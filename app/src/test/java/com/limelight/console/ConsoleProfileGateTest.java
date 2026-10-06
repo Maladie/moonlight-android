@@ -172,7 +172,7 @@ public class ConsoleProfileGateTest {
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
                 StandardCharsets.UTF_8).replace("\r\n", "\n");
         String leave = between(source, "private void leaveHost()",
-                "private ImageButton addQuickAction(");
+                "private void refreshDiscordIndicator(");
 
         assertTrue(leave.contains("profileSelection(host.uuid).showSelector"));
         assertTrue(leave.contains("showProfileGate(host, true, false)"));

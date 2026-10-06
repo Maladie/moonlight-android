@@ -480,7 +480,10 @@
     <string name="console_status_unreachable">Nieosiągalny</string>
     <string name="console_status_unpaired">Online · niesparowany</string>
     <string name="console_status_active_session">Aktywna sesja</string>
-    <string name="console_status_active_app">Aktywna sesja · %1$s</string>
+    <string name="console_status_active_app">Stream · %1$s</string>
+    <string name="console_refresh_library">Odśwież bibliotekę</string>
+    <string name="console_change_host">Zmień hosta</string>
+    <string name="console_return_to_stream">Wróć do streamu</string>
     <string name="console_apps">APLIKACJE</string>
     <string name="console_controllers_none">KONTROLERY · BRAK</string>
     <plurals name="console_controller_count">
@@ -559,11 +562,9 @@
     <string name="console_app_stream_settings">Ustawienia streamingu aplikacji</string>
     <string name="console_app_actions_details">Uruchom, skonfiguruj, ukryj lub sprawdź tę aplikację.</string>
     <string name="console_show_app">Pokaż aplikację</string>
-    <string name="console_action_refresh">Odśwież stan i bibliotekę</string>
     <string name="console_pair_discovered_host">Sparuj wykryty host</string>
     <string name="console_pair_discovered_host_named">Sparuj wykryty host %1$s</string>
     <string name="console_action_quick_launch">Szybkie uruchamianie</string>
-    <string name="console_action_stream_settings">Opcje</string>
     <string name="console_action_hidden_apps">Ukryte aplikacje</string>
     <string name="console_action_discord">Discord</string>
     <string name="console_refresh">Odśwież stan i bibliotekę</string>
@@ -619,9 +620,6 @@
     <string name="console_remove_host_title">Usunąć %1$s?</string>
     <string name="console_remove_host_details">Spowoduje to usunięcie zapisanego hosta, okładek z pamięci podręcznej, skrótów i danych sparowanego Gateway z tego urządzenia.</string>
     <string name="console_host_removed">Usunięto %1$s.</string>
-    <string name="console_discord_no_host">Discord · wybierz hosta</string>
-    <string name="console_discord_unconfigured">Discord · Gateway niesparowany</string>
-    <string name="console_discord_disabled">Discord · integracja wyłączona</string>
     <string name="console_discord_connecting">Discord · sprawdzanie połączenia</string>
     <string name="console_discord_disconnected">Discord · rozłączono</string>
     <string name="console_discord_auth_required">Discord · wymagana autoryzacja</string>
@@ -972,10 +970,8 @@
     <string name="console_add_host_searching">Odświeżanie znalezionych hostów…</string>
     <string name="console_add_host_by_ip">Dodaj przez adres IP</string>
     <string name="console_add_host_details">Hosty w pobliżu są wyszukiwane automatycznie. Możesz także ręcznie podać adres IP.</string>
-    <string name="console_action_leave_host">Opuść host</string>
     <string name="console_wake_host">Obudź hosta</string>
     <string name="console_unpair_host">Odparuj hosta</string>
-    <string name="console_host_status">%1$s\n%2$s</string>
     <string name="console_host_status_description">%1$s. %2$s. Naciśnij Wybierz, aby otworzyć opcje hosta.</string>
     <string name="console_host_power_wake_description">%1$s jest offline. Wciśnij Wybierz, aby obudzić hosta.</string>
     <string name="console_host_waking_description">Trwa wybudzanie hosta %1$s. Zaczekaj.</string>

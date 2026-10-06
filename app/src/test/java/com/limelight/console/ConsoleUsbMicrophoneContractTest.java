@@ -45,11 +45,12 @@ public class ConsoleUsbMicrophoneContractTest {
     @Test public void toolbarIsAccessibleAndIndependentOfGame() throws IOException {
         String console = source("src/main/java/com/limelight/console/ConsoleActivity.java");
         String game = source("src/main/java/com/limelight/Game.java");
-        int discord = console.indexOf("global.discord");
-        int microphone = console.indexOf("global.usb_microphone", discord);
+        String bar = source("src/main/java/com/limelight/console/ConsoleTopBar.java");
+        int discord = bar.indexOf("global.discord");
+        int microphone = bar.indexOf("global.usb_microphone", discord);
         assertTrue(discord >= 0 && microphone > discord);
-        assertTrue(console.contains("setContentDescription(getString("));
-        assertTrue(console.contains("button.setTooltipText(description)"));
+        assertTrue(console.contains("R.string.console_usb_microphone_description"));
+        assertTrue(bar.contains("microphone.setContentDescription(description)"));
         assertTrue(console.contains("registerOnSharedPreferenceChangeListener("));
         assertTrue(console.contains("unregisterOnSharedPreferenceChangeListener("));
         assertTrue(console.contains("microphoneStateListener"));

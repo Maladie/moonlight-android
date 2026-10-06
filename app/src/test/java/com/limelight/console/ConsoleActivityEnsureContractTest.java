@@ -455,7 +455,7 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("private void loadKnownHosts("));
         String scopedCancel = source.substring(source.indexOf(
                         "private void cancelCurrentPreparation()"),
-                source.indexOf("private void updateDiscordActionDescription("));
+                source.indexOf("private void resumeSession(ComputerDetails host)"));
         String worker = source.substring(source.indexOf(
                         "@Override public SessionOrchestrator.PreparedWarmUp prepareHost("),
                 source.indexOf("@Override public void launchPreparedHost("));
