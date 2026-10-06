@@ -61,6 +61,11 @@ REQUIRED_GAME_STABLE_SAMPLES = 4
 REQUIRED_LAUNCHER_STABLE_SAMPLES = 4
 LAUNCHER_POSTCONDITION_TIMEOUT = 5.0
 PROVIDER_LAUNCHER_PROBE_DELAY = 15.0
+# Background scan (no Bridge lock): its ctypes calls each wait for a contended GIL, so a
+# ~60 ms scan often takes several hundred ms; a short budget made the status flap.
+RUNNING_SCAN_DEADLINE = 2.0
+# Scans inside the Bridge lock or a control request must not stall /observation or the stop.
+LOCKED_RUNNING_SCAN_DEADLINE = 0.25
 GAME_START_TIMEOUT = 60.0
 GAME_STOP_TIMEOUT = 20.0
 STEAM_PRIMARY_START_TIMEOUT = 30.0
@@ -499,8 +504,8 @@ class WindowProbe:
             self.kernel32.CloseHandle(token)
 
     def scan_running_processes(self, game_images: set[str],
-                               catalog_path: Callable[[str], bool]
-                               ) -> tuple[list[dict[str, Any]], str]:
+                               catalog_path: Callable[[str], bool],
+                               budget: float) -> tuple[list[dict[str, Any]], str]:
         """Own-user processes; ``partial`` when an unreadable process could still match.
 
         A process whose owner is unreadable can be a game only through the matcher's two
@@ -527,7 +532,7 @@ class WindowProbe:
 
         result: list[dict[str, Any]] = []
         status = "complete"
-        deadline = time.monotonic() + 0.25
+        deadline = time.monotonic() + budget
         entry = self._process_entry()
         try:
             if not self.user32.EnumWindows(callback_type(visit), 0):
@@ -4013,7 +4018,8 @@ class BridgeState:
         return len(matches) == 1 \
             and int(matches[0].get("process_id") or 0) == process_id
 
-    def _verified_running_games(self) -> tuple[list[dict[str, Any]], str, str, str]:
+    def _verified_running_games(self, budget: float
+                                ) -> tuple[list[dict[str, Any]], str, str, str]:
         """Verified games, scan status, library revision and a diagnostic reason category."""
         with self.lock:
             games = [dict(game) for game in self.library.values()]
@@ -4033,7 +4039,8 @@ class BridgeState:
         identities, status = probe.scan_running_processes(
             {ntpath.basename(path).casefold() for path in exact_paths},
             lambda raw: any(self._trace_path_matches_game(
-                {"process_path": self._normalized_process_path(raw)}, game) for game in games))
+                {"process_path": self._normalized_process_path(raw)}, game) for game in games),
+            budget)
         scan_status = status
         matches: dict[str, list[dict[str, Any]]] = {}
         for identity in identities:
@@ -4230,7 +4237,8 @@ class BridgeState:
         with self.lock:
             observed_current = self.current
         try:
-            games, status, revision, reason = self._verified_running_games()
+            games, status, revision, reason = self._verified_running_games(
+                RUNNING_SCAN_DEADLINE)
         except Exception:
             games, status, revision, reason = [], "unavailable", "", "scan_error"
         with self.lock:
@@ -4384,7 +4392,8 @@ class BridgeState:
         normalized = self.resolve_game_id(game_id)
         failed = {"accepted": False, "command": "stop", "force": False,
                   "reason": "running_game_identity_changed"}
-        games, status, revision, _reason = self._verified_running_games()
+        games, status, revision, _reason = self._verified_running_games(
+            LOCKED_RUNNING_SCAN_DEADLINE)
         expected = next((game for game in games if game["game_id"] == normalized
                          and game["process_token"] == token), None)
         if expected is None or status == "unavailable":
@@ -4417,7 +4426,8 @@ class BridgeState:
             games: list[dict[str, Any]] = []
             status = "unavailable"
             for _attempt in range(2):
-                games, status, _revision, _reason = self._verified_running_games()
+                games, status, _revision, _reason = self._verified_running_games(
+                    LOCKED_RUNNING_SCAN_DEADLINE)
                 if status != "unavailable":
                     break
             probe = self.running_process_probe
@@ -4532,7 +4542,8 @@ class BridgeState:
                     return
                 if identity_state == "gone":
                     if self.current.get("connectorStopPending") is True:
-                        games, status, _revision, _reason = self._verified_running_games()
+                        games, status, _revision, _reason = self._verified_running_games(
+                            LOCKED_RUNNING_SCAN_DEADLINE)
                         if status == "complete" and not games:
                             self._complete_game_stop_locked()
                     elif path and started > 0:

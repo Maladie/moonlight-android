@@ -27,6 +27,7 @@ from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
 from GameProviderBridge import (
     BridgeState, GAME_START_TIMEOUT, GameProviderHandler, LAUNCHER_POSTCONDITION_TIMEOUT,
+    LOCKED_RUNNING_SCAN_DEADLINE, RUNNING_SCAN_DEADLINE,
     ProviderDiagnostics,
     REQUIRED_GAME_STABLE_SAMPLES, REQUIRED_LAUNCHER_STABLE_SAMPLES,
     REQUIRED_STABLE_SAMPLES,
@@ -47,7 +48,7 @@ class RunningScanCompletenessTest(unittest.TestCase):
            "process_started_filetime": 5, "user_sid": "own", "session_id": 1}
 
     def scan(self, statuses, visible, images=frozenset(), names=None, paths=None,
-             catalog=r"C:\Games"):
+             catalog=r"C:\Games", budget=RUNNING_SCAN_DEADLINE):
         probe = object.__new__(WindowProbe)
         probe.kernel32 = mock.Mock()
         pids = [100] + sorted(statuses)
@@ -91,7 +92,30 @@ class RunningScanCompletenessTest(unittest.TestCase):
         with mock.patch.object(ctypes, "get_last_error", return_value=18, create=True):
             return probe.scan_running_processes(
                 set(images), lambda path: WindowProbe.belongs_to_install_directory(
-                    path.casefold(), catalog.casefold()))
+                    path.casefold(), catalog.casefold()), budget)
+
+    def test_scan_deadline_is_two_seconds_unlocked_and_a_quarter_second_locked(self):
+        # One clock tick per process stands in for its identity reads; four processes.
+        for budget, per_process, expected in (
+                (RUNNING_SCAN_DEADLINE, 0.45, "complete"),
+                (RUNNING_SCAN_DEADLINE, 0.55, "unavailable"),
+                (LOCKED_RUNNING_SCAN_DEADLINE, 0.25, "unavailable")):
+            now = iter(range(100))
+            with mock.patch("GameProviderBridge.time.monotonic",
+                            side_effect=lambda: next(now) * per_process):
+                _, status = self.scan({600: "unknown", 700: "unknown", 800: "unknown"},
+                                      visible=[100], budget=budget)
+            self.assertEqual(expected, status, (budget, per_process))
+
+    def test_only_the_background_refresh_scans_with_the_long_deadline(self):
+        state = object.__new__(BridgeState)
+        state._verified_running_games = mock.Mock(side_effect=RuntimeError)
+        state.lock = threading.RLock()
+        state.current = {}
+        state.library_revision = "r"
+        state._epic_playtime_samples = {}
+        state.refresh_running_games()
+        state._verified_running_games.assert_called_once_with(RUNNING_SCAN_DEADLINE)
 
     def test_unreadable_processes_without_a_window_keep_the_scan_complete(self):
         result, status = self.scan({600: "unknown", 700: "unknown"}, visible=[100])
