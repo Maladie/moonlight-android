@@ -576,6 +576,15 @@ public final class StreamRuntime implements NvConnectionListener,
         lostWithoutPresentation("stage_failed");
     }
 
+    @Override public void controlRejected(String stage, String reason) {
+        Presentation p = attached();
+        if (p != null) {
+            p.controlRejected(stage, reason);
+            return;
+        }
+        lostWithoutPresentation("stage_failed");
+    }
+
     @Override public void connectionStarted() {
         synchronized (this) {
             if (state == State.CONNECTING && !stopRequested) state = State.CONNECTED;

@@ -16,6 +16,7 @@ import com.limelight.binding.audio.UsbMicrophoneService;
 import com.limelight.binding.audio.UsbMicrophonePermissionActivity;
 import com.limelight.binding.audio.DiscordAudioDownlink;
 import com.limelight.console.HostGatewayStore;
+import com.limelight.console.ProfileAuthorization;
 import com.limelight.gateway.GatewayConnection;
 
 import com.limelight.diagnostics.MoonWakerDiagnostics;
@@ -55,6 +56,7 @@ public final class MoonWakerApplication extends Application implements
                 UsbMicrophoneService.CONSOLE_PREFS, MODE_PRIVATE);
         gatewayPreferences = getSharedPreferences(
                 UsbMicrophoneService.GATEWAY_PREFS, MODE_PRIVATE);
+        ProfileAuthorization.onChange(() -> mainHandler.post(this::updateDiscordAudio));
         defaultPreferences.registerOnSharedPreferenceChangeListener(this);
         consolePreferences.registerOnSharedPreferenceChangeListener(this);
         gatewayPreferences.registerOnSharedPreferenceChangeListener(this);
@@ -116,7 +118,10 @@ public final class MoonWakerApplication extends Application implements
         String selectedHost = consolePreferences.getString(
                 UsbMicrophoneService.SELECTED_HOST, "");
         HostGatewayStore store = new HostGatewayStore(this);
-        GatewayConnection connection = store.loadForHost(selectedHost, null);
+        // A stream is already past the profile gate; the console is not until it grants a host.
+        GatewayConnection connection = activity instanceof Game
+                ? store.loadForHost(selectedHost, null)
+                : store.loadForPolling(selectedHost, null, null);
         // Only a known parent profile has Discord routes; a child or unclassified profile
         // would only collect 404s.
         if (connection != null && !store.discordEligible(selectedHost, connection.profileId())) {

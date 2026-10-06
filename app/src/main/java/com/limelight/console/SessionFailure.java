@@ -10,7 +10,7 @@ import java.io.IOException;
  * screen. The code is shown on that screen and recorded with its correlation, so a report
  * from the TV names exactly one path.
  */
-enum SessionFailure {
+public enum SessionFailure {
     // ConsoleActivity closePreviousSession, before any path is chosen.
     CLOSE_HOST_UNAVAILABLE("close.host_unavailable",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
@@ -91,16 +91,39 @@ enum SessionFailure {
     SUPPORT_PREVIOUS_NOT_CLOSED("support.previous_not_closed",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
     SUPPORT_HOST_NOT_READY("support.host_not_ready",
-            R.string.console_host_not_ready, R.string.console_host_timeout);
+            R.string.console_host_not_ready, R.string.console_host_timeout),
 
-    final String code;
-    final int title;
-    final int details;
+    // Game stream start: a Gateway control operation (acquire, reconcile or complete) answered HTTP 409.
+    CONTROL_STREAM_CONFLICT("control.managed_stream_conflict",
+            R.string.conn_error_title, R.string.control_stream_conflict),
+    CONTROL_PREVIOUS_GAME_UNCONFIRMED("control.previous_game_unconfirmed",
+            R.string.conn_error_title, R.string.control_previous_game_unconfirmed),
+    CONTROL_STATE_CHANGED("control.state_changed",
+            R.string.conn_error_title, R.string.control_state_changed),
+    CONTROL_REJECTED("control.rejected",
+            R.string.conn_error_title, R.string.control_rejected);
+
+    public final String code;
+    public final int title;
+    public final int details;
 
     SessionFailure(String code, int title, int details) {
         this.code = code;
         this.title = title;
         this.details = details;
+    }
+
+    /** Maps the Gateway reason of an HTTP 409 control-operation response to its failure. */
+    public static SessionFailure fromControlRejection(String reason) {
+        String value = reason == null ? "" : reason;
+        switch (value) {
+            case "managed_stream_conflict": return CONTROL_STREAM_CONFLICT;
+            case "retained_process_unconfirmed":
+            case "retained_owner_unconfirmed": return CONTROL_PREVIOUS_GAME_UNCONFIRMED;
+            case "stale_operation":
+            case "stale_session": return CONTROL_STATE_CHANGED;
+            default: return CONTROL_REJECTED;
+        }
     }
 
     /** Carries the exact close path to the orchestrator instead of message text. */
@@ -140,7 +163,7 @@ enum SessionFailure {
     }
 
     /** Keeps only a lowercase reason token; free text could carry identifiers or secrets. */
-    static String safeDetail(String detail) {
+    public static String safeDetail(String detail) {
         return detail != null && detail.matches("[a-z_]{1,64}") ? detail : "";
     }
 }

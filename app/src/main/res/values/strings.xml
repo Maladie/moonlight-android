@@ -1336,6 +1336,10 @@
     <string name="transition_game_ended">Game ended</string>
     <string name="transition_returning_library">Returning to the library…</string>
     <string name="console_previous_session_close_failed">The previous host session could not be closed. Try again after it disappears from the active session indicator.</string>
+    <string name="control_stream_conflict">Another stream session is already running on the host. Close it on the host or end that session, then try again.</string>
+    <string name="control_previous_game_unconfirmed">The host has not confirmed that the previous game has ended. Wait a moment and try again.</string>
+    <string name="control_state_changed">The session state on the host changed while starting. Try again.</string>
+    <string name="control_rejected">The host rejected starting this stream. Try again in a moment.</string>
     <string name="console_session_uncertain_title">Session status is still being verified</string>
     <string name="console_session_uncertain_details">MoonWaker has not yet confirmed which game is running. Wait a moment and try again. No game or stream was started or stopped.</string>
     <string name="console_presentation_launch_failed_title">Could not show the stream</string>
