@@ -24,7 +24,7 @@ Characterize behavior → choose the existing owner/narrow seam → move cohesiv
 ## Reject
 - A helper receiving Game or ConsoleActivity to reach their mutable fields.
 - Copying flags into a helper while Activity remains the competing owner.
-- A new SessionManager with all the old responsibilities under a different filename.
+- A new SessionManager with all the old responsibilities under a different filename. The ban targets moving responsibilities without changing ownership; a single-threaded model with a pure transition function that removes global state (MW-04 `SessionModel`) is allowed.
 - Static singletons retaining Activity/views/listeners beyond their lifetime.
 - Merely moving methods, counting lines, adding interfaces with no concrete need, or masking dependency cycles through generic callbacks.
 - Reimplementing LaunchTransitionController, SessionOrchestrator, OperationJournal or durable child accounting.

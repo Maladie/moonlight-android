@@ -10,7 +10,7 @@ Home/app navigation and game-only stop retain the transport where required by th
 
 ## Ownership and correlation
 
-Start with existing owners: `SessionOrchestrator` for intent; `LaunchTransitionController` for transition/privacy decisions; `RetainedStreamSessionCoordinator` for the retained facade; `SessionResumeManager` for reconnect material; `SuspendedSessionStore` for intentional suspension; host `OperationJournal` for durable GameOps. Verify locations and current contracts before changing them.
+Start with existing owners: `SessionOrchestrator` for intent and `RetainedStreamSessionCoordinator` for the retained facade until MW-05 step K3, from which `SessionModel` owns session state and intent (`RetainedStreamSessionCoordinator` is being removed by MW-05 K3-K5); `LaunchTransitionController` for transition/privacy decisions; `SessionResumeManager` for reconnect material; `SuspendedSessionStore` for intentional suspension; host `OperationJournal` for durable GameOps. Verify locations and current contracts before changing them.
 
 Physical runtime may move behind an existing facade. Do not create a second durable journal or competing state machine. `Game` and `ConsoleActivity` should shed the touched domain responsibility, not donate it to another catch-all manager.
 
