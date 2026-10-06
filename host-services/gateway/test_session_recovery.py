@@ -39,7 +39,7 @@ class SessionRecoveryTest(unittest.TestCase):
         probe = mock.Mock()
         probe.process_identity.side_effect = lambda pid, **kw: (
             own if pid == os.getpid() else self.processes.get(pid))
-        probe.scan_running_processes.side_effect = lambda _images: (list(self.processes.values()), "complete")
+        probe.scan_running_processes.side_effect = lambda _images, _catalog: (list(self.processes.values()), "complete")
         probe.process_identity_status.side_effect = lambda pid, **kw: (
             ("alive", own) if pid == os.getpid() else
             ("alive", self.processes[pid]) if pid in self.processes else ("gone", None))
@@ -413,6 +413,43 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertFalse(ok, rejected)
         self.assertEqual(effects, len(self.closes))
         self.assertEqual(parent["generation"], self.gateway.control_state["stream"]["generation"])
+
+    def test_reauthorize_reads_the_provider_without_the_lock(self):
+        child_id = self.start_child()
+        self.gateway.child_time_session_end(self.client, "kid", child_id, "replacement")
+        reads, proxy = [], self.gateway.proxy
+
+        def tracked(name, path, **kwargs):
+            reads.append((name, self.gateway.lock._is_owned()))
+            return proxy(name, path, **kwargs)
+        self.gateway.proxy = tracked
+        status, parent = self.acquire("parent", "reauthorize")
+        self.assertEqual(200, status, parent)
+        self.assertEqual([("game_provider", False)], reads)
+
+    def test_child_session_ending_during_a_read_yields_no_permit(self):
+        # The entitlement gate is re-checked under the lock after every unlocked read.
+        child_id = self.start_child()
+        stream = dict(self.gateway.control_state["stream"])
+        generation = self.gateway.control_state["generation"]
+        self.gateway.authorize_profile(self.client, "kid", allow_child=True)
+        proxy = self.gateway.proxy
+
+        def ending(name, path, **kwargs):
+            if name == "game_provider":
+                with self.gateway.lock:
+                    self.gateway.child_time_session = None
+            return proxy(name, path, **kwargs)
+        self.gateway.proxy = ending
+        status, result = self.gateway.control_operation_acquire(self.client, {
+            "operation_id": "child-resume", "intent": "resume",
+            "stream_session_id": stream["stream_session_id"], "sunshine_app_id": 7,
+            "expected_generation": stream["generation"], "observed_sunshine_app_id": 7,
+            "child_session_id": child_id}, "child-resume", 5.0)
+        self.assertEqual(409, status, result)
+        self.assertEqual("child_session_unmanaged", result["reason"])
+        self.assertIsNone(self.gateway.control_state["active"])
+        self.assertEqual(generation, self.gateway.control_state["generation"])
 
     def test_c_late_child_cleanup_cannot_touch_reauthorized_parent(self):
         child_id = self.start_child()

@@ -75,17 +75,24 @@ branch and `_control_stream_idle` each required `_child_time_current_game` to re
 PENDING with a "partial" scan while idle, so all three answered
 `retained_process_unconfirmed` (or never reconciled) until a hard reset.
 
-Fix: the three paths share `GatewayState._control_retained_process`. A stream that retains
-no identity is accepted, with an empty identity, when the provider answers well-formed
-with game evidence ABSENT, state idle, no current game id, no running identity and a
-scan that ran (`running_scan_status` "complete" or "partial"; "unavailable" still
-rejects). The record has no retained target whose absence could be proven. Open point
-for the owner: the record holds only an opaque `sunshine_app_id`, so a token-less *game*
-stream is not distinguishable from Desktop; if the provider reports idle under a partial
-scan while such a game still runs, its record is released or rebound. A stream that
-does carry a token or provider game id keeps the previous proof unchanged (complete scan,
-exact `target_status`). An unreachable provider or a malformed observation still rejects
-with `retained_process_unconfirmed`. Ownership checks, generation fencing, the rebind
-condition of Defect 1 and the child-entitlement gate are untouched; there is no new
-release path and no expiry. Tests: `test_control_operations.py`, the `tokenless` /
-`token_bearing` / `rejected_close` cases.
+Root cause of the partial scan: a Medium-integrity Bridge cannot read the owner token of
+an elevated process, and any such process with a visible window (or a game executable's
+image name) made the whole running scan "partial" for as long as it ran. The Bridge now
+re-reads such a process's image path without the owner and marks the scan partial only
+when that path is unreadable or lies in the catalog (exact game executable or a game's
+install directory); the process never joins the running games. An idle host with an
+elevated desktop app open now reports a "complete" scan.
+
+Final rule (owner decision; it closes the open point of the first follow-up, which had
+accepted a "partial" scan for token-less streams and is reverted): the stop branch, the
+resume/reconnect/warm_up branch and `_control_stream_idle` share
+`GatewayState._control_retained_process`, and every stream, with or without a
+`process_token` or `provider_game_id`, needs the same provider proof: a matching active
+game, or idle (game and process evidence ABSENT, state idle, no current game id, a
+"complete" running scan and, for a retained target, its exact `target_status` gone or
+reused). A "partial" or "unavailable" scan, an unreachable provider or a malformed
+observation rejects with `retained_process_unconfirmed` and never idle-reconciles.
+Ownership checks, generation fencing, the rebind condition of Defect 1 and the
+child-entitlement gate are untouched. Tests: `test_control_operations.py`, the
+`tokenless` / `token_bearing` / `rejected_close` cases; Bridge:
+`test_playnite_bridge.py` `RunningScanCompletenessTest`.

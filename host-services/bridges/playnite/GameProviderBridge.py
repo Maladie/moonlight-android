@@ -498,12 +498,16 @@ class WindowProbe:
         finally:
             self.kernel32.CloseHandle(token)
 
-    def scan_running_processes(self, game_images: set[str]) -> tuple[list[dict[str, Any]], str]:
+    def scan_running_processes(self, game_images: set[str],
+                               catalog_path: Callable[[str], bool]
+                               ) -> tuple[list[dict[str, Any]], str]:
         """Own-user processes; ``partial`` when an unreadable process could still match.
 
-        An unreadable process exposes only its image name and windows, so it can be a
-        game only through the matcher's two routes: a visible window on this desktop or
-        the image name of an exact game executable (``game_images``, casefolded).
+        A process whose owner is unreadable can be a game only through the matcher's two
+        routes: a visible window on this desktop or the image name of an exact game
+        executable (``game_images``, casefolded). Its image path, when readable, decides:
+        only a path ``catalog_path`` accepts can still be a game. It never joins the
+        result, so owner/session checks stay strict.
         """
         own = self.process_identity(os.getpid(), include_owner=True)
         if own is None or not self.user32:
@@ -535,9 +539,12 @@ class WindowProbe:
                 identity = self.process_identity(pid, include_owner=True) if pid > 4 else None
                 if identity is None:
                     if pid > 4 and (pid in visible_pids
-                                    or entry.szExeFile.casefold() in game_images) \
-                            and self.process_identity_status(pid)[0] != "gone":
-                        status = "partial"
+                                    or entry.szExeFile.casefold() in game_images):
+                        found, unowned = self.process_identity_status(pid)
+                        path = str((unowned or {}).get("process_path") or "") \
+                            if found == "alive" else ""
+                        if found != "gone" and (not path or catalog_path(path)):
+                            status = "partial"
                 elif identity["user_sid"] == own["user_sid"] \
                         and identity["session_id"] == own["session_id"]:
                     identity["visible_window"] = pid in visible_pids
@@ -4006,7 +4013,8 @@ class BridgeState:
         return len(matches) == 1 \
             and int(matches[0].get("process_id") or 0) == process_id
 
-    def _verified_running_games(self) -> tuple[list[dict[str, Any]], str, str]:
+    def _verified_running_games(self) -> tuple[list[dict[str, Any]], str, str, str]:
+        """Verified games, scan status, library revision and a diagnostic reason category."""
         with self.lock:
             games = [dict(game) for game in self.library.values()]
             revision = self.library_revision
@@ -4014,7 +4022,7 @@ class BridgeState:
             current = dict(self.current)
             native_confirmation = self._native_reconciliation_confirmation if self.connected else None
         if probe is None:
-            return [], "unavailable", revision
+            return [], "unavailable", revision, "probe_missing"
         exact_paths = set()
         for game in games:
             executable = str(game.get("exe") or game.get("executable") or "").strip()
@@ -4023,7 +4031,10 @@ class BridgeState:
                 exact_paths.add(self._normalized_process_path(
                     executable if ntpath.isabs(executable) else ntpath.join(directory, executable)))
         identities, status = probe.scan_running_processes(
-            {ntpath.basename(path).casefold() for path in exact_paths})
+            {ntpath.basename(path).casefold() for path in exact_paths},
+            lambda raw: any(self._trace_path_matches_game(
+                {"process_path": self._normalized_process_path(raw)}, game) for game in games))
+        scan_status = status
         matches: dict[str, list[dict[str, Any]]] = {}
         for identity in identities:
             path = self._normalized_process_path(identity.get("process_path"))
@@ -4088,6 +4099,9 @@ class BridgeState:
                 }:
             own = probe.process_identity(os.getpid(), include_owner=True)
             fresh = probe.process_identity(current_pid, include_owner=True)
+            # An unreadable live emulator (e.g. elevated) may still be this game.
+            if fresh is None and probe.process_identity_status(current_pid)[0] != "gone":
+                status = scan_status = "partial"
             if own is not None and fresh is not None \
                     and fresh.get("user_sid") == own.get("user_sid") \
                     and int(fresh.get("session_id") or 0) == int(
@@ -4106,7 +4120,9 @@ class BridgeState:
                 verified.extend(values)
             else:
                 status = "partial"
-        return verified, status, revision
+        reason = {"complete": "verified", "unavailable": "process_scan_unavailable"}.get(
+            status, "process_unreadable" if scan_status == "partial" else "match_unconfirmed")
+        return verified, status, revision, reason
 
     def _apply_epic_playtime_locked(self) -> None:
         for game_id, game in self.library.items():
@@ -4214,9 +4230,9 @@ class BridgeState:
         with self.lock:
             observed_current = self.current
         try:
-            games, status, revision = self._verified_running_games()
+            games, status, revision, reason = self._verified_running_games()
         except Exception:
-            games, status, revision = [], "unavailable", ""
+            games, status, revision, reason = [], "unavailable", "", "scan_error"
         with self.lock:
             if revision != self.library_revision or self.current is not observed_current:
                 self._epic_playtime_samples.clear()
@@ -4225,10 +4241,16 @@ class BridgeState:
                 games if status != "unavailable" else [], time.monotonic())
             self._running_games = [{key: game[key] for key in (
                 "game_id", "process_id", "process_token")} for game in games]
+            previous = self._running_scan_status
             self._running_scan_status = status
             self._running_scan_revision = self.library_revision
             self._running_scan_at = time.monotonic()
         elapsed = time.monotonic() - started
+        if status != previous:
+            DIAGNOSTICS.record("running-scan.status-changed",
+                               "INFO" if status == "complete" else "WARN",
+                               status=status, previous_state=previous, reason=reason,
+                               duration_ms=int(elapsed * 1000))
         if elapsed > 0.2:
             logging.warning("Running game scan took %.0fms (%s)", elapsed * 1000, status)
 
@@ -4362,7 +4384,7 @@ class BridgeState:
         normalized = self.resolve_game_id(game_id)
         failed = {"accepted": False, "command": "stop", "force": False,
                   "reason": "running_game_identity_changed"}
-        games, status, revision = self._verified_running_games()
+        games, status, revision, _reason = self._verified_running_games()
         expected = next((game for game in games if game["game_id"] == normalized
                          and game["process_token"] == token), None)
         if expected is None or status == "unavailable":
@@ -4395,7 +4417,7 @@ class BridgeState:
             games: list[dict[str, Any]] = []
             status = "unavailable"
             for _attempt in range(2):
-                games, status, _revision = self._verified_running_games()
+                games, status, _revision, _reason = self._verified_running_games()
                 if status != "unavailable":
                     break
             probe = self.running_process_probe
@@ -4510,7 +4532,7 @@ class BridgeState:
                     return
                 if identity_state == "gone":
                     if self.current.get("connectorStopPending") is True:
-                        games, status, _revision = self._verified_running_games()
+                        games, status, _revision, _reason = self._verified_running_games()
                         if status == "complete" and not games:
                             self._complete_game_stop_locked()
                     elif path and started > 0:

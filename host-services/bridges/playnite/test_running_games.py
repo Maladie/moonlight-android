@@ -134,6 +134,20 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.stop_verified_process.assert_called_once()
         self.assertEqual(11, self.probe.stop_verified_process.call_args.args[0]["process_id"])
 
+    def test_scan_status_transitions_are_recorded_once_with_a_reason_category(self):
+        recorder = mock.Mock()
+        with mock.patch("GameProviderBridge.DIAGNOSTICS", recorder):
+            self.state.refresh_running_games()
+            self.state.refresh_running_games()
+            self.probe.scan_running_processes.return_value = ([], "complete")
+            self.state.refresh_running_games()
+        self.assertEqual(
+            [("unavailable", "partial", "process_unreadable"),
+             ("partial", "complete", "verified")],
+            [(call.kwargs["previous_state"], call.kwargs["status"], call.kwargs["reason"])
+             for call in recorder.record.call_args_list])
+        self.assertNotIn("process_path", str(recorder.record.call_args_list))
+
     def test_current_stop_clears_only_same_identity_and_never_newer_current(self):
         token = self.token("epic:Cowbird")
         result = self.state._stop_verified_running_game("epic:Cowbird", token)
@@ -171,7 +185,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.scan_running_processes.return_value = ([self.hk,
             identity(44, r"C:\Games\HK\UnityCrashHandler64.exe")], "partial")
         self.assertEqual(1, len(self.state._verified_running_games()[0]))
-        self.probe.scan_running_processes.side_effect = lambda _images: (
+        self.probe.scan_running_processes.side_effect = lambda _images, _catalog: (
             setattr(self.state, "library_revision", "3") or ([self.hk], "complete"))
         self.state.refresh_running_games()
         self.assertEqual([], self.state.current_snapshot()["running_games"])
@@ -210,13 +224,38 @@ class RunningGamesTest(unittest.TestCase):
         self.state.handle_message({"type": "status", "status": {
             "name": "gameStarted", "id": guid, "processId": 44}})
 
-        running, status, _revision = self.state._verified_running_games()
+        running, status, _revision, _reason = self.state._verified_running_games()
 
         self.assertEqual("complete", status)
         self.assertEqual({"steam:367520", guid},
                          {game["game_id"] for game in running})
         self.assertEqual(44, next(game["process_id"] for game in running
                                   if game["game_id"] == guid))
+
+    def test_unreadable_confirmed_emulator_makes_the_scan_partial(self):
+        # An elevated emulator outside its ROM directory: its owner is unreadable, so the
+        # idle-looking scan must not read "complete" while it may still run the game.
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        self.state.library = {guid: {"id": guid, "provider": "playnite", "playniteGameId": guid,
+                                     "installDir": r"C:\Games\Contra", "exe": ""}}
+        self.state.connected = True
+        self.state.current = {"id": guid, "state": "running", "processId": 44,
+                              "processStartedFiletime": 400}
+        self.state._native_reconciliation_confirmation = (guid, 44)
+        self.probe.scan_running_processes.return_value = ([], "complete")
+        own = {"process_id": os.getpid(), "process_path": r"C:\Bridge\bridge.exe",
+               "process_started_filetime": 500, "user_sid": "own-sid", "session_id": 1}
+        self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
+            dict(own) if pid == os.getpid() else None)
+        for probed, expected in ((("alive", identity(44, r"C:\Emu\retroarch.exe", 400)),
+                                  ("partial", "process_unreadable")),
+                                 (("unknown", None), ("partial", "process_unreadable")),
+                                 (("gone", None), ("complete", "verified"))):
+            with self.subTest(probed=probed[0]):
+                self.probe.process_identity_status.return_value = probed
+                running, status, _revision, reason = self.state._verified_running_games()
+                self.assertEqual([], running)
+                self.assertEqual(expected, (status, reason))
 
     def test_retained_target_status_is_exact_even_for_an_exe_less_emulator(self):
         # An exe-less emulator entry: once windowless it is never a catalog match, so only
@@ -247,7 +286,11 @@ class RunningGamesTest(unittest.TestCase):
         self.state.library["steam:2"] = {"id": "steam:2", "provider": "steam",
                                          "installDir": r"C:\Games\Celeste", "exe": "Celeste.exe"}
         self.state._verified_running_games()
-        self.probe.scan_running_processes.assert_called_once_with({"celeste.exe"})
+        self.probe.scan_running_processes.assert_called_once_with({"celeste.exe"}, mock.ANY)
+        catalog_path = self.probe.scan_running_processes.call_args.args[1]
+        self.assertTrue(catalog_path(r"C:\Games\Celeste\Celeste.exe"))
+        self.assertTrue(catalog_path(r"c:/games/hk/tools/helper.exe"))
+        self.assertFalse(catalog_path(r"C:\Program Files\Admin Tool\tool.exe"))
 
     def test_emulator_stop_event_waits_for_exact_process_exit(self):
         guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
@@ -272,6 +315,7 @@ class RunningGamesTest(unittest.TestCase):
         self.assertEqual("running", self.state.current["state"])
         self.assertTrue(self.state.current["connectorStopPending"])
         live[0] = False
+        self.probe.process_identity_status.return_value = ("gone", None)
         self.probe.scan_running_processes.return_value = ([], "complete")
         self.assertEqual("idle", self.state.current_snapshot()["state"])
 
@@ -373,6 +417,7 @@ class RunningGamesTest(unittest.TestCase):
         self.assertTrue(self.state.current["connectorStopPending"])
 
         live[0] = False
+        self.probe.process_identity_status.return_value = ("gone", None)
         self.probe.scan_running_processes.return_value = ([], "complete")
         self.assertEqual("idle", self.state.current_snapshot()["state"])
 
@@ -392,7 +437,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
             dict(own) if pid == os.getpid() else {**emulator, "user_sid": "foreign"})
 
-        running, _status, _revision = self.state._verified_running_games()
+        running, _status, _revision, _reason = self.state._verified_running_games()
 
         self.assertEqual([], running)
 
@@ -412,7 +457,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
             dict(own) if pid == os.getpid() else dict(emulator))
 
-        running, _status, _revision = self.state._verified_running_games()
+        running, _status, _revision, _reason = self.state._verified_running_games()
 
         self.assertEqual([], running)
 
@@ -695,13 +740,13 @@ class NativeRunningGamesTest(unittest.TestCase):
             setattr(entry._obj, "th32ProcessID", 11) or True)
         self.probe.kernel32.Process32NextW.return_value = False
         with mock.patch("GameProviderBridge.time.monotonic", side_effect=[0, 1]):
-            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set()))
+            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set(), lambda _path: True))
         with mock.patch.object(ctypes, "get_last_error", return_value=5, create=True):
-            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set()))
+            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set(), lambda _path: True))
         for change in ({"user_sid": "foreign"}, {"session_id": 2}):
             self.probe.process_identity.side_effect = [self.expected, {**self.expected, **change}]
             with mock.patch.object(ctypes, "get_last_error", return_value=18, create=True):
-                self.assertEqual(([], "complete"), self.probe.scan_running_processes(set()))
+                self.assertEqual(([], "complete"), self.probe.scan_running_processes(set(), lambda _path: True))
 
 
 if __name__ == "__main__":

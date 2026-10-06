@@ -24,7 +24,7 @@ class PlaytimeTest(unittest.TestCase):
             state.library = {epic["id"]: dict(epic)}
             state.library_revision = "1"
             running = [{"game_id": epic["id"], "process_id": 22, "process_token": "a"}]
-            state._verified_running_games = lambda: (running, "complete", state.library_revision)
+            state._verified_running_games = lambda: (running, "complete", state.library_revision, "verified")
             with mock.patch("GameProviderBridge.time.monotonic") as clock:
                 for second in range(100, 166, 5):
                     clock.return_value = second
@@ -62,7 +62,7 @@ class PlaytimeTest(unittest.TestCase):
                          "steam:10": {"provider": "steam", "playtimeMinutes": 120}}
         running = [{"game_id": "epic:Batman", "process_id": 22, "process_token": "a"},
                    {"game_id": "steam:10", "process_id": 11, "process_token": "b"}]
-        state._verified_running_games = lambda: (running, "partial", state.library_revision)
+        state._verified_running_games = lambda: (running, "partial", state.library_revision, "match_unconfirmed")
         with mock.patch("GameProviderBridge.time.monotonic") as clock:
             for second in (100, 105, 500, 505):  # sleep/long verification gap is not billed
                 clock.return_value = second
@@ -74,7 +74,7 @@ class PlaytimeTest(unittest.TestCase):
             self.assertEqual(70, state.library["epic:Batman"]["playtimeSeconds"])
             state._verified_running_games = mock.Mock(side_effect=OSError("probe unavailable"))
             state.refresh_running_games()
-            state._verified_running_games = lambda: (running, "complete", state.library_revision)
+            state._verified_running_games = lambda: (running, "complete", state.library_revision, "verified")
             clock.return_value = 515
             state.refresh_running_games()
             self.assertEqual(70, state.library["epic:Batman"]["playtimeSeconds"])
