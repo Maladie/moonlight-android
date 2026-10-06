@@ -167,8 +167,10 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(destroy.indexOf("active = false;")
                 < destroy.indexOf("executor.shutdownNow()"));
-        assertTrue(refresh.contains("executor.isShutdown()"));
-        assertTrue(refresh.contains("catch (RejectedExecutionException"));
+        // Late work after teardown is dropped by the pool itself, not guarded per call site.
+        assertTrue(source.contains("ExecutorService executor = lifecycleExecutor(3)"));
+        assertTrue(source.contains("new ThreadPoolExecutor.DiscardPolicy()"));
+        assertFalse(refresh.contains("RejectedExecutionException"));
         assertTrue(close.contains("refreshSessionState(host.uuid)"));
         assertTrue(close.indexOf("if (success)")
                 < close.indexOf("refreshSessionState(host.uuid)"));
