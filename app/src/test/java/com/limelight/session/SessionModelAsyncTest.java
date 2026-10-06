@@ -239,4 +239,58 @@ public class SessionModelAsyncTest {
         assertFalse(driver.call(new SessionEvent.ReconnectRelinquished(preparing)));
         assertEquals(SessionModel.State.HOME_LIVE, driver.state());
     }
+
+    /** A transition that throws, as a model bug would. */
+    private static final class Throwing extends SessionEvent.BooleanEvent {
+        @Override void apply(SessionModel m, SessionModel.Reply<Boolean> reply) {
+            throw new IllegalStateException("model bug");
+        }
+    }
+
+    @Test public void aThrowingTransitionFailsItsOperationInsteadOfLeavingTheCallerWaiting() {
+        Boolean[] answer = new Boolean[1];
+        model.dispatch(new Throwing(), result -> answer[0] = result);
+        driver.drain();
+        assertEquals(Boolean.FALSE, answer[0]);
+        assertEquals(SessionModel.TerminationResult.NO_CONTROLLER,
+                new SessionEvent.TerminateRequested("s", null).failure());
+        assertEquals(SessionModel.SwitchResult.NOT_ELIGIBLE, new SessionEvent.SwitchRequested(
+                "h", "p", "p", false, 1, "g", "", "", "", 0L, null, null).failure());
+    }
+
+    @Test public void awaitingWorkerIsReleasedWhenTheTransitionThrows() throws Exception {
+        java.util.concurrent.ExecutorService thread =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            SessionModel threaded = new SessionModel(thread::execute, Runnable::run, () -> false,
+                    new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
+            java.util.concurrent.Future<Boolean> worker = java.util.concurrent.Executors
+                    .newSingleThreadExecutor().submit(() -> threaded.await(new Throwing()));
+            assertEquals(Boolean.FALSE, worker.get(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            // Awaiting from inside the model thread is refused and fails that operation.
+            Boolean[] nested = new Boolean[1];
+            java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+            threaded.dispatch(new SessionEvent.BooleanEvent() {
+                @Override void apply(SessionModel m, SessionModel.Reply<Boolean> reply) {
+                    reply.accept(m.await(new SessionEvent.Cleared("s")));
+                }
+            }, result -> { nested[0] = result; done.countDown(); });
+            assertTrue(done.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(Boolean.FALSE, nested[0]);
+        } finally {
+            thread.shutdownNow();
+        }
+    }
+
+    @Test public void throwingOwnerEffectAnswersFalse() {
+        Owner owner = new Owner() {
+            @Override public boolean parkRetainedTransport() {
+                throw new IllegalStateException("owner bug");
+            }
+        };
+        driver.enterHome(owner, "s", "host", "parent", 7, "game");
+        assertFalse(driver.parkForBackground("s"));
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED, driver.state());
+    }
 }

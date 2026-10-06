@@ -304,6 +304,8 @@ public final class SessionModel {
     private final Stores stores;
     private final List<Runnable> afterCommit = new ArrayList<>();
     private volatile Thread runningThread;
+    /** The thread the model runs on; await from it would never return. */
+    private volatile Thread modelThreadOwner;
     private volatile Snapshot published;
     private Snapshot delivered;
     private long sequence;
@@ -375,7 +377,7 @@ public final class SessionModel {
      * for the model, and the model never waits for anything.
      */
     public <R> R await(SessionEvent<R> event) {
-        if (onMainThread.getAsBoolean() || Thread.currentThread() == runningThread) {
+        if (onMainThread.getAsBoolean() || Thread.currentThread() == modelThreadOwner) {
             throw new IllegalStateException("SessionModel.await on the main or model thread");
         }
         CountDownLatch done = new CountDownLatch(1);
@@ -396,25 +398,32 @@ public final class SessionModel {
     /**
      * Applies one event. Replies and effects issued by the transition run only after the new
      * snapshot is published, so a continuation never observes the state before its own event.
-     * A reply answered later (after an effect) is delivered directly on its executor.
+     * A reply answered later (after an effect) is delivered directly on its executor. A
+     * transition that throws fails its operation: the caller receives the event's failure
+     * answer, so no continuation or waiting worker is left without a result.
      */
     private <R> void run(SessionEvent<R> event, Reply<R> reply, Executor replyOn) {
         Thread self = Thread.currentThread();
         runningThread = self;
+        modelThreadOwner = self;
+        boolean[] answered = new boolean[1];
+        Reply<R> once = value -> {
+            if (answered[0] || reply == null) return;
+            answered[0] = true;
+            Runnable answer = () -> reply.accept(value);
+            if (Thread.currentThread() == runningThread) {
+                afterCommit.add(() -> replyOn.execute(answer));
+            } else {
+                replyOn.execute(answer);
+            }
+        };
         try {
-            event.apply(this, value -> {
-                if (reply == null) return;
-                Runnable answer = () -> reply.accept(value);
-                if (Thread.currentThread() == runningThread) {
-                    afterCommit.add(() -> replyOn.execute(answer));
-                } else {
-                    replyOn.execute(answer);
-                }
-            });
+            event.apply(this, once);
         } catch (RuntimeException error) {
-            MoonWakerDiagnostics.record("WARN", "android.session-model", "event.failed",
+            MoonWakerDiagnostics.record("ERROR", "android.session-model", "event.failed",
                     "event", event.getClass().getSimpleName(),
                     "error_type", error.getClass().getName());
+            once.accept(event.failure());
         } finally {
             publish();
             runningThread = null;
@@ -791,7 +800,7 @@ public final class SessionModel {
             reply.accept(false);
             return;
         }
-        effect(() -> reply.accept(owner.cancelPreparingTransport(expected)));
+        effect(() -> reply.accept(ownerAnswer(() -> owner.cancelPreparingTransport(expected))));
     }
 
     /** Claims the preparing Home frame, asks the owner, and commits on the result event. */
@@ -806,7 +815,7 @@ public final class SessionModel {
         long claim = ++nextOperationId;
         homeFrameClaim = claim;
         effect(() -> {
-            boolean accepted = owner.preparingHomeFrameSubmitted(expected);
+            boolean accepted = ownerAnswer(() -> owner.preparingHomeFrameSubmitted(expected));
             dispatchFromEffect(new SessionEvent.HomeFrameResult(claim, owner, expected, accepted),
                     reply);
         });
@@ -944,7 +953,7 @@ public final class SessionModel {
                 return;
             }
             Snapshot preparing = new Snapshot(this, records, sequence);
-            effect(() -> reply.accept(owner.parkPreparingTransport(preparing)));
+            effect(() -> reply.accept(ownerAnswer(() -> owner.parkPreparingTransport(preparing))));
             return;
         }
         if (state != State.HOME_LIVE) {
@@ -960,7 +969,7 @@ public final class SessionModel {
         parkOperation = operation;
         String capturedId = streamSessionId;
         effect(() -> dispatchFromEffect(new SessionEvent.ParkResult(
-                operation, capturedId, owner.parkRetainedTransport()), reply));
+                operation, capturedId, ownerAnswer(owner::parkRetainedTransport)), reply));
     }
 
     void parkResult(long operation, String capturedId, boolean parked, Reply<Boolean> reply) {
@@ -1433,6 +1442,17 @@ public final class SessionModel {
 
     // ---- helpers -------------------------------------------------------------------------------
 
+
+    /** An owner effect's answer; an owner that throws answers false (logged). */
+    private static boolean ownerAnswer(BooleanSupplier owner) {
+        try {
+            return owner.getAsBoolean();
+        } catch (RuntimeException error) {
+            MoonWakerDiagnostics.record("ERROR", "android.session-model", "effect.failed",
+                    "error_type", error.getClass().getName());
+            return false;
+        }
+    }
 
     /** Posts an effect's result event; the original caller's reply is answered by it. */
     private <R> void dispatchFromEffect(SessionEvent<R> event, Reply<R> reply) {

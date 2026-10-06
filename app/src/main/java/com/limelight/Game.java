@@ -996,6 +996,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
                 } else {
                     beginAutoWarmUpPreparing(begun -> {
+                        if (isFinishing() || isDestroyed()) return;
                         if (begun) openPreparingConsoleHome();
                         else finish();
                     });
@@ -1836,13 +1837,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 destroyedPreparingExact);
         stopChildMonitoring();
         cancelStreamingAutopilotCalibration();
+        boolean preparingAbandoned;
         synchronized (autoWarmUpGateLock) {
-            if (!autoWarmUpHomeFrameAccepted.get()) cancelUnstartedAutoWarmUp(false);
+            preparingAbandoned = !autoWarmUpHomeFrameAccepted.get()
+                    && cancelUnstartedAutoWarmUp(false);
         }
         boolean runtimeSurvives = false;
         if (runtime != null && attachment != null) {
             AndroidStreamRuntime.publishLaunchRecord(runtime, getIntent());
-            runtime.presentationLost(attachment, isFinishing());
+            // The cancel above is applied by the model later: the runtime is told directly.
+            if (preparingAbandoned) runtime.abandonPreparing(attachment);
+            else runtime.presentationLost(attachment, isFinishing());
             runtimeSurvives = !runtime.isStopping();
             attachment = null;
             input = null;
@@ -3780,7 +3785,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void commitBinding(java.util.function.Consumer<Boolean> done) {
                         // The model commits only after this connection commit succeeded with
                         // every retained binding unchanged (fenced by its operation id).
-                        java.util.function.BooleanSupplier commit = () -> runtime == transferRuntime
+                        java.util.function.BooleanSupplier commit = () -> current()
+                                && sessionModel.snapshot().state != SessionModel.State.TERMINATING
+                                && runtime == transferRuntime
                                 && transferRuntime != null
                                 && transferRuntime.reauthorizeControlGeneration(transferAttachment,
                                 previousControlGeneration, authorization.generation);
@@ -5056,6 +5063,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     return;
                 }
                 completeAutoWarmUpPreparing(completed -> {
+                    if (isFinishing() || isDestroyed()) return;
                     if (completed) {
                         onStreamConnected(convertedWarmUp);
                     } else if (autoWarmUpTransportStopRequested.compareAndSet(false, true)) {
@@ -6277,6 +6285,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (hasAutoWarmUpTransportIdentity()
                 && isExactAutoWarmUpPreparing(sessionModel.snapshot())) {
             completeAutoWarmUpPreparing(completed -> {
+                if (isFinishing() || isDestroyed()) return;
                 if (completed) announceAttachedTransport();
                 // Mirrors connectionStarted: an attempt that can no longer complete is stopped.
                 else if (autoWarmUpTransportStopRequested.compareAndSet(false, true)) {
@@ -6426,6 +6435,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 "status", backgroundStreamParked ? "parked" : "active");
         if (attemptedConnection && isTransportConnected()) {
             if (hasOwnRetainedSession()) {
+                // The surface is already gone: stop decoding into it before the model parks.
+                runtime.surfaceLost(attachment);
                 sessionModel.post(new SessionEvent.ParkRequested(streamSessionId));
             } else if (canParkBackgroundStream()) {
                 parkBackgroundStream();

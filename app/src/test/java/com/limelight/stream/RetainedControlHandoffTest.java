@@ -28,7 +28,7 @@ public class RetainedControlHandoffTest {
     @Test public void cancellationAfterHostAckConvergesBeforeRetainingNeutral() {
         Handoff handoff = new Handoff(); handoff.cancelled = true;
         RetainedControlHandoff.finish(handoff);
-        assertEquals(List.of("current", "commit", "publish", "cancelled", "neutral"), handoff.calls);
+        assertEquals(List.of("current", "commit", "current", "publish", "cancelled", "neutral"), handoff.calls);
         assertEquals(handoff.hostGeneration, handoff.localGeneration);
         assertEquals(5, handoff.localGeneration);
     }
@@ -42,10 +42,21 @@ public class RetainedControlHandoffTest {
         assertEquals(5, handoff.localGeneration);
     }
 
+    @Test public void commitResultForANoLongerCurrentSwitchCompensatesWithoutPublishing() {
+        Handoff handoff = new Handoff() {
+            @Override public void commitBinding(java.util.function.Consumer<Boolean> done) {
+                super.commitBinding(committed -> { current = false; done.accept(committed); });
+            }
+        };
+        RetainedControlHandoff.finish(handoff);
+        assertEquals(List.of("current", "commit", "current", "compensate"), handoff.calls);
+        assertEquals(0, handoff.localGeneration);
+    }
+
     @Test public void liveHandoffStartsOnlyAfterBothBindingsArePublished() {
         Handoff handoff = new Handoff();
         RetainedControlHandoff.finish(handoff);
-        assertEquals(List.of("current", "commit", "publish", "cancelled", "start"), handoff.calls);
+        assertEquals(List.of("current", "commit", "current", "publish", "cancelled", "start"), handoff.calls);
     }
 
     @Test public void everyPostAckFailureCompensatesInsteadOfLeavingOldLocalGeneration() {

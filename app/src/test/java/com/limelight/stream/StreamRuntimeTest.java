@@ -1,5 +1,6 @@
 package com.limelight.stream;
 
+import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionModelDriver;
 
@@ -321,6 +322,39 @@ public class StreamRuntimeTest {
         assertEquals(1, transport.stops.get());
         assertEquals(1, presentation.disconnected.get());
         assertEquals(Collections.singletonList("s1"), platform.reconnectCleared);
+    }
+
+    @Test public void abandonedPreparingStopsWithoutSavingReconnectMaterial() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        assertTrue(m.beginPreparing(runtime, "s1", "host", "p", 7, "", "t1", 1L));
+        StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
+        SessionModel.Snapshot preparing = m.snapshot();
+        // The presentation's cancel is still queued for the model when it goes away.
+        m.model.post(new SessionEvent.PreparingCancelled(runtime, preparing));
+
+        runtime.abandonPreparing(attachment);
+
+        assertTrue(platform.reconnectSaved.isEmpty());
+        assertNull(StreamRuntime.forSession("s1"));
+        assertEquals(SessionModel.State.NONE, m.state());
+        assertTrue(m.snapshot().records.pending == null);
+    }
+
+    @Test public void surfaceLossDetachesAndMutesOnlyAConnectedCurrentAttachment() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
+        runtime.surfaceLost(attachment);
+        assertEquals(0, transport.decoderDetaches.get());
+
+        runtime.start();
+        runtime.connectionStarted();
+        runtime.surfaceLost(attachment);
+
+        assertEquals(1, transport.decoderDetaches.get());
+        assertEquals(0f, transport.volume, 0f);
+        assertEquals(SessionModel.State.NONE, m.state());
     }
 
     @Test public void preparingWithoutTransportIsStoppedHonestlyOnPresentationLoss() {

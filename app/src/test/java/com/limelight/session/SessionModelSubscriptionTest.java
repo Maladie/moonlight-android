@@ -93,7 +93,7 @@ public class SessionModelSubscriptionTest {
         assertEquals(9L, recorder.received.get(0).controlGeneration);
     }
 
-    @Test public void multiStepTransitionDeliversOnlyItsFinalSnapshot() {
+    @Test public void multiStepMutationDeliversOnlyItsFinalSnapshot() {
         Recorder recorder = new Recorder();
         model.subscribe(recorder);
         apply(new SessionEvent.PreparingBegun(owner, "session-a", "host", "default", 7, "",

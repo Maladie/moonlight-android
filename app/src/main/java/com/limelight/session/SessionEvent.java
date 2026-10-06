@@ -27,6 +27,14 @@ public abstract class SessionEvent<R> {
 
     abstract void apply(SessionModel model, Reply<R> reply);
 
+    /** The answer a waiting caller receives when the transition fails. */
+    R failure() { return null; }
+
+    /** Events answering whether they took effect; a failed transition answers false. */
+    abstract static class BooleanEvent extends SessionEvent<Boolean> {
+        @Override Boolean failure() { return Boolean.FALSE; }
+    }
+
     // ---- transport and presentation ------------------------------------------------------------
 
     public static final class EnterHome extends SessionEvent<Void> {
@@ -50,7 +58,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class ControlGenerationBound extends SessionEvent<Boolean> {
+    public static final class ControlGenerationBound extends BooleanEvent {
         private final Controller owner;
         private final String sessionId;
         private final long generation;
@@ -80,7 +88,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class TransportUnsafe extends SessionEvent<Boolean> {
+    public static final class TransportUnsafe extends BooleanEvent {
         private final Controller owner;
         private final String sessionId, hostId;
         private final int appId;
@@ -111,7 +119,7 @@ public abstract class SessionEvent<R> {
     }
 
     /** Park for background: replies whether the transport was parked. */
-    public static final class ParkRequested extends SessionEvent<Boolean> {
+    public static final class ParkRequested extends BooleanEvent {
         private final String sessionId;
 
         public ParkRequested(String sessionId) {
@@ -123,7 +131,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    static final class ParkResult extends SessionEvent<Boolean> {
+    static final class ParkResult extends BooleanEvent {
         private final long operation;
         private final String sessionId;
         private final boolean parked;
@@ -140,7 +148,7 @@ public abstract class SessionEvent<R> {
     }
 
     /** The preparing Home drew its first frame; replies whether the owner accepted it. */
-    public static final class HomeFrameSubmitted extends SessionEvent<Boolean> {
+    public static final class HomeFrameSubmitted extends BooleanEvent {
         private final Snapshot expected;
 
         public HomeFrameSubmitted(Snapshot expected) {
@@ -152,7 +160,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    static final class HomeFrameResult extends SessionEvent<Boolean> {
+    static final class HomeFrameResult extends BooleanEvent {
         private final long claim;
         private final Controller owner;
         private final Snapshot expected;
@@ -180,7 +188,7 @@ public abstract class SessionEvent<R> {
     // ---- preparing (warm-up) -------------------------------------------------------------------
 
     /** Identity of one preparing attempt. */
-    abstract static class PreparingEvent extends SessionEvent<Boolean> {
+    abstract static class PreparingEvent extends BooleanEvent {
         final Controller owner;
         final String sessionId, hostId, transitionId;
         final int appId;
@@ -266,7 +274,7 @@ public abstract class SessionEvent<R> {
     }
 
     /** Asks the transport owner to cancel exactly this preparing attempt. */
-    public static final class CancelPreparingTransport extends SessionEvent<Boolean> {
+    public static final class CancelPreparingTransport extends BooleanEvent {
         private final Snapshot expected;
 
         public CancelPreparingTransport(Snapshot expected) {
@@ -308,6 +316,8 @@ public abstract class SessionEvent<R> {
             this.completion = completion;
         }
 
+        @Override SwitchResult failure() { return SwitchResult.NOT_ELIGIBLE; }
+
         @Override void apply(SessionModel m, Reply<SwitchResult> reply) {
             m.switchGame(hostId, executionProfileId, targetProfileId, targetIsChild, appId,
                     newGameId, newGameName, streamTargetName, artworkPath, orchestrationId,
@@ -337,7 +347,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class PreparingSwitchUpdated extends SessionEvent<Boolean> {
+    public static final class PreparingSwitchUpdated extends BooleanEvent {
         private final Controller owner;
         private final SwitchRequest request;
         private final String currentTransitionId, expectedGameId, newGameId, newTransitionId;
@@ -359,7 +369,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class OwnedSwitchGameUpdated extends SessionEvent<Boolean> {
+    public static final class OwnedSwitchGameUpdated extends BooleanEvent {
         private final Controller owner;
         private final SwitchRequest request;
         private final String expectedOldGameId, newGameId;
@@ -378,7 +388,7 @@ public abstract class SessionEvent<R> {
     }
 
     /** Releases the switch lock of {@code request}. */
-    public static final class SwitchFinished extends SessionEvent<Boolean> {
+    public static final class SwitchFinished extends BooleanEvent {
         private final Controller owner;
         private final SwitchRequest request;
 
@@ -395,7 +405,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class GameStoppedRetainNeutral extends SessionEvent<Boolean> {
+    public static final class GameStoppedRetainNeutral extends BooleanEvent {
         private final Controller owner;
         private final String sessionId, hostId, gameId;
         private final int appId;
@@ -426,6 +436,8 @@ public abstract class SessionEvent<R> {
             this.sessionId = sessionId;
             this.completion = completion;
         }
+
+        @Override TerminationResult failure() { return TerminationResult.NO_CONTROLLER; }
 
         @Override void apply(SessionModel m, Reply<TerminationResult> reply) {
             m.terminate(sessionId, completion, reply);
@@ -461,7 +473,7 @@ public abstract class SessionEvent<R> {
     }
 
     /** A terminating marker without a token (the presentation owns the stop). */
-    public static final class TerminatingMarked extends SessionEvent<Boolean> {
+    public static final class TerminatingMarked extends BooleanEvent {
         private final String sessionId, hostId, gameId;
         private final int appId;
 
@@ -510,7 +522,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class DirectTerminationCompleted extends SessionEvent<Boolean> {
+    public static final class DirectTerminationCompleted extends BooleanEvent {
         private final DirectTermination token;
         private final boolean success, transportUnsafe;
 
@@ -537,7 +549,7 @@ public abstract class SessionEvent<R> {
     }
 
     /** The session ended locally; clears it unless it is preparing. */
-    public static final class Cleared extends SessionEvent<Boolean> {
+    public static final class Cleared extends BooleanEvent {
         private final String sessionId;
         private final boolean authoritativeEnd;
 
@@ -565,7 +577,7 @@ public abstract class SessionEvent<R> {
      * After cancelling {@code preparing}, gives up the reconnect its owner marked for it (a
      * host change). Posted after the owner's marker, so it clears exactly that record.
      */
-    public static final class ReconnectRelinquished extends SessionEvent<Boolean> {
+    public static final class ReconnectRelinquished extends BooleanEvent {
         private final Snapshot preparing;
 
         public ReconnectRelinquished(Snapshot preparing) {
@@ -577,7 +589,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class HardReset extends SessionEvent<Boolean> {
+    public static final class HardReset extends BooleanEvent {
         private final String hostId;
 
         public HardReset(String hostId) {
@@ -591,7 +603,7 @@ public abstract class SessionEvent<R> {
 
     // ---- actor ---------------------------------------------------------------------------------
 
-    public static final class ActorBound extends SessionEvent<Boolean> {
+    public static final class ActorBound extends BooleanEvent {
         private final Controller owner;
         private final String sessionId, actor, origin;
 
@@ -612,7 +624,7 @@ public abstract class SessionEvent<R> {
      * model checks every binding, runs {@code commitConnection} as an effect on the main thread
      * under an operation id, and applies the actor and generation only on the matching result.
      */
-    public static final class Reauthorize extends SessionEvent<Boolean> {
+    public static final class Reauthorize extends BooleanEvent {
         final Controller owner;
         final String sessionId, origin, actor;
         final long expectedGeneration, generation;
@@ -692,7 +704,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class ReauthorizationDiscarded extends SessionEvent<Boolean> {
+    public static final class ReauthorizationDiscarded extends BooleanEvent {
         private final Controller owner;
         private final String sessionId;
         private final long previousGeneration, generation;
@@ -735,7 +747,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class ReconnectCleared extends SessionEvent<Boolean> {
+    public static final class ReconnectCleared extends BooleanEvent {
         private final String sessionId;
 
         public ReconnectCleared(String sessionId) {
@@ -760,7 +772,7 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    public static final class SuspendedResumed extends SessionEvent<Boolean> {
+    public static final class SuspendedResumed extends BooleanEvent {
         private final String suspendId, hostId, executionProfileId, gameId, sessionId;
         private final int appId;
 
@@ -796,7 +808,7 @@ public abstract class SessionEvent<R> {
     }
 
     /** The suspended host session ended; by actor profile or by execution profile. */
-    public static final class SuspendedEnded extends SessionEvent<Boolean> {
+    public static final class SuspendedEnded extends BooleanEvent {
         private final String hostId, profileId, suspendId;
         private final boolean byExecution;
 
@@ -842,6 +854,8 @@ public abstract class SessionEvent<R> {
 
     /** Takes the pending host-selection request; replies its host or "". */
     public static final class HostSelectionConsumed extends SessionEvent<String> {
+        @Override String failure() { return ""; }
+
         @Override void apply(SessionModel m, Reply<String> reply) {
             reply.accept(SuspendedSessionStore.consumeHostSelectionRequest(m.suspendedStore()));
         }
@@ -878,7 +892,7 @@ public abstract class SessionEvent<R> {
     }
 
     /** Clears the host sleep record; with a request time, only that exact request. */
-    public static final class HostSleepCleared extends SessionEvent<Boolean> {
+    public static final class HostSleepCleared extends BooleanEvent {
         private final String hostId;
         private final long requestedAt;
 

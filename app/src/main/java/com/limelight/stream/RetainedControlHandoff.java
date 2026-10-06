@@ -31,7 +31,8 @@ public final class RetainedControlHandoff {
 
     private static void complete(Actions actions, boolean committed) {
         try {
-            if (committed) {
+            // The commit result arrives later: the switch must still be current to use it.
+            if (committed && actions.current()) {
                 // Cancellation suppresses the game, not an acknowledged ownership transfer.
                 actions.publishBinding();
                 if (actions.cancelled()) actions.retainNeutral();

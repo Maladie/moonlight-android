@@ -486,6 +486,30 @@ public final class StreamRuntime implements NvConnectionListener,
         }
     }
 
+    /**
+     * The presentation cancelled its own unstarted preparing attempt and is going away: nothing
+     * is retained, so the transport stops without saving reconnect material.
+     */
+    public void abandonPreparing(Attachment attachment) {
+        if (!isCurrent(attachment)) return;
+        detach(attachment);
+        platform.record("INFO", "runtime.preparing_abandoned",
+                "stream_session_id", streamSessionId, "generation", generation());
+        stop(result -> { });
+    }
+
+    /**
+     * The presentation's surface is gone: stop decoding into it and mute now, before any
+     * asynchronous park decision. Changes no session state; park tolerates the detached decoder.
+     */
+    public void surfaceLost(Attachment attachment) {
+        synchronized (this) {
+            if (!isCurrent(attachment) || state != State.CONNECTED) return;
+        }
+        transport.detachDecoder();
+        transport.setAudioVolume(0f);
+    }
+
     private boolean retainedByCoordinator() {
         SessionModel.Snapshot retained = platform.sessionModel().snapshot();
         return retained.streamSessionId.equals(streamSessionId)
