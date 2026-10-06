@@ -4,7 +4,7 @@ import time
 import unittest
 from unittest import mock
 
-from GameProviderBridge import BridgeState, WindowProbe
+from GameProviderBridge import RUNNING_SCAN_DEADLINE, BridgeState, WindowProbe
 from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
 
@@ -184,8 +184,8 @@ class RunningGamesTest(unittest.TestCase):
         self.assertEqual([], self.state.current_snapshot()["running_games"])
         self.probe.scan_running_processes.return_value = ([self.hk,
             identity(44, r"C:\Games\HK\UnityCrashHandler64.exe")], "partial")
-        self.assertEqual(1, len(self.state._verified_running_games()[0]))
-        self.probe.scan_running_processes.side_effect = lambda _images, _catalog: (
+        self.assertEqual(1, len(self.state._verified_running_games(RUNNING_SCAN_DEADLINE)[0]))
+        self.probe.scan_running_processes.side_effect = lambda _images, _catalog, _budget: (
             setattr(self.state, "library_revision", "3") or ([self.hk], "complete"))
         self.state.refresh_running_games()
         self.assertEqual([], self.state.current_snapshot()["running_games"])
@@ -195,13 +195,13 @@ class RunningGamesTest(unittest.TestCase):
         self.state.library = {guid: {"id": guid, "provider": "playnite",
                                      "playniteGameId": guid, "exe": self.hk["process_path"]}}
         self.probe.scan_running_processes.return_value = ([self.hk], "complete")
-        self.assertEqual([], self.state._verified_running_games()[0])
+        self.assertEqual([], self.state._verified_running_games(RUNNING_SCAN_DEADLINE)[0])
         self.state.connected = True
         self.state.current = {"id": guid, "processId": 11, "processStartedFiletime": 100}
         self.state._native_reconciliation_confirmation = (guid, 11)
-        self.assertEqual(1, len(self.state._verified_running_games()[0]))
+        self.assertEqual(1, len(self.state._verified_running_games(RUNNING_SCAN_DEADLINE)[0]))
         self.state.library["steam:2"] = {"id": "steam:2", "provider": "steam", "exe": self.hk["process_path"]}
-        self.assertEqual([], self.state._verified_running_games()[0])
+        self.assertEqual([], self.state._verified_running_games(RUNNING_SCAN_DEADLINE)[0])
 
     def test_hollow_knight_to_contra_uses_fresh_connector_process_identity(self):
         guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
@@ -224,7 +224,7 @@ class RunningGamesTest(unittest.TestCase):
         self.state.handle_message({"type": "status", "status": {
             "name": "gameStarted", "id": guid, "processId": 44}})
 
-        running, status, _revision, _reason = self.state._verified_running_games()
+        running, status, _revision, _reason = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
 
         self.assertEqual("complete", status)
         self.assertEqual({"steam:367520", guid},
@@ -253,7 +253,7 @@ class RunningGamesTest(unittest.TestCase):
                                  (("gone", None), ("complete", "verified"))):
             with self.subTest(probed=probed[0]):
                 self.probe.process_identity_status.return_value = probed
-                running, status, _revision, reason = self.state._verified_running_games()
+                running, status, _revision, reason = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
                 self.assertEqual([], running)
                 self.assertEqual(expected, (status, reason))
 
@@ -285,8 +285,8 @@ class RunningGamesTest(unittest.TestCase):
     def test_scan_receives_the_image_names_of_exact_game_executables(self):
         self.state.library["steam:2"] = {"id": "steam:2", "provider": "steam",
                                          "installDir": r"C:\Games\Celeste", "exe": "Celeste.exe"}
-        self.state._verified_running_games()
-        self.probe.scan_running_processes.assert_called_once_with({"celeste.exe"}, mock.ANY)
+        self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
+        self.probe.scan_running_processes.assert_called_once_with({"celeste.exe"}, mock.ANY, RUNNING_SCAN_DEADLINE)
         catalog_path = self.probe.scan_running_processes.call_args.args[1]
         self.assertTrue(catalog_path(r"C:\Games\Celeste\Celeste.exe"))
         self.assertTrue(catalog_path(r"c:/games/hk/tools/helper.exe"))
@@ -437,7 +437,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
             dict(own) if pid == os.getpid() else {**emulator, "user_sid": "foreign"})
 
-        running, _status, _revision, _reason = self.state._verified_running_games()
+        running, _status, _revision, _reason = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
 
         self.assertEqual([], running)
 
@@ -457,7 +457,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
             dict(own) if pid == os.getpid() else dict(emulator))
 
-        running, _status, _revision, _reason = self.state._verified_running_games()
+        running, _status, _revision, _reason = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
 
         self.assertEqual([], running)
 
@@ -739,14 +739,14 @@ class NativeRunningGamesTest(unittest.TestCase):
         self.probe.kernel32.Process32FirstW.side_effect = lambda _, entry: (
             setattr(entry._obj, "th32ProcessID", 11) or True)
         self.probe.kernel32.Process32NextW.return_value = False
-        with mock.patch("GameProviderBridge.time.monotonic", side_effect=[0, 1]):
-            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set(), lambda _path: True))
+        with mock.patch("GameProviderBridge.time.monotonic", side_effect=[0, 3]):
+            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set(), lambda _path: True, RUNNING_SCAN_DEADLINE))
         with mock.patch.object(ctypes, "get_last_error", return_value=5, create=True):
-            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set(), lambda _path: True))
+            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set(), lambda _path: True, RUNNING_SCAN_DEADLINE))
         for change in ({"user_sid": "foreign"}, {"session_id": 2}):
             self.probe.process_identity.side_effect = [self.expected, {**self.expected, **change}]
             with mock.patch.object(ctypes, "get_last_error", return_value=18, create=True):
-                self.assertEqual(([], "complete"), self.probe.scan_running_processes(set(), lambda _path: True))
+                self.assertEqual(([], "complete"), self.probe.scan_running_processes(set(), lambda _path: True, RUNNING_SCAN_DEADLINE))
 
 
 if __name__ == "__main__":
