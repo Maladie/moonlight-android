@@ -5125,12 +5125,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     /**
      * A live reconnect of exactly the marked record supersedes its RECONNECT_REQUIRED marker,
-     * whose stale control generation could never correlate with the host again. The model
-     * re-checks the marker and the record when it applies the event.
+     * whose stale control generation could never correlate with the host again. An actor
+     * handoff ("reauthorize") counts too: the host authorized the new actor before the
+     * connection started and advanced the generation the same way. The model re-checks the
+     * marker and the record when it applies the event.
      */
     private void relinquishReconnectedMarker() {
+        String control = getIntent().getStringExtra(EXTRA_CONTROL_INTENT);
         if (!getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)
-                || !"reconnect".equals(getIntent().getStringExtra(EXTRA_CONTROL_INTENT))) return;
+                || !"reconnect".equals(control) && !"reauthorize".equals(control)) return;
         SessionModel.Snapshot marked = sessionModel.snapshot();
         if (marked.state != SessionModel.State.RECONNECT_REQUIRED
                 || !marked.streamSessionId.equals(streamSessionId)

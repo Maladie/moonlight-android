@@ -722,6 +722,23 @@ public class SessionStateProjectionTest {
                 owner.current(m.snapshot(), 3L).observationState);
     }
 
+    @Test public void liveActorHandoffOfTheMarkedRecordReplacesItsStaleCorrelation() {
+        // Saved by the parent actor; the child reconnects it through a host-authorized
+        // "reauthorize" acquire on the same execution profile, which also advances 3 -> 4.
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "host", "parent", 42, "game");
+        assertTrue(m.bindControlGeneration(controller, "session", 3L));
+        m.markReconnectRequired("session");
+        long ordinal = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(readyAtGeneration("boot", ordinal, 4L), m.snapshot(), 0L));
+        assertEquals("observation_correlation_mismatch",
+                owner.current(m.snapshot(), 1L).observationReason);
+
+        assertTrue(m.call(new SessionEvent.ReconnectRelinquished(m.snapshot())));
+        assertEquals(SessionSnapshot.ObservationState.READY,
+                owner.current(m.snapshot(), 2L).observationState);
+    }
+
     private static HostGatewayClient.SessionObservation readyAtGeneration(
             String boot, long ordinal, long generation) {
         return new HostGatewayClient.SessionObservation(boot, 1L, 1_000L, 15_000L,

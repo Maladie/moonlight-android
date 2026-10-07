@@ -157,7 +157,7 @@ public class GameTransitionCancelContractTest {
         String relinquish = text.substring(
                 text.indexOf("private void relinquishReconnectedMarker()"),
                 text.indexOf("private void onStreamConnected("));
-        assertTrue(relinquish.contains("\"reconnect\".equals("));
+        assertTrue(relinquish.contains("!\"reconnect\".equals(control) && !\"reauthorize\".equals(control)"));
         assertTrue(relinquish.contains("marked.state != SessionModel.State.RECONNECT_REQUIRED"));
         assertTrue(relinquish.contains("marked.streamSessionId.equals(streamSessionId)"));
         assertTrue(relinquish.contains("marked.playniteGameId.equalsIgnoreCase("));
