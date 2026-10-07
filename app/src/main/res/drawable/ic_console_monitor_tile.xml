@@ -1,0 +1,4 @@
+<!-- Host tile monitor (mockup ic_monitor at 0.32 of the tile): 2.6 px stroke at 40 px. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="38dp" android:height="38dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="3.12" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M10,8H38A5,5 0,0 1,43 13V28A5,5 0,0 1,38 33H10A5,5 0,0 1,5 28V13A5,5 0,0 1,10 8ZM24,33V39M16,40H32" />
+</vector>

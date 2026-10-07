@@ -28,6 +28,7 @@ final class ExpandedLibraryGrid extends RecyclerView {
     private static final int CELL_WIDTH_DP = 92;
     private static final int CELL_HEIGHT_DP = 123;
     private static final int CELL_MARGIN_DP = 4;
+    private static final int SIDE_PADDING_DP = 5;
     static final int CELL_PITCH_DP = CELL_WIDTH_DP + CELL_MARGIN_DP * 2;
 
     interface Callbacks {
@@ -142,7 +143,7 @@ final class ExpandedLibraryGrid extends RecyclerView {
         setClipChildren(false);
         setClipToPadding(false);
         setVerticalScrollBarEnabled(false);
-        setPadding(px(5), px(14), px(5), px(14));
+        setPadding(px(SIDE_PADDING_DP), px(14), px(SIDE_PADDING_DP), px(14));
         addOnScrollListener(new OnScrollListener() {
             @Override
             public void onScrolled(@NonNull RecyclerView view, int dx, int dy) {
@@ -154,7 +155,7 @@ final class ExpandedLibraryGrid extends RecyclerView {
 
     /** Width that fits exactly {@code columns} fixed-size cells plus the side padding. */
     int preferredWidth() {
-        return px(columns * CELL_PITCH_DP + 10);
+        return px(columns * CELL_PITCH_DP + SIDE_PADDING_DP * 2);
     }
 
     void setItems(List<PlayniteDashboardItem> next) {
@@ -213,10 +214,18 @@ final class ExpandedLibraryGrid extends RecyclerView {
         grid.scrollToPositionWithOffset(Math.max(0, row - 1) * columns, 0);
     }
 
-    /** Focuses {@code position}, scrolling it in and waiting for its layout when needed. */
+    /**
+     * Focuses {@code position}, scrolling it in and waiting for its layout when needed. The
+     * position is remembered for {@link #restoreFocus} even while a panel blocks focus; an empty
+     * grid is left instead.
+     */
     void focusPosition(int position) {
-        if (items.isEmpty()) return;
+        if (items.isEmpty()) {
+            callbacks.onLeave();
+            return;
+        }
         int target = Math.max(0, Math.min(items.size() - 1, position));
+        lastFocused = target;
         ViewHolder holder = findViewHolderForAdapterPosition(target);
         if (holder != null && holder.itemView.isShown() && holder.itemView.requestFocus()) return;
         if (hasFocus()) {
@@ -234,8 +243,7 @@ final class ExpandedLibraryGrid extends RecyclerView {
      * removed meanwhile yields to the one now at its position; an empty grid is left.
      */
     void restoreFocus() {
-        if (items.isEmpty()) callbacks.onLeave();
-        else focusPosition(lastFocused);
+        focusPosition(lastFocused);
     }
 
     int focusedPosition() {
@@ -319,6 +327,28 @@ final class ExpandedLibraryGrid extends RecyclerView {
             return;
         }
         super.requestLayout();
+    }
+
+    /**
+     * Cuts the grid just above its first row (UX_MENU_PL.md 3.5): with a row aligned to the top
+     * padding, the row before it ends one cell margin above the padding and stays hidden, while
+     * the first row's focus scale and ring still fit under the cut. Clip bounds, not a canvas
+     * clip: elevated cards ignore the latter.
+     */
+    @Override
+    protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight);
+        setClipBounds(new Rect(0, topCut(), width, height));
+    }
+
+    /** Distance from the grid's top edge to where its cards become visible. */
+    int topCut() {
+        return getPaddingTop() - px(CELL_MARGIN_DP - 1);
+    }
+
+    /** Distance from the grid's side edges to its first and last cover. */
+    int coverInset() {
+        return px(SIDE_PADDING_DP + CELL_MARGIN_DP);
     }
 
     @Override

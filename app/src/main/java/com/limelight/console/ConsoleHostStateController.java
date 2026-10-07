@@ -59,6 +59,12 @@ final class ConsoleHostStateController {
         return hostUuid != null && waking.containsKey(hostUuid);
     }
 
+    /** Uptime at which this client started waking the host, or -1. */
+    long wakingSince(String hostUuid) {
+        Long started = hostUuid == null ? null : waking.get(hostUuid);
+        return started == null ? -1L : started;
+    }
+
     ConsoleHostPresentation.State state(ComputerDetails host) {
         return ConsoleHostPresentation.state(host,
                 host != null && isWaking(host.uuid));

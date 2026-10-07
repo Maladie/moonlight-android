@@ -1,0 +1,5 @@
+<!-- Attention mark (mockup ic_attention): a line and a dot, 2.6 px stroke at 40 px. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="16dp" android:height="16dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="3.74" android:strokeLineCap="round" android:pathData="M24,9V28" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M24,35A3,3 0,1 1,24 41A3,3 0,1 1,24 35Z" />
+</vector>

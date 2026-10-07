@@ -123,6 +123,12 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
         rebuild();
     }
 
+    /** Library search has no dictation: its keyboard drops the microphone key. */
+    void setMicrophoneVisible(boolean visible) {
+        model.setMicrophone(visible);
+        rebuild();
+    }
+
     public boolean handleNavigationKey(KeyEvent event) {
         if (event == null) return false;
         int keyCode = event.getKeyCode();
@@ -507,6 +513,7 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
     }
 
     private void addLegendItem(String value, String glyph, boolean glyphFirst) {
+        if (value.isEmpty()) return;
         LinearLayout item = new LinearLayout(getContext());
         item.setGravity(Gravity.CENTER);
         if (glyphFirst && glyph != null) {

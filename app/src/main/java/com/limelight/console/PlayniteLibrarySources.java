@@ -61,37 +61,12 @@ final class PlayniteLibrarySources {
     static List<PlayniteLibraryGame> filter(List<PlayniteLibraryGame> games,
                                              Set<String> selectedSources) {
         if (selectedSources == null) return new ArrayList<>(games);
-        Set<String> normalized = new java.util.LinkedHashSet<>();
-        for (String selected : selectedSources) normalized.add(key(selected));
-        Set<String> available = new java.util.LinkedHashSet<>();
-        for (PlayniteLibraryGame game : games) available.add(key(game.libraryKey));
-        normalized.retainAll(available);
-        if (normalized.isEmpty() && !games.isEmpty()) return new ArrayList<>(games);
         List<PlayniteLibraryGame> result = new ArrayList<>();
         for (PlayniteLibraryGame game : games) {
-            if (normalized.contains(key(game.libraryKey))) result.add(game);
+            if (selectedSources.contains(key(game.libraryKey))) result.add(game);
         }
-        return result;
-    }
-
-    static Set<String> migrateSelection(Set<String> stored,
-                                        Map<String, String> available) {
-        if (stored == null) return null;
-        Set<String> migrated = new java.util.LinkedHashSet<>();
-        for (String value : stored) {
-            String candidate = key(value);
-            if (available.containsKey(candidate)) {
-                migrated.add(candidate);
-                continue;
-            }
-            for (Map.Entry<String, String> entry : available.entrySet()) {
-                if (key(entry.getValue()).equals(candidate)) {
-                    migrated.add(entry.getKey());
-                    break;
-                }
-            }
-        }
-        return migrated.isEmpty() ? null : migrated;
+        // A choice matching none of the current platforms shows everything, as no choice does.
+        return result.isEmpty() ? new ArrayList<>(games) : result;
     }
 
     private PlayniteLibrarySources() { }

@@ -3,7 +3,6 @@ package com.limelight.console;
 /** A resolved dashboard action. Invisible actions never reach production UI. */
 final class ConsoleAction {
     enum Context {
-        GLOBAL,
         HOST,
         APPLICATION,
         DISCORD
