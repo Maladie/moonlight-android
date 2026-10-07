@@ -4333,16 +4333,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         hostGatewayStore.profiles(hostId);
                 HostGatewayClient.IntegrationProfile previousProfile =
                         cachedBefore == null ? null : cachedBefore.find(previous);
-                HostGatewayClient.IntegrationProfile refreshedProfile =
-                        profiles.find(previous);
+                HostGatewayClient.IntegrationProfile refreshedProfile = profiles.find(previous);
                 boolean childWasInvalidated = previousProfile != null
                         && previousProfile.isChild()
                         && (refreshedProfile == null || !refreshedProfile.isChild()
                         || !refreshedProfile.enabled || !refreshedProfile.useProfile);
                 rememberChildCapability(hostId, profiles, capabilityResult);
                 saveHostProfiles(hostId, profiles);
-                HostGatewayClient.IntegrationProfile observedProfile = profiles.find(previous);
-                if (observedProfile != null && observedProfile.isChild()) {
+                if (refreshedProfile != null && refreshedProfile.isChild()) {
                     childEligibilityObservedAt.put(hostId + "\n" + previous,
                             SystemClock.elapsedRealtime());
                 }
@@ -4350,9 +4348,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     hostGatewayStore.setAutomaticIntegrationProfileId(hostId, "");
                     ComputerDetails current = currentHost(hostId);
                     ProfileAuthorization.revoke();
-                    if (current != null) showProfileGate(current, true, false);
+                    if (current != null && !isDestroyed()) showProfileGate(current, true, false);
                     return;
                 }
+                if (isDestroyed()) return; // Profile data and grants above outlive the UI.
                 HostGatewayStore.ProfileSelection selection =
                         hostGatewayStore.profileSelection(hostId);
                 if (selection.selected != null
@@ -4401,6 +4400,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             HostGatewayClient.IntegrationProfiles result = profiles;
             mainHandler.post(() -> {
+                if (isDestroyed()) return;
                 hostProfileRefreshInFlight.remove(hostId);
                 Integer latest = hostProfileRefreshGenerations.get(hostId);
                 if (latest == null || latest != generation || !hostSelectionVisible) {
@@ -4524,8 +4524,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             SessionSnapshot projected = resolved;
             mainHandler.post(() -> {
-                Integer currentGeneration = sessionProjectionRequestGenerations.get(
-                        stateKey);
+                if (isDestroyed()) return;
+                Integer currentGeneration = sessionProjectionRequestGenerations.get(stateKey);
                 if (currentGeneration != null && currentGeneration == requestGeneration) {
                     sessionProjectionRefreshInFlight.remove(stateKey);
                 }

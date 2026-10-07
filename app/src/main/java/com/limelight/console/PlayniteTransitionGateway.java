@@ -300,6 +300,8 @@ public final class PlayniteTransitionGateway {
                 boolean correlated = accepted.observationCorrelated;
                 return new Snapshot(accepted, correlated ? observation : null, correlated);
             } catch (IOException unavailable) {
+                // A cancelled read (interrupt restored by the transport) observed nothing.
+                if (Thread.currentThread().isInterrupted()) throw unavailable;
                 SessionSnapshot projected = projectionOwner.unavailable(
                         ordinal, retained, now, unavailable.getMessage());
                 return new Snapshot(projected, null, false);
@@ -331,6 +333,7 @@ public final class PlayniteTransitionGateway {
             observation = client.getSessionObservation(connection,
                     actorContext.executionProfileId, ordinal, transition);
         } catch (IOException unavailable) {
+            if (Thread.currentThread().isInterrupted()) throw unavailable;
             return new Snapshot(projectionOwner.unavailable(
                     ordinal, retained, now, unavailable.getMessage()), null, false);
         }

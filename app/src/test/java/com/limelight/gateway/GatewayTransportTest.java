@@ -322,6 +322,66 @@ public class GatewayTransportTest {
         }
     }
 
+    @Test public void interruptedReadIsCancellationButTimeoutAndIoFailureAreErrors()
+            throws Exception {
+        java.io.File directory = java.nio.file.Files.createTempDirectory("gateway-cancel").toFile();
+        diagnosticsHook("resetForTests");
+        try (java.net.ServerSocket silent = new java.net.ServerSocket(0);
+             java.net.ServerSocket closed = new java.net.ServerSocket(0)) {
+            com.limelight.diagnostics.MoonWakerDiagnostics.initialize(directory);
+            assertTrue(GatewayTransport.recordCancelled("GET", "/api/v1/capabilities",
+                    "cancelled-1", CONNECTION, 0, System.nanoTime(),
+                    new InterruptedIOException("interrupted"), false));
+            assertTrue(Thread.interrupted());
+
+            int closedPort = closed.getLocalPort();
+            closed.close();
+            GatewayTransport transport = new GatewayTransport(() -> "failed-1");
+            try {
+                transport.getJson(new GatewayConnection("https://127.0.0.1:" + closedPort,
+                        "secret", FINGERPRINT, "profile-1"), "/api/v1/capabilities", 200);
+                fail("Expected connection failure");
+            } catch (IOException expected) {
+                assertFalse(expected instanceof InterruptedIOException);
+            }
+            transport = new GatewayTransport(() -> "timeout-1");
+            try {
+                transport.getJson(new GatewayConnection("https://127.0.0.1:"
+                        + silent.getLocalPort(), "secret", FINGERPRINT, "profile-1"),
+                        "/api/v1/capabilities", 200);
+                fail("Expected read timeout");
+            } catch (java.net.SocketTimeoutException expected) {
+                assertFalse(Thread.currentThread().isInterrupted());
+            }
+            assertTrue((Boolean) diagnosticsHook("flushForTests"));
+            String events = new String(java.nio.file.Files.readAllBytes(
+                    new java.io.File(directory, "events.jsonl").toPath()), StandardCharsets.UTF_8);
+            for (String line : events.split("\r?\n")) {
+                if (line.contains("\"cancelled-1\"")) {
+                    assertTrue(line, line.contains("\"level\":\"INFO\"")
+                            && line.contains("\"event\":\"request.cancelled\"")
+                            && line.contains("\"error_type\":\"java.io.InterruptedIOException\""));
+                }
+                if (line.contains("\"failed-1\"") || line.contains("\"timeout-1\"")) {
+                    assertTrue(line, line.contains("\"level\":\"ERROR\""));
+                }
+            }
+            assertTrue(events.contains("\"event\":\"request.cancelled\""));
+            assertTrue(events.contains("\"request_id\":\"failed-1\""));
+            assertTrue(events.contains("\"request_id\":\"timeout-1\""));
+        } finally {
+            Thread.interrupted();
+            diagnosticsHook("resetForTests");
+        }
+    }
+
+    private static Object diagnosticsHook(String name) throws Exception {
+        java.lang.reflect.Method method = com.limelight.diagnostics.MoonWakerDiagnostics.class
+                .getDeclaredMethod(name);
+        method.setAccessible(true);
+        return method.invoke(null);
+    }
+
     @Test public void resolvesOnlyRelativeApiPaths() throws Exception {
         assertEquals("https://host:8785/api/v1/status",
                 GatewayTransport.resolve(" https://host:8785/ ", "/api/v1/status").toString());

@@ -117,6 +117,35 @@ public class PlayniteTransitionGatewayTest {
         SessionStateResolver.resetProjectionOwnersForTests();
     }
 
+    @Test public void cancelledReadPropagatesWithoutPublishingUnavailability() throws Exception {
+        SessionStateResolver.resetProjectionOwnersForTests();
+        SessionStateResolver.diagnosticSink = (level, component, event, fields) -> true;
+        RecordingClient client = new RecordingClient();
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, "host",
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"),
+                client, () -> 0L);
+        SessionStateResolver.ProjectionOwner owner =
+                SessionStateResolver.owner(m.model, "host", "parent", "parent");
+        gateway.snapshot();
+        long published = owner.diagnosticEventsForTests();
+        client.failure = new java.io.InterruptedIOException("interrupted");
+        try {
+            for (int read = 0; read < 2; read++) {
+                try {
+                    if (read == 0) gateway.snapshot();
+                    else gateway.snapshotWithinControl(permit("op", "session-1", 2L, 3L));
+                    fail("cancelled read must propagate");
+                } catch (java.io.InterruptedIOException expected) {
+                    assertTrue(Thread.interrupted());
+                }
+                assertEquals(published, owner.diagnosticEventsForTests());
+            }
+        } finally {
+            Thread.interrupted();
+            SessionStateResolver.resetProjectionOwnersForTests();
+        }
+    }
+
     private static com.limelight.gateway.ControlOperationClient.Permit permit(
             String operationId, String session, long generation, long epoch) throws Exception {
         java.lang.reflect.Constructor<com.limelight.gateway.ControlOperationClient.Permit> create =
@@ -406,6 +435,7 @@ public class PlayniteTransitionGatewayTest {
         String gameEvidence = "VERIFIED";
         String gameId = "steam:123";
         int parsedObservations;
+        IOException failure;
 
         @Override SessionObservation getSessionObservation(
                 GatewayConnection connection, String executionProfileId,
@@ -424,6 +454,11 @@ public class PlayniteTransitionGatewayTest {
                 throws IOException {
             requests.add(method + " " + path);
             profiles.add(connection.profileId());
+            if (failure != null) {
+                // The transport restores the interrupt that okhttp consumed.
+                Thread.currentThread().interrupt();
+                throw failure;
+            }
             try {
                 if (path.startsWith("/api/v1/session/observation?")) {
                     long ordinal = Long.parseLong(path.replaceFirst(
