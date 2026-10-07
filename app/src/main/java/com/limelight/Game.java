@@ -3424,6 +3424,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void terminateRetainedSession(
             SessionModel.TerminationCallback completion) {
+        // The model runs this for the console that asked; that console owns what is shown next.
         terminateWholeSessionVerified(completion == null ? null : new ProviderStopCallback() {
             @Override public void complete(boolean success) {
                 completion.complete(success);
@@ -3432,7 +3433,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override public void transportUnsafe() {
                 completion.transportUnsafe();
             }
-        });
+        }, false, true);
     }
 
     @Override
@@ -4472,11 +4473,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void terminateWholeSessionVerified(ProviderStopCallback completion) {
-        terminateWholeSessionVerified(completion, false);
+        terminateWholeSessionVerified(completion, false, false);
     }
 
-    private void terminateWholeSessionVerified(
-            ProviderStopCallback completion, boolean providerAlreadyStopped) {
+    /** {@code requesterPresentsHome}: the console that asked shows what follows, not Game. */
+    private void terminateWholeSessionVerified(ProviderStopCallback completion,
+            boolean providerAlreadyStopped, boolean requesterPresentsHome) {
         runOnUiThread(() -> {
             if (!wholeSessionTermination.begin()) {
                 if (completion != null) completion.complete(false);
@@ -4511,7 +4513,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
             java.util.function.BiConsumer<SessionModel.DirectTermination, Boolean> terminate =
                     (directTermination, marked) -> runWholeSessionTermination(completion,
-                            providerAlreadyStopped, privacy, directTermination, marked,
+                            providerAlreadyStopped, requesterPresentsHome, privacy,
+                            directTermination, marked,
                             expectedSessionId, expectedHostId, expectedAppId, expectedGameId,
                             actorContext, expectedControlGeneration);
             if (!hostCorrelated) {
@@ -4546,7 +4549,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void runWholeSessionTermination(
-            ProviderStopCallback completion, boolean providerAlreadyStopped, Runnable privacy,
+            ProviderStopCallback completion, boolean providerAlreadyStopped,
+            boolean requesterPresentsHome, Runnable privacy,
             SessionModel.DirectTermination directTermination, boolean marked,
             String expectedSessionId, String expectedHostId, int expectedAppId,
             String expectedGameId, PlayniteTransitionGateway.ActorContext actorContext,
@@ -4564,7 +4568,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             WeakReference<Game> activity = new WeakReference<>(this);
             wholeSessionTermination.run(
                     privacy,
-                    this::openTerminalConsoleHome,
+                    // Opening Home would clear the requesting console and cancel its request.
+                    requesterPresentsHome ? () -> { } : this::openTerminalConsoleHome,
                     local -> stopConnectionResult(result -> {
                         boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
                         local.complete(stopped);
@@ -5421,7 +5426,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 LimeLog.info("Fresh neutral cleanup transition=" + transitionId
                                         + " providerStopped=" + success);
                                 if (success) {
-                                    terminateWholeSessionVerified(null, true);
+                                    terminateWholeSessionVerified(null, true, false);
                                 } else if (transitionController != null) {
                                     transitionController.error(transitionId,
                                             getString(R.string.transition_readiness_unconfirmed));

@@ -153,9 +153,25 @@ public class GameTransitionCancelContractTest {
         assertTrue(helper.contains("new SessionEvent.DirectTerminationBegun("));
         assertTrue(helper.contains("new SessionEvent.TerminatingMarked("));
         assertTrue(helper.contains("Runnable privacy = terminalPrivacyOnce()"));
-        assertTrue(helper.contains("this::openTerminalConsoleHome"));
+        assertTrue(helper.contains(
+                "requesterPresentsHome ? () -> { } : this::openTerminalConsoleHome"));
+        assertTrue(helper.contains("terminateWholeSessionVerified(completion, false, false)"));
         assertTrue(helper.contains("HostSessionTermination.run("));
         assertFalse(helper.contains("quitApp("));
+        // The model runs this for a requesting console; Game must not clear it by opening Home.
+        String requested = text.substring(text.indexOf(
+                        "public void terminateRetainedSession("),
+                text.indexOf("public void switchGame("));
+        assertTrue(requested.contains("}, false, true);"));
+        assertFalse(requested.contains("openTerminalConsoleHome"));
+        String home = text.substring(text.indexOf("private void openTerminalConsoleHome("),
+                text.indexOf("private void restoreParkedStream("));
+        assertTrue(home.contains("Intent.FLAG_ACTIVITY_CLEAR_TOP"));
+        Path homePath = Paths.get("src/main/java/com/limelight/console/StreamHomeActivity.java");
+        if (!Files.exists(homePath)) homePath = Paths.get("app").resolve(homePath);
+        String streamHome = new String(Files.readAllBytes(homePath), StandardCharsets.UTF_8);
+        assertTrue(streamHome.contains("protected void onRequestedStreamClosed()"));
+        assertTrue(streamHome.contains("EXTRA_SUPPRESS_AUTO_WARM_UP, true"));
         String terminated = text.substring(text.indexOf(
                         "public void connectionTerminated("),
                 text.indexOf("public void connectionStatusUpdate("));
@@ -450,11 +466,11 @@ public class GameTransitionCancelContractTest {
         assertTrue(cleanup.contains("freshOwnedFailureCleanupInFlight.compareAndSet(false, true)"));
         assertTrue(callback.indexOf("isFreshOwnedFailureCleanup(")
                 < callback.indexOf("RetainedSwitch operation"));
-        assertTrue(callback.contains("terminateWholeSessionVerified(null, true)"));
+        assertTrue(callback.contains("terminateWholeSessionVerified(null, true, false)"));
         assertTrue(terminate.contains("providerAlreadyStopped"));
         assertTrue(terminate.contains("HostSessionTermination.run("));
         assertTrue(terminate.contains(
-                "terminateWholeSessionVerified(completion, false)"));
+                "terminateWholeSessionVerified(completion, false, false)"));
         assertTrue(terminate.contains(
                 "DirectTerminationCompleted.abandoned"));
         assertTrue(terminate.contains("stopConnectionResult("));

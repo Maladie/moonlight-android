@@ -133,8 +133,9 @@ public class S05ControlPlaneContractTest {
         String close = between(game, "private void closeStreamWithPrivacy(",
                 "private ");
         assertTrue(close.contains("terminateWholeSessionVerified(null)"));
-        String common = between(game, "private void terminateWholeSessionVerified(\n"
-                        + "            ProviderStopCallback completion, boolean providerAlreadyStopped)",
+        String common = between(game, "private void terminateWholeSessionVerified("
+                        + "ProviderStopCallback completion,\n"
+                        + "            boolean providerAlreadyStopped, boolean requesterPresentsHome)",
                 "private void applyImmediateTerminalPrivacy(");
         assertTrue(common.contains("if (!wholeSessionTermination.begin())"));
         assertTrue(common.contains("stopChildMonitoring()"));

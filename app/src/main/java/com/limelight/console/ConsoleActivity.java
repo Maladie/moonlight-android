@@ -1706,6 +1706,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return false;
     }
 
+    /** A stream this console asked the model to close has ended; it owns what is shown next. */
+    protected void onRequestedStreamClosed() { }
+
     /** The retained stream this Home was launched for: its launch request, not live state. */
     private String launchedExtra(String name) {
         return normalizeId(getIntent().getStringExtra(name));
@@ -7019,15 +7022,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? knownProviderGameId(host) : requestedProviderGameId;
         ConsoleUiFeedback.makeText(this, R.string.console_terminate_session_request,
                 Toast.LENGTH_SHORT).show();
-        SessionModel.Snapshot retained =
-                sessionModel.snapshot();
+        SessionModel.Snapshot retained = sessionModel.snapshot();
         if (retained.hostId.equalsIgnoreCase(host.uuid)
                 && retained.executionProfileId.equals(
                 executionProfileId(host.uuid, profileKey.profileId))
                 && !retained.streamSessionId.isEmpty()) {
             sessionModel.dispatch(new SessionEvent.TerminateRequested(retained.streamSessionId,
-                    success -> finishTerminateSession(host, profileKey, expectedSuspendId,
-                            success)), result -> {
+                    success -> { finishTerminateSession(host, profileKey, expectedSuspendId,
+                            success); onRequestedStreamClosed(); }), result -> {
                 if (result == SessionModel.TerminationResult.NO_CONTROLLER) {
                     terminateSessionByControlPlane(host, profileKey, expectedSuspendId,
                             providerGameId);
@@ -7100,8 +7102,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void requestCloseHostStream(ComputerDetails host) {
-        SessionModel.Snapshot retained =
-                sessionModel.snapshot();
+        SessionModel.Snapshot retained = sessionModel.snapshot();
         boolean exactRetained = retained.hostId.equalsIgnoreCase(host.uuid)
                 && retained.executionProfileId.equals(executionProfileId(
                 host.uuid, selectedProfileId(host.uuid)));
@@ -7109,8 +7110,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 Toast.LENGTH_SHORT).show();
         if (exactRetained && !retained.streamSessionId.isEmpty()) {
             sessionModel.dispatch(new SessionEvent.TerminateRequested(retained.streamSessionId,
-                    success -> finishCloseHostStream(host, retained.streamSessionId, success)),
-                    result -> {
+                    success -> { finishCloseHostStream(host, retained.streamSessionId, success);
+                        onRequestedStreamClosed(); }), result -> {
                 if (result == SessionModel.TerminationResult.NO_CONTROLLER) {
                     closeHostStreamByControlPlane(host, retained.streamSessionId);
                 }
@@ -12388,8 +12389,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     throws SessionFailure.Raised {
                 ComputerDetails host = currentHost(intent.hostId);
                 if (host == null) throw SessionFailure.CLOSE_HOST_UNAVAILABLE.raise();
-                SessionModel.Snapshot retained =
-                        sessionModel.snapshot();
+                SessionModel.Snapshot retained = sessionModel.snapshot();
                 int runningAppId = resolveSessionSnapshot(host, intent.profileId)
                         .hostRunningAppId;
                 boolean childMustCloseDisallowedGame = isChildIntent(intent)
