@@ -3980,7 +3980,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             transferIntent.getByteArrayExtra(EXTRA_SERVER_CERT),
                             authorization.streamSessionId, authorization.sunshineAppId, "",
                             authorization.generation,
-                            PlayniteTransitionGateway.ActorContext.parent(next.profileId), false);
+                            PlayniteTransitionGateway.ActorContext.parent(next.profileId), false)
+                            .closed();
                 }
             } catch (IOException | RuntimeException error) {
                 LimeLog.warning("Retained authorization compensation failed operation="
@@ -4585,7 +4586,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             application, expectedHostId, activeHost, port, httpsPort,
                             uniqueId, certificate, expectedSessionId, expectedAppId,
                             expectedGameId, expectedControlGeneration, actorContext,
-                            providerAlreadyStopped)), "MoonWaker-TerminateHost").start();
+                            providerAlreadyStopped).closed()), "MoonWaker-TerminateHost").start();
                     },
                     success -> {
                         if (completion == null) {
@@ -7014,7 +7015,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void confirmQuitSession() {
         overlayMenuView.closeMenu();
-        ConsoleConfirmDialog.show(this, getString(R.string.overlay_menu_quit_session),
+        ConsoleConfirmDialog.show(this, getString(R.string.console_close_session),
                 getString(R.string.applist_quit_confirmation),
                 getString(android.R.string.cancel),
                 getString(android.R.string.ok),

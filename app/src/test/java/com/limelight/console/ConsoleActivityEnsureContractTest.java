@@ -134,7 +134,7 @@ public class ConsoleActivityEnsureContractTest {
     @Test public void retainedFallbackRequiresPersistedControlGeneration() throws IOException {
         String source = consoleActivitySource();
         String method = source.substring(source.indexOf(
-                        "private boolean terminateKnownControlPlane("),
+                        "private HostSessionTermination.Outcome terminateKnownControlPlane("),
                 source.indexOf("private String knownProviderGameId("));
 
         assertTrue(method.contains("retained.controlGeneration > 0L"));
@@ -162,8 +162,8 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("super.onDestroy()"));
         String refresh = source.substring(source.indexOf("private void refreshSessionState("),
                 source.indexOf("private void invalidateHostStateAsync("));
-        String close = source.substring(source.indexOf("private void finishCloseHostStream("),
-                source.indexOf("private void confirmHardTerminateSession("));
+        String close = source.substring(source.indexOf("private void finishTerminateSession("),
+                source.indexOf("private boolean isPairingContextCurrent("));
 
         assertTrue(destroy.indexOf("active = false;")
                 < destroy.indexOf("executor.shutdownNow()"));
@@ -172,7 +172,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(source.contains("new ThreadPoolExecutor.DiscardPolicy()"));
         assertFalse(refresh.contains("RejectedExecutionException"));
         assertTrue(close.contains("refreshSessionState(host.uuid)"));
-        assertTrue(close.indexOf("if (success)")
+        assertTrue(close.indexOf("if (outcome.closed())")
                 < close.indexOf("refreshSessionState(host.uuid)"));
     }
 
@@ -232,9 +232,9 @@ public class ConsoleActivityEnsureContractTest {
         String appActions = source.substring(source.indexOf("private void showAppActions("),
                 source.indexOf("private void addAppAction("));
 
-        assertTrue(quickActions.contains("requestTerminateSession(host)"));
+        assertTrue(quickActions.contains("confirmTerminateSession(host)"));
         assertFalse(quickActions.contains("ServerHelper.doQuit"));
-        assertTrue(appActions.contains("requestTerminateSession(host)"));
+        assertTrue(appActions.contains("confirmTerminateSession(host)"));
         assertFalse(appActions.contains("ServerHelper.doQuit"));
     }
 

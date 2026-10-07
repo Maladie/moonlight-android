@@ -247,7 +247,7 @@ public final class AndroidStreamRuntime {
                             record.getStringExtra(Game.EXTRA_UNIQUEID),
                             record.getByteArrayExtra(Game.EXTRA_SERVER_CERT),
                             session.streamSessionId, session.appId, session.playniteGameId,
-                            session.controlGeneration, actor, false)),
+                            session.controlGeneration, actor, false).closed()),
                             "MoonWaker-TerminateHeadless").start(),
                     success -> {
                         if (completion == null) return;

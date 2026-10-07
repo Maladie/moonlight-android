@@ -24,7 +24,7 @@ public class ConsoleMenuStructureTest {
         ConsoleActionMenu<ConsoleHostPanel.Action> menu = ConsoleHostPanel.menu(facts);
 
         assertEquals(Arrays.asList(ConsoleHostPanel.Action.DESKTOP,
-                ConsoleHostPanel.Action.SLEEP, ConsoleHostPanel.Action.CLOSE_STREAM,
+                ConsoleHostPanel.Action.SLEEP, ConsoleHostPanel.Action.CLOSE_SESSION,
                 ConsoleHostPanel.Action.TEST_CONNECTION, ConsoleHostPanel.Action.CHANGE_HOST,
                 ConsoleHostPanel.Action.HARD_TERMINATE, ConsoleHostPanel.Action.UNPAIR),
                 menu.actions());
@@ -45,7 +45,7 @@ public class ConsoleMenuStructureTest {
         ConsoleActionMenu<ConsoleHostPanel.Action> menu = ConsoleHostPanel.menu(facts);
 
         assertEquals(Arrays.asList(ConsoleHostPanel.Action.RESUME,
-                ConsoleHostPanel.Action.CLOSE_STREAM, ConsoleHostPanel.Action.SLEEP,
+                ConsoleHostPanel.Action.CLOSE_SESSION, ConsoleHostPanel.Action.SLEEP,
                 ConsoleHostPanel.Action.TEST_CONNECTION, ConsoleHostPanel.Action.HARD_TERMINATE,
                 ConsoleHostPanel.Action.UNPAIR), menu.actions());
         assertTrue(menu.items.get(0).enabled);

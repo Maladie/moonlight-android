@@ -97,7 +97,7 @@ public class OverlayMenuViewTest {
         assertTrue(menu.contains("if (endGameAvailable)"));
         assertTrue(menu.contains("R.string.overlay_menu_end_game"));
         assertTrue(menu.contains("ACTION_END_GAME"));
-        assertTrue(menu.contains("R.string.overlay_menu_quit_session"));
+        assertTrue(menu.contains("R.string.console_close_session"));
         assertTrue(activate.contains("actionListener.onEndGame()"));
         assertTrue(activate.contains("actionListener.onQuitSession()"));
     }

@@ -32,7 +32,7 @@ public class ConsoleChildProfileUiContractTest {
         String menu = between(activity, "private void showHostSelectionOptions(",
                 "static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(");
         String panel = source("src/main/java/com/limelight/console/ConsoleHostPanel.java");
-        for (String action : new String[]{"WAKE", "DESKTOP", "CLOSE_STREAM", "HARD_TERMINATE",
+        for (String action : new String[]{"WAKE", "DESKTOP", "CLOSE_SESSION", "HARD_TERMINATE",
                 "UNPAIR", "TEST_CONNECTION", "SLEEP"}) {
             assertTrue(menu.contains("case " + action + ":"));
         }
@@ -57,10 +57,10 @@ public class ConsoleChildProfileUiContractTest {
         assertFalse(start.contains("endChildBindingAndAwait"));
         assertTrue(start.contains("childLaunchBindings.remove(pending.key(), pending)"));
         assertFalse(start.contains("new ChildLaunchFailure(\"child_session_ending\")"));
-        String close = between(activity, "private void requestCloseHostStream(",
-                "private void finishCloseHostStream(");
+        String close = between(activity, "private void requestTerminateSession(",
+                "private void finishTerminateSession(");
         assertFalse(close.contains("selectedProfileIsChild"));
-        assertTrue(close.contains("retained.executionProfileId.equals(executionProfileId("));
+        assertTrue(close.contains("retained.executionProfileId.equals("));
     }
 
     @Test public void childStartsOnlyAfterOrchestratorHasResolvedPreviousSession() throws Exception {

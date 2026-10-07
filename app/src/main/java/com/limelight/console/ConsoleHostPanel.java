@@ -4,7 +4,7 @@ import com.limelight.R;
 
 /**
  * Host panel structure (UX_MENU_PL.md section 3.3): three main actions (Pulpit, Obudź or Uśpij,
- * Zamknij stream; with an active session: Wróć do streamu, Zamknij stream, Uśpij), a "Więcej"
+ * Zamknij sesję; with an active session: Wróć do streamu, Zamknij sesję, Uśpij), a "Więcej"
  * group, and the destructive actions last. The caller resolves the facts from its stores and
  * performs the chosen action.
  */
@@ -12,7 +12,7 @@ final class ConsoleHostPanel {
     enum Action {
         RESUME(R.drawable.ic_console_play),
         DESKTOP(R.drawable.ic_console_monitor), WAKE(R.drawable.ic_console_sun),
-        SLEEP(R.drawable.ic_console_moon), CLOSE_STREAM(R.drawable.ic_console_close),
+        SLEEP(R.drawable.ic_console_moon), CLOSE_SESSION(R.drawable.ic_console_close),
         TEST_CONNECTION(R.drawable.ic_console_pulse), CHANGE_HOST(R.drawable.ic_console_leave_host),
         HARD_TERMINATE(R.drawable.ic_console_power),
         UNPAIR(R.drawable.ic_console_unlink);
@@ -45,15 +45,15 @@ final class ConsoleHostPanel {
 
     static ConsoleActionMenu<Action> menu(Facts facts) {
         ConsoleActionMenu<Action> menu = new ConsoleActionMenu<>();
-        boolean closeStream = facts.online && facts.paired && facts.streamRunning;
+        boolean closeSession = facts.online && facts.paired && facts.streamRunning;
         if (facts.sessionActive) {
             menu.add(Action.RESUME, R.string.console_return_to_stream, facts.resumeAvailable)
-                    .add(Action.CLOSE_STREAM, R.string.console_close_stream, closeStream);
+                    .add(Action.CLOSE_SESSION, R.string.console_close_session, closeSession);
             power(menu, facts);
         } else {
             menu.add(Action.DESKTOP, R.string.console_launch_desktop, facts.online && facts.paired);
             power(menu, facts);
-            menu.add(Action.CLOSE_STREAM, R.string.console_close_stream, closeStream);
+            menu.add(Action.CLOSE_SESSION, R.string.console_close_session, closeSession);
         }
         menu.group(R.string.console_section_more)
                 .add(Action.TEST_CONNECTION, R.string.pcview_menu_test_network, true);

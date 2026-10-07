@@ -584,7 +584,7 @@ public class OverlayMenuView extends LinearLayout {
                 ACTION_SUSPEND_SESSION, spacing);
         }
         addVerticalButton(R.drawable.ic_overlay_power,
-                getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
+                getContext().getString(R.string.console_close_session), ACTION_QUIT, spacing);
         if (canShowDiscordCard()) {
             addVerticalButton(R.drawable.ic_console_discord,
                     getContext().getString(R.string.discord_community_title),

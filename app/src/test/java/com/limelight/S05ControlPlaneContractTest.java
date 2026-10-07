@@ -57,23 +57,21 @@ public class S05ControlPlaneContractTest {
         String terminate = between(console,
                 "private void requestTerminateSession(ComputerDetails host, String",
                 "private boolean isPairingContextCurrent(");
-        String close = between(console, "private void requestCloseHostStream(",
-                "private void finishCloseHostStream(");
         String hard = between(console, "private void requestHardTerminateSession(",
                 "private void finishHardTerminate(");
         assertTrue(terminate.contains("new SessionEvent.TerminateRequested("));
-        assertTrue(close.contains("new SessionEvent.TerminateRequested("));
         assertFalse(hard.contains("new SessionEvent.TerminateRequested("));
         assertTrue(hard.contains("clearHardResetSessionState(host, profileKey)"));
         assertTrue(hard.contains("hardResetHost(gateway, childSessionId)"));
-        assertFalse(close.contains("new SessionEvent.Disconnect("));
+        assertFalse(terminate.contains("new SessionEvent.Disconnect("));
     }
 
     @Test public void ordinaryQuitAcceptsAlreadyIdleProviderAndDoesNotPoisonBarrier()
             throws Exception {
         String host = source("com/limelight/stream/HostSessionTermination.java");
 
-        assertTrue(host.contains("String exact = providerIdle ? \"\""));
+        assertTrue(host.contains(
+                "String exact = stopTarget(expectedGame, current.gameState, current.gameId);"));
         // An idle permit (no provider game) is the Gateway's proof: no racy provider re-read
         // may reject the quit before /cancel (lab MW-05 D1: effect_rejected, Desktop kept running).
         assertTrue(host.contains(
@@ -82,7 +80,7 @@ public class S05ControlPlaneContractTest {
                 "control.complete(gateway, permit, false, !effectResultUncertain)"));
         assertTrue(host.contains("\"control-full-quit-\" + UUID.randomUUID()"));
         assertTrue(host.contains(
-                "return control.complete(gateway, permit, true).succeeded()"));
+                "return Outcome.of(control.complete(gateway, permit, true).succeeded())"));
     }
 
     @Test public void terminalLocalEffectsDoNotDependOnViewsOrHostRpc() throws Exception {
@@ -145,7 +143,7 @@ public class S05ControlPlaneContractTest {
         String overlay = source("com/limelight/ui/overlay/OverlayMenuView.java");
         assertFalse(overlay.contains("hostActionsAvailable"));
         int suspend = overlay.indexOf("if (suspendSessionAvailable)");
-        int quit = overlay.indexOf("R.string.overlay_menu_quit_session", suspend);
+        int quit = overlay.indexOf("R.string.console_close_session", suspend);
         assertTrue(quit > suspend);
         assertTrue(overlay.substring(suspend, quit).contains("}"));
     }

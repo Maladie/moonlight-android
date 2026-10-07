@@ -20,7 +20,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(topBarSource().contains("global.quick_launch"));
     }
 
-    @Test public void hostStatusClosesOnlyTheStreamAndKeepsHardTermination() throws IOException {
+    @Test public void hostCloseSessionUsesTheSingleTerminationPathAndKeepsHardTermination() throws IOException {
         String source = consoleActivitySource();
         String selector = source.substring(source.indexOf("topBar = new ConsoleTopBar("),
                 source.indexOf("homeContent.addView(topBar"));
@@ -29,9 +29,9 @@ public class ConsoleActivityRequestedUiContractTest {
 
         assertTrue(selector.contains("showHostSelectionOptions(host)"));
         String panel = hostPanelSource();
-        assertTrue(panel.contains("R.string.console_close_stream"));
-        assertTrue(menu.contains("confirmCloseHostStream(host)"));
-        assertFalse(menu.contains("confirmTerminateSession(host)"));
+        assertTrue(panel.contains("R.string.console_close_session"));
+        assertTrue(menu.contains("case CLOSE_SESSION: confirmTerminateSession(host)"));
+        assertFalse(source.contains("CloseHostStream("));
         assertTrue(panel.contains("R.string.console_hard_terminate_session"));
         assertTrue(menu.contains("confirmHardTerminateSession(host)"));
         assertTrue(panel.contains("facts.online && facts.paired && facts.gatewayAvailable"));
@@ -376,7 +376,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("isFreshExactRunningManagedGame(host, item)"));
         String gameCard = gameCardSource();
         assertTrue(gameCard.indexOf("R.string.overlay_menu_end_game")
-                < gameCard.indexOf("R.string.overlay_menu_quit_session"));
+                < gameCard.indexOf("R.string.console_close_session"));
         assertTrue(menu.contains("confirmTerminateSession(host, item.stableId())"));
         assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true, confirmedKey.profileId)"));
         assertTrue(stop.contains("refreshSessionState(host.uuid)"));

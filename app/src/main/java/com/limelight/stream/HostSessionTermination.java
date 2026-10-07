@@ -24,9 +24,27 @@ public final class HostSessionTermination {
     // The provider rescans running games at once after a catalog update (5 s interval otherwise).
     private static final long STOP_EVIDENCE_TIMEOUT_MILLIS = 8_000L;
 
+    /** Why a whole-session close ended; the caller tells the user. */
+    public enum Outcome {
+        CLOSED,
+        /** The running provider game could not be verified as the one to stop. */
+        GAME_UNVERIFIED,
+        /** Sunshine runs a stream this session does not own. */
+        OTHER_STREAM,
+        FAILED;
+
+        public boolean closed() {
+            return this == CLOSED;
+        }
+
+        public static Outcome of(boolean closed) {
+            return closed ? CLOSED : FAILED;
+        }
+    }
+
     private HostSessionTermination() { }
 
-    public static boolean run(Context context, String hostId, String activeHost,
+    public static Outcome run(Context context, String hostId, String activeHost,
                               int port, int httpsPort, String uniqueId, byte[] certificate,
                               String streamSessionId, int appId, String gameId,
                               long expectedGeneration,
@@ -34,7 +52,7 @@ public final class HostSessionTermination {
                               boolean providerAlreadyStopped) {
         GatewayConnection gateway = new HostGatewayStore(context).loadForHost(
                 hostId, activeHost, actor.actorProfileId);
-        if (gateway == null || expectedGeneration <= 0L) return false;
+        if (gateway == null || expectedGeneration <= 0L) return Outcome.FAILED;
         ControlOperationClient control = new ControlOperationClient(new GatewayTransport());
         String operationId = "control-full-quit-" + UUID.randomUUID();
         ControlOperationClient.Permit permit = null;
@@ -52,11 +70,18 @@ public final class HostSessionTermination {
                 permit = control.acquire(gateway, operationId, "full_quit", streamSessionId,
                         appId, expectedGeneration, running, "");
             } catch (Exception unavailable) {
+                // A definitive rejection grants no permit, so there is nothing to reconcile.
+                Outcome rejected = rejection(unavailable);
+                if (rejected != Outcome.FAILED) return rejected;
                 ControlOperationClient.Result reconciled = control.reconcile(
                         gateway, operationId, streamSessionId, appId, running);
-                return reconciled.succeeded();
+                return Outcome.of(reconciled.succeeded());
             }
-            if (permit.succeeded()) return true;
+            if (permit.succeeded()) return Outcome.CLOSED;
+            // A foreign Sunshine stream fails the close before any provider game is stopped.
+            if (running != 0 && running != appId) {
+                throw new IllegalStateException("unmanaged_stream");
+            }
             // The Gateway grants a full_quit only with the provider idle or its exact game
             // verified, under the lock that fences provider transitions. A permit without a
             // provider game is that idle proof; a re-read can only lose its dispatch ordering
@@ -68,12 +93,7 @@ public final class HostSessionTermination {
                 String expectedGame = gameId == null ? "" : gameId.trim();
                 PlayniteTransitionGateway.Snapshot current = provider.stopEvidenceWithinControl(
                         permit, expectedGame, STOP_EVIDENCE_TIMEOUT_MILLIS);
-                boolean providerIdle = "idle".equalsIgnoreCase(current.gameState)
-                        && (current.gameId == null || current.gameId.trim().isEmpty());
-                String exact = providerIdle ? ""
-                        : expectedGame.isEmpty() ? null
-                        : PlayniteIdentityResolutionPolicy.verifiedStopTarget(
-                                expectedGame, current.gameState, current.gameId);
+                String exact = stopTarget(expectedGame, current.gameState, current.gameId);
                 if (exact == null) throw new IllegalStateException("provider_game_mismatch");
                 if (!exact.isEmpty()) {
                     if (!current.hasVerifiedProcessFor(exact)
@@ -98,9 +118,6 @@ public final class HostSessionTermination {
                     effectResultUncertain = false;
                 }
             }
-            if (running != 0 && running != appId) {
-                throw new IllegalStateException("unmanaged_stream");
-            }
             if (running == appId) {
                 effectResultUncertain = true;
                 boolean accepted = http.quitApp();
@@ -116,11 +133,12 @@ public final class HostSessionTermination {
                 if (running != 0) Thread.sleep(100L);
             }
             effectSucceeded = running == 0;
-            return effectSucceeded && control.complete(gateway, permit, true).succeeded();
+            return Outcome.of(effectSucceeded
+                    && control.complete(gateway, permit, true).succeeded());
         } catch (Exception error) {
             if (permit != null && effectSucceeded) {
                 try {
-                    return control.complete(gateway, permit, true).succeeded();
+                    return Outcome.of(control.complete(gateway, permit, true).succeeded());
                 } catch (Exception ignored) {
                     // A retry with the same permit is idempotent and preserves recovery state.
                 }
@@ -132,7 +150,31 @@ public final class HostSessionTermination {
                 }
             }
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
-            return false;
+            return failure(error.getMessage());
         }
+    }
+
+    /**
+     * The game a full_quit stops: "" with the provider idle, else the caller's expected game
+     * when the provider runs exactly it; null when no expected game verifies the running one.
+     */
+    static String stopTarget(String expectedGame, String gameState, String currentGame) {
+        if ("idle".equalsIgnoreCase(gameState)
+                && (currentGame == null || currentGame.trim().isEmpty())) return "";
+        return expectedGame.isEmpty() ? null : PlayniteIdentityResolutionPolicy
+                .verifiedStopTarget(expectedGame, gameState, currentGame);
+    }
+
+    /** The outcome of a Gateway rejection of the acquire; FAILED for anything else. */
+    static Outcome rejection(Exception error) {
+        return error instanceof GatewayTransport.GatewayException
+                ? failure(error.getMessage()) : Outcome.FAILED;
+    }
+
+    static Outcome failure(String reason) {
+        return "provider_game_mismatch".equals(reason)
+                || "provider_process_mismatch".equals(reason)
+                || "retained_process_unconfirmed".equals(reason) ? Outcome.GAME_UNVERIFIED
+                : "unmanaged_stream".equals(reason) ? Outcome.OTHER_STREAM : Outcome.FAILED;
     }
 }
