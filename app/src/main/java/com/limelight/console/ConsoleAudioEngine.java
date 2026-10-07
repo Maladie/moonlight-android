@@ -32,6 +32,9 @@ final class ConsoleAudioEngine {
     private static final long NAVIGATION_THROTTLE_MS = 90L;
     private static final int FADE_STEPS = 18;
     private static final long FADE_STEP_MS = 35L;
+    /** Ambience gain at stepper 1 and 10; the asset itself peaks at 0 dBFS (RMS about -15). */
+    static final float AMBIENT_MIN_DB = -42f;
+    static final float AMBIENT_MAX_DB = -10f;
 
     private final Context context;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -237,7 +240,7 @@ final class ConsoleAudioEngine {
     private synchronized void updateAmbient(boolean immediate) {
         if (released || ambientPlayer == null) return;
         float target = resumed && menuVisible && ambientEnabled
-                ? (hostSelectionVisible ? hostSelectionVolume : menuVolume) : 0f;
+                ? ambientGain(hostSelectionVisible ? hostSelectionVolume : menuVolume) : 0f;
         int generation = ++fadeGeneration;
         float start = ambientVolume;
         if (target > 0f && !ambientPlayer.isPlaying()) ambientPlayer.start();
@@ -283,6 +286,18 @@ final class ConsoleAudioEngine {
         } catch (RuntimeException error) {
             Log.w(TAG, "Unable to update menu ambience equalizer", error);
         }
+    }
+
+    /**
+     * Maps a music slider level (0..1, ten steps) to player gain with equal dB per step,
+     * so step 1 sits barely audible under the UI and step 10 keeps 10 dB of headroom.
+     */
+    static float ambientGain(float level) {
+        if (level <= 0f) return 0f;
+        float steps = ConsolePanel.STEPS;
+        float step = Math.max(1f, Math.min(steps, level * steps));
+        float db = AMBIENT_MIN_DB + (step - 1f) * (AMBIENT_MAX_DB - AMBIENT_MIN_DB) / (steps - 1f);
+        return (float) Math.pow(10.0, db / 20.0);
     }
 
     private static float clamp(float value) {
