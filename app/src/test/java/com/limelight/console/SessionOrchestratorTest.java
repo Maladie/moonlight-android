@@ -329,6 +329,7 @@ public class SessionOrchestratorTest {
 
     @Test public void neutralWarmUpReconnectHandsOffGameWithoutReplacement() {
         Fake effects = new Fake();
+        effects.warmUpCarriesGame = true;
         effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
                 77, "", false, "", true);
 
@@ -342,6 +343,51 @@ public class SessionOrchestratorTest {
         assertSame(game, effects.reconnectIntent);
         assertEquals(0, effects.closes);
         assertEquals(0, effects.launches);
+    }
+
+    @Test public void gameVerifiedDuringOrphanPreflightAsksBeforeReplacement() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                77, "", false, "", true);
+        effects.onReadiness = () -> effects.snapshot = snapshot(
+                SessionSnapshot.State.RECONNECT_REQUIRED, 77, "other", false, "", true);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
+        assertNotNull(effects.confirmation);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+        assertEquals(0, effects.reconnects);
+    }
+
+    @Test public void hostConfirmedGameReconnectsNeutralTargetWithoutWarmUp() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                42, "game", false, "", true);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.reconnects);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void orphanedNeutralStreamWithoutWarmUpIsClosedThenGameLaunches() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                77, "", false, "", true);
+        PlayIntent game = game();
+
+        orchestrator(effects).play(game);
+
+        assertNull(effects.confirmation);
+        assertEquals(0, effects.reconnects);
+        assertEquals(1, effects.closes);
+        assertEquals(Boolean.TRUE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.launches);
+        assertEquals(42, effects.launchedTarget.getAppId());
+        assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
     }
 
     @Test public void cancelledNeutralWarmUpReconnectIgnoresStaleOpaqueFrame() {
@@ -1070,6 +1116,7 @@ public class SessionOrchestratorTest {
         int returned;
         int reconnects;
         PlayIntent reconnectIntent;
+        boolean warmUpCarriesGame;
         int readiness;
         int loadings;
         int refreshes;
@@ -1096,11 +1143,11 @@ public class SessionOrchestratorTest {
             attachedRequest = orchestrationId;
             attachedTarget = target;
         }
-        @Override public void reconnectSavedSession() { reconnects++; }
         @Override public void reconnectSavedSession(PlayIntent intent) {
             reconnects++;
             reconnectIntent = intent;
         }
+        @Override public boolean warmUpCarriesGame() { return warmUpCarriesGame; }
         @Override public void reject(SessionOrchestrator.Rejection reason) {
             rejection = reason;
         }

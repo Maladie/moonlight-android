@@ -1348,6 +1348,8 @@
     <string name="console_session_uncertain_details">MoonWaker has not yet confirmed which game is running. Wait a moment and try again. No game or stream was started or stopped.</string>
     <string name="console_presentation_launch_failed_title">Could not show the stream</string>
     <string name="console_presentation_launch_failed_details">The stream screen did not open, so the game was not switched. Nothing was closed. Try again.</string>
+    <string name="console_reconnect_saved_session_unavailable">The saved stream session could not be reconnected. Start the game again.</string>
+    <string name="console_reconnect_actor_handoff_failed">The saved stream session could not be handed over to this profile. Start the game again.</string>
     <string name="console_terminate_session_title">Close the game and stream?</string>
     <string name="console_terminate_session_details">This closes the running game or application on the host and its MoonWaker stream. Unsaved progress may be lost.</string>
     <string name="console_terminate_session_request">Ending the host session…</string>

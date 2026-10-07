@@ -194,7 +194,7 @@ public class S05ControlPlaneContractTest {
         assertTrue(reconnect.contains("startChildSession(intent, cancelled)"));
         assertTrue(reconnect.contains("failClosedActorHandoff(intent, pending, accepted)"));
         assertTrue(reconnect.contains("failClosedActorHandoff(intent, pending, binding)"));
-        String resume = between(console, "private boolean startResumeActivity(",
+        String resume = between(console, "private String startResumeActivity(",
                 "private void failClosedActorHandoff(");
         assertTrue(resume.contains("Game.EXTRA_CONTROL_INTENT, \"reauthorize\""));
         assertTrue(resume.contains("Game.EXTRA_PROFILE_ID, intent.profileId"));

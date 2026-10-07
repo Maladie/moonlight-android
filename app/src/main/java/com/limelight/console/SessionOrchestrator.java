@@ -63,10 +63,11 @@ final class SessionOrchestrator implements AutoCloseable {
         boolean isAvailable(); boolean isPaired(String hostId); SessionSnapshot resolve(String hostId);
         default SessionSnapshot resolve(HostProfileKey key) { return resolve(key.hostId); }
         default boolean canPrepareHost(String hostId) { return isPaired(hostId); }
-        void returnToRetainedStream(); void reconnectSavedSession();
+        void returnToRetainedStream(); void reconnectSavedSession(PlayIntent intent);
+        /** A live warm-up attempt carries the intent's game into the resumed neutral stream. */
+        boolean warmUpCarriesGame();
         /** Starts the attaching stream presentation carrying the target; ends the request. */
         void attachPresentationForSwitch(long orchestrationId, PlayIntent intent, NvApp target);
-        default void reconnectSavedSession(PlayIntent intent) { reconnectSavedSession(); }
         void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
         boolean canAttemptRetainedSwitch(PlayIntent intent);
@@ -351,7 +352,11 @@ final class SessionOrchestrator implements AutoCloseable {
                 && snapshot.neutralStreamTarget
                 && snapshot.playniteGameId.isEmpty()
                 && intent.kind == PlayIntent.Kind.PLAYNITE_GAME;
-        if (snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
+        // Orphaned neutral stream: no game confirmed and none to carry. Decided on every pass
+        // from this snapshot and never carried forward; its full quit fails closed while any
+        // provider game runs, so it is replaced without asking.
+        boolean orphaned = reconnectingWarmUp && !matches && !effects.warmUpCarriesGame();
+        if (!orphaned && snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
                 && (matches || reconnectingWarmUp)) {
             if (!opaqueReady) {
                 awaitOpaque(request, intent, LaunchTransitionType.GENERIC,
@@ -388,8 +393,9 @@ final class SessionOrchestrator implements AutoCloseable {
             }
             return;
         }
-        reuseOnly |= !replacementAuthorized && effects.canAttemptRetainedSwitch(intent);
-        if (!replacementAuthorized && !reuseOnly) {
+        boolean authorized = replacementAuthorized || orphaned;
+        reuseOnly |= !authorized && effects.canAttemptRetainedSwitch(intent);
+        if (!authorized && !reuseOnly) {
             effects.confirmReplacement(() -> {
                 if (current(request)) evaluate(request, intent, true, false,
                         opaqueReady, preparedTarget, pass + 1);
@@ -404,7 +410,7 @@ final class SessionOrchestrator implements AutoCloseable {
                             : HostLaunchPreflight.Action.LAUNCH);
         } else {
             closeCompetingSession(request, intent, preparedTarget,
-                    replacementAuthorized, reuseOnly, pass);
+                    authorized, reuseOnly, pass);
         }
     }
 

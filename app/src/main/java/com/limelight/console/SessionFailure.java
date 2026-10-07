@@ -87,6 +87,16 @@ public enum SessionFailure {
             R.string.console_presentation_launch_failed_title,
             R.string.console_presentation_launch_failed_details),
 
+    // ConsoleActivity reconnectSavedSessionForActor, same actor: the saved session could not be
+    // resumed; detail names the refusal (no record, record or retained mismatch, no intent).
+    RECONNECT_SAVED_SESSION_UNAVAILABLE("reconnect.saved_session_unavailable",
+            R.string.console_presentation_launch_failed_title,
+            R.string.console_reconnect_saved_session_unavailable),
+    // ConsoleActivity reconnectSavedSessionForActor, actor handoff: failed after compensation.
+    RECONNECT_ACTOR_HANDOFF_FAILED("reconnect.actor_handoff_failed",
+            R.string.console_presentation_launch_failed_title,
+            R.string.console_reconnect_actor_handoff_failed),
+
     // ConsoleActivity beginInstallationSupportStream (does not use the orchestrator).
     SUPPORT_PREVIOUS_NOT_CLOSED("support.previous_not_closed",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
