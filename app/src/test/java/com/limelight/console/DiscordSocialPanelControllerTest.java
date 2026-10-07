@@ -148,6 +148,15 @@ public class DiscordSocialPanelControllerTest {
     }
 
     @Test
+    public void onlyGateway409MeansDiscordNotReady() {
+        assertTrue(DiscordPanelController.discordNotReady(
+                new HostGatewayClient.GatewayException("Discord RPC authorization is required.", 409)));
+        assertFalse(DiscordPanelController.discordNotReady(
+                new HostGatewayClient.GatewayException("Unable to load Discord servers.", 502)));
+        assertFalse(DiscordPanelController.discordNotReady(new java.io.IOException("reset")));
+    }
+
+    @Test
     public void confirmedVoiceDisablesAnotherJoinForThatDestination() {
         HostGatewayClient.DiscordVoice voice = new HostGatewayClient.DiscordVoice(
                 true, "12345", "Lobby", "67890", false, false, 1);

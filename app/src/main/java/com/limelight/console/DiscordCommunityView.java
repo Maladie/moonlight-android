@@ -74,7 +74,8 @@ final class DiscordCommunityView extends FrameLayout {
         final List<DiscordCommunityPresentation.Destination> recent;
         final List<DiscordCommunityPresentation.Destination> guildChannels;
         final boolean homeLoading;
-        final boolean homeUnavailable;
+        /** String resource explaining why voice places are missing; 0 while the home loaded. */
+        final int homeUnavailableText;
         final boolean guildLoading;
         final boolean guildUnavailable;
         final String error;
@@ -102,7 +103,7 @@ final class DiscordCommunityView extends FrameLayout {
               List<DiscordCommunityPresentation.Destination> active,
               List<DiscordCommunityPresentation.Destination> recent,
               List<DiscordCommunityPresentation.Destination> guildChannels,
-              boolean homeLoading, boolean homeUnavailable, boolean guildLoading,
+              boolean homeLoading, int homeUnavailableText, boolean guildLoading,
               boolean guildUnavailable, String error, HostGatewayClient.DiscordVoice voice,
               boolean voiceLoading, boolean voiceBusy, DiscordPanelController.CommunityOptions options,
               boolean optionsLoading, String optionsError, HostGatewayClient.DiscordAudioState audio,
@@ -118,7 +119,7 @@ final class DiscordCommunityView extends FrameLayout {
             this.recent = recent;
             this.guildChannels = guildChannels;
             this.homeLoading = homeLoading;
-            this.homeUnavailable = homeUnavailable;
+            this.homeUnavailableText = homeUnavailableText;
             this.guildLoading = guildLoading;
             this.guildUnavailable = guildUnavailable;
             this.error = error;
@@ -870,7 +871,7 @@ final class DiscordCommunityView extends FrameLayout {
         } else if (model.active.isEmpty()) {
             recentLabel.setVisibility(GONE);
             String empty = model.homeLoading ? getContext().getString(R.string.discord_community_loading)
-                    : model.homeUnavailable ? getContext().getString(R.string.discord_community_host_unavailable)
+                    : model.homeUnavailableText != 0 ? getContext().getString(model.homeUnavailableText)
                     : model.snapshot.connected ? getContext().getString(R.string.discord_community_no_active)
                     : model.error;
             View card = emptyCard(empty);
@@ -1741,7 +1742,7 @@ final class DiscordCommunityView extends FrameLayout {
 
     private String feedKey(Model value) {
         StringBuilder key = new StringBuilder(value.state.tab.name()).append('|').append(value.homeLoading)
-                .append('|').append(value.homeUnavailable).append('|').append(isLinked(value.snapshot))
+                .append('|').append(value.homeUnavailableText).append('|').append(isLinked(value.snapshot))
                 .append('|').append(value.error);
         appendDestinations(key, value.active);
         appendDestinations(key, value.recent);
