@@ -70,6 +70,8 @@ final class ConsolePanel {
     /** Bottom padding of the scroll view kept for the pinned legend (1004 px baseline). */
     static final int LEGEND_AREA_DP = 50;
     static final int LEGEND_BOTTOM_DP = 22;
+    /** Mockup 18 legend: centred 48 px above the card's bottom edge (side panels: 52 px). */
+    static final int CARD_LEGEND_BOTTOM_DP = 19;
     static final int SCROLL_TOP_DP = 18;
     static final int STEPS = 10;
     static final int TEXT = 0xFFF5F6F9;
@@ -118,18 +120,23 @@ final class ConsolePanel {
     private final Map<ColorStateList, Map<Integer, Drawable.ConstantState>> icons =
             new IdentityHashMap<>();
     private boolean reducedMotion;
+    private final boolean card;
 
     ConsolePanel(Context context, LockableScrollView scroll, ConsoleMenuBackdrop backdrop,
                  boolean reducedMotion) {
-        this(context, scroll, backdrop, reducedMotion, 10);
+        this(context, scroll, backdrop, reducedMotion, false);
     }
 
-    /** {@code focusRadiusDp}: 10 for side panels (20 px), 16 for the settings card (32 px). */
+    /**
+     * {@code card}: the settings card of mockup 18 instead of a side panel (mockup 4): 32 px
+     * focus radius instead of 20, its own header spacing and legend line.
+     */
     ConsolePanel(Context context, LockableScrollView scroll, ConsoleMenuBackdrop backdrop,
-                 boolean reducedMotion, int focusRadiusDp) {
+                 boolean reducedMotion, boolean card) {
         this.context = context;
         this.scroll = scroll;
         this.reducedMotion = reducedMotion;
+        this.card = card;
         glass = new ConsoleGlass(scroll, backdrop);
         accent = context.getResources().getColor(R.color.console_accent);
         danger = context.getResources().getColor(R.color.console_state_error);
@@ -138,7 +145,7 @@ final class ConsolePanel {
         dangerColors = stateColors(danger, DANGER_INK);
         valueColors = stateColors(secondary, INK_SECONDARY);
         stepperColors = stateColors(accent, INK);
-        focusFill = focusFill(focusRadiusDp).getConstantState();
+        focusFill = focusFill(card ? 16 : 10).getConstantState();
         // Parse the row icons once off the main thread; the first card then hits the cache.
         ConsoleMenuBackdrop.inBackground(() -> {
             context.getDrawable(R.drawable.ic_console_chevron);
@@ -171,7 +178,7 @@ final class ConsolePanel {
         // The top inset keeps scrolled-away header text fading out inside the glass instead of
         // being cut by its rounded top edge.
         scroll.setPadding(0, dp(SCROLL_TOP_DP), 0, dp(LEGEND_AREA_DP));
-        scroll.setFooter(legend, dp(LEGEND_BOTTOM_DP));
+        scroll.setFooter(legend, dp(card ? CARD_LEGEND_BOTTOM_DP : LEGEND_BOTTOM_DP));
         content.setPadding(dp(PAD_X_DP), dp(25 - SCROLL_TOP_DP), dp(PAD_X_DP), dp(4));
     }
 
@@ -223,11 +230,14 @@ final class ConsolePanel {
         container.addView(inset(header(eyebrow)), wrap(0, 0));
         TextView titleView = inset(text(title, TITLE_SP, TEXT));
         titleView.setTypeface(medium);
-        container.addView(titleView, wrap(dp(4), 0));
+        // Mockup 18 card baselines: eyebrow, title +60 px, subtitle +44 px, rows 30 px below
+        // the subtitle or 34 px below the title (the mockups use 26-32 and 36: 18-game starts
+        // its rows 6 px above 18-video). Side panels (mockup 4): title +56, subtitle +42.
+        container.addView(titleView, wrap(dp(card ? 7 : 4), 0));
         TextView detailView = inset(text(details, SECONDARY_SP, secondary));
         detailView.setVisibility(TextUtils.isEmpty(details) ? View.GONE : View.VISIBLE);
         if (scrollableDetails) makeScrollable(detailView);
-        container.addView(detailView, wrap(dp(3), dp(12)));
+        container.addView(detailView, wrap(dp(card ? 4 : 3), dp(card ? 0 : 12)));
 
         List<View> ordered = destructiveLast(Arrays.asList(rows), ConsolePanel::isDestructive);
         int firstDestructive = 0;
@@ -236,7 +246,7 @@ final class ConsolePanel {
         for (int index = 0; index < ordered.size(); index++) {
             View row = ordered.get(index);
             if (index == firstDestructive && index > 0) container.addView(divider(), dividerParams());
-            container.addView(row, wrap(0, 0));
+            container.addView(row, wrap(card && index == 0 ? dp(12) : 0, 0));
         }
         updateLegend(container);
     }
@@ -377,12 +387,16 @@ final class ConsolePanel {
         valueView.setDuplicateParentStateEnabled(true);
         valueView.setSingleLine(true);
         valueView.setEllipsize(TextUtils.TruncateAt.END);
-        valueView.setMaxWidth(dp(WIDTH_DP / 2));
+        valueView.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
         valueView.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
                 tinted(R.drawable.ic_console_chevron, valueColors), null);
         valueView.setCompoundDrawablePadding(dp(4));
+        // Label and value both take their full width; only when together they do not fit do
+        // both give up the overflow equally (the label wraps, the value ellipsizes).
+        row.getChildAt(0).setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         params.leftMargin = dp(16);
         row.addView(valueView, params);
         setValue(row, value);
@@ -512,7 +526,9 @@ final class ConsolePanel {
 
     TextView section(String label) {
         TextView header = header(label);
-        header.setPadding(dp(ROW_INSET_DP), dp(SECTION_TOP_DP), dp(ROW_INSET_DP), dp(6));
+        // Mockup 18 card "head": 66 px, baseline 50 px down; side panels keep 16 + 6 dp.
+        header.setPadding(dp(ROW_INSET_DP), dp(card ? 14 : SECTION_TOP_DP), dp(ROW_INSET_DP),
+                dp(card ? 5 : 6));
         header.setFocusable(false);
         return header;
     }
@@ -668,7 +684,13 @@ final class ConsolePanel {
 
     /** Mockup 18 "sep": a hairline across the text span in a 25 px (12.5 dp) band. */
     View separator() {
-        View separator = new View(context);
+        // A plain View measures to all the height left to it, which a fill-viewport card offers.
+        View separator = new View(context) {
+            @Override protected void onMeasure(int width, int height) {
+                setMeasuredDimension(getDefaultSize(getSuggestedMinimumWidth(), width),
+                        getSuggestedMinimumHeight());
+            }
+        };
         separator.setBackground(new InsetDrawable(new ColorDrawable(0x1EFFFFFF),
                 dp(ROW_INSET_DP), dp(6), dp(ROW_INSET_DP), dp(6)));
         separator.setMinimumHeight(dp(12) + Math.max(1, dp(1) / 2));
@@ -824,7 +846,8 @@ final class ConsolePanel {
 
         @Override protected void onDraw(Canvas canvas) {
             float dp = getResources().getDisplayMetrics().density;
-            float y = 6f * dp;
+            // Mockup 18: the track 80 px below the row top (ROW_H + 4); the band starts 60 px down.
+            float y = 10f * dp;
             float half = 1.5f * dp;
             track.set(0, y - half, getWidth(), y + half);
             paint.setColor(INK_SECONDARY);

@@ -40,14 +40,14 @@ final class ConsoleSettingsScreen {
     /** Mockup 18: a 4 x 36 px accent bar, text 26 px after its left edge. */
     static final int SELECTION_BAR_DP = 2;
     static final int SELECTION_GAP_DP = 11;
-    /** Mockup 18: card rows 32 px radius, category rows 20 px. */
-    static final int ROW_RADIUS_DP = 16;
+    /** Mockup 18: category rows 20 px radius (card rows: ConsolePanel's card, 32 px). */
     static final int CATEGORY_RADIUS_DP = 10;
     private static final String LEGEND_SEPARATOR = "  ·  ";
 
     static final class Category {
         final String title;
-        final CharSequence details;
+        /** Mutable for a caller whose subtitle follows its rows; {@link #refresh} shows it. */
+        CharSequence details;
         final Function<ConsolePanel, View[]> rows;
 
         Category(String title, Function<ConsolePanel, View[]> rows) {
@@ -136,7 +136,8 @@ final class ConsoleSettingsScreen {
         title.setTextColor(ConsolePanel.TEXT);
         title.setTypeface(medium);
         title.setIncludeFontPadding(false);
-        title.setPadding(dp(ConsolePanel.ROW_INSET_DP), 0, 0, dp(18));
+        // Mockup 18: first category row 46 px below the title's baseline.
+        title.setPadding(dp(ConsolePanel.ROW_INSET_DP), 0, 0, dp(17));
         categoryColumn.addView(title);
         columns.addView(categoryColumn, new LinearLayout.LayoutParams(
                 dp(CATEGORY_WIDTH_DP), ViewGroup.LayoutParams.MATCH_PARENT));
@@ -152,7 +153,7 @@ final class ConsoleSettingsScreen {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         columns.addView(contentScroll, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        panel = new ConsolePanel(activity, contentScroll, backdrop, reducedMotion, ROW_RADIUS_DP);
+        panel = new ConsolePanel(activity, contentScroll, backdrop, reducedMotion, true);
         panel.floatOnGlass(content);
         root.getViewTreeObserver().addOnGlobalFocusChangeListener(
                 (oldFocus, newFocus) -> updateLegend());
@@ -237,14 +238,19 @@ final class ConsoleSettingsScreen {
         crumb.setText(next.crumb.toUpperCase(Locale.ROOT));
         crumb.setVisibility(next.crumb.isEmpty() ? View.GONE : View.VISIBLE);
         // The crumb sits where the title's top padding was (baseline 84 px, title 146 px).
-        categoryColumn.setPadding(0, dp(next.crumb.isEmpty() ? 25 : 5), dp(24), 0);
+        categoryColumn.setPadding(0, dp(next.crumb.isEmpty() ? 25 : 3), dp(24), 0);
         title.setText(next.title);
         for (TextView row : categoryRows) categoryColumn.removeView(row);
         categoryRows.clear();
         for (int index = 0; index < next.categories.size(); index++) {
             int position = index;
             TextView row = panel.action(next.categories.get(index).title);
+            // A background replaces the padding with its own (the fill's 1.5 dp insets), which
+            // put the accent bar on the column edge, 28 px left of mockup 18's x 124.
+            int left = row.getPaddingLeft(), top = row.getPaddingTop();
+            int right = row.getPaddingRight(), bottom = row.getPaddingBottom();
             row.setBackground(panel.focusFill(CATEGORY_RADIUS_DP));
+            row.setPadding(left, top, right, bottom);
             View.OnFocusChangeListener styled = row.getOnFocusChangeListener();
             row.setOnFocusChangeListener((view, focused) -> {
                 styled.onFocusChange(view, focused);
@@ -355,8 +361,8 @@ final class ConsoleSettingsScreen {
 
     private void renderCategory() {
         Category category = level.categories.get(selected);
-        panel.render(content, level.eyebrow, category.title, category.details, false,
-                category.rows.apply(panel));
+        View[] rows = category.rows.apply(panel); // may update the details
+        panel.render(content, level.eyebrow, category.title, category.details, false, rows);
         contentScroll.scrollTo(0, 0);
         wireContent();
         updateLegend();

@@ -1409,9 +1409,11 @@
     <string name="console_app_stream_eyebrow">Stream settings · game</string>
     <string name="console_app_stream_category">Game overrides</string>
     <string name="console_app_stream_details_global">“Global” = the value from Settings › Streaming.</string>
-    <string name="console_app_stream_details_inherited">“Inherited” = the app\'s value or the one from Settings › Streaming.</string>
+    <string name="console_app_stream_details_inherited">“Inherited” = the value from the app\'s settings.</string>
     <string name="console_app_stream_use_global">Use global settings</string>
     <string name="console_app_stream_use_inherited">Use app settings</string>
+    <string name="console_app_stream_disabled_global">Turn off “Use global settings” to override.</string>
+    <string name="console_app_stream_disabled_inherited">Turn off “Use app settings” to override.</string>
     <string name="console_app_stream_resolution">Resolution</string>
     <string name="console_app_stream_bitrate">Bitrate</string>
     <string name="console_app_stream_global_f">Global (%1$s)</string>

@@ -32,6 +32,7 @@ final class ConsoleAppStreamSettings {
     private boolean inherit;
     private AppPreferences.AppSettings settings;
     private PreferenceConfiguration inherited;
+    private ConsoleSettingsScreen.Category category;
 
     ConsoleAppStreamSettings(Activity activity, ConsoleSettingsScreen screen) {
         this.activity = activity;
@@ -57,11 +58,10 @@ final class ConsoleAppStreamSettings {
                 ? AppPreferences.getEffectivePreferences(activity, parentKey)
                 : AppPreferences.applyPreferenceOverrides(activity,
                         PreferenceConfiguration.readPreferences(activity));
+        category = new ConsoleSettingsScreen.Category(s(R.string.console_app_stream_category),
+                this::rows);
         screen.show(crumb, appName, s(R.string.console_app_stream_eyebrow),
-                Collections.singletonList(new ConsoleSettingsScreen.Category(
-                        s(R.string.console_app_stream_category),
-                        s(inherit ? R.string.console_app_stream_details_inherited
-                                : R.string.console_app_stream_details_global), this::rows)), 0);
+                Collections.singletonList(category), 0);
     }
 
     private View[] rows(ConsolePanel panel) {
@@ -133,13 +133,22 @@ final class ConsoleAppStreamSettings {
                 chosen -> settings.enablePerfOverlay = chosen));
 
         View[] overrides = {resolution, fps, bitrate, pacing, refresh, hdr, stats};
-        for (View row : overrides) {
+        // The reason the rows are dimmed replaces the subtitle, so the rows keep mockup 18's
+        // positions (a reason line in a row would move every row below it).
+        category.details = s(settings.useGlobalSettings
+                ? inherit ? R.string.console_app_stream_disabled_inherited
+                        : R.string.console_app_stream_disabled_global
+                : inherit ? R.string.console_app_stream_details_inherited
+                        : R.string.console_app_stream_details_global);
+        if (settings.useGlobalSettings) {
             // The saved overrides stay. A Sunshine app ignores them while "use global" is on; a
             // Quick Launch item or Playnite game still applies them over its Sunshine app's own
             // overrides, and ignores them only when that app uses the global settings too
             // (AppPreferences.getEffectivePreferences).
-            row.setEnabled(!settings.useGlobalSettings);
-            row.setFocusable(!settings.useGlobalSettings);
+            for (View row : overrides) {
+                row.setEnabled(false);
+                row.setFocusable(false);
+            }
         }
         List<View> rows = new ArrayList<>();
         rows.add(useGlobal);

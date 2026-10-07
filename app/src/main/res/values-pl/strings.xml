@@ -1375,9 +1375,11 @@
     <string name="console_app_stream_eyebrow">Ustawienia streamu · gra</string>
     <string name="console_app_stream_category">Nadpisania gry</string>
     <string name="console_app_stream_details_global">„Globalne” = wartość z Ustawienia › Streaming.</string>
-    <string name="console_app_stream_details_inherited">„Odziedziczone” = wartość aplikacji albo z Ustawienia › Streaming.</string>
+    <string name="console_app_stream_details_inherited">„Odziedziczone” = wartość z ustawień aplikacji.</string>
     <string name="console_app_stream_use_global">Używaj ustawień globalnych</string>
     <string name="console_app_stream_use_inherited">Używaj ustawień aplikacji</string>
+    <string name="console_app_stream_disabled_global">Wyłącz „Używaj ustawień globalnych”, aby nadpisać.</string>
+    <string name="console_app_stream_disabled_inherited">Wyłącz „Używaj ustawień aplikacji”, aby nadpisać.</string>
     <string name="console_app_stream_resolution">Rozdzielczość</string>
     <string name="console_app_stream_bitrate">Bitrate</string>
     <string name="console_app_stream_global_f">Globalna (%1$s)</string>
