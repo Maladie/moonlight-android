@@ -1192,7 +1192,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     @Override public void requestHome(DiscordPanelController.CommunityHomeCallback callback) {
                         ComputerDetails host = hosts.get(selectedHostUuid);
                         if (host == null) {
-                            callback.onUnavailable();
+                            callback.onUnavailable(false);
                             return;
                         }
                         String address = host.activeAddress == null ? null : host.activeAddress.address;
@@ -4304,6 +4304,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         playniteSessionProjection = null;
         initialLibraryPresentation = null;
         clearArtwork();
+        libraryTransitionCoordinator.cancel();
+        selectedGameMetadata.setVisibility(View.INVISIBLE);
+        selectedGameDescription.setText("");
+        selectedGameFactsRow.setVisibility(View.GONE);
+        if (selectedGameTitleRow != null) selectedGameTitleRow.setVisibility(View.INVISIBLE);
         renderedAppsSignature = null;
         return true;
     }
@@ -10689,7 +10694,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         consolePanel.destructive(endGame);
         cancel.setOnClickListener(view -> handlePanelBack());
         endGame.setOnClickListener(view -> {
-            hideSidePanel();
+            hideSidePanelImmediately();
             requestEndPlayniteGame(host, item, confirmedKey);
         });
         showSidePanel(getString(R.string.playnite_game_options), item.game.name,
@@ -10699,32 +10704,29 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void requestEndPlayniteGame(ComputerDetails host,
                                         PlayniteDashboardItem item,
                                         HostProfileKey confirmedKey) {
+        String expectedGameId = SessionSnapshot.normalize(item.stableId());
         if (host == null || confirmedKey == null
                 || !confirmedKey.equals(selectedProfileKey(host.uuid))
-                || !host.uuid.equalsIgnoreCase(selectedHostUuid)) {
+                || !host.uuid.equalsIgnoreCase(selectedHostUuid)
+                || expectedGameId.isEmpty() || !isFreshExactRunningManagedGame(host, item)) {
             ConsoleUiFeedback.makeText(this, R.string.overlay_menu_end_game_failed,
                     Toast.LENGTH_LONG).show();
             return;
         }
-        String expectedGameId = SessionSnapshot.normalize(item.stableId());
-        if (expectedGameId.isEmpty() || !isFreshExactRunningManagedGame(host, item)) {
-            ConsoleUiFeedback.makeText(this, R.string.overlay_menu_end_game_failed,
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
+        showSidePanelBusy(getString(R.string.playnite_game_options), item.game.name,
+                getString(R.string.playnite_ending_game));
+        String busyPanelKey = currentPanelKey;
         executor.execute(() -> {
-            boolean success;
+            boolean success = false;
             try {
-                if (!confirmedKey.equals(selectedProfileKey(host.uuid))) {
+                if (!confirmedKey.equals(selectedProfileKey(host.uuid)))
                     throw new IOException("game_stop_profile_changed");
-                }
                 stopActiveProviderGame(host, expectedGameId, true, confirmedKey.profileId);
                 success = true;
-            } catch (IOException | RuntimeException ignored) {
-                success = false;
-            }
+            } catch (IOException | RuntimeException ignored) { }
             boolean stopped = success;
             mainHandler.post(() -> {
+                if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();
                 if (!confirmedKey.equals(selectedProfileKey(host.uuid))
                         || !host.uuid.equalsIgnoreCase(selectedHostUuid)) return;
                 if (stopped) {
@@ -10733,10 +10735,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     refreshSessionState(host.uuid);
                 }
                 refreshSessionProjection(host, ignored -> { });
-                ConsoleUiFeedback.makeText(this, stopped
-                                ? R.string.playnite_end_game_success
-                                : R.string.overlay_menu_end_game_failed,
-                        Toast.LENGTH_LONG).show();
+                ConsoleUiFeedback.makeText(this, stopped ? R.string.playnite_end_game_success
+                        : R.string.overlay_menu_end_game_failed, Toast.LENGTH_LONG).show();
             });
         });
     }

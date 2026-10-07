@@ -1066,6 +1066,7 @@
     <string name="playnite_running_badge">URUCHOMIONA</string>
     <string name="playnite_running_badge_description">Gra %1$s jest obecnie uruchomiona</string>
     <string name="playnite_end_game_success">Gra została zakończona. Inne gry i stream nie zostały zamknięte.</string>
+    <string name="playnite_ending_game">Kończenie gry…</string>
     <string name="playnite_end_game_confirmation">Zakończyć tę grę? Inne gry i stream nie zostaną zamknięte.</string>
     <string name="playnite_source">Źródło: %1$s</string>
     <string name="playnite_stream_settings">Ustawienia streamingu gry</string>

@@ -228,6 +228,23 @@ public class GatewayTransportTest {
                         "{}".getBytes(StandardCharsets.UTF_8)));
     }
 
+    @Test public void discord409IsNotReadyStateWhileMalformedSuccessStaysDecodeFailure()
+            throws Exception {
+        assertTrue(GatewayTransport.isDiscordNotReady("/api/v1/discord/voice?force=true", 409));
+        assertTrue(GatewayTransport.isDiscordNotReady("/api/v1/discord/home", 409));
+        assertFalse(GatewayTransport.isDiscordNotReady("/api/v1/discord/home", 502));
+        assertFalse(GatewayTransport.isDiscordNotReady("/api/v1/control/operation/acquire", 409));
+        // A well-formed 409 body parses; the status check, not the JSON decode, rejects it.
+        byte[] notReady = "{\"ok\":false,\"error\":\"Discord RPC authorization is required.\"}"
+                .getBytes(StandardCharsets.UTF_8);
+        assertGatewayException("Discord RPC authorization is required.", 409,
+                () -> GatewayTransport.requireSuccess(409,
+                        GatewayTransport.parseJson(409, notReady)));
+        assertGatewayException("Invalid response from host gateway.", 200,
+                () -> GatewayTransport.parseJson(200,
+                        "not-json".getBytes(StandardCharsets.UTF_8)));
+    }
+
     @Test public void malformedJsonPreservesStatus() throws Exception {
         assertGatewayException("Invalid response from host gateway.", 502,
                 () -> GatewayTransport.decodeJsonResponse(502,

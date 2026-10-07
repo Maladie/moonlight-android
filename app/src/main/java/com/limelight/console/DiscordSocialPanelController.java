@@ -80,7 +80,7 @@ final class DiscordSocialPanelController {
     private DiscordCommunityState state = DiscordCommunityState.initial();
     private HostGatewayClient.DiscordHome home;
     private boolean homeLoading;
-    private boolean homeUnavailable;
+    private int homeUnavailableText;
     private List<HostGatewayClient.DiscordChannel> guildChannels = Collections.emptyList();
     private boolean guildLoading;
     private boolean guildUnavailable;
@@ -128,7 +128,7 @@ final class DiscordSocialPanelController {
         updateShowingChat();
         home = null;
         homeLoading = true;
-        homeUnavailable = false;
+        homeUnavailableText = 0;
         guildChannels = Collections.emptyList();
         guildLoading = false;
         guildUnavailable = false;
@@ -249,14 +249,15 @@ final class DiscordSocialPanelController {
                 if (!visible || expected != generation) return;
                 home = value;
                 homeLoading = false;
-                homeUnavailable = false;
+                homeUnavailableText = 0;
                 render(DiscordSocialClient.getSnapshot());
                 refreshVoice(expected);
             }
-            @Override public void onUnavailable() {
+            @Override public void onUnavailable(boolean discordNotReady) {
                 if (!visible || expected != generation) return;
                 homeLoading = false;
-                homeUnavailable = true;
+                homeUnavailableText = discordNotReady ? R.string.discord_community_host_not_ready
+                        : R.string.discord_community_host_unavailable;
                 render(DiscordSocialClient.getSnapshot());
                 refreshVoice(expected);
             }
@@ -402,7 +403,7 @@ final class DiscordSocialPanelController {
         project(snapshot, active, recent);
         ensureView();
         communityView.bind(new DiscordCommunityView.Model(snapshot, state, active, recent,
-                DiscordCommunityPresentation.channels(guildChannels), homeLoading, homeUnavailable,
+                DiscordCommunityPresentation.channels(guildChannels), homeLoading, homeUnavailableText,
                 guildLoading, guildUnavailable, localError, joinedVoice, voiceLoading, voiceBusy,
                 options, optionsLoading, optionsError, audio, audioLoading, audioBusy, audioError,
                 directFriend(snapshot, state.directMessageRecipientId),

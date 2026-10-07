@@ -61,6 +61,29 @@ final class ConsoleSettingsScreen {
         }
     }
 
+    /**
+     * Marks row replacement. Removing the focused row hands the focus to the window's first
+     * focusable (the first category); that stray focus must not select its category.
+     */
+    static final class Rebuild {
+        private boolean active;
+
+        /** Whether rows are being replaced; a category row's focus then selects nothing. */
+        boolean active() {
+            return active;
+        }
+
+        void run(Runnable change) {
+            boolean outer = active;
+            active = true;
+            try {
+                change.run();
+            } finally {
+                active = outer;
+            }
+        }
+    }
+
     /** One screen of categories; nested screens keep their parents for Back. */
     private static final class Level {
         final String crumb;
@@ -100,6 +123,7 @@ final class ConsoleSettingsScreen {
     private int pageOrigin = -1;
     /** Counts opened sub-pages, so a choice can tell whether it opened another one. */
     private int pages;
+    private final Rebuild rebuild = new Rebuild();
     private boolean reducedMotion;
 
     ConsoleSettingsScreen(Activity activity, boolean reducedMotion, boolean overStream) {
@@ -240,31 +264,7 @@ final class ConsoleSettingsScreen {
         // The crumb sits where the title's top padding was (baseline 84 px, title 146 px).
         categoryColumn.setPadding(0, dp(next.crumb.isEmpty() ? 25 : 3), dp(24), 0);
         title.setText(next.title);
-        for (TextView row : categoryRows) categoryColumn.removeView(row);
-        categoryRows.clear();
-        for (int index = 0; index < next.categories.size(); index++) {
-            int position = index;
-            TextView row = panel.action(next.categories.get(index).title);
-            // A background replaces the padding with its own (the fill's 1.5 dp insets), which
-            // put the accent bar on the column edge, 28 px left of mockup 18's x 124.
-            int left = row.getPaddingLeft(), top = row.getPaddingTop();
-            int right = row.getPaddingRight(), bottom = row.getPaddingBottom();
-            row.setBackground(panel.focusFill(CATEGORY_RADIUS_DP));
-            row.setPadding(left, top, right, bottom);
-            View.OnFocusChangeListener styled = row.getOnFocusChangeListener();
-            row.setOnFocusChangeListener((view, focused) -> {
-                styled.onFocusChange(view, focused);
-                if (focused) select(position);
-            });
-            row.setOnClickListener(view -> focusContent());
-            categoryRows.add(row);
-            categoryColumn.addView(row, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        }
-        chainVertically(new ArrayList<>(categoryRows));
-        selected = -1;
-        pageOrigin = -1;
-        select(Math.max(0, Math.min(category, next.categories.size() - 1)));
+        rebuild.run(() -> replaceCategories(next, category));
         if (!dialog.isShowing()) {
             backdrop.capture(activity.getWindow(), reducedMotion);
             dialog.show();
@@ -283,6 +283,35 @@ final class ConsoleSettingsScreen {
         else if (!categoryRows.isEmpty()) target = categoryRows.get(selected);
         if (target != null) target.post(target::requestFocus);
         updateLegend();
+    }
+
+    /** Replaces the category rows and shows {@code category}; called while rebuilding. */
+    private void replaceCategories(Level next, int category) {
+        for (TextView row : categoryRows) categoryColumn.removeView(row);
+        categoryRows.clear();
+        for (int index = 0; index < next.categories.size(); index++) {
+            int position = index;
+            TextView row = panel.action(next.categories.get(index).title);
+            // A background replaces the padding with its own (the fill's 1.5 dp insets), which
+            // put the accent bar on the column edge, 28 px left of mockup 18's x 124.
+            int left = row.getPaddingLeft(), top = row.getPaddingTop();
+            int right = row.getPaddingRight(), bottom = row.getPaddingBottom();
+            row.setBackground(panel.focusFill(CATEGORY_RADIUS_DP));
+            row.setPadding(left, top, right, bottom);
+            View.OnFocusChangeListener styled = row.getOnFocusChangeListener();
+            row.setOnFocusChangeListener((view, focused) -> {
+                styled.onFocusChange(view, focused);
+                if (focused && !rebuild.active()) select(position);
+            });
+            row.setOnClickListener(view -> focusContent());
+            categoryRows.add(row);
+            categoryColumn.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        chainVertically(new ArrayList<>(categoryRows));
+        selected = -1;
+        pageOrigin = -1;
+        select(Math.max(0, Math.min(category, next.categories.size() - 1)));
     }
 
     /** Re-renders the shown category (e.g. after a dependency changed) keeping the focus. */
@@ -332,7 +361,7 @@ final class ConsoleSettingsScreen {
     void showPage(String title, CharSequence details, View[] rows, int focus) {
         pages++;
         if (pageOrigin < 0) pageOrigin = Math.max(0, focusedContentChild());
-        panel.render(content, level.categories.get(selected).title, title, details, false, rows);
+        renderContent(level.categories.get(selected).title, title, details, rows);
         contentScroll.scrollTo(0, 0);
         wireContent();
         View first = rows.length == 0 ? null : rows[Math.min(focus, rows.length - 1)];
@@ -362,10 +391,14 @@ final class ConsoleSettingsScreen {
     private void renderCategory() {
         Category category = level.categories.get(selected);
         View[] rows = category.rows.apply(panel); // may update the details
-        panel.render(content, level.eyebrow, category.title, category.details, false, rows);
+        renderContent(level.eyebrow, category.title, category.details, rows);
         contentScroll.scrollTo(0, 0);
         wireContent();
         updateLegend();
+    }
+
+    private void renderContent(String eyebrow, String heading, CharSequence details, View[] rows) {
+        rebuild.run(() -> panel.render(content, eyebrow, heading, details, false, rows));
     }
 
     private void back() {

@@ -38,7 +38,7 @@ final class DiscordPanelController {
     private interface Result<T> { void accept(T value); }
     interface CommunityHomeCallback {
         void onHome(HostGatewayClient.DiscordHome home);
-        void onUnavailable();
+        void onUnavailable(boolean discordNotReady);
     }
     interface CommunityChannelsCallback {
         void onChannels(List<HostGatewayClient.DiscordChannel> channels);
@@ -815,15 +815,16 @@ final class DiscordPanelController {
                 ? context.getString(R.string.discord_selected_host) : name;
         GatewayConnection current = connection();
         if (current == null || !store.isDiscordEnabled(hostUuid, current.profileId())) {
-            callback.onUnavailable();
+            callback.onUnavailable(false);
             return;
         }
         executor.execute(() -> {
             try {
                 HostGatewayClient.DiscordHome home = loadDiscordHome(current, false);
                 mainHandler.post(() -> callback.onHome(home));
-            } catch (Exception ignored) {
-                mainHandler.post(callback::onUnavailable);
+            } catch (Exception error) {
+                boolean notReady = discordNotReady(error);
+                mainHandler.post(() -> callback.onUnavailable(notReady));
             }
         });
     }
@@ -878,8 +879,9 @@ final class DiscordPanelController {
             } catch (Exception error) {
                 int statusCode = error instanceof HostGatewayClient.GatewayException
                         ? ((HostGatewayClient.GatewayException) error).statusCode : 0;
-                String message = safeCommunityJoinError(error);
-                LimeLog.warning("Community Discord join failed (HTTP " + statusCode + "): " + message);
+                String message = communityVoiceError(error);
+                LimeLog.warning("Community Discord join failed (HTTP " + statusCode + "): "
+                        + safeCommunityJoinError(error));
                 mainHandler.post(() -> callback.onError(message));
             }
         });
@@ -899,8 +901,8 @@ final class DiscordPanelController {
                 HostGatewayClient.DiscordVoice voice = client.getDiscordVoice(current, true);
                 mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onVoice(voice); });
             } catch (Exception error) {
-                String message = safeCommunityJoinError(error);
-                LimeLog.warning("Community Discord voice refresh failed: " + message);
+                String message = communityVoiceError(error);
+                LimeLog.warning("Community Discord voice refresh failed: " + safeCommunityJoinError(error));
                 mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
             }
         });
@@ -929,8 +931,8 @@ final class DiscordPanelController {
                 }
                 mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onVoice(voice); });
             } catch (Exception error) {
-                String message = safeCommunityJoinError(error);
-                LimeLog.warning("Community Discord voice action failed: " + message);
+                String message = communityVoiceError(error);
+                LimeLog.warning("Community Discord voice action failed: " + safeCommunityJoinError(error));
                 mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
             }
         });
@@ -1111,14 +1113,24 @@ final class DiscordPanelController {
     }
 
     /**
-     * Audio errors as readable resource text: the Gateway answers 409 while Discord is not ready
-     * on the host (Bridge offline, client not running or not authorized); anything else is generic.
+     * The Gateway answers 409 on Discord routes while Discord is not ready on the host (Bridge
+     * offline, client not running or not authorized).
      */
-    private String communityAudioError(Throwable error) {
-        boolean notReady = error instanceof HostGatewayClient.GatewayException
+    static boolean discordNotReady(Throwable error) {
+        return error instanceof HostGatewayClient.GatewayException
                 && ((HostGatewayClient.GatewayException) error).statusCode == 409;
-        return context.getString(notReady ? R.string.discord_community_host_not_ready
+    }
+
+    /** Audio errors as readable resource text; anything but "not ready" is generic. */
+    private String communityAudioError(Throwable error) {
+        return context.getString(discordNotReady(error) ? R.string.discord_community_host_not_ready
                 : R.string.discord_community_audio_failed);
+    }
+
+    private String communityVoiceError(Throwable error) {
+        return discordNotReady(error)
+                ? context.getString(R.string.discord_community_host_not_ready)
+                : safeCommunityJoinError(error);
     }
 
     static String safeCommunityJoinError(Throwable error) {

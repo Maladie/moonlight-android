@@ -1154,6 +1154,7 @@
     <string name="playnite_running_badge">RUNNING</string>
     <string name="playnite_running_badge_description">%1$s is currently running</string>
     <string name="playnite_end_game_success">The game has ended. Other games and the stream were not closed.</string>
+    <string name="playnite_ending_game">Ending game…</string>
     <string name="playnite_end_game_confirmation">End this game? Other games and the stream will not be closed.</string>
     <string name="playnite_source">Source: %1$s</string>
     <string name="playnite_stream_settings">Game streaming settings</string>

@@ -276,13 +276,28 @@ public final class GatewayTransport {
     }
 
     static JSONObject decodeJsonResponse(int status, byte[] raw) throws IOException {
-        JSONObject response;
+        return requireSuccess(status, parseJson(status, raw));
+    }
+
+    static JSONObject parseJson(int status, byte[] raw) throws GatewayException {
         try {
-            response = raw.length == 0 ? new JSONObject() :
+            return raw.length == 0 ? new JSONObject() :
                     new JSONObject(new String(raw, StandardCharsets.UTF_8));
         } catch (JSONException error) {
             throw new GatewayException("Invalid response from host gateway.", status);
         }
+    }
+
+    /**
+     * A known host state answered as an HTTP status, not a request failure: the Gateway
+     * answers 409 on Discord routes while Discord is not ready on the host.
+     */
+    static boolean isDiscordNotReady(String path, int status) {
+        return status == HttpURLConnection.HTTP_CONFLICT
+                && diagnosticRoute(path).startsWith("/api/v1/discord/");
+    }
+
+    static JSONObject requireSuccess(int status, JSONObject response) throws GatewayException {
         if (status < HttpURLConnection.HTTP_OK || status >= 300) {
             throw new GatewayException(
                     response.optString("error", response.optString("reason",
@@ -410,7 +425,10 @@ public final class GatewayTransport {
                 byte[] raw = input != null
                         ? readAndClose(input, JSON_LIMIT, responseBytesRead) : new byte[0];
                 phase = "json_decode";
-                JSONObject response = decodeJsonResponse(status, raw);
+                JSONObject response = parseJson(status, raw);
+                phase = "http_status";
+                requireSuccess(status, response);
+                phase = "certificate";
                 if (connection == null
                         && (trustManager.seenFingerprint == null
                         || trustManager.seenFingerprint.isEmpty())) {
@@ -434,6 +452,12 @@ public final class GatewayTransport {
                 boolean threadInterrupted = Thread.currentThread().isInterrupted();
                 if (recordCancelled(method, path, effectiveRequestId, connection, status,
                         startedNanos, error, threadInterrupted)) throw error;
+                if ("http_status".equals(phase) && isDiscordNotReady(path, status)) {
+                    // Closes the request.started trace at INFO: a known host state, not a failure.
+                    recordRequest("request.not_ready", method, path, effectiveRequestId,
+                            connection, status, startedNanos, null);
+                    throw error;
+                }
                 if (status > 0 && ("response_stream".equals(phase)
                         || "response_body".equals(phase))) {
                     MoonWakerDiagnostics.record("ERROR", "android.gateway",
