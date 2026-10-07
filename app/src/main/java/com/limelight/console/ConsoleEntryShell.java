@@ -54,6 +54,13 @@ final class ConsoleEntryShell extends FrameLayout {
     static final int TEXT = 0xFFF5F6F9;
     static final int TEXT_SECONDARY = 0xFFC8CCD6;
     static final int HEADER = 0xFF949CAE;
+    /**
+     * Legend centred on y = 990 px on every screen: the mockups' 1000 (1010 on the PIN
+     * screen) left the keys' bottoms at 1020-1027 px, on or past the 5 % title-safe edge of
+     * 1026 px that an overscanning TV may still crop.
+     */
+    static final float LEGEND_CY_DP = 495f;
+    static final float LEGEND_HEIGHT_DP = 32f;
 
     private static Bitmap bloomBitmap;
     private static Bitmap vignetteBitmap;
@@ -156,6 +163,17 @@ final class ConsoleEntryShell extends FrameLayout {
                 }).start();
     }
 
+    /**
+     * Draws the shell as it is now without the legend of the page on screen, e.g. into the copy
+     * a screen above it blurs (mockup "pin_base": the profile screen without its chrome).
+     */
+    void drawWithoutLegend(Canvas canvas) {
+        int visibility = current.legend.getVisibility();
+        current.legend.setVisibility(INVISIBLE);
+        draw(canvas);
+        current.legend.setVisibility(visibility);
+    }
+
     private static void hide(Page page) {
         // A hidden page stays laid out so its row keeps the scroll position.
         page.setVisibility(INVISIBLE);
@@ -193,10 +211,11 @@ final class ConsoleEntryShell extends FrameLayout {
             legend = new LinearLayout(context);
             legend.setOrientation(LinearLayout.HORIZONTAL);
             legend.setGravity(Gravity.CENTER_VERTICAL);
-            // Centred on y = 1000 px.
+            // At one place on every screen whatever the page shows above it, and tall enough
+            // for a controller glyph's whole line box (a shorter view cut the glyph's bottom).
             LayoutParams legendParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                    dp(24), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            legendParams.bottomMargin = dp(28);
+                    dp(LEGEND_HEIGHT_DP), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+            legendParams.topMargin = dp(LEGEND_CY_DP - LEGEND_HEIGHT_DP / 2f);
             addView(legend, legendParams);
         }
 
@@ -215,16 +234,21 @@ final class ConsoleEntryShell extends FrameLayout {
             setSubtitle(subtitleText);
         }
 
-        /** Mockup "gate_header" dot: 12 px, 10 px before the eyebrow; 0 removes it. */
+        /**
+         * Mockup "gate_header" dot: 12 px, 10 px before the eyebrow, on its cap height's
+         * middle; 0 removes it.
+         */
         void setEyebrowDot(int color) {
             GradientDrawable dot = null;
             if (color != 0) {
                 dot = new GradientDrawable();
                 dot.setShape(GradientDrawable.OVAL);
                 dot.setColor(color);
-                dot.setSize(dp(6), dp(6));
+                int size = dp(6);
+                int offset = ConsoleText.dotOffset(eyebrow, size);
+                dot.setBounds(0, offset, size, size + offset);
             }
-            eyebrow.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
+            eyebrow.setCompoundDrawables(dot, null, null, null);
         }
 
         void setSubtitle(CharSequence value) {
@@ -235,21 +259,27 @@ final class ConsoleEntryShell extends FrameLayout {
             legend.removeAllViews();
         }
 
-        /** A key as text: a glass key chip ("OK"), or a controller glyph. */
+        /**
+         * A key as text: a glass key chip ("OK"), or a controller glyph in a view as tall as
+         * its font's line box, centred on the glyph's own ink.
+         */
         void addLegendKey(String key, boolean controllerGlyph, String label) {
-            TextView glyph;
             if (controllerGlyph) {
-                glyph = text(20, TEXT, ControllerGlyphs.typeface(getContext()));
-            } else {
-                glyph = text(11, TEXT, medium);
-                GradientDrawable chip = new GradientDrawable();
-                chip.setCornerRadius(dp(10));
-                chip.setColor(0x1EFFFFFF);
-                chip.setStroke(Math.max(1, dp(.75f)), 0x50FFFFFF);
-                glyph.setBackground(chip);
-                glyph.setMinWidth(dp(20));
-                glyph.setPadding(dp(5.5f), 0, dp(5.5f), 0);
+                TextView glyph = text(20, TEXT, ControllerGlyphs.typeface(getContext()));
+                glyph.setText(key);
+                ConsoleText.centreOnInk(glyph, key);
+                addLegendItem(glyph, ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, label);
+                return;
             }
+            TextView glyph = text(11, TEXT, medium);
+            GradientDrawable chip = new GradientDrawable();
+            chip.setCornerRadius(dp(10));
+            chip.setColor(0x1EFFFFFF);
+            chip.setStroke(Math.max(1, dp(.75f)), 0x50FFFFFF);
+            glyph.setBackground(chip);
+            glyph.setMinWidth(dp(20));
+            glyph.setPadding(dp(5.5f), 0, dp(5.5f), 0);
             glyph.setText(key);
             ConsoleText.centreOnGlyphs(glyph);
             addLegendItem(glyph, ViewGroup.LayoutParams.WRAP_CONTENT, dp(20), label);

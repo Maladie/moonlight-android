@@ -287,8 +287,7 @@ final class ConsoleProfileSelectView extends HorizontalScrollView {
     private TileViews profileColumn(HostGatewayClient.IntegrationProfile profile) {
         TileViews views = new TileViews();
         String profileId = profile.id;
-        String name = profile.name == null || profile.name.trim().isEmpty()
-                ? getContext().getString(R.string.console_entry_eyebrow) : profile.name.trim();
+        String name = displayName(getContext(), profile);
         LinearLayout column = new LinearLayout(getContext());
         views.column = column;
         column.setId(View.generateViewId());
@@ -311,13 +310,10 @@ final class ConsoleProfileSelectView extends HorizontalScrollView {
         frame.setPadding(margin, margin, margin, margin);
         frame.setClipChildren(false);
         frame.setClipToPadding(false);
-        boolean tinted = profile.isChild()
-                && ConsoleChildProfileEditor.isKnownAvatar(profile.avatarId)
-                && !"default".equals(profile.avatarId);
         // The glow takes the avatar's light colour, as host tiles do; a child's chosen
         // colour replaces the generated art and so also its hue.
         int accent = HostTileArt.accent(profileId);
-        if (tinted) {
+        if (tinted(profile)) {
             float[] hsv = new float[3];
             Color.colorToHSV(ConsoleChildProfileEditor.avatarColor(profile.avatarId), hsv);
             accent = Color.HSVToColor(new float[]{hsv[0], .6f, 1f});
@@ -331,20 +327,7 @@ final class ConsoleProfileSelectView extends HorizontalScrollView {
         frame.setBackground(focus);
         int size = dp(AVATAR_DP) + 2 * margin;
         column.addView(frame, new LinearLayout.LayoutParams(size, size));
-
-        // Mockup "blob_avatar", round.
-        ImageView artwork = new ImageView(getContext());
-        // Round in its own drawing: the Options menu's software copy ignores outline clips.
-        artwork.setImageDrawable(new RoundArt(HostTileArt.avatar(profileId)));
-        if (tinted) {
-            artwork.setColorFilter(ConsoleChildProfileEditor.avatarColor(profile.avatarId),
-                    PorterDuff.Mode.SRC_ATOP);
-        }
-        frame.addView(artwork, match());
-        // Mockup "initials_on": 27 % of the avatar, shadow 4 px blur, 2 px down, 55 % black.
-        TextView initials = text(initials(name), 24, Color.WHITE, medium);
-        initials.setShadowLayer(dp(2), 0f, dp(1), 0x8C000000);
-        frame.addView(initials, match());
+        addAvatar(frame, profile, AVATAR_DP);
 
         // Mockup "corner_badge": r 22 px on a 4 px dark separating ring, its centre 4 px
         // outside the avatar's edge on the lower right diagonal; it keeps its size when the
@@ -410,19 +393,18 @@ final class ConsoleProfileSelectView extends HorizontalScrollView {
         LinearLayout line = new LinearLayout(getContext());
         line.setOrientation(LinearLayout.HORIZONTAL);
         line.setGravity(Gravity.CENTER);
+        TextView status = text(value, 12, ConsoleEntryShell.TEXT_SECONDARY, Typeface.DEFAULT);
         if (dot) {
             View mark = new View(getContext());
             GradientDrawable green = new GradientDrawable();
             green.setShape(GradientDrawable.OVAL);
             green.setColor(ConsoleHostTileLook.ONLINE);
             mark.setBackground(green);
+            mark.setTranslationY(ConsoleText.dotOffset(status, dp(6)));
             LinearLayout.LayoutParams markParams = new LinearLayout.LayoutParams(dp(6), dp(6));
             markParams.rightMargin = dp(4);
-            // Centred on the x-height, 2 px below the middle of the line box.
-            markParams.topMargin = dp(2);
             line.addView(mark, markParams);
         }
-        TextView status = text(value, 12, ConsoleEntryShell.TEXT_SECONDARY, Typeface.DEFAULT);
         status.setSingleLine(true);
         status.setEllipsize(TextUtils.TruncateAt.END);
         line.addView(status, new LinearLayout.LayoutParams(
@@ -488,6 +470,50 @@ final class ConsoleProfileSelectView extends HorizontalScrollView {
                 new PlaynitePlaytimeFormatter.Labels("",
                         getContext().getString(R.string.playnite_hours_short),
                         getContext().getString(R.string.playnite_minutes_short)));
+    }
+
+    /** The avatar of a profile on screen, for a screen that takes it over; null if not shown. */
+    View avatarOf(String profileId) {
+        TileViews views = tiles.get(profileId);
+        return views != null && views.frame.isShown() ? views.frame : null;
+    }
+
+    static String displayName(Context context, HostGatewayClient.IntegrationProfile profile) {
+        return profile.name == null || profile.name.trim().isEmpty()
+                ? context.getString(R.string.console_entry_eyebrow) : profile.name.trim();
+    }
+
+    private static boolean tinted(HostGatewayClient.IntegrationProfile profile) {
+        return profile.isChild() && ConsoleChildProfileEditor.isKnownAvatar(profile.avatarId)
+                && !"default".equals(profile.avatarId);
+    }
+
+    /**
+     * Mockup "blob_avatar" with "initials_on", round, filling {@code frame} inside its padding:
+     * initials 27 % of the avatar, shadow 4 px blur and 2 px down at 176 px, 55 % black.
+     */
+    static void addAvatar(FrameLayout frame, HostGatewayClient.IntegrationProfile profile,
+                          float sizeDp) {
+        Context context = frame.getContext();
+        float density = context.getResources().getDisplayMetrics().density;
+        float scale = sizeDp / AVATAR_DP;
+        ImageView artwork = new ImageView(context);
+        // Round in its own drawing: the menus' software copies ignore outline clips.
+        artwork.setImageDrawable(new RoundArt(HostTileArt.avatar(profile.id)));
+        if (tinted(profile)) {
+            artwork.setColorFilter(ConsoleChildProfileEditor.avatarColor(profile.avatarId),
+                    PorterDuff.Mode.SRC_ATOP);
+        }
+        frame.addView(artwork, match());
+        TextView initials = new TextView(context);
+        initials.setText(initials(displayName(context, profile)));
+        initials.setTextSize(24 * scale);
+        initials.setTextColor(Color.WHITE);
+        initials.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        initials.setGravity(Gravity.CENTER);
+        initials.setIncludeFontPadding(false);
+        initials.setShadowLayer(2 * scale * density, 0f, scale * density, 0x8C000000);
+        frame.addView(initials, match());
     }
 
     private static String initials(String name) {

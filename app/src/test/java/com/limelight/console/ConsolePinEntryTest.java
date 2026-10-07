@@ -30,6 +30,28 @@ public class ConsolePinEntryTest {
         }
     }
 
+    @Test public void boardDimsKeysWhileBlockedAndKeepsErrorUntilNextDigit() {
+        ConsolePinEntryView.Look lockout = ConsolePinEntryView.Look.of(0, false, 25_000L, true);
+        assertTrue(lockout.countdown);
+        assertTrue(lockout.error);
+        assertEquals(.4f, lockout.keyDim(), 0f);
+        ConsolePinEntryView.Look checking = ConsolePinEntryView.Look.of(4, true, 0L, true);
+        assertTrue(checking.checking);
+        assertFalse(checking.countdown);
+        assertFalse(checking.error);
+        assertEquals(.4f, checking.keyDim(), 0f);
+        ConsolePinEntryView.Look typing = ConsolePinEntryView.Look.of(1, false, 0L, true);
+        assertFalse(typing.blocked);
+        assertFalse(typing.error);
+        assertEquals(1f, typing.keyDim(), 0f);
+
+        ConsolePinEntry entry = new ConsolePinEntry();
+        assertEquals(ConsolePinEntry.Action.IGNORED, entry.deleteLast());
+        entry.appendDigit(7);
+        assertEquals(ConsolePinEntry.Action.CHANGED, entry.deleteLast());
+        assertEquals(0, entry.length());
+    }
+
     @Test public void pinBoardUsesBundledControllerGlyphMappings() {
         assertEquals("\uEECB", com.limelight.ui.ControllerGlyphs.text(
                 false, com.limelight.ui.ControllerGlyphs.Button.DPAD_LEFT));

@@ -236,7 +236,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final long PLAYNITE_SELECTION_SAVE_DELAY_MS = 350L;
     private static final long LIBRARY_UPDATE_NAVIGATION_IDLE_MS = 180L;
     private static final long WINDOWS_PROFILE_SWITCH_TIMEOUT_MS = 2 * 60_000L;
-    private static final long PIN_INVALID_FEEDBACK_MS = 1_200L;
     private static final String PREF_SCREEN_SAVER_SECONDS = "screen_saver_seconds";
     private static final String PREF_AUTOPILOT_LAST_RESULT = "streaming_autopilot_last_result";
     private static final String PREF_AUTOPILOT_LAST_RESULT_AT =
@@ -618,6 +617,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private FrameLayout homeLayer;
     private ConsoleEntryShell entryShell;
     private ConsoleHostSelectView hostSelectView;
+    private final ConsoleHostEntryAttempt hostEntryAttempt = new ConsoleHostEntryAttempt(
+            profileGateGeneration, uuid -> {
+                if (hostSelectView != null) hostSelectView.setPending(uuid);
+            });
     private boolean contentPanelOpen;
     private ConsoleProfileSelectView profileSelectView;
     private ConsolePinEntryView pinEntryView;
@@ -861,6 +864,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             queueConsoleUpdates(ConsoleUpdateChannels.diff(
                     previous, copy, selectedHostUuid));
+            if (fresh && hostEntryAttempt.pollAnswered(copy.uuid) && hostSelectionVisible) {
+                activateHostFromSelection(copy.uuid);
+            }
         });
     };
 
@@ -1362,10 +1368,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             entryShell.setVisibility(hostSelectionVisible
                     || profileGateHostUuid != null ? View.VISIBLE : View.GONE);
         }
-        if (pinEntryView != null && pinProfileId != null) {
-            pinEntryView.setVisibility(View.VISIBLE);
-            pinEntryView.bringToFront();
-        }
         hideSystemUi();
         resetScreenSaverTimer();
         updateScreenSaverWakePolicy();
@@ -1792,7 +1794,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         mainHandler.removeCallbacks(childEligibilityBoundary);
         pendingHostPreparation = null;
         cancelOfflinePinAttempt();
-        endPendingHostEntry();
+        hostEntryAttempt.end();
         if (pinProfileId != null) {
             profileGateGeneration.incrementAndGet();
             pinEntry.clear();
@@ -2295,8 +2297,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void buildSecondaryLayers(FrameLayout container) {
         buildHostSelectionLayer(container);
         profileSelectView = new ConsoleProfileSelectView(this, entryShell);
-        pinEntryView = new ConsolePinEntryView(this);
-        container.addView(pinEntryView, match());
+        pinEntryView = new ConsolePinEntryView(this, entryShell, profileSelectView);
         buildSidePanel();
         buildLoadingLayer(container);
         buildScreenSaverLayer(container);
@@ -2380,8 +2381,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return;
             }
         }
-        ComputerDetails automatic = autoLoginHostUuid == null || autoLoginHostUuid.isEmpty()
-                ? null : hosts.get(autoLoginHostUuid);
+        ComputerDetails automatic = hosts.get(autoLoginHostUuid);
         if (automatic != null) {
             resolveProfileGate(automatic, false, true);
         } else {
@@ -2396,13 +2396,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         clearPinEntry();
         profileGateHostUuid = null;
         hostSelectionVisible = true;
-        if (consoleAudioEngine != null) {
-            consoleAudioEngine.setHostSelectionVisible(true);
-        }
-        if (hostSelectView != null) {
-            hostSelectView.setFocusTarget(focusUuid);
-        }
-        endPendingHostEntry();
+        if (consoleAudioEngine != null) consoleAudioEngine.setHostSelectionVisible(true);
+        if (hostSelectView != null) hostSelectView.setFocusTarget(focusUuid);
+        hostEntryAttempt.end();
         stopAppListPoller();
         cancelPlayniteArtworkPrefetch();
         if (loadingLayer != null) loadingLayer.setVisibility(View.GONE);
@@ -2451,24 +2447,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void activateHostFromSelection(String uuid) {
         ComputerDetails host = hosts.get(uuid);
         if (host == null) return;
-        if (host.pairState != PairingManager.PairState.PAIRED) {
+        // OK frames the tile at once; a host not polled yet decides here when its poll answers.
+        if (hostStateController.state(host) == ConsoleHostPresentation.State.CHECKING) {
+            hostEntryAttempt.awaitPoll(uuid);
+        } else if (host.pairState != PairingManager.PairState.PAIRED) {
+            hostEntryAttempt.cancel();
             pairHost(host);
-            return;
+        } else {
+            hostEntryAttempt.press(uuid);
+            resolveProfileGate(host, true, true);
         }
-        // The gate may wait on the Gateway's profile list; the tile answers OK at once.
-        hostSelectView.setPending(uuid);
-        resolveProfileGate(host, true, true);
-    }
-
-    /** Ends the tile's pressed state once the profile fetch it waits for is over. */
-    private void endPendingHostEntry() {
-        if (hostSelectView != null) hostSelectView.setPending(null);
     }
 
     private void resolveProfileGate(ComputerDetails host, boolean focusApps,
                                     boolean prepareHost) {
-        if (host == null) return;
-        int token = profileGateGeneration.incrementAndGet();
+        int token = host == null ? -1 : hostEntryAttempt.start(host.uuid);
+        if (token < 0) return; // No host, or OK joins the host's running profile fetch.
         profileGateHostUuid = host.uuid;
         stopAppListPoller();
         cancelPlayniteRequest();
@@ -2482,22 +2476,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         executor.execute(() -> {
             HostGatewayClient.IntegrationProfiles profiles = null;
             try {
-                profiles = hostGatewayClient.getIntegrationProfiles(connection);
+                profiles = hostGatewayClient.getIntegrationProfiles(connection,
+                        HostGatewayClient.READ_TIMEOUT_MS);
             } catch (IOException | RuntimeException unavailable) {
                 // The last authorized profile cache remains usable while Gateway is unavailable.
             }
             HostGatewayClient.IntegrationProfiles result = profiles;
             mainHandler.post(() -> {
-                // Every outcome of the fetch ends the tile's pressed state, stale or not.
-                endPendingHostEntry();
-                if (token != profileGateGeneration.get()) return;
+                // A superseded fetch leaves the tile's pressed state to the newer attempt.
+                if (!hostEntryAttempt.finish(token)) return;
                 ComputerDetails current = currentHost(host.uuid);
-                if (current == null) return;
+                if (current == null) return; // The host was removed; finish ended the frame.
                 boolean childWasInvalidated = result != null
                         && selectedChildWasInvalidated(host.uuid, result);
-                if (result != null) {
-                    saveHostProfiles(host.uuid, result);
-                }
+                if (result != null) saveHostProfiles(host.uuid, result);
                 if (childWasInvalidated) {
                     hostGatewayStore.setAutomaticIntegrationProfileId(host.uuid, "");
                     showProfileGate(current, focusApps, prepareHost);
@@ -2510,12 +2502,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void resolveProfileGate(ComputerDetails host, boolean focusApps,
                                     boolean prepareHost, int token) {
-        endPendingHostEntry();
-        if (token != profileGateGeneration.get()) return;
+        if (!hostEntryAttempt.finish(token)) return;
         HostGatewayStore.ProfileGate gate = hostGatewayStore.profileGate(host.uuid);
-        if (gate.clearAutomatic) {
-            hostGatewayStore.setAutomaticIntegrationProfileId(host.uuid, "");
-        }
+        if (gate.clearAutomatic) hostGatewayStore.setAutomaticIntegrationProfileId(host.uuid, "");
         if (gate.showGate) {
             showProfileGate(host, focusApps, prepareHost);
             return;
@@ -3361,19 +3350,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
             pinSecureFlagAdded = true;
         }
-        if (profileSelectView != null) profileSelectView.setVisibility(View.GONE);
         boolean playStationButtons = hasLastControllerInput
                 ? lastControllerPlayStation : ControllerGlyphs.hasPlayStationController();
+        // A page of the entry shell: the profile row stays beneath as its blurred backdrop.
         pinEntryView.show(host.name, profile, playStationButtons,
-                lastInputWasController && hasLastControllerInput, digit -> {
+                lastInputWasController && hasLastControllerInput, reducedMotion, digit -> {
             if (pinProfileId == null || pinSubmitting
                     || SystemClock.elapsedRealtime() < pinCooldownUntil) return;
-            ConsolePinEntry.Action action = pinEntry.appendDigit(digit);
+            ConsolePinEntry.Action action = digit == ConsolePinEntryView.DELETE
+                    ? pinEntry.deleteLast() : pinEntry.appendDigit(digit);
             renderPinEntry("");
             if (action == ConsolePinEntry.Action.SUBMIT) submitProfilePin();
         });
         renderPinEntry("");
-        pinEntryView.bringToFront();
     }
 
     private void submitProfilePin() {
@@ -3503,12 +3492,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         attempt.gateToken, null, null);
                 return;
             case INVALID:
-                finishOfflinePinFailure(attempt.gateToken, attempt.profileId,
-                        result.retryAfterSeconds, getString(R.string.console_pin_invalid));
-                return;
             case COOLDOWN:
-                finishOfflinePinFailure(attempt.gateToken, attempt.profileId,
-                        result.retryAfterSeconds, null);
+                finishOfflinePinFailure(result.retryAfterSeconds,
+                        result.status == OfflineProfilePinFlow.Status.INVALID);
                 return;
             case MISSING:
                 renderPinEntry(getString(OfflineProfilePinStore.supportsOfflineValidation(
@@ -3534,19 +3520,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private void finishOfflinePinFailure(int token, String profileId, int retryAfterSeconds,
-                                         String message) {
+    private void finishOfflinePinFailure(int retryAfterSeconds, boolean invalid) {
         int seconds = Math.max(1, retryAfterSeconds);
         pinCooldownUntil = SystemClock.elapsedRealtime() + seconds * 1_000L;
-        if (message != null) {
-            renderPinEntry(message);
-            mainHandler.postDelayed(() -> {
-                if (token == profileGateGeneration.get()
-                        && profileId.equals(pinProfileId)) renderPinCooldown();
-            }, PIN_INVALID_FEEDBACK_MS);
-        } else {
-            renderPinCooldown();
-        }
+        if (invalid) pinEntryView.showInvalid();
+        renderPinCooldown();
     }
 
     private void finishProfilePinVerification(String hostId, String profileId, int token,
@@ -3577,15 +3555,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 gatewayError == null ? 0 : gatewayError.retryAfterSeconds);
         if (seconds > 0) {
             pinCooldownUntil = SystemClock.elapsedRealtime() + seconds * 1_000L;
-            if ("invalid_pin".equals(reason)) {
-                renderPinEntry(getString(R.string.console_pin_invalid));
-                mainHandler.postDelayed(() -> {
-                    if (token == profileGateGeneration.get()
-                            && profileId.equals(pinProfileId)) renderPinCooldown();
-                }, PIN_INVALID_FEEDBACK_MS);
-            } else {
-                renderPinCooldown();
-            }
+            if ("invalid_pin".equals(reason)) pinEntryView.showInvalid();
+            renderPinCooldown();
         } else {
             renderPinEntry(getString(R.string.console_pin_failed));
         }
@@ -3612,8 +3583,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void renderPinEntry(String message) {
         if (pinEntryView != null && pinProfileId != null) {
-            pinEntryView.render(pinEntry.length(), message, !pinSubmitting
-                    && SystemClock.elapsedRealtime() >= pinCooldownUntil);
+            pinEntryView.render(pinEntry.length(), message, pinSubmitting,
+                    pinCooldownUntil - SystemClock.elapsedRealtime());
         }
     }
 
@@ -3623,11 +3594,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         pinSubmitting = false;
         pinCooldownUntil = 0L;
         pinCompleteHostEntry = false;
-        if (pinEntryView != null) pinEntryView.setVisibility(View.GONE);
-        if (pinSecureFlagAdded) {
+        // FLAG_SECURE stays until the PIN page has faded out, unless a PIN screen reopened.
+        if (pinEntryView != null) pinEntryView.hide(() -> {
+            if (pinProfileId != null || !pinSecureFlagAdded) return;
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
             pinSecureFlagAdded = false;
-        }
+        });
     }
 
     private void enterHostAfterProfileGate(ComputerDetails host, boolean focusApps,
@@ -4726,22 +4698,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (localWarmUp && warmUpStatus == WARM_UP_ERROR) {
             return getString(R.string.console_warm_up_error);
         }
-        switch (state) {
-            case WAKING:
-                return getString(R.string.console_status_waking);
-            case ASLEEP:
-                return getString(R.string.console_status_asleep);
-            case UNREACHABLE:
-                return getString(R.string.console_status_unreachable);
-            case CONNECTING:
-                return getString(R.string.console_status_connecting);
-            case UNPAIRED:
-                return getString(R.string.console_status_unpaired);
-            case OFFLINE:
-                return getString(R.string.console_status_offline);
-            default:
-                return getString(R.string.console_status_online);
-        }
+        return getString(ConsoleHostPresentation.status(state));
     }
 
     private ConsoleHostPresentation.State consoleHostState(

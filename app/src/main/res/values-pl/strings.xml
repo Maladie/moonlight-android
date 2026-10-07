@@ -479,6 +479,7 @@
     <string name="console_status_asleep">Uśpiony</string>
     <string name="console_status_unreachable">Nieosiągalny</string>
     <string name="console_status_unpaired">Online · niesparowany</string>
+    <string name="console_status_checking">Sprawdzanie…</string>
     <string name="console_status_active_session">Aktywna sesja</string>
     <string name="console_status_active_app">Stream · %1$s</string>
     <string name="console_refresh_library">Odśwież bibliotekę</string>
@@ -820,7 +821,7 @@
     <string name="console_profile_gate_tile_description">%1$s. %2$s. Naciśnij Wybierz, aby użyć tego profilu.</string>
     <string name="console_profile_gate_change_host">Zmień komputer</string>
     <string name="console_pin_title">Wprowadź PIN</string>
-    <string name="console_pin_invalid">Nieprawidłowy PIN. Spróbuj ponownie.</string>
+    <string name="console_pin_invalid">Nieprawidłowy PIN</string>
     <string name="console_pin_cooldown">Spróbuj ponownie za %1$d s</string>
     <string name="console_pin_failed">Nie udało się zweryfikować PIN-u.</string>
     <string name="console_pin_checking">Sprawdzanie PIN-u…</string>
@@ -829,8 +830,9 @@
     <string name="console_pin_offline_waking">Wybudzanie komputera…</string>
     <string name="console_pin_offline_waiting">Oczekiwanie na uruchomienie komputera…</string>
     <string name="console_pin_offline_unavailable">Nie udało się połączyć z komputerem po wybudzeniu.</string>
-    <string name="console_pin_submit">Zatwierdź</string>
+    <string name="console_pin_gamepad_hint">Wpisz PIN przyciskami pada</string>
     <string name="console_pin_delete_or_back">Usuń / wstecz</string>
+    <string name="console_pin_delete">Usuń</string>
     <string name="discord_panel_title">Discord</string>
     <string name="discord_gateway_required_title">Wymagane parowanie Gatewaya</string>
     <string name="discord_gateway_required_details">Nie można uruchomić Discorda dla hosta %1$s, ponieważ ten telewizor nie jest sparowany z jego Host Gatewayem.</string>
