@@ -29,10 +29,10 @@ import java.util.Random;
 /**
  * Shared frame of the entry screens (UX_MENU_PL.md section 3.7, mockup "gate_backdrop"): a deep
  * navy base with two slowly breathing ambient blooms in the accent colour, faint dust and a
- * vignette, a centred eyebrow/title/subtitle header, the clock top right, one centred legend and
- * a content slot. Blooms, vignette and dust are small cached bitmaps or a once-drawn view; the
- * blooms breathe in scale and alpha inside their own draw. Screens cross-fade above the
- * background, which stays.
+ * vignette, the clock top right and pages, each a centred eyebrow/title/subtitle header, one
+ * centred legend and a content slot. Blooms, vignette and dust are small cached bitmaps or a
+ * once-drawn view; the blooms breathe in scale and alpha inside their own draw. Pages
+ * cross-fade above the background, which stays.
  */
 final class ConsoleEntryShell extends FrameLayout {
     static final int CROSS_FADE_MS = 220;
@@ -59,17 +59,14 @@ final class ConsoleEntryShell extends FrameLayout {
     private static Bitmap vignetteBitmap;
 
     private final Blooms blooms;
-    private final FrameLayout foreground;
     private final TextView clock;
-    private final TextView eyebrow;
-    private final TextView title;
-    private final TextView subtitle;
-    private final LinearLayout legend;
     private final Typeface medium = Typeface.create("sans-serif-medium", Typeface.NORMAL);
-    private View current;
+    private Page current;
     private boolean reducedMotion;
-    private float shownHue;
-    private float targetHue = -1f;
+    /** Both blooms as HSV, as drawn now, and the colours they are moving to. */
+    private final float[][] shown = new float[2][3];
+    private final int[] target = new int[2];
+    private boolean pageChanged;
     private ValueAnimator accentAnimator;
     private Runnable visibilityListener;
 
@@ -88,121 +85,55 @@ final class ConsoleEntryShell extends FrameLayout {
         addView(atmosphere, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
-        foreground = new FrameLayout(context);
-        foreground.setClipChildren(false);
-        foreground.setClipToPadding(false);
-        addView(foreground, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-        current = foreground;
-
         clock = text(22, TEXT, Typeface.create("sans-serif-light", Typeface.NORMAL));
         LayoutParams clockParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
         clockParams.topMargin = dp(31);
         clockParams.rightMargin = dp(48);
-        foreground.addView(clock, clockParams);
-
-        LinearLayout header = new LinearLayout(context);
-        header.setOrientation(LinearLayout.VERTICAL);
-        header.setGravity(Gravity.CENTER_HORIZONTAL);
-        eyebrow = text(12, HEADER, medium);
-        eyebrow.setLetterSpacing(2f / 24f);
-        header.addView(eyebrow, wrap(0));
-        title = text(22, TEXT, medium);
-        header.addView(title, wrap(10));
-        subtitle = text(13, TEXT_SECONDARY, Typeface.DEFAULT);
-        header.addView(subtitle, wrap(4));
-        LayoutParams headerParams = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
-        headerParams.topMargin = dp(89);
-        foreground.addView(header, headerParams);
-
-        legend = new LinearLayout(context);
-        legend.setOrientation(LinearLayout.HORIZONTAL);
-        legend.setGravity(Gravity.CENTER_VERTICAL);
-        // Centred on y = 1000 px.
-        LayoutParams legendParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                dp(24), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        legendParams.bottomMargin = dp(28);
-        foreground.addView(legend, legendParams);
+        addView(clock, clockParams);
     }
 
-    /** The screen body; its top sits under the header, the row centred near y = 520 px. */
-    void setContent(View content) {
-        LayoutParams params = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
-        params.topMargin = dp(186);
-        foreground.addView(content, params);
+    /** A screen of the shell; the first one added is the one on screen. */
+    Page addPage() {
+        Page page = new Page(getContext());
+        if (current == null) current = page;
+        else page.setVisibility(INVISIBLE);
+        addBelowClock(page);
+        return page;
     }
 
-    void setHeader(CharSequence eyebrowText, CharSequence titleText, CharSequence subtitleText) {
-        eyebrow.setText(eyebrowText);
-        title.setText(titleText);
-        setSubtitle(subtitleText);
-    }
-
-    void setSubtitle(CharSequence value) {
-        subtitle.setText(value);
+    /** Full-screen layer above the pages; the clock stays above it. */
+    void addBelowClock(View layer) {
+        addView(layer, indexOfChild(clock), new LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     void setClock(CharSequence value) {
         clock.setText(value);
     }
 
-    void clearLegend() {
-        legend.removeAllViews();
+    boolean shows(Page page) {
+        return current == page && isShown();
     }
 
-    /** A key as text: a glass key chip ("OK"), or a controller glyph. */
-    void addLegendKey(String key, boolean controllerGlyph, String label) {
-        TextView glyph;
-        if (controllerGlyph) {
-            glyph = text(20, TEXT, ControllerGlyphs.typeface(getContext()));
-        } else {
-            glyph = text(11, TEXT, medium);
-            GradientDrawable chip = new GradientDrawable();
-            chip.setCornerRadius(dp(10));
-            chip.setColor(0x1EFFFFFF);
-            chip.setStroke(Math.max(1, dp(.75f)), 0x50FFFFFF);
-            glyph.setBackground(chip);
-            glyph.setMinWidth(dp(20));
-            glyph.setPadding(dp(5.5f), 0, dp(5.5f), 0);
+    /** The previous page is still fading out under the current one. */
+    boolean crossFading() {
+        for (int index = 0; index < getChildCount(); index++) {
+            View child = getChildAt(index);
+            if (child instanceof Page && child != current
+                    && child.getVisibility() == VISIBLE) return true;
         }
-        glyph.setText(key);
-        ConsoleText.centreOnGlyphs(glyph);
-        addLegendItem(glyph, ViewGroup.LayoutParams.WRAP_CONTENT, dp(20), label);
-    }
-
-    void addLegendIcon(int icon, String label) {
-        ImageView glyph = new ImageView(getContext());
-        glyph.setImageResource(icon);
-        glyph.setColorFilter(TEXT);
-        glyph.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        addLegendItem(glyph, dp(15), dp(15), label);
-    }
-
-    private void addLegendItem(View glyph, int width, int height, String label) {
-        LinearLayout.LayoutParams glyphParams = new LinearLayout.LayoutParams(width, height);
-        glyphParams.leftMargin = legend.getChildCount() == 0 ? 0 : dp(22);
-        legend.addView(glyph, glyphParams);
-        TextView description = text(12, TEXT_SECONDARY, Typeface.DEFAULT);
-        description.setText(label);
-        LinearLayout.LayoutParams descriptionParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        descriptionParams.leftMargin = dp(6);
-        legend.addView(description, descriptionParams);
+        return false;
     }
 
     /**
-     * Shows the shell with {@code screen} above its background: null for the shell's own
-     * header, row and legend, or another full-screen view stacked above the shell. When the
-     * shell is already on screen the previous screen cross-fades into the new one.
+     * Shows the shell with {@code target} above its background. When the shell is already on
+     * screen the previous page cross-fades into the new one; background and clock stay.
      */
-    void show(View screen) {
+    void show(Page target) {
         boolean animate = !reducedMotion && isShown();
         setVisibility(VISIBLE);
-        View target = screen == null ? foreground : screen;
-        View previous = current;
+        Page previous = current;
         current = target;
         target.animate().cancel();
         target.setVisibility(VISIBLE);
@@ -211,6 +142,7 @@ final class ConsoleEntryShell extends FrameLayout {
             return;
         }
         previous.animate().cancel();
+        pageChanged = true;
         if (!animate || !previous.isShown()) {
             target.setAlpha(1f);
             hide(previous);
@@ -224,35 +156,172 @@ final class ConsoleEntryShell extends FrameLayout {
                 }).start();
     }
 
-    private void hide(View screen) {
-        // The own foreground stays laid out so the row keeps its scroll position.
-        screen.setVisibility(screen == foreground ? INVISIBLE : GONE);
-        screen.setAlpha(1f);
+    private static void hide(Page page) {
+        // A hidden page stays laid out so its row keeps the scroll position.
+        page.setVisibility(INVISIBLE);
+        page.setAlpha(1f);
     }
 
-    /**
-     * Moves the blooms to the hue of a new accent colour along the shorter way round the colour
-     * wheel (a straight RGB blend would pass through grey), easing from the hue now on screen,
-     * so focus moving again mid-change never jumps back.
-     */
+    /** Header, content row and legend of one screen (mockup "gate_header", "legend_v4"). */
+    final class Page extends FrameLayout {
+        private final TextView eyebrow;
+        private final TextView title;
+        private final TextView subtitle;
+        private final LinearLayout legend;
+
+        private Page(Context context) {
+            super(context);
+            setClipChildren(false);
+            setClipToPadding(false);
+            LinearLayout header = new LinearLayout(context);
+            header.setOrientation(LinearLayout.VERTICAL);
+            header.setGravity(Gravity.CENTER_HORIZONTAL);
+            eyebrow = text(12, HEADER, medium);
+            eyebrow.setLetterSpacing(2f / 24f);
+            eyebrow.setCompoundDrawablePadding(dp(5));
+            header.addView(eyebrow, wrap(0));
+            title = text(22, TEXT, medium);
+            header.addView(title, wrap(9));
+            subtitle = text(13, TEXT_SECONDARY, Typeface.DEFAULT);
+            header.addView(subtitle, wrap(4));
+            LayoutParams headerParams = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
+            // Eyebrow ink from y = 179 px, title ink from about 229 px, as in the mockups.
+            headerParams.topMargin = dp(87);
+            addView(header, headerParams);
+
+            legend = new LinearLayout(context);
+            legend.setOrientation(LinearLayout.HORIZONTAL);
+            legend.setGravity(Gravity.CENTER_VERTICAL);
+            // Centred on y = 1000 px.
+            LayoutParams legendParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    dp(24), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            legendParams.bottomMargin = dp(28);
+            addView(legend, legendParams);
+        }
+
+        /** The screen body; its top sits under the header, the row centred near y = 520 px. */
+        void setContent(View content) {
+            LayoutParams params = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
+            params.topMargin = dp(186);
+            addView(content, params);
+        }
+
+        void setHeader(CharSequence eyebrowText, CharSequence titleText,
+                       CharSequence subtitleText) {
+            eyebrow.setText(eyebrowText);
+            title.setText(titleText);
+            setSubtitle(subtitleText);
+        }
+
+        /** Mockup "gate_header" dot: 12 px, 10 px before the eyebrow; 0 removes it. */
+        void setEyebrowDot(int color) {
+            GradientDrawable dot = null;
+            if (color != 0) {
+                dot = new GradientDrawable();
+                dot.setShape(GradientDrawable.OVAL);
+                dot.setColor(color);
+                dot.setSize(dp(6), dp(6));
+            }
+            eyebrow.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
+        }
+
+        void setSubtitle(CharSequence value) {
+            subtitle.setText(value);
+        }
+
+        void clearLegend() {
+            legend.removeAllViews();
+        }
+
+        /** A key as text: a glass key chip ("OK"), or a controller glyph. */
+        void addLegendKey(String key, boolean controllerGlyph, String label) {
+            TextView glyph;
+            if (controllerGlyph) {
+                glyph = text(20, TEXT, ControllerGlyphs.typeface(getContext()));
+            } else {
+                glyph = text(11, TEXT, medium);
+                GradientDrawable chip = new GradientDrawable();
+                chip.setCornerRadius(dp(10));
+                chip.setColor(0x1EFFFFFF);
+                chip.setStroke(Math.max(1, dp(.75f)), 0x50FFFFFF);
+                glyph.setBackground(chip);
+                glyph.setMinWidth(dp(20));
+                glyph.setPadding(dp(5.5f), 0, dp(5.5f), 0);
+            }
+            glyph.setText(key);
+            ConsoleText.centreOnGlyphs(glyph);
+            addLegendItem(glyph, ViewGroup.LayoutParams.WRAP_CONTENT, dp(20), label);
+        }
+
+        void addLegendIcon(int icon, String label) {
+            ImageView glyph = new ImageView(getContext());
+            glyph.setImageResource(icon);
+            glyph.setColorFilter(TEXT);
+            glyph.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            addLegendItem(glyph, dp(15), dp(15), label);
+        }
+
+        private void addLegendItem(View glyph, int width, int height, String label) {
+            LinearLayout.LayoutParams glyphParams = new LinearLayout.LayoutParams(width, height);
+            glyphParams.leftMargin = legend.getChildCount() == 0 ? 0 : dp(22);
+            legend.addView(glyph, glyphParams);
+            TextView description = text(12, TEXT_SECONDARY, Typeface.DEFAULT);
+            description.setText(label);
+            LinearLayout.LayoutParams descriptionParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            descriptionParams.leftMargin = dp(6);
+            legend.addView(description, descriptionParams);
+        }
+    }
+
+    /** The blooms in the hue of an accent colour, e.g. the focused host's. */
     void setAccent(int color) {
         float[] hsv = new float[3];
         Color.colorToHSV(color, hsv);
-        float target = hsv[0];
-        if (target == targetHue) return;
-        targetHue = target;
+        setBlooms(Color.HSVToColor(new float[]{hsv[0], PRIMARY_SATURATION, PRIMARY_VALUE}),
+                Color.HSVToColor(new float[]{(hsv[0] + SECONDARY_HUE_SHIFT) % 360f,
+                        SECONDARY_SATURATION, SECONDARY_VALUE}));
+    }
+
+    /**
+     * Moves both blooms to new colours along the shorter way round the colour wheel (a straight
+     * RGB blend would pass through grey), easing from the colours now on screen, so a change
+     * mid-way never jumps back. The first change after a page change takes the cross-fade's
+     * time, later ones (focus moving along a row) the slow accent time.
+     */
+    void setBlooms(int primary, int secondary) {
+        if (primary == target[0] && secondary == target[1]) return;
+        target[0] = primary;
+        target[1] = secondary;
         if (accentAnimator != null) accentAnimator.cancel();
+        float[][] to = new float[2][3];
+        Color.colorToHSV(primary, to[0]);
+        Color.colorToHSV(secondary, to[1]);
         if (!isShown()) {
-            applyHue(target);
+            applyBlooms(to);
             return;
         }
-        float from = shownHue;
-        float delta = ((target - from) % 360f + 540f) % 360f - 180f;
+        float[][] from = {shown[0].clone(), shown[1].clone()};
         accentAnimator = ValueAnimator.ofFloat(0f, 1f);
-        accentAnimator.setDuration(reducedMotion ? ACCENT_REDUCED_MS : ACCENT_MS);
+        accentAnimator.setDuration(reducedMotion ? ACCENT_REDUCED_MS
+                : pageChanged ? CROSS_FADE_MS : ACCENT_MS);
+        pageChanged = false;
         accentAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
-        accentAnimator.addUpdateListener(animation -> applyHue(
-                from + delta * (Float) animation.getAnimatedValue()));
+        accentAnimator.addUpdateListener(animation -> {
+            float t = (Float) animation.getAnimatedValue();
+            float[][] now = new float[2][3];
+            for (int bloom = 0; bloom < 2; bloom++) {
+                float delta = ((to[bloom][0] - from[bloom][0]) % 360f + 540f) % 360f - 180f;
+                now[bloom][0] = ((from[bloom][0] + delta * t) % 360f + 360f) % 360f;
+                for (int part = 1; part < 3; part++) {
+                    now[bloom][part] = from[bloom][part]
+                            + (to[bloom][part] - from[bloom][part]) * t;
+                }
+            }
+            applyBlooms(now);
+        });
         accentAnimator.start();
     }
 
@@ -261,10 +330,18 @@ final class ConsoleEntryShell extends FrameLayout {
         updateBreathing();
     }
 
-    /** Only the hue moves; saturation and value follow the mockup's blooms. */
-    private void applyHue(float hue) {
-        shownHue = (hue % 360f + 360f) % 360f;
-        blooms.setHue(shownHue);
+    /**
+     * Holds the blooms' breath where it is, e.g. while a menu shows a frozen copy of the
+     * shell, so the live parts left visible match the copy around them.
+     */
+    void setBloomsFrozen(boolean frozen) {
+        blooms.setFrozen(frozen);
+    }
+
+    private void applyBlooms(float[][] hsv) {
+        shown[0] = hsv[0];
+        shown[1] = hsv[1];
+        blooms.setColors(Color.HSVToColor(hsv[0]), Color.HSVToColor(hsv[1]));
     }
 
     @Override
@@ -355,17 +432,28 @@ final class ConsoleEntryShell extends FrameLayout {
         private final RectF rect = new RectF();
         private boolean breathing;
         private long start;
+        private long frozenAt = -1L;
 
         Blooms(Context context) {
             super(context);
         }
 
-        void setHue(float hue) {
-            paints[0].setColorFilter(new PorterDuffColorFilter(Color.HSVToColor(
-                    new float[]{hue, PRIMARY_SATURATION, PRIMARY_VALUE}), PorterDuff.Mode.SRC_IN));
-            paints[1].setColorFilter(new PorterDuffColorFilter(Color.HSVToColor(
-                    new float[]{(hue + SECONDARY_HUE_SHIFT) % 360f, SECONDARY_SATURATION,
-                            SECONDARY_VALUE}), PorterDuff.Mode.SRC_IN));
+        void setColors(int primary, int secondary) {
+            paints[0].setColorFilter(new PorterDuffColorFilter(primary, PorterDuff.Mode.SRC_IN));
+            paints[1].setColorFilter(new PorterDuffColorFilter(secondary,
+                    PorterDuff.Mode.SRC_IN));
+            invalidate();
+        }
+
+        void setFrozen(boolean frozen) {
+            long now = AnimationUtils.currentAnimationTimeMillis();
+            if (frozen == frozenAt >= 0L) return;
+            if (frozen) {
+                frozenAt = now;
+            } else {
+                start += now - frozenAt;
+                frozenAt = -1L;
+            }
             invalidate();
         }
 
@@ -380,7 +468,7 @@ final class ConsoleEntryShell extends FrameLayout {
         protected void onDraw(Canvas canvas) {
             int width = getWidth();
             int height = getHeight();
-            long now = AnimationUtils.currentAnimationTimeMillis();
+            long now = frozenAt >= 0L ? frozenAt : AnimationUtils.currentAnimationTimeMillis();
             for (int index = 0; index < SPOTS.length; index++) {
                 float[] spot = SPOTS[index];
                 // Ease in and out between rest and full breath, phase-shifted per bloom.
@@ -397,7 +485,7 @@ final class ConsoleEntryShell extends FrameLayout {
                 paints[index].setAlpha(Math.round(255 * spot[3] * (.8f + .4f * eased)));
                 canvas.drawBitmap(bloomBitmap(), null, rect, paints[index]);
             }
-            if (breathing) postInvalidateOnAnimation();
+            if (breathing && frozenAt < 0L) postInvalidateOnAnimation();
         }
     }
 

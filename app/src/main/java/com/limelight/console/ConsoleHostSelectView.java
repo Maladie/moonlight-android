@@ -86,6 +86,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
     static final int GLASS_FILL = 0x14FFFFFF;
 
     private final ConsoleEntryShell shell;
+    private final ConsoleEntryShell.Page page;
     private final Listener listener;
     private final long wakingTimeoutMs;
     private final LinearLayout row;
@@ -105,6 +106,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
                           Listener listener) {
         super(context);
         this.shell = shell;
+        page = shell.addPage();
         this.listener = listener;
         this.wakingTimeoutMs = wakingTimeoutMs;
         setFillViewport(true);
@@ -119,11 +121,16 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
         row.setClipToPadding(false);
         addView(row, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        shell.setHeader(context.getString(R.string.console_entry_eyebrow),
+        page.setHeader(context.getString(R.string.console_entry_eyebrow),
                 context.getString(R.string.console_host_selection_title),
                 context.getString(R.string.console_host_selection_subtitle));
-        shell.setContent(this);
+        page.setContent(this);
         updateLegend(false);
+    }
+
+    /** Back from the profile screen cross-fades it into this row above the same shell. */
+    void show() {
+        shell.show(page);
     }
 
     static boolean isConfirmKey(int keyCode) {
@@ -138,7 +145,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
      * their names change. Returns whether the row was rebuilt.
      */
     boolean render(List<Tile> hosts, boolean searching) {
-        shell.setSubtitle(getContext().getString(searching
+        page.setSubtitle(getContext().getString(searching
                 ? R.string.console_host_selection_searching
                 : R.string.console_host_selection_subtitle));
         StringBuilder next = new StringBuilder();
@@ -561,21 +568,21 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
     private void updateLegend(boolean options) {
         if (legendOptions != null && legendOptions == options) return;
         legendOptions = options;
-        shell.clearLegend();
+        page.clearLegend();
         String select = getContext().getString(R.string.console_select_hint);
         if (controllerPresent) {
-            shell.addLegendKey(ControllerGlyphs.text(playStation,
+            page.addLegendKey(ControllerGlyphs.text(playStation,
                     ControllerGlyphs.Button.CONFIRM), true, select);
         } else {
-            shell.addLegendKey("OK", false, select);
+            page.addLegendKey("OK", false, select);
         }
         if (!options) return;
         String hostOptions = getContext().getString(R.string.console_host_options_label);
         if (controllerPresent) {
-            shell.addLegendKey(ControllerGlyphs.text(playStation, ControllerGlyphs.Button.MENU),
+            page.addLegendKey(ControllerGlyphs.text(playStation, ControllerGlyphs.Button.MENU),
                     true, hostOptions);
         } else {
-            shell.addLegendIcon(R.drawable.ic_console_options, hostOptions);
+            page.addLegendIcon(R.drawable.ic_console_options, hostOptions);
         }
     }
 
@@ -675,7 +682,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
      * Mockup "hairline" (and the fill of "glass"): a 1.5 px rounded edge lit from above, its
      * alpha fading to 35 % at the bottom.
      */
-    private static final class GlassEdge extends Drawable {
+    static final class GlassEdge extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
         private final float corner;

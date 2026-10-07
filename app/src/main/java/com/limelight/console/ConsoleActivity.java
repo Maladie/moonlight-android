@@ -611,7 +611,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             Date now = new Date();
             String clockText = DateFormat.getTimeInstance(DateFormat.SHORT).format(now);
             if (entryShell != null) entryShell.setClock(clockText);
-            if (profileGateView != null) profileGateView.setClockText(clockText);
             long delay = 60_000L - System.currentTimeMillis() % 60_000L;
             mainHandler.postDelayed(this, delay);
         }
@@ -620,7 +619,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private ConsoleEntryShell entryShell;
     private ConsoleHostSelectView hostSelectView;
     private boolean contentPanelOpen;
-    private ConsoleProfileGateView profileGateView;
+    private ConsoleProfileSelectView profileSelectView;
     private ConsolePinEntryView pinEntryView;
     private final ConsoleHostStateController hostStateController =
             new ConsoleHostStateController(SystemClock::uptimeMillis);
@@ -1359,13 +1358,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             homeLayer.setVisibility(hostSelectionVisible ? View.GONE : View.VISIBLE);
         }
         if (entryShell != null) {
-            // The shell's background also stays under the profile gate.
+            // The profile screen is a page of the shell.
             entryShell.setVisibility(hostSelectionVisible
                     || profileGateHostUuid != null ? View.VISIBLE : View.GONE);
-        }
-        if (profileGateView != null && profileGateHostUuid != null) {
-            profileGateView.setVisibility(pinProfileId == null ? View.VISIBLE : View.GONE);
-            if (pinProfileId == null) profileGateView.bringToFront();
         }
         if (pinEntryView != null && pinProfileId != null) {
             pinEntryView.setVisibility(View.VISIBLE);
@@ -1434,6 +1429,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return true;
             }
         }
+        if (profileGateHostUuid != null && pinProfileId == null && event != null
+                && profileSelectView != null && profileSelectView.handleKey(event)) return true;
         if (profileGateHostUuid != null && event != null
                 && event.getAction() == KeyEvent.ACTION_UP
                 && (event.getKeyCode() == KeyEvent.KEYCODE_BACK
@@ -2297,8 +2294,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void buildSecondaryLayers(FrameLayout container) {
         buildHostSelectionLayer(container);
-        profileGateView = new ConsoleProfileGateView(this);
-        container.addView(profileGateView, match());
+        profileSelectView = new ConsoleProfileSelectView(this, entryShell);
         pinEntryView = new ConsolePinEntryView(this);
         container.addView(pinEntryView, match());
         buildSidePanel();
@@ -2414,8 +2410,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             discordDmNotifications.setPresentationBlocked(discordDmHostToken, false);
         }
         if (homeLayer != null) homeLayer.setVisibility(View.GONE);
-        // Back from the profile gate cross-fades it into the host row above the same shell.
-        if (entryShell != null) entryShell.show(null);
+        if (hostSelectView != null) hostSelectView.show();
         renderHostSelection();
         refreshVisibleHostProfiles();
         requestHostSelectionFocus();
@@ -2428,6 +2423,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sorted.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
         List<ConsoleHostSelectView.Tile> tiles = new ArrayList<>();
         for (ComputerDetails host : sorted) tiles.add(hostSelectionTile(host));
+        if (profileSelectView != null) profileSelectView.updateHost(tiles);
         if (hostSelectView.render(tiles, polling) && hostSelectionVisible) {
             requestHostSelectionFocus();
         }
@@ -2545,12 +2541,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         hostSelectView.setFocusTarget(host.uuid);
         if (homeLayer != null) homeLayer.setVisibility(View.GONE);
         List<ControllerInfo> controllers = loadControllers();
-        profileGateView.setControllerState(usesPlayStationButtons(controllers),
-                !controllers.isEmpty());
-        profileGateView.setReducedMotion(reducedMotion);
-        profileGateView.show(host.name, selection.profiles,
-                hostGatewayStore.automaticIntegrationProfileId(host.uuid),
-                new ConsoleProfileGateView.Listener() {
+        profileSelectView.setControllers(!controllers.isEmpty(),
+                usesPlayStationButtons(controllers));
+        // The profile row cross-fades in above the shell, whose background stays.
+        profileSelectView.show(hostSelectionTile(host), selection.profiles,
+                hostGatewayStore.automaticIntegrationProfileId(host.uuid), reducedMotion,
+                new ConsoleProfileSelectView.Listener() {
                     @Override public void onProfileSelected(String profileId) {
                         if (!host.uuid.equals(profileGateHostUuid)) return;
                         HostGatewayClient.IntegrationProfile profile =
@@ -2576,12 +2572,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                 profileId.equals(automatic) ? "" : profileId);
                         showProfileGate(host, focusApps, prepareHost);
                     }
+
+                    @Override public void onChangeHost() {
+                        closeProfileGate();
+                    }
                 });
-        profileGateView.setClockText(DateFormat.getTimeInstance(DateFormat.SHORT)
-                .format(new Date()));
-        profileGateView.bringToFront();
-        // The gate is drawn above the entry shell, whose background stays while the rows fade.
-        entryShell.show(profileGateView);
     }
 
     private HostGatewayClient.IntegrationProfile profileForGate(
@@ -3366,7 +3361,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
             pinSecureFlagAdded = true;
         }
-        if (profileGateView != null) profileGateView.setVisibility(View.GONE);
+        if (profileSelectView != null) profileSelectView.setVisibility(View.GONE);
         boolean playStationButtons = hasLastControllerInput
                 ? lastControllerPlayStation : ControllerGlyphs.hasPlayStationController();
         pinEntryView.show(host.name, profile, playStationButtons,
@@ -3642,7 +3637,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = null;
-        if (profileGateView != null) profileGateView.setVisibility(View.GONE);
+        if (profileSelectView != null) profileSelectView.setVisibility(View.GONE);
         newlyDiscoveredHosts.remove(host.uuid);
         selectHost(host, focusApps);
         if (prepareHost) prepareSelectedHost(host);
@@ -13511,9 +13506,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         usesPlayStationButtons(controllers));
             }
         }
-        if (profileGateView != null) {
-            profileGateView.setControllerState(usesPlayStationButtons(controllers),
-                    !controllers.isEmpty());
+        if (profileSelectView != null) {
+            profileSelectView.setControllers(!controllers.isEmpty(),
+                    usesPlayStationButtons(controllers));
         }
         if (signature.toString().equals(renderedControllersSignature)) return;
         renderedControllersSignature = signature.toString();
