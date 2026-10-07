@@ -1,18 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="summary_reset_osc">Bütün ekran kontrollerini varsayılan boyutu ve pozisyonuna sıfırlar</string>
-    <string name="title_checkbox_touchscreen_trackpad">Dokunmatik ekranı trackpad olarak kullan</string>
-    <string name="category_input_settings">Girdi Ayarları</string>
-    <string name="summary_language_list">Moonlight için kullanılacak olan dil</string>
     <string name="ip_hint">GeForce PC\'nin IP adresi</string>
     <string name="title_details">Detaylar</string>
-    <string name="dialog_title_osc_opacity">Opaklığı değiştir</string>
     <string name="conn_error_title">Bağlantı Hatası</string>
     <string name="conn_starting">Başlatılıyor</string>
     <string name="conn_error_msg">Başlatma başarısız</string>
-    <string name="summary_audio_config_list">Ev-sinema sistemleri için 5.1 yada 7.1 surround sesi etkinleştir</string>
-    <string name="title_checkbox_host_audio">Sesleri bilgisayarda çal</string>
-    <string name="suffix_seekbar_bitrate_mbps">Mbps</string>
     <string name="error_pc_offline">Bilgisayar çevrimdışı</string>
     <string name="unpair_success">Eşleştirme başarıyla kaldırıldı</string>
     <string name="unpairing">Eşleştirme kaldırılıyor…</string>
@@ -61,15 +53,6 @@
     <string name="nettest_text_success">Ağınız Moonlight\'ı engelliyor gibi görünmüyor. Bağlanmakta hala sorun yaşıyorsanız, bilgisayarınızın güvenlik duvarı ayarlarını kontrol edin.
 \n
 \nİnternet üzerinden yayın yapmaya çalışıyorsanız, Moonlight İnternet Barındırma Aracını bilgisayarınıza yükleyin ve bilgisayarınızın internet bağlantısını kontrol etmek için birlikte verilen İnternet Akış Test Cihazını çalıştırın.</string>
-    <string name="title_checkbox_multi_controller">Otomatik oyun kumandası varlığı algılama</string>
-    <string name="summary_checkbox_multi_controller">Bu seçeneğin işaretinin kaldırılması bir oyun kumandasının her zaman mevcut olmasını zorlar</string>
-    <string name="summary_checkbox_vibrate_fallback">Oyun kumandanız desteklemiyorsa, gürültüyü taklit etmek için cihazınızı titreştirir</string>
-    <string name="title_seekbar_deadzone">Analog çubuk ölü bölgesini ayarlama</string>
-    <string name="summary_checkbox_xb1_driver">Yerel Xbox oyun kumandası desteği olmayan cihazlar için yerleşik USB sürücüsünü etkinleştirir</string>
-    <string name="title_checkbox_mouse_emulation">Oyun kumandası üzerinden fare emülasyonu</string>
-    <string name="title_checkbox_mouse_nav_buttons">Geri ve ileri fare düğmelerini etkinleştirme</string>
-    <string name="category_on_screen_controls_settings">Ekran Kontrolleri Ayarları</string>
-    <string name="title_checkbox_show_onscreen_controls">Ekran kontrollerini göster</string>
     <string name="error_manager_not_running">ComputerManager hizmeti çalışmıyor. Lütfen birkaç saniye bekleyin veya uygulamayı yeniden başlatın.</string>
     <string name="error_unknown_host">Ana bilgisayar çözümlenemedi</string>
     <string name="title_decoding_error">Video Kod Çözücü Çöktü</string>
@@ -120,12 +103,7 @@
     <string name="addpc_fail">Belirtilen bilgisayara bağlanılamıyor. Gerekli bağlantı noktalarına güvenlik duvarı üzerinden izin verildiğinden emin olun.</string>
     <string name="addpc_unknown_host">Bilgisayar adresi çözümlenemiyor. Adreste yazım hatası yapmadığınızdan emin olun.</string>
     <string name="addpc_enter_ip">Bir IP adresi girmelisiniz</string>
-    <string name="category_basic_settings">Temel Ayarlar</string>
-    <string name="summary_resolution_list">Görüntü netliğini artırmak için artırın. Düşük uçlu cihazlarda ve daha yavaş ağlarda daha iyi performans için azaltın.</string>
     <string name="title_native_res_dialog">Yerel çözünürlük uyarısı</string>
-    <string name="title_fps_list">Video kare hızı</string>
-    <string name="title_seekbar_bitrate">Video bit hızı</string>
-    <string name="summary_checkbox_touchscreen_trackpad">Etkinleştirilirse, dokunmatik ekran bir dokunmatik fare gibi davranır. Devre dışı bırakılırsa, dokunmatik ekran doğrudan fare imlecini kontrol eder.</string>
     <string name="conn_establishing_msg">Bağlantı başlatılıyor</string>
     <string name="conn_metered">Uyarı: Aktif ağ bağlantınız ölçülüdür!</string>
     <string name="conn_client_latency">Ortalama kare kod çözme gecikmesi:</string>
@@ -134,20 +112,8 @@
     <string name="applist_refresh_msg">Uygulamalar yenileniyor…</string>
     <string name="applist_refresh_error_title">Hata</string>
     <string name="title_add_pc">Bilgisayarı manuel olarak Ekle</string>
-    <string name="title_resolution_list">Video çözünürlüğü</string>
-    <string name="summary_fps_list">Daha akıcı bir video akışı için artırın. Düşük uçlu cihazlarda daha iyi performans için azaltın.</string>
     <string name="resolution_prefix_native">Yerel</string>
     <string name="resolution_prefix_native_fullscreen">Yerel tam ekran</string>
-    <string name="category_audio_settings">Ses Ayarları</string>
-    <string name="title_audio_config_list">Çevresel ses yapılandırması</string>
-    <string name="summary_seekbar_deadzone">Not: Bazı oyunlar Moonlight\'ın kullanmak üzere yapılandırıldığından daha büyük bir ölü bölge uygulayabilir.</string>
-    <string name="suffix_seekbar_deadzone">%</string>
-    <string name="title_checkbox_xb1_driver">Xbox 360/One USB oyun kumandası sürücüsü</string>
-    <string name="title_checkbox_usb_bind_all">Yerel Xbox oyun kumandası desteğini geçersiz kılma</string>
-    <string name="summary_checkbox_mouse_emulation">Başlat düğmesine uzun süre basmak oyun kumandasını fare moduna geçirir</string>
-    <string name="summary_checkbox_mouse_nav_buttons">Bu seçeneği etkinleştirmek bazı hatalı cihazlarda sağ tıklamayı bozabilir</string>
-    <string name="title_checkbox_flip_face_buttons">Yüz düğmelerini çevirme</string>
-    <string name="title_checkbox_absolute_mouse_mode">Uzak masaüstü fare modu</string>
     <string name="error_404">GFE bir HTTP 404 hatası bildirdi. Bilgisayarınızın desteklenen bir GPU çalıştırdığından emin olun. Uzak masaüstü yazılımı kullanmak da bu hataya neden olabilir. Cihazınızı yeniden başlatmayı veya GFE\'yi yeniden yüklemeyi deneyin.</string>
     <string name="message_decoding_error">Moonlight, bu cihazın video kod çözücüsü ile uyumsuzluk nedeniyle çöktü. GeForce Experience\'ın bilgisayarınızdaki en son sürüme güncellendiğinden emin olun. Çökmeler devam ederse akış ayarlarını değiştirmeyi deneyin.</string>
     <string name="conn_hardware_latency">Ortalama donanım kod çözme gecikmesi:</string>
@@ -166,10 +132,4 @@
 \nBilgisayarınızda özel bir çözünürlük oluşturulmasından kaynaklanan herhangi bir sorundan sorumlu değiliz.
 \n
 \nSon olarak, cihazınız veya bilgisayarınız doğal çözünürlükte akışı desteklemiyor olabilir. Eğer cihazınızda çalışmıyorsa, ne yazık ki şansınız yok demektir.</string>
-    <string name="summary_seekbar_bitrate">Daha iyi görüntü kalitesi için artırın. Daha yavaş bağlantılarda performansı artırmak için azaltın.</string>
-    <string name="title_checkbox_stretch_video">Videoyu tam ekrana genişlet</string>
-    <string name="title_checkbox_vibrate_fallback">Titreşim ile gürültü desteğini taklit etme</string>
-    <string name="summary_checkbox_usb_bind_all">Yerel Xbox oyun kumandası desteği mevcut olsa bile desteklenen tüm oyun kumandaları için Moonlight\'ın USB sürücüsünü kullan</string>
-    <string name="summary_checkbox_flip_face_buttons">Oyun kumandaları ve ekran kontrolleri için A/B ve X/Y yüz düğmelerini değiştirir</string>
-    <string name="summary_checkbox_absolute_mouse_mode">Bu fare hızlandırmanın uzak masaüstü kullanımı için daha doğal davranmasını sağlayabilir, ancak birçok oyunla uyumsuzdur.</string>
 </resources>

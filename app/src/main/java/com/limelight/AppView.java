@@ -72,10 +72,7 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
     private final static int VIEW_DETAILS_ID = 5;
     private final static int CREATE_SHORTCUT_ID = 6;
     private final static int HIDE_APP_ID = 7;
-    private final static int APP_SETTINGS_ID = 8;
     private final static int ADD_QUICK_LAUNCH_ID = 9;
-    
-    private final static int REQUEST_APP_SETTINGS = 1001;
 
     public final static String HIDDEN_APPS_PREF_FILENAME = "HiddenApps";
 
@@ -396,18 +393,6 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        
-        if (requestCode == REQUEST_APP_SETTINGS) {
-            // Refresh the grid adapter to update settings indicators
-            if (appGridAdapter != null) {
-                appGridAdapter.notifyDataSetChanged();
-            }
-        }
-    }
-
-    @Override
     public void onCreateContextMenu(ContextMenu menu, View v, ContextMenuInfo menuInfo) {
         super.onCreateContextMenu(menu, v, menuInfo);
 
@@ -434,7 +419,6 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
         }
 
         menu.add(Menu.NONE, VIEW_DETAILS_ID, 4, getResources().getString(R.string.applist_menu_details));
-        menu.add(Menu.NONE, APP_SETTINGS_ID, 5, "App Settings");
         menu.add(Menu.NONE, ADD_QUICK_LAUNCH_ID, 6, getResources().getString(R.string.applist_menu_add_quick_launch));
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -499,13 +483,6 @@ public class AppView extends Activity implements AdapterFragmentCallbacks {
 
             case VIEW_DETAILS_ID:
                 Dialog.displayDialog(AppView.this, getResources().getString(R.string.title_details), app.app.toString(), false);
-                return true;
-
-            case APP_SETTINGS_ID:
-                Intent settingsIntent = new Intent(AppView.this, com.limelight.preferences.AppStreamSettings.class);
-                settingsIntent.putExtra(com.limelight.preferences.AppStreamSettings.EXTRA_APP_KEY, computer.uuid + ":" + app.app.getAppId());
-                settingsIntent.putExtra(com.limelight.preferences.AppStreamSettings.EXTRA_APP_NAME, app.app.getAppName());
-                startActivityForResult(settingsIntent, REQUEST_APP_SETTINGS);
                 return true;
 
             case HIDE_APP_ID:

@@ -347,7 +347,8 @@ public class ConsoleActivityRequestedUiContractTest {
                 source.indexOf("private ComputerDetails currentHost("));
 
         assertTrue(gameCardSource().contains("R.string.playnite_stream_settings"));
-        assertTrue(menu.contains("AppStreamSettings.EXTRA_INHERIT_APP_SETTINGS"));
+        assertTrue(menu.contains("new ConsoleAppStreamSettings(this, settingsScreen).open("));
+        assertTrue(menu.contains("streamSettingsKey,\n                                    item.game.name, true,"));
         assertTrue(menu.contains("playniteStreamSettingsKey(host.uuid, item.stableId())"));
         assertTrue(launch.contains(
                 "playniteStreamSettingsKey(host.uuid, game.playniteGameId)"));
