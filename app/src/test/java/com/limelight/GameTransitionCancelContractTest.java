@@ -193,6 +193,21 @@ public class GameTransitionCancelContractTest {
         String streamHome = new String(Files.readAllBytes(homePath), StandardCharsets.UTF_8);
         assertTrue(streamHome.contains("protected void onRequestedStreamClosed()"));
         assertTrue(streamHome.contains("EXTRA_SUPPRESS_AUTO_WARM_UP, true"));
+        Path consolePath = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
+        if (!Files.exists(consolePath)) consolePath = Paths.get("app").resolve(consolePath);
+        String console = new String(Files.readAllBytes(consolePath), StandardCharsets.UTF_8);
+        // Host-panel closes show progress until done; a failure dismissed over a closed
+        // stream hands the Home over instead of leaving a stream Home without a stream.
+        for (String request : new String[] {"private void requestTerminateSession(ComputerDetails"
+                + " host, String", "private void requestCloseHostStream("}) {
+            String body = console.substring(console.indexOf(request),
+                    console.indexOf("sessionModel.dispatch(", console.indexOf(request)));
+            assertTrue(body.contains("showSidePanelBusy("));
+        }
+        String cancel = console.substring(console.indexOf("@Override public void onCancel()"),
+                console.indexOf("@Override public void onRetry()"));
+        assertTrue(cancel.contains("onRequestedStreamClosed();"));
+        assertTrue(cancel.contains("launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID)"));
         String terminated = text.substring(text.indexOf(
                         "public void connectionTerminated("),
                 text.indexOf("public void connectionStatusUpdate("));

@@ -84,7 +84,7 @@ public class ConsoleHostPreparationContractTest {
         assertTrue(resume.contains("SessionModel.State.RECONNECT_REQUIRED"));
         assertTrue(resume.contains("retained.streamSessionId.equals(pending.streamSessionId)"));
         assertTrue(resume.contains(
-                "if (warmUpCarriesPendingGame(pending)) applyWarmUpIntent(resume,"));
+                "if (warmUpCarriesPendingGame(pending, retained.state)) applyWarmUpIntent(resume,"));
 
         String game = source("src/main/java/com/limelight/Game.java");
         String home = section(game, "private void launchConsoleHome(",
@@ -116,7 +116,7 @@ public class ConsoleHostPreparationContractTest {
                 < resume.indexOf("applyWarmUpIntent("));
         assertTrue(resume.indexOf("applyWarmUpIntent(") < resume.indexOf("startActivity(resume)"));
         assertTrue(console.contains(
-                "@Override public boolean warmUpCarriesGame() { return warmUpCarriesPendingGame("));
+                "return warmUpCarriesPendingGame(s.records.pending, s.state); }"));
         String carries = section(console, "private boolean warmUpCarriesPendingGame(",
                 "private void failClosedActorHandoff(");
         assertTrue(carries.contains("warmUpClientAttempt > 0L"));

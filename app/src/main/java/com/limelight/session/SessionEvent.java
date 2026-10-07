@@ -612,8 +612,11 @@ public abstract class SessionEvent<R> {
     }
 
     /**
-     * After cancelling {@code preparing}, gives up the reconnect its owner marked for it (a
-     * host change). Posted after the owner's marker, so it clears exactly that record.
+     * Clears the RECONNECT_REQUIRED marker of exactly the given record (stream session, host,
+     * app, game); any other state or record is refused. Posted in two cases: after cancelling
+     * {@code preparing}, to give up the reconnect its owner marked for it (a host change); and
+     * when a live reconnect of that record without warm-up connected, so the live transport
+     * replaces the marker whose control generation the host has since advanced.
      */
     public static final class ReconnectRelinquished extends BooleanEvent {
         private final Snapshot preparing;
