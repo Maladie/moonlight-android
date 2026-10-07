@@ -208,6 +208,7 @@ final class ConsoleTopBar extends FrameLayout {
             profile.setImageDrawable(avatar);
             profile.label = name;
             profile.setContentDescription(description);
+            if (profile.hasFocus()) showLabel(profile);
         }
         setShown(profile, avatar != null);
     }

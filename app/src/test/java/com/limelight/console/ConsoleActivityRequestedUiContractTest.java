@@ -39,6 +39,39 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("launchDesktopSession(host)"));
     }
 
+    @Test public void endGameShowsProgressUntilTheStopCompletes() throws IOException {
+        String source = consoleActivitySource();
+        String confirm = source.substring(source.indexOf("private void confirmEndPlayniteGame("),
+                source.indexOf("private void requestEndPlayniteGame("));
+        String request = source.substring(source.indexOf("private void requestEndPlayniteGame("),
+                source.indexOf("private void restoreCachedPlaynitePoster("));
+        String completion = request.substring(request.indexOf("mainHandler.post("));
+
+        assertTrue(confirm.contains("hideSidePanelImmediately();"));
+        assertTrue(request.indexOf("showSidePanelBusy(") < request.indexOf("executor.execute("));
+        assertTrue(request.contains("R.string.playnite_ending_game"));
+        assertTrue(request.contains("String busyPanelKey = currentPanelKey;"));
+        assertTrue(completion.indexOf(
+                "if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();")
+                < completion.indexOf("return;"));
+    }
+
+    @Test public void profileSwitchDropsThePreviousProfilesPresentation() throws IOException {
+        String source = consoleActivitySource();
+        String change = source.substring(source.indexOf("private boolean changeSelectedProfile("),
+                source.indexOf("private void refreshHostProfiles("));
+        String bar = topBarSource();
+        String showProfile = bar.substring(bar.indexOf("void showProfile("),
+                bar.indexOf("void showDiscord("));
+
+        assertTrue(change.contains("libraryTransitionCoordinator.cancel();"));
+        assertTrue(change.contains("selectedGameMetadata.setVisibility(View.INVISIBLE);"));
+        assertTrue(change.contains("selectedGameTitleRow.setVisibility(View.INVISIBLE);"));
+        assertTrue(change.contains("selectedGameDescription.setText(\"\");"));
+        assertTrue(change.contains("selectedGameFactsRow.setVisibility(View.GONE);"));
+        assertTrue(showProfile.contains("if (profile.hasFocus()) showLabel(profile);"));
+    }
+
     @Test public void focusedHostRemainsAStableTwoLineStatusNotAPowerAction()
             throws IOException {
         String source = consoleActivitySource();
