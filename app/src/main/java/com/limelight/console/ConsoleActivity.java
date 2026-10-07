@@ -1192,7 +1192,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     @Override public void requestHome(DiscordPanelController.CommunityHomeCallback callback) {
                         ComputerDetails host = hosts.get(selectedHostUuid);
                         if (host == null) {
-                            callback.onUnavailable();
+                            callback.onUnavailable(false);
                             return;
                         }
                         String address = host.activeAddress == null ? null : host.activeAddress.address;
