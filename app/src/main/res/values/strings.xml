@@ -1227,6 +1227,7 @@
     <string name="preflight_credential_action_required">The sign-in details for profile %1$s must be updated in MoonWaker Host Control.</string>
     <string name="preflight_other_profile_active">Another Windows profile is active on the computer.</string>
     <string name="preflight_login_broker_unavailable">The MoonWaker remote sign-in service is unavailable.</string>
+    <string name="preflight_host_session_state_unreadable">The Windows session state on the host cannot be read.</string>
     <string name="preflight_windows_sign_in_failed">Windows could not sign in profile %1$s.</string>
     <string name="preflight_windows_sign_in_expired">The sign-in request for profile %1$s expired.</string>
     <string name="preflight_windows_sign_in_cancelled">Sign-in for profile %1$s was cancelled.</string>
@@ -1239,7 +1240,7 @@
     <string name="transition_readiness_unconfirmed">Readiness could not be confirmed</string>
     <string name="transition_launcher_interaction_required">The game launcher needs your attention. Reveal the stream to continue, or go back to end it.</string>
     <string name="transition_host_session_locked_title">Windows session locked</string>
-    <string name="transition_host_session_locked">MoonWaker could not sign in automatically. Choose Reveal now to unlock Windows manually. To restore automatic sign-in, check the credentials and this device\'s remote sign-in permission in Host Control.</string>
+    <string name="transition_host_session_locked">The Windows session on the host is locked. Choose Reveal now to unlock it on screen. For automatic unlocking, check the saved credentials and this device\'s remote sign-in permission in Host Control.</string>
     <string name="transition_stream_display_not_configured">The streamed display is not configured on the host</string>
     <string name="transition_target_wrong_display">The game moved outside the streamed display. Restoring the correct display…</string>
     <string name="console_provider_stop_waiting_for_process">The game is still starting and has no process that can be closed yet. Wait a moment and try again.</string>

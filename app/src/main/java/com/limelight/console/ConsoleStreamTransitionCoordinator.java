@@ -15,6 +15,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.BooleanSupplier;
 
 public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     public enum ProviderStartFailure { INTERACTION_REQUIRED, CLEANUP_PENDING }
@@ -39,6 +40,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         void ensureInstalledGameTarget(String gameId, String gameName) throws IOException;
         default void startGame(String gameId) throws IOException { }
         default void stopGame(String gameId, String processToken) throws IOException { }
+        /** One Gateway session ensure; true only when the host reports the session ready. */
+        default boolean unlockHostSession(BooleanSupplier cancelled)
+                throws IOException, InterruptedException {
+            return false;
+        }
     }
 
     interface MonotonicClock {
@@ -108,6 +114,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private boolean providerCleanupCompleted;
     private boolean providerCleanupArmed;
     private boolean streamConnected;
+    private boolean hostUnlockAttempted;
     private long epoch;
 
     public ConsoleStreamTransitionCoordinator(
@@ -741,6 +748,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 }
                 context.lastReadinessReason = readinessReason;
                 if ("host_session_locked".equals(readinessReason)) {
+                    // Re-read the host after a confirmed unlock; otherwise the manual gate.
+                    if (tryHostUnlock(runEpoch)) continue;
+                    if (!isCurrent(runEpoch)) return;
                     if (!context.lockScreenPresented) {
                         context.lockScreenPresented = true;
                         applySnapshot(runEpoch, snapshot);
@@ -1272,6 +1282,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     throws IOException {
                 gateway.stopGame(gameId, processToken);
             }
+
+            @Override public boolean unlockHostSession(BooleanSupplier cancelled)
+                    throws IOException, InterruptedException {
+                return gateway.unlockHostSession(cancelled);
+            }
         };
     }
 
@@ -1292,6 +1307,32 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             transitionController.error(
                     transitionSpec.id, callbacks.readinessUnconfirmedMessage());
         }
+    }
+
+    /**
+     * The one host unlock of this transition: a locked Windows session is first handed to the
+     * Gateway's session ensure (which unlocks through the login broker). Only when that is
+     * refused, fails or times out does the caller fall back to the manual privacy gate. A result
+     * that arrives after this transition was stopped or replaced is ignored.
+     */
+    private boolean tryHostUnlock(long runEpoch) {
+        synchronized (this) {
+            if (hostUnlockAttempted || !isCurrent(runEpoch)) return false;
+            hostUnlockAttempted = true;
+        }
+        logTimeline("host-unlock-requested");
+        boolean ready = false;
+        try {
+            // A stopped or replaced transition ends the poll and cancels the attempt, so the
+            // broker does not unlock Windows for a launch the user already left.
+            ready = gateway.unlockHostSession(() -> !isCurrent(runEpoch));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (IOException | RuntimeException error) {
+            logTimeline("host-unlock-error reason=" + timelineReason(error));
+        }
+        logTimeline(ready ? "host-unlock-ready" : "host-unlock-not-ready");
+        return ready && isCurrent(runEpoch);
     }
 
     private static boolean isLauncherInteractionRequired(Exception error) {

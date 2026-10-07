@@ -494,6 +494,17 @@ public class HostLaunchPreflightTest {
         assertEquals(0, fake.refreshes);
     }
 
+    @Test public void unreadableHostSessionStateHasItsOwnFailure() {
+        Fake fake = new Fake();
+        fake.session = new HostLaunchPreflight.Session(
+                "action_required", "session_lock_state_unknown", "", 1_000);
+        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
+
+        assertFailure(result, HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.FailureReason.HOST_SESSION_STATE_UNREADABLE);
+        assertEquals(0, fake.refreshes);
+    }
+
     @Test public void nullSessionResponseCannotMasqueradeAsReady() {
         Fake fake = new Fake();
         fake.session = null;

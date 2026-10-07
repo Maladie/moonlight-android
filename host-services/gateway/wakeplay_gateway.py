@@ -2378,7 +2378,10 @@ class GatewayState:
         elif session_state == "other_user_active":
             remote_state, reason = "action_required", "other_user_active"
         elif session_state == "unknown":
-            remote_state, reason = "unavailable", "session_state_unknown"
+            # The broker names why it cannot read the session (e.g. lock state).
+            broker_reason = str(result.get("reason") or "none")
+            remote_state, reason = "unavailable", (
+                broker_reason if broker_reason != "none" else "session_state_unknown")
         else:
             remote_state, reason = "ready", "none"
         return {"session_state": session_state,

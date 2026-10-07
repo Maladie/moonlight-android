@@ -104,7 +104,8 @@ namespace MoonWaker.WindowsLogin
 
     internal interface ISessionStateBackend
     {
-        string GetState(ProfileIdentity identity);
+        /// <summary>Session state; reason explains an "unknown" state, otherwise "none".</summary>
+        string GetState(ProfileIdentity identity, out string reason);
         string Switch(ProfileIdentity identity);
     }
 
@@ -949,11 +950,19 @@ namespace MoonWaker.WindowsLogin
                             : BrokerReply.Fail("action_required", "credential_identity_mismatch");
                 }
                 if (request.Operation == ManagementSessionState)
-                    return BrokerReply.Ok(sessions.GetState(identity));
+                    return SessionStateReply(identity);
                 return BrokerReply.Fail("unsupported", "unsupported_operation");
             }
             catch (BrokerFault fault) { return BrokerReply.Fail(fault.State, fault.Reason); }
             catch { return BrokerReply.Fail("action_required", "broker_operation_failed"); }
+        }
+
+        private BrokerReply SessionStateReply(ProfileIdentity identity)
+        {
+            string reason;
+            BrokerReply reply = BrokerReply.Ok(sessions.GetState(identity, out reason));
+            reply.Reason = reason;
+            return reply;
         }
 
         internal BrokerReply HandleGateway(PipeRequest request)
@@ -990,7 +999,7 @@ namespace MoonWaker.WindowsLogin
                             }
                             else credentialReason = "credential_identity_mismatch";
                     }
-                    return BrokerReply.Ok(sessions.GetState(identity))
+                    return SessionStateReply(identity)
                         .Add(3, credentialState).Add(4, credentialReason);
                 }
                 if (request.Operation == GatewayBeginChildAttempt ||

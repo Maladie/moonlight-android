@@ -42,6 +42,7 @@ final class HostLaunchPreflight {
         CREDENTIAL_ACTION_REQUIRED,
         OTHER_PROFILE_ACTIVE,
         LOGIN_BROKER_UNAVAILABLE,
+        HOST_SESSION_STATE_UNREADABLE,
         WINDOWS_SIGN_IN_FAILED,
         WINDOWS_SIGN_IN_EXPIRED,
         WINDOWS_SIGN_IN_CANCELLED,
@@ -217,6 +218,12 @@ final class HostLaunchPreflight {
             this.outcome = "ready".equals(this.state) ? Outcome.READY
                     : canPollState(this.state) && !this.attemptId.isEmpty()
                     ? Outcome.PENDING : Outcome.FAILED;
+        }
+
+        static Session from(HostGatewayClient.WindowsSession value) {
+            return new Session(value.state, value.reason, value.attemptId,
+                    value.retryAfterMs, value.requestId, value.actorProfileId,
+                    value.executionProfileId);
         }
 
         static Session ready() {
@@ -686,6 +693,11 @@ final class HostLaunchPreflight {
         }
         if ("broker_unavailable".equals(reason)) {
             return FailureReason.LOGIN_BROKER_UNAVAILABLE;
+        }
+        if ("session_state_unknown".equals(reason)
+                || "session_lock_state_unknown".equals(reason)
+                || "windows_version_unsupported".equals(reason)) {
+            return FailureReason.HOST_SESSION_STATE_UNREADABLE;
         }
         if ("attempt_expired".equals(reason) || "expired".equals(session.state)) {
             return FailureReason.WINDOWS_SIGN_IN_EXPIRED;

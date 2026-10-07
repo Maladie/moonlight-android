@@ -2839,6 +2839,23 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         self.assertEqual("ready", result["state"])
         self.assertEqual(1, len(self.broker.begin_calls))
 
+    def test_ensure_unlocks_locked_session_and_names_unreadable_state(self):
+        self.broker.profile = self.broker.reply(
+            True, "locked", fields={3: "ready", 4: "none"})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-locked")
+        self.assertEqual(202, status)
+        self.assertEqual(
+            [("android-tv", "living-room", "request-locked")], self.broker.begin_calls)
+
+        self.broker.profile = self.broker.reply(
+            True, "unknown", "session_lock_state_unknown", {3: "ready", 4: "none"})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-unknown")
+        self.assertEqual(409, status)
+        self.assertEqual("session_lock_state_unknown", result["reason"])
+        self.assertEqual(1, len(self.broker.begin_calls))
+
     def test_switch_maps_pending_and_missing_credential_attention(self):
         status, result = self.state.switch_session(
             self.client, "living-room", "request-switch")

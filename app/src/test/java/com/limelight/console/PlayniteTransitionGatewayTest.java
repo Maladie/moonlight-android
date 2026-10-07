@@ -399,6 +399,82 @@ public class PlayniteTransitionGatewayTest {
         assertFalse(acceptance.matches("suspend-a", 42, "game"));
     }
 
+    private static final String ATTEMPT = "0123456789abcdef0123456789abcdef";
+
+    @Test public void hostUnlockPollsItsAttemptUntilReady() throws Exception {
+        UnlockClient client = new UnlockClient();
+        client.statuses.add("ready");
+
+        assertTrue(unlockGateway(client, () -> 0L).unlockHostSession(() -> false));
+        assertEquals(1, client.polls);
+        assertEquals(0, client.cancels.size());
+    }
+
+    @Test public void foreignUnlockAnswerCancelsTheAttempt() throws Exception {
+        UnlockClient client = new UnlockClient();
+        client.statuses.add("ready");
+        client.foreignStatus = true;
+
+        assertFalse(unlockGateway(client, () -> 0L).unlockHostSession(() -> false));
+        assertEquals(Arrays.asList(client.requestId + "/" + ATTEMPT), client.cancels);
+    }
+
+    @Test public void unlockBoundCancelsTheAttempt() throws Exception {
+        UnlockClient client = new UnlockClient();
+        long[] now = {0L};
+        client.onStatus = () -> now[0] += PlayniteTransitionGateway.HOST_UNLOCK_TIMEOUT_MILLIS;
+        client.statuses.add("pending");
+
+        assertFalse(unlockGateway(client, () -> now[0]).unlockHostSession(() -> false));
+        assertEquals(1, client.polls);
+        assertEquals(Arrays.asList(client.requestId + "/" + ATTEMPT), client.cancels);
+    }
+
+    @Test public void cancelledUnlockStopsPollingAndCancelsTheAttempt() throws Exception {
+        UnlockClient client = new UnlockClient();
+        client.statuses.add("ready");
+
+        assertFalse(unlockGateway(client, () -> 0L).unlockHostSession(() -> true));
+        assertEquals(0, client.polls);
+        assertEquals(Arrays.asList(client.requestId + "/" + ATTEMPT), client.cancels);
+    }
+
+    private PlayniteTransitionGateway unlockGateway(UnlockClient client,
+                                                    java.util.function.LongSupplier clock) {
+        return new PlayniteTransitionGateway(m.model, "host", connection("kid"),
+                PlayniteTransitionGateway.ActorContext.child("kid", "parent"), client, clock);
+    }
+
+    /** Ensure answers with a pending attempt; each status poll returns the next state. */
+    private static final class UnlockClient extends HostGatewayClient {
+        final List<String> statuses = new ArrayList<>();
+        final List<String> cancels = new ArrayList<>();
+        String requestId = "";
+        boolean foreignStatus;
+        Runnable onStatus;
+        int polls;
+
+        @Override WindowsSession ensureWindowsSession(GatewayConnection connection,
+                                                      String requestId) {
+            this.requestId = requestId;
+            return new WindowsSession("pending", "none", ATTEMPT, 250, requestId,
+                    "kid", "parent");
+        }
+
+        @Override WindowsSession getWindowsSessionStatus(GatewayConnection connection,
+                                                         String requestId, String attemptId) {
+            polls++;
+            if (onStatus != null) onStatus.run();
+            return new WindowsSession(statuses.remove(0), "none", attemptId, 250,
+                    foreignStatus ? "android-other" : requestId, "kid", "parent");
+        }
+
+        @Override void cancelWindowsSession(GatewayConnection connection, String requestId,
+                                            String attemptId) {
+            cancels.add(requestId + "/" + attemptId);
+        }
+    }
+
     private static GatewayConnection connection(String profileId) {
         return new GatewayConnection(
                 "https://host:8785", "secret", FINGERPRINT, profileId);

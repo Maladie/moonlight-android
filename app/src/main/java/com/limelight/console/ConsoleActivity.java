@@ -11945,9 +11945,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
             private HostLaunchPreflight.Session session(
                     HostGatewayClient.WindowsSession value) {
-                return new HostLaunchPreflight.Session(value.state, value.reason,
-                        value.attemptId, value.retryAfterMs, value.requestId,
-                        value.actorProfileId, value.executionProfileId);
+                return HostLaunchPreflight.Session.from(value);
             }
         };
         HostLaunchPreflight.Sunshine sunshine = new HostLaunchPreflight.Sunshine() {
@@ -12040,6 +12038,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return getString(R.string.preflight_other_profile_active);
             case LOGIN_BROKER_UNAVAILABLE:
                 return getString(R.string.preflight_login_broker_unavailable);
+            case HOST_SESSION_STATE_UNREADABLE:
+                return getString(R.string.preflight_host_session_state_unreadable);
             case WINDOWS_SIGN_IN_EXPIRED:
                 return getString(R.string.preflight_windows_sign_in_expired,
                         failure.profileName);
