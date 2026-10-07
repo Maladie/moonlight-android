@@ -810,6 +810,7 @@
     <string name="console_child_launch_profile_unavailable">Ten profil dziecka jest obecnie niedostępny.</string>
     <string name="console_child_launch_unavailable">Profil dziecka nie może teraz uruchomić gry.</string>
     <string name="console_profile_gate_title">Kto gra?</string>
+    <string name="console_intro_greeting">Witaj, %1$s</string>
     <string name="console_profile_gate_active">Aktywny na PC</string>
     <string name="console_profile_gate_automatic">Automatyczny</string>
     <string name="console_profile_gate_pin">PIN</string>

@@ -310,19 +310,11 @@ final class ConsoleProfileSelectView extends HorizontalScrollView {
         frame.setPadding(margin, margin, margin, margin);
         frame.setClipChildren(false);
         frame.setClipToPadding(false);
-        // The glow takes the avatar's light colour, as host tiles do; a child's chosen
-        // colour replaces the generated art and so also its hue.
-        int accent = HostTileArt.accent(profileId);
-        if (tinted(profile)) {
-            float[] hsv = new float[3];
-            Color.colorToHSV(ConsoleChildProfileEditor.avatarColor(profile.avatarId), hsv);
-            accent = Color.HSVToColor(new float[]{hsv[0], .6f, 1f});
-        }
         ConsoleCardFocus focus = new ConsoleCardFocus(getResources(), margin,
                 dp(AVATAR_DP) / 2f);
         focus.setLayers(SHADOW, FOCUS_SHADOW, GLOW);
         focus.setRing(RING_GAP_DP, RING_DP);
-        focus.setGlowColor(accent);
+        focus.setGlowColor(accent(profile));
         focus.setShadowAlpha(SHADOW_ALPHA);
         frame.setBackground(focus);
         int size = dp(AVATAR_DP) + 2 * margin;
@@ -481,6 +473,17 @@ final class ConsoleProfileSelectView extends HorizontalScrollView {
     static String displayName(Context context, HostGatewayClient.IntegrationProfile profile) {
         return profile.name == null || profile.name.trim().isEmpty()
                 ? context.getString(R.string.console_entry_eyebrow) : profile.name.trim();
+    }
+
+    /**
+     * The avatar's light colour, which its focus glow takes, as host tiles do; a child's
+     * chosen colour replaces the generated art and so also its hue.
+     */
+    private static int accent(HostGatewayClient.IntegrationProfile profile) {
+        if (!tinted(profile)) return HostTileArt.accent(profile.id);
+        float[] hsv = new float[3];
+        Color.colorToHSV(ConsoleChildProfileEditor.avatarColor(profile.avatarId), hsv);
+        return Color.HSVToColor(new float[]{hsv[0], .6f, 1f});
     }
 
     private static boolean tinted(HostGatewayClient.IntegrationProfile profile) {

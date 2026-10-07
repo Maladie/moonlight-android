@@ -65,6 +65,14 @@ public final class HostGatewayStore {
             this.selected = selected;
             this.showSelector = profiles.size() > 1;
         }
+
+        /** The listed profile with this id, e.g. the one chosen on the profile gate. */
+        HostGatewayClient.IntegrationProfile find(String profileId) {
+            for (HostGatewayClient.IntegrationProfile profile : profiles) {
+                if (profile.id.equals(profileId)) return profile;
+            }
+            return null;
+        }
     }
 
     static final class ProfileGate {
