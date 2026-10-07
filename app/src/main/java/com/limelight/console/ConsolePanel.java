@@ -148,13 +148,6 @@ final class ConsolePanel {
         content.setPadding(dp(PAD_X_DP), dp(25 - SCROLL_TOP_DP), dp(PAD_X_DP), dp(4));
     }
 
-    /** Undoes {@link #floatOnGlass} for a full-screen composition that brings its own surface. */
-    void leaveGlass(LinearLayout content) {
-        scroll.setPadding(0, 0, 0, 0);
-        scroll.setFooter(null, 0);
-        content.setPadding(0, 0, 0, 0);
-    }
-
     /**
      * Picks the legend for the rows now in {@code container}; {@link #render} calls it once, and
      * callers that put saved rows back without rendering call it after restoring them.
@@ -169,6 +162,12 @@ final class ConsolePanel {
         legendStepper = stepper;
         legend.setText(stepper ? R.string.console_panel_legend_stepper
                 : R.string.console_panel_legend);
+        scroll.requestLayout();
+    }
+
+    /** A legend of the caller's own, for a panel it fills without {@link #render}. */
+    void setLegend(CharSequence text) {
+        legend.setText(text);
         scroll.requestLayout();
     }
 
@@ -434,7 +433,9 @@ final class ConsolePanel {
         row.setClickable(true);
         row.setSoundEffectsEnabled(false);
         // Background first: the inset fill would otherwise replace the row padding with its own.
-        row.setBackground(focusFill.newDrawable(context.getResources()));
+        // No Resources here: InsetDrawable/GradientDrawable states built in code are 160 dpi, and
+        // newDrawable(res) would rescale the px inset and radius again (70 px fill became 64).
+        row.setBackground(focusFill.newDrawable());
         row.setPadding(dp(ROW_INSET_DP), dp(4), dp(ROW_INSET_DP), dp(4));
         row.setOnFocusChangeListener((view, hasFocus) -> {
             if (DiscordPanelViews.isTile(view)) DiscordPanelViews.styleTile(view, hasFocus);

@@ -18,7 +18,7 @@ import android.view.View;
 
 /**
  * Glass panel surface (UX_MENU_PL.md section 4.3): the menu's blurred backdrop copy, cropped to
- * the panel, saturated x1.3, tinted rgb(16,18,26) at 50 % and veiled 7 % white (baked into the
+ * the panel, saturated x1.3, tinted rgb(16,18,26) at 50 % and veiled 7/255 white (baked into the
  * copy once by {@link ConsoleMenuBackdrop}'s worker), with a 1.5 px
  * hairline that is brighter on top and 36 px corners. It never blurs on its own; without a copy
  * it is a near-opaque tint.
@@ -28,7 +28,8 @@ final class ConsoleGlass extends Drawable {
     static final float SATURATION = 1.3f;
     static final int TINT = 0x10121A;
     static final float TINT_ALPHA = .5f;
-    static final float VEIL = .07f;
+    /** The mockups' veil=7 is on the 0-255 scale (make_mockups.glass), i.e. 2.7 %. */
+    static final float VEIL = 7f / 255f;
     static final int SOLID = 0xF210121A;
     static final float HAIRLINE_DP = .75f;
     static final int HAIRLINE_TOP = 0x2EFFFFFF;
@@ -126,6 +127,23 @@ final class ConsoleGlass extends Drawable {
         }
         matrix[18] = 1f;
         return matrix;
+    }
+
+    /**
+     * {@code matrix} applied to the input first covered by {@code argb} at its alpha: the panel
+     * glass samples the backdrop as seen, i.e. under the backdrop's own tint (make_mockups glass).
+     */
+    static float[] under(float[] matrix, int argb) {
+        float alpha = (argb >>> 24) / 255f;
+        float[] result = matrix.clone();
+        for (int row = 0; row < 3; row++) {
+            for (int column = 0; column < 3; column++) {
+                int channel = (argb >> (16 - 8 * column)) & 0xFF;
+                result[row * 5 + 4] += matrix[row * 5 + column] * alpha * channel;
+                result[row * 5 + column] = matrix[row * 5 + column] * (1f - alpha);
+            }
+        }
+        return result;
     }
 
     /** Applies the RGB rows of a {@link #colorMatrix} to opaque pixels, clamped to 0..255. */

@@ -31,23 +31,38 @@ public class EmbeddedTvKeyboardModelTest {
         keyboard.select("text.z");
         assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_DOWN));
         assertEquals("symbols", keyboard.selectedId());
-        keyboard.select("text.c");
+        keyboard.select("text.x");
         assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_DOWN));
         assertEquals("microphone", keyboard.selectedId());
-        keyboard.select("text.m");
+        keyboard.select("text.,");
         assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_DOWN));
-        assertEquals("send", keyboard.selectedId());
-        keyboard.select("text.!");
+        assertEquals("backspace", keyboard.selectedId());
+        keyboard.select("text..");
         assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_DOWN));
         assertEquals("send", keyboard.selectedId());
     }
 
-    @Test public void alphabetKeepsBasicPunctuationOnThePrimaryPageWithoutOverlappingKeys() {
+    @Test public void alphabetIsTheMockupGridAndKeepsPunctuationReachable() {
         EmbeddedTvKeyboardModel keyboard = new EmbeddedTvKeyboardModel();
         assertEquals(",", find(keyboard, "text.,").text);
         assertEquals(".", find(keyboard, "text..").text);
-        assertEquals("?", find(keyboard, "text.?").text);
+        // ? and ! lost their own keys: they are held on "." (and stay on the 123 page).
+        assertTrue(EmbeddedTvKeyboardModel.accentVariants(".", EmbeddedTvKeyboardModel.Shift.LOWER,
+                "pl-PL").containsAll(Arrays.asList("?", "!")));
+        assertFalse(hasKey(keyboard, "shift"));
+        assertEquals(10, rowLength(keyboard, 0));
+        assertEquals(9, rowLength(keyboard, 1));
+        assertEquals(9, rowLength(keyboard, 2));
+        // 1320 px of 132 px pitch: Dyktuj and Wyślij 220 px, Spacja 560 px, backspace 140 px.
+        assertEquals(232, width(find(keyboard, "microphone")));
+        assertEquals(572, width(find(keyboard, "space")));
+        assertEquals(152, width(find(keyboard, "backspace")));
+        assertEquals(232, width(find(keyboard, "send")));
+        keyboard.select("symbols");
+        keyboard.activateSelected();
         assertEquals("!", find(keyboard, "text.!").text);
+        assertEquals("?", find(keyboard, "text.?").text);
+        keyboard.reset();
 
         java.util.List<EmbeddedTvKeyboardModel.Key> keys = keyboard.keys();
         for (EmbeddedTvKeyboardModel.Key key : keys) {
@@ -60,7 +75,7 @@ public class EmbeddedTvKeyboardModelTest {
                 assertTrue(bounds.right <= otherBounds.left || otherBounds.right <= bounds.left);
             }
         }
-        for (String id : new String[]{"text.,", "text..", "text.?", "text.!"}) {
+        for (String id : new String[]{"text.,", "text.."}) {
             EmbeddedTvKeyboardModel.Bounds bounds = EmbeddedTvKeyboardModel.bounds(find(keyboard, id), 1920, 336);
             assertTrue(bounds.right - bounds.left >= 96);
             assertTrue(bounds.bottom - bounds.top >= 72);
@@ -69,17 +84,14 @@ public class EmbeddedTvKeyboardModelTest {
 
     @Test public void shiftCyclesOneShotAndCapsWithoutLosingTheSelectedKey() {
         EmbeddedTvKeyboardModel keyboard = new EmbeddedTvKeyboardModel();
-        keyboard.select("shift");
-
-        keyboard.activateSelected();
+        keyboard.cycleShift();
         assertEquals(EmbeddedTvKeyboardModel.Shift.ONE_SHOT, keyboard.shift());
         keyboard.select("text.a");
         assertEquals("A", keyboard.activateSelected().text);
         assertEquals(EmbeddedTvKeyboardModel.Shift.LOWER, keyboard.shift());
 
-        keyboard.select("shift");
-        keyboard.activateSelected();
-        keyboard.activateSelected();
+        keyboard.cycleShift();
+        keyboard.cycleShift();
         assertEquals(EmbeddedTvKeyboardModel.Shift.CAPS, keyboard.shift());
         keyboard.select("text.a");
         assertEquals("A", keyboard.activateSelected().text);
@@ -95,6 +107,22 @@ public class EmbeddedTvKeyboardModelTest {
         assertEquals(EmbeddedTvKeyboardModel.Page.SYMBOLS, keyboard.page());
         keyboard.select("text.@");
         assertEquals("@", keyboard.activateSelected().text);
+    }
+
+    @Test public void holdingOkOnAnyLetterOffersItsCapitalFirstAsShiftWithoutL2() {
+        EmbeddedTvKeyboardModel keyboard = new EmbeddedTvKeyboardModel();
+        keyboard.select("text.b");
+        assertEquals(Arrays.asList("B"), keyboard.accentVariantsForSelected());
+        EmbeddedTvKeyboardModel.Activation capital = keyboard.activateAccent("B");
+        assertEquals(EmbeddedTvKeyboardModel.Action.TEXT, capital.action);
+        assertEquals("B", capital.text);
+        keyboard.select("text.a");
+        assertEquals("A", keyboard.accentVariantsForSelected().get(0));
+        keyboard.cycleShift();
+        keyboard.cycleShift();
+        assertEquals("a", keyboard.accentVariantsForSelected().get(0));
+        assertFalse(EmbeddedTvKeyboardModel.accentVariants(".", EmbeddedTvKeyboardModel.Shift.LOWER,
+                "pl-PL").contains("."));
     }
 
     @Test public void insertionAndDeletionKeepWholeUnicodeCodePointsAtTheCursor() {
@@ -118,9 +146,9 @@ public class EmbeddedTvKeyboardModelTest {
 
     @Test public void accentVariantsCoverPolishLettersAndRespectShiftModes() {
         EmbeddedTvKeyboardModel keyboard = new EmbeddedTvKeyboardModel();
-        assertEquals(Arrays.asList("ź", "ż", "ž"), EmbeddedTvKeyboardModel.accentVariants("z",
+        assertEquals(Arrays.asList("Z", "ź", "ż", "ž"), EmbeddedTvKeyboardModel.accentVariants("z",
                 EmbeddedTvKeyboardModel.Shift.LOWER, "pl-PL"));
-        assertEquals(Arrays.asList("Ź", "Ż", "Ž"), EmbeddedTvKeyboardModel.accentVariants("z",
+        assertEquals(Arrays.asList("z", "Ź", "Ż", "Ž"), EmbeddedTvKeyboardModel.accentVariants("z",
                 EmbeddedTvKeyboardModel.Shift.CAPS, "PL_pl"));
         keyboard.cycleShift();
 
@@ -133,17 +161,17 @@ public class EmbeddedTvKeyboardModelTest {
 
     @Test public void localePriorityUsesPrimaryLanguageCaseInsensitivelyAndKeepsFallbacks() {
         assertEquals("ą", EmbeddedTvKeyboardModel.accentVariants("a", EmbeddedTvKeyboardModel.Shift.LOWER,
-                "PL-pl").get(0));
+                "PL-pl").get(1));
         assertEquals("ß", EmbeddedTvKeyboardModel.accentVariants("s", EmbeddedTvKeyboardModel.Shift.LOWER,
-                "de-DE").get(0));
+                "de-DE").get(1));
         assertEquals("œ", EmbeddedTvKeyboardModel.accentVariants("o", EmbeddedTvKeyboardModel.Shift.LOWER,
-                "fr_CA").get(1));
+                "fr_CA").get(2));
         assertEquals("ı", EmbeddedTvKeyboardModel.accentVariants("i", EmbeddedTvKeyboardModel.Shift.LOWER,
-                "tr-TR").get(0));
+                "tr-TR").get(1));
         assertEquals("ă", EmbeddedTvKeyboardModel.accentVariants("a", EmbeddedTvKeyboardModel.Shift.LOWER,
-                "ro-RO").get(0));
+                "ro-RO").get(1));
         assertEquals("å", EmbeddedTvKeyboardModel.accentVariants("a", EmbeddedTvKeyboardModel.Shift.LOWER,
-                "sv-SE").get(0));
+                "sv-SE").get(1));
         assertTrue(EmbeddedTvKeyboardModel.accentVariants("a", EmbeddedTvKeyboardModel.Shift.LOWER,
                 "en-US").contains("æ"));
     }
@@ -235,12 +263,24 @@ public class EmbeddedTvKeyboardModelTest {
 
         EmbeddedTvKeyboardModel.Bounds spaceBounds = EmbeddedTvKeyboardModel.bounds(space, 1000, 400);
         EmbeddedTvKeyboardModel.Bounds sendBounds = EmbeddedTvKeyboardModel.bounds(send, 1000, 400);
-        assertEquals(400, spaceBounds.left);
-        assertEquals(700, spaceBounds.right);
-        assertEquals(700, sendBounds.left);
+        assertEquals(276, spaceBounds.left);
+        assertEquals(709, spaceBounds.right);
+        assertEquals(824, sendBounds.left);
         assertEquals(1000, sendBounds.right);
         assertTrue(spaceBounds.contains(550, 350));
-        assertTrue(sendBounds.contains(850, 350));
+        assertTrue(sendBounds.contains(900, 350));
+    }
+
+    private static int rowLength(EmbeddedTvKeyboardModel keyboard, int row) {
+        int count = 0;
+        for (EmbeddedTvKeyboardModel.Key key : keyboard.keys()) if ((int) key.y == row) count++;
+        return count;
+    }
+
+    /** Key width in px on the mockup's 1320 px keyboard (ten 132 px columns). */
+    private static int width(EmbeddedTvKeyboardModel.Key key) {
+        EmbeddedTvKeyboardModel.Bounds bounds = EmbeddedTvKeyboardModel.bounds(key, 1320, 288);
+        return bounds.right - bounds.left;
     }
 
     private static int rowCount(EmbeddedTvKeyboardModel keyboard) {
