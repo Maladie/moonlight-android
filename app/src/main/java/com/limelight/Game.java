@@ -5096,6 +5096,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 boolean convertedWarmUp = autoWarmUpConvertedToGame;
                 if (!warmUpConnection) {
+                    relinquishReconnectedMarker();
                     onStreamConnected(convertedWarmUp);
                     return;
                 }
@@ -5120,6 +5121,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // This may be null if launched from the "Resume Session" PC context menu item
             shortcutHelper.reportGameLaunched(computer, app);
         }
+    }
+
+    /**
+     * A live reconnect of exactly the marked record supersedes its RECONNECT_REQUIRED marker,
+     * whose stale control generation could never correlate with the host again. The model
+     * re-checks the marker and the record when it applies the event.
+     */
+    private void relinquishReconnectedMarker() {
+        if (!getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)
+                || !"reconnect".equals(getIntent().getStringExtra(EXTRA_CONTROL_INTENT))) return;
+        SessionModel.Snapshot marked = sessionModel.snapshot();
+        if (marked.state != SessionModel.State.RECONNECT_REQUIRED
+                || !marked.streamSessionId.equals(streamSessionId)
+                || !marked.hostId.equalsIgnoreCase(
+                        normalizeOpaqueId(getIntent().getStringExtra(EXTRA_PC_UUID)))
+                || marked.appId != getIntent().getIntExtra(
+                        EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID)
+                || !marked.playniteGameId.equalsIgnoreCase(currentSessionGameId())) return;
+        sessionModel.post(new SessionEvent.ReconnectRelinquished(marked));
     }
 
     private void onStreamConnected(boolean convertedWarmUp) {

@@ -143,6 +143,27 @@ public class GameTransitionCancelContractTest {
         assertTrue(host.contains("provider_game_mismatch"));
     }
 
+    @Test public void liveReconnectWithoutWarmUpRelinquishesOnlyItsOwnMarker()
+            throws IOException {
+        String text = source();
+        String started = text.substring(text.indexOf("public void connectionStarted()"),
+                text.indexOf("private void relinquishReconnectedMarker()"));
+        String direct = started.substring(started.indexOf("if (!warmUpConnection)"),
+                started.indexOf("completeAutoWarmUpPreparing("));
+        assertTrue(direct.indexOf("relinquishReconnectedMarker()")
+                < direct.indexOf("onStreamConnected("));
+        assertFalse(started.substring(started.indexOf("completeAutoWarmUpPreparing("))
+                .contains("relinquishReconnectedMarker"));
+        String relinquish = text.substring(
+                text.indexOf("private void relinquishReconnectedMarker()"),
+                text.indexOf("private void onStreamConnected("));
+        assertTrue(relinquish.contains("\"reconnect\".equals("));
+        assertTrue(relinquish.contains("marked.state != SessionModel.State.RECONNECT_REQUIRED"));
+        assertTrue(relinquish.contains("marked.streamSessionId.equals(streamSessionId)"));
+        assertTrue(relinquish.contains("marked.playniteGameId.equalsIgnoreCase("));
+        assertTrue(relinquish.contains("new SessionEvent.ReconnectRelinquished(marked)"));
+    }
+
     @Test public void directQuitPublishesClosingStateAndDelegatesHostEffects()
             throws IOException {
         String text = source();

@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionModelDriver;
 import com.limelight.session.SuspendedSessionStore;
@@ -687,6 +688,49 @@ public class SessionStateProjectionTest {
         assertEquals(SessionSnapshot.ObservationState.PENDING, rendered.observationState);
         assertEquals("UNAVAILABLE", rendered.processEvidence);
         assertEquals("", rendered.playniteGameId);
+    }
+
+    @Test public void liveReconnectOfTheMarkedRecordReplacesItsStaleCorrelation() {
+        Controller controller = new Controller();
+        m.enterHome(controller, "other", "host", "child", 42, "game");
+        SessionModel.Snapshot otherRecord = m.snapshot();
+        clearRetainedTransport();
+        m.enterHome(controller, "session", "host", "child", 42, "game");
+        assertTrue(m.bindControlGeneration(controller, "session", 3L));
+        SessionModel.Snapshot beforeLoss = m.snapshot();
+        // A state other than RECONNECT_REQUIRED is never relinquished.
+        assertFalse(m.call(new SessionEvent.ReconnectRelinquished(beforeLoss)));
+        assertEquals(SessionModel.State.HOME_LIVE, m.state());
+        m.markReconnectRequired("session");
+
+        // The host bumped the generation for the reconnect acquire (3 -> 4).
+        long ordinal = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(readyAtGeneration("boot", ordinal, 4L), m.snapshot(), 0L));
+        SessionSnapshot marked = owner.current(m.snapshot(), 1L);
+        assertEquals(SessionSnapshot.ObservationState.PENDING, marked.observationState);
+        assertEquals("observation_correlation_mismatch", marked.observationReason);
+
+        // A stale Game of another record changes nothing.
+        assertFalse(m.call(new SessionEvent.ReconnectRelinquished(otherRecord)));
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED, m.state());
+        assertEquals("observation_correlation_mismatch",
+                owner.current(m.snapshot(), 2L).observationReason);
+
+        assertTrue(m.call(new SessionEvent.ReconnectRelinquished(m.snapshot())));
+        assertEquals(SessionModel.State.NONE, m.state());
+        assertEquals(SessionSnapshot.ObservationState.READY,
+                owner.current(m.snapshot(), 3L).observationState);
+    }
+
+    private static HostGatewayClient.SessionObservation readyAtGeneration(
+            String boot, long ordinal, long generation) {
+        return new HostGatewayClient.SessionObservation(boot, 1L, 1_000L, 15_000L,
+                "running", 1_000L, "child", "parent", ordinal, "", "operation",
+                "session", generation, 1L, "running", HostGatewayClient.Evidence.VERIFIED,
+                "running", HostGatewayClient.Evidence.VERIFIED, "game",
+                HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
+                HostGatewayClient.Evidence.VERIFIED, true, "game", 3, "target_window_ready",
+                false, true, false);
     }
 
     private static HostGatewayClient.SessionObservation ready(
