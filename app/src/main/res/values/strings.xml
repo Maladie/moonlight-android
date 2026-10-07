@@ -844,6 +844,7 @@
     <string name="console_child_launch_profile_unavailable">This child profile is currently unavailable.</string>
     <string name="console_child_launch_unavailable">This child profile cannot play right now.</string>
     <string name="console_profile_gate_title">Who\'s playing?</string>
+    <string name="console_intro_greeting">Welcome, %1$s</string>
     <string name="console_profile_gate_active">Active on PC</string>
     <string name="console_profile_gate_automatic">Automatic</string>
     <string name="console_profile_gate_pin">PIN</string>
