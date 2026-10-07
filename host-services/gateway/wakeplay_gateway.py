@@ -2373,15 +2373,18 @@ class GatewayState:
             remote_state, reason = "disabled", "remote_sign_in_disabled"
         elif profile.get("account_mapping_status") != "resolved":
             remote_state, reason = "action_required", "account_mapping_required"
+        elif result.get("success") and session_state == "unknown":
+            # Precedes the credential branch: an unreadable session is never a
+            # credential problem. Only reasons the client knows are passed through.
+            broker_reason = str(result.get("reason") or "none")
+            remote_state, reason = "unavailable", (
+                broker_reason if broker_reason in (
+                    "session_lock_state_unknown", "windows_version_unsupported")
+                else "session_state_unknown")
         elif not result.get("success") or credential_state != "ready":
             remote_state, reason = "action_required", credential_reason
         elif session_state == "other_user_active":
             remote_state, reason = "action_required", "other_user_active"
-        elif session_state == "unknown":
-            # The broker names why it cannot read the session (e.g. lock state).
-            broker_reason = str(result.get("reason") or "none")
-            remote_state, reason = "unavailable", (
-                broker_reason if broker_reason != "none" else "session_state_unknown")
         else:
             remote_state, reason = "ready", "none"
         return {"session_state": session_state,
@@ -2444,7 +2447,7 @@ class GatewayState:
                 "session_state": "active", "actor_profile_id": actor_profile_id,
                 "execution_profile_id": execution_id, "request_id": request_id,
             }
-        if current["session_state"] == "other_user_active":
+        if current["session_state"] in ("other_user_active", "unknown"):
             return HTTPStatus.CONFLICT, {"ok": False, **current,
                                          "actor_profile_id": actor_profile_id,
                                          "execution_profile_id": execution_id,
@@ -2452,14 +2455,11 @@ class GatewayState:
         # Remote sign-in is checked only when the parent really needs a logon.
         self.authorize_child_profile(client, actor_profile_id, "remote_sign_in")
         if (not parent.get("remote_sign_in_enabled") or
-                parent.get("account_mapping_status") != "resolved" or
-                current["remote_sign_in_state"] == "unavailable"):
+                parent.get("account_mapping_status") != "resolved"):
             return HTTPStatus.CONFLICT, {
                 "ok": False, "state": "action_required",
                 "reason": "remote_sign_in_disabled" if not parent.get(
-                    "remote_sign_in_enabled") else current.get(
-                        "reason") if current["remote_sign_in_state"] == "unavailable"
-                    else "account_mapping_required",
+                    "remote_sign_in_enabled") else "account_mapping_required",
                 "actor_profile_id": actor_profile_id,
                 "execution_profile_id": execution_id,
                 "request_id": request_id,
@@ -2565,15 +2565,14 @@ class GatewayState:
         if current["session_state"] == "active":
             return HTTPStatus.OK, {"ok": True, "state": "ready",
                                    "reason": "none", "session_state": "active"}
-        if current["session_state"] == "other_user_active":
+        if current["session_state"] in ("other_user_active", "unknown"):
             return HTTPStatus.CONFLICT, {"ok": False, **current}
         self.authorize_profile(client, profile_id, "remote_sign_in", record_use=True)
         if not profile.get("remote_sign_in_enabled"):
             return HTTPStatus.CONFLICT, {"ok": False, "state": "action_required",
                                          "reason": "remote_sign_in_disabled",
                                          "session_state": current["session_state"]}
-        if (current["remote_sign_in_state"] == "unavailable" or
-                current["reason"] == "account_mapping_required"):
+        if current["reason"] == "account_mapping_required":
             return HTTPStatus.CONFLICT, {"ok": False, **current}
         result = self.login_broker.begin(
             self.broker_client_id(client), profile, request_id)
