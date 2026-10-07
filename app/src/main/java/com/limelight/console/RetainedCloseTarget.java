@@ -1,6 +1,6 @@
 package com.limelight.console;
 
-import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.session.SessionModel;
 
 /**
  * Host, actor profile and provider game a "close game and MoonWaker" runs against once the
@@ -19,7 +19,7 @@ final class RetainedCloseTarget {
     }
 
     /** {@code record*} come from the resume record matching the session; null without one. */
-    static RetainedCloseTarget of(RetainedStreamSessionCoordinator.Snapshot retained,
+    static RetainedCloseTarget of(SessionModel.Snapshot retained,
                                   String recordHostId, String recordProfileId,
                                   String recordGameId) {
         if (!retained.hostId.isEmpty()) {

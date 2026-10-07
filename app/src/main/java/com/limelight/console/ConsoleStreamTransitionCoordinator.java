@@ -6,7 +6,7 @@ import com.limelight.console.transition.LaunchTransitionSnapshot;
 import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionState;
 import com.limelight.console.transition.LaunchTransitionType;
-import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.session.SessionModel;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -408,7 +408,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     /** Transfers a cross-actor owner only with one exact post-reauthorization proof. */
     public boolean transferProviderOwnershipTo(
             ConsoleStreamTransitionCoordinator replacement,
-            RetainedStreamSessionCoordinator.ProviderTransferAuthorization authorization) {
+            SessionModel.ProviderTransferAuthorization authorization, SessionModel model) {
         if (replacement == null || authorization == null
                 || transitionSpec.playniteGameId.isEmpty()
                 || !providerOwnerKey().equals(replacement.providerOwnerKey())
@@ -432,7 +432,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             if (owner == null || !owner.matches(transitionSpec) || owner.cleanupClaimed
                     || !owner.processToken.equals(authorization.processToken)
                     || owner.processId != authorization.processId
-                    || !RetainedStreamSessionCoordinator.consumeProviderTransferAuthorization(
+                    || !model.consumeProviderTransferAuthorization(
                     authorization)) return false;
             PROVIDER_OWNERS.put(key, owner.transferTo(replacement.transitionSpec));
         }

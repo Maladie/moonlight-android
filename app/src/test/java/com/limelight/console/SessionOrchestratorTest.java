@@ -1,8 +1,10 @@
 package com.limelight.console;
 
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionModelDriver;
+
 import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.nvstream.http.NvApp;
-import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import org.junit.Test;
 
@@ -20,6 +22,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public class SessionOrchestratorTest {
+    private final SessionModelDriver m = new SessionModelDriver();
     @Test public void sameOriginActorChangeReusesEvenWhenNewActorSeesIdleOrTheSameGame() {
         for (SessionSnapshot.State state : new SessionSnapshot.State[] {
                 SessionSnapshot.State.NONE, SessionSnapshot.State.ACTIVE}) {
@@ -254,40 +257,40 @@ public class SessionOrchestratorTest {
 
     @Test public void warmUpWakeDecisionUsesLocalBridgeAndMoonlightEvidence() {
         assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.HOME_LIVE, false,
+                SessionModel.State.HOME_LIVE, false,
                 com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
         assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.PARKED_LIVE, false,
+                SessionModel.State.PARKED_LIVE, false,
                 com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
         assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.PREPARING, false,
+                SessionModel.State.PREPARING, false,
                 com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
         assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.TERMINATING, false,
+                SessionModel.State.TERMINATING, false,
                 com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
         assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.NONE, true,
+                SessionModel.State.NONE, true,
                 com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
         assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.NONE, false,
+                SessionModel.State.NONE, false,
                 com.limelight.nvstream.http.ComputerDetails.State.ONLINE));
         assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.NONE, false,
+                SessionModel.State.NONE, false,
                 com.limelight.nvstream.http.ComputerDetails.State.UNKNOWN));
         assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.NONE, false,
+                SessionModel.State.NONE, false,
                 com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
         assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
+                SessionModel.State.RECONNECT_REQUIRED,
                 false, com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
     }
 
     @Test public void warmUpWakeDecisionIsPureAndDoesNotOwnSendState() {
         assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.NONE, false,
+                SessionModel.State.NONE, false,
                 com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
         assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
-                RetainedStreamSessionCoordinator.State.NONE, false,
+                SessionModel.State.NONE, false,
                 com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
     }
 

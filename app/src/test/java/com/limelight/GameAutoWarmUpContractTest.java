@@ -24,8 +24,8 @@ public class GameAutoWarmUpContractTest {
         // A fresh warm-up claims PREPARING before opening Home; only a reattached presentation
         // whose Home frame the coordinator already accepted skips that (resumeAcceptedWarmUp).
         assertTrue(create.indexOf("if (reattachPending && resumeAcceptedWarmUp())")
-                < create.indexOf("beginAutoWarmUpPreparing()"));
-        assertTrue(create.indexOf("beginAutoWarmUpPreparing()")
+                < create.indexOf("beginAutoWarmUpPreparing("));
+        assertTrue(create.indexOf("beginAutoWarmUpPreparing(")
                 < create.lastIndexOf("openPreparingConsoleHome()"));
         String resume = between(game, "private boolean resumeAcceptedWarmUp()",
                 "static boolean shouldResumeAcceptedWarmUp(");
@@ -51,7 +51,7 @@ public class GameAutoWarmUpContractTest {
         String create = between(game, "protected void onCreate(",
                 "private MediaCodecDecoderRenderer createDecoderRenderer");
         String apply = between(game, "private void applyRetainedTransition(",
-                "private boolean advancePreparingSwitch(");
+                "private void advancePreparingSwitch(");
 
         assertTrue(create.contains("if (hasAutoWarmUpTransportIdentity() && !autoWarmUpConvertedToGame)"));
         assertTrue(create.contains("consoleLoadingView.showNeutralWarmUpAppearance()"));
@@ -102,9 +102,9 @@ public class GameAutoWarmUpContractTest {
         assertTrue(runtimeStarted.contains("state = State.CONNECTED"));
         assertTrue(runtimeStarted.indexOf("state = State.CONNECTED")
                 < runtimeStarted.indexOf("p.connectionStarted()"));
-        assertTrue(connected.contains("completeAutoWarmUpPreparing()"));
+        assertTrue(connected.contains("completeAutoWarmUpPreparing("));
         assertTrue(connected.indexOf("spinner.dismiss()")
-                < connected.indexOf("completeAutoWarmUpPreparing()"));
+                < connected.indexOf("completeAutoWarmUpPreparing("));
         assertTrue(connected.indexOf(
                 "autoWarmUpTransportStopRequested.compareAndSet(false, true)")
                 < connected.indexOf("stopConnection(() -> finish())"));
@@ -173,7 +173,7 @@ public class GameAutoWarmUpContractTest {
                 < cancel.indexOf("stopConnection(() -> finish())"));
         assertEquals(1, occurrences(cancel, "transitionCoordinator.cancel()"));
         assertEquals(1, occurrences(cancel, "stopConnection(() -> finish())"));
-        assertTrue(cancel.contains("SessionResumeManager.save("));
+        assertTrue(cancel.contains("saveReconnect(true)"));
         assertFalse(cancel.contains("quitApp"));
     }
 
@@ -181,7 +181,7 @@ public class GameAutoWarmUpContractTest {
             throws IOException {
         String game = source();
         String cancel = between(game, "private boolean cancelUnstartedAutoWarmUp(",
-                "private boolean completeAutoWarmUpPreparing()");
+                "private void completeAutoWarmUpPreparing(");
         String external = between(game, "public boolean parkPreparingTransport(",
                 "public void terminateRetainedSession(");
         String submitted = between(game, "public boolean preparingHomeFrameSubmitted(",
@@ -189,8 +189,8 @@ public class GameAutoWarmUpContractTest {
         String destroy = between(game, "protected void onDestroy()",
                 "protected void onPause()" );
 
-        assertTrue(cancel.contains("RetainedStreamSessionCoordinator.cancelPreparing("));
-        assertFalse(cancel.contains("SessionResumeManager.save"));
+        assertTrue(cancel.contains("new SessionEvent.PreparingCancelled("));
+        assertFalse(cancel.contains("saveReconnect(true)"));
         assertFalse(cancel.contains("stopConnection"));
         assertFalse(cancel.contains("stopProviderGame"));
         assertTrue(external.contains("if (!autoWarmUpHomeFrameAccepted.get())"));
@@ -211,13 +211,13 @@ public class GameAutoWarmUpContractTest {
             throws IOException {
         String failure = between(source(),
                 "private boolean handleAutoWarmUpConnectionFailure()",
-                "private boolean beginAutoWarmUpPreparing()");
+                "private void beginAutoWarmUpPreparing(");
         String completed = between(failure,
                 "if (autoWarmUpRetained && isOwnedHiddenAutoWarmUp())",
-                "RetainedStreamSessionCoordinator.snapshot()");
+                "sessionModel.snapshot()");
 
         assertTrue(failure.indexOf("if (autoWarmUpTransportStopRequested.get()) return true")
-                < failure.indexOf("RetainedStreamSessionCoordinator.snapshot()"));
+                < failure.indexOf("sessionModel.snapshot()"));
         assertTrue(completed.contains(
                 "return !autoWarmUpTransportStopRequested.compareAndSet(false, true)"));
         assertTrue(failure.indexOf(
@@ -245,7 +245,7 @@ public class GameAutoWarmUpContractTest {
         String sameGame = between(game, "private void adoptPreparingObservedGame(",
                 "private void applyRetainedTransition(");
         String setup = between(game, "private void applyRetainedTransition(",
-                "private boolean advancePreparingSwitch(");
+                "private void advancePreparingSwitch(");
 
         assertTrue(begin.indexOf("consoleLoadingView.doAfterNextFrame")
                 < begin.indexOf("beginRetainedProviderSwitch(operation)"));
@@ -273,7 +273,7 @@ public class GameAutoWarmUpContractTest {
         String clear = between(game, "private void clearAutoWarmUpIdentity()",
                 "private boolean handleAutoWarmUpConnectionFailure()");
         String apply = between(game, "private void applyRetainedTransition(",
-                "private boolean advancePreparingSwitch(");
+                "private void advancePreparingSwitch(");
         String launchHome = between(game, "private void launchConsoleHome(",
                 "private void showOverlayMenuWithBattery()");
 
@@ -295,7 +295,7 @@ public class GameAutoWarmUpContractTest {
                 "public void connectionStarted()");
         String failure = between(game,
                 "private boolean handleAutoWarmUpConnectionFailure()",
-                "private boolean beginAutoWarmUpPreparing()");
+                "private void beginAutoWarmUpPreparing(");
 
         assertTrue(stageFailed.indexOf("cleanupUnrevealedProviderLaunch(")
                 < stageFailed.indexOf("handleAutoWarmUpConnectionFailure()"));
@@ -310,15 +310,15 @@ public class GameAutoWarmUpContractTest {
         String newGame = between(game, "private void beginNewRetainedGameAttempt(",
                 "private void adoptPreparingObservedGame(");
         String setup = between(game, "private void applyRetainedTransition(",
-                "private boolean advancePreparingSwitch(");
-        String completion = between(game, "private boolean completeAutoWarmUpPreparing()",
-                "private boolean markAutoWarmUpReconnectRequired(String reason)");
+                "private void advancePreparingSwitch(");
+        String completion = between(game, "private void completeAutoWarmUpPreparing(",
+                "private void markAutoWarmUpReconnectRequired(String reason,");
 
         assertTrue(newGame.indexOf("advancePreparingSwitch(")
                 < newGame.indexOf("applyRetainedTransition("));
         assertTrue(setup.indexOf("transitionController.begin(next)")
                 < setup.indexOf("autoWarmUpConvertedToGame = true"));
-        assertTrue(completion.contains("preparing.transitionId"));
+        assertTrue(completion.contains("new SessionEvent.PreparingCompleted(runtime, preparing)"));
         assertTrue(completion.contains("clearAutoWarmUpIdentity()"));
     }
 
@@ -338,9 +338,8 @@ public class GameAutoWarmUpContractTest {
                 "private static final class RetainedSwitch");
 
         assertEquals(2, occurrences(completed, "finishRetainedSwitchLock(operation)"));
-        assertTrue(completed.contains("if (operation.request.preparing)"));
-        assertTrue(completed.contains("operation.request.transitionId"));
-        assertTrue(completed.contains("operation.request.attempt"));
+        // The model releases a preparing lock by its transition and attempt.
+        assertTrue(completed.contains("new SessionEvent.SwitchFinished(runtime, operation.request)"));
     }
 
     @Test public void childMonitoringResumesOnlyAfterRetainedSwitchMarkerIsCleared()
@@ -373,9 +372,11 @@ public class GameAutoWarmUpContractTest {
         assertTrue(interaction.contains("operation.providerStartRejected = true"));
         assertTrue(interaction.contains("signalRetainedSwitchReuse(operation)"));
         assertFalse(interaction.contains("updateRetainedGame("));
-        assertFalse(interaction.contains("SessionResumeManager.saveActive"));
-        assertTrue(cleanup.contains("!operation.providerStartRejected"));
-        assertTrue(cleanup.contains("operation.providerStartRejected = false"));
+        assertFalse(interaction.contains("saveReconnect(false)"));
+        assertTrue(cleanup.contains("if (operation.providerStartRejected)"));
+        assertTrue(between(game, "private void settleStartFailedSwitch(",
+                "private void afterRetainedGameStopped(").contains(
+                "operation.providerStartRejected = false"));
     }
 
     @Test public void rejectedRevealHomeAndRecoveryRemainNeutral() throws IOException {
@@ -396,7 +397,7 @@ public class GameAutoWarmUpContractTest {
         assertTrue(reveal.contains("else persistRevealedTransitionForRecovery()"));
         assertTrue(neutral.contains("LaunchTransitionType.GAME_CONNECTION.name()"));
         assertTrue(neutral.contains("EXTRA_TRANSITION_PLAYNITE_GAME_ID, \"\""));
-        assertTrue(neutral.contains("SessionResumeManager.saveActive"));
+        assertTrue(neutral.contains("saveReconnect(false)"));
         assertTrue(home.contains("String sessionGameId = currentSessionGameId()"));
         assertEquals(3, occurrences(home, "sessionGameId"));
         assertTrue(retry.indexOf("providerStartRejectedTransitionId = \"\"")

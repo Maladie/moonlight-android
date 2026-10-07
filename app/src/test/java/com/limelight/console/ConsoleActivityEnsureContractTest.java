@@ -78,7 +78,7 @@ public class ConsoleActivityEnsureContractTest {
                         "private void requestTerminateSession(ComputerDetails host, String"),
                 source.indexOf("private boolean isPairingContextCurrent("));
 
-        assertTrue(method.indexOf("RetainedStreamSessionCoordinator.terminate(")
+        assertTrue(method.indexOf("new SessionEvent.TerminateRequested(")
                 < method.indexOf("executor.execute("));
         assertTrue(method.contains("terminateKnownControlPlane(host, profileKey.profileId"));
         assertFalse(method.contains("quitApp("));
@@ -98,7 +98,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(method.contains("boolean success = hardResetHost(gateway, childSessionId)"));
         assertTrue(method.contains("hostGatewayClient.hardResetSession(gateway, childSessionId)"));
         assertFalse(method.contains("terminateKnownControlPlane("));
-        assertFalse(method.contains("RetainedStreamSessionCoordinator.terminate("));
+        assertFalse(method.contains("new SessionEvent.TerminateRequested("));
     }
 
     @Test public void retainedFallbackKeepsAllHostEffectsInsideControlPermit() throws IOException {
@@ -107,7 +107,7 @@ public class ConsoleActivityEnsureContractTest {
                         "private void terminateRetainedSessionAndExit()"),
                 source.indexOf("private String currentRetainedStreamSessionId()"));
 
-        assertTrue(method.contains("RetainedStreamSessionCoordinator.terminate("));
+        assertTrue(method.contains("new SessionEvent.TerminateRequested("));
         assertTrue(method.contains("terminateKnownControlPlane(host, terminationProfileId"));
         assertTrue(method.contains("providerGameId)"));
         assertTrue(method.contains("complete.complete(success)"));
@@ -122,10 +122,10 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("private final ServiceConnection serviceConnection"));
 
         assertTrue(method.contains("AuthoritativeSessionTransition.lostRetainedTransport("));
-        assertTrue(method.contains("clearIfMatches(\n                retained.streamSessionId)"));
+        assertTrue(method.contains("new SessionEvent.Cleared(retained.streamSessionId)"));
         assertTrue(method.contains("pending.matches(retained.streamSessionId)"));
         assertTrue(method.contains("isStreamHome() && retained.streamSessionId.equals(\n"
-                + "                    launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID))"));
+                + "                        launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID))"));
         assertTrue(method.contains("finish();"));
         assertFalse(method.contains("finishAffinity"));
         assertFalse(method.contains("!pending.autoResume"));
@@ -217,11 +217,10 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(effects.contains("terminateLiveRetainedForReplacement("));
         assertTrue(effects.contains("terminateKnownControlPlane(host, intent.profileId"));
-        assertTrue(effects.matches("(?s).*RetainedStreamSessionCoordinator\\."
-                + "beginDirectTermination\\(\\s+retained\\).*"));
+        assertTrue(effects.matches("(?s).*new SessionEvent\\.DirectTerminationBegun\\(retained\\).*"));
         assertFalse(effects.contains(".restoreReconnectIfTerminating("));
         assertFalse(effects.contains("closePreviousSession(ready"));
-        assertTrue(helper.contains("RetainedStreamSessionCoordinator.terminate("));
+        assertTrue(helper.contains("new SessionEvent.TerminateRequested("));
         assertTrue(helper.contains("cancelled.getAsBoolean()"));
     }
 
@@ -291,9 +290,9 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(launch.contains("LaunchTransitionType.GAME_CONNECTION"));
         assertTrue(launch.contains("playniteGameHistoryKey("));
         int reused = retainedSwitch.indexOf(
-                "result == RetainedStreamSessionCoordinator.SwitchOutcome.REUSED");
+                "result == SessionModel.SwitchOutcome.REUSED");
         int cancelled = retainedSwitch.indexOf(
-                "result == RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED");
+                "result == SessionModel.SwitchOutcome.CANCELLED");
         assertTrue(reused >= 0 && cancelled > reused);
         assertTrue(retainedSwitch.substring(reused, cancelled).contains(
                 "playniteGameHistoryKey("));
@@ -407,7 +406,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(method.contains("!retained.playniteGameId.equalsIgnoreCase("));
         assertTrue(method.contains("PlayniteTargetResolver.findById("));
         assertTrue(method.contains("PlayniteTargetResolver.isNeutralStream(retainedTarget)"));
-        assertTrue(method.contains("RetainedStreamSessionCoordinator.canSwitchOrigin("));
+        assertTrue(method.contains("sessionModel.canSwitchOrigin("));
     }
 
     @Test public void retryKeepsIntentAndFreshObservationRestoresResumePresentation()
@@ -472,7 +471,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(scopedCancel.contains("else if (sessionOrchestrator != null)"));
         assertFalse(cancel.contains("cancelOwnedWarmUp"));
         assertTrue(hostCancel.contains(
-                "RetainedStreamSessionCoordinator.cancelPreparing(preparing)"));
+                "new SessionEvent.CancelPreparingTransport(preparing)"));
         assertTrue(hostCancel.contains("if (cancelled && relinquishForHostChange)"));
         assertTrue(preparation.contains("warmUpStatus = WARM_UP_ERROR"));
         assertTrue(preparation.indexOf("renderHosts();")
@@ -536,7 +535,7 @@ public class ConsoleActivityEnsureContractTest {
         assertEquals(-1, relay.indexOf("clearPendingWarmUpRelay()", play));
         assertTrue(relay.contains("isPendingWarmUpRelayOwnedOrCompleted"));
         assertTrue(source.contains(
-                "RetainedStreamSessionCoordinator.isPreparingSwitchOwned("));
+                "sessionModel.isPreparingSwitchOwned("));
     }
 
     @Test public void automaticHostSelectionResolvesProfileGateBeforeWarmUp() throws IOException {
@@ -578,7 +577,7 @@ public class ConsoleActivityEnsureContractTest {
         String streamHome = streamHomeActivitySource();
         int createStart = streamHome.indexOf("protected void onCreate(");
         String create = streamHome.substring(createStart,
-                streamHome.indexOf("private RetainedStreamSessionCoordinator.Snapshot",
+                streamHome.indexOf("private SessionModel.Snapshot",
                         createStart));
         String console = consoleActivitySource();
         String build = console.substring(console.indexOf("private FrameLayout buildUi()"),
@@ -774,13 +773,13 @@ public class ConsoleActivityEnsureContractTest {
         String back = source.substring(source.indexOf("public void onBackPressed()"),
                 source.indexOf("private void loadKnownHosts("));
         String retainedPrompt = back.substring(back.indexOf(
-                "RetainedStreamSessionCoordinator.hasRetainedSession()"),
+                "sessionModel.hasRetainedSession()"),
                 back.indexOf("showRetainedStreamExitConfirmation()"));
 
         assertFalse(retainedPrompt.contains("retainedStreamHome"));
         assertTrue(retainedPrompt.contains(
-                "RetainedStreamSessionCoordinator.hasRetainedSession()"));
-        assertTrue(retainedPrompt.contains("SessionResumeManager.hasPendingSession(this)"));
+                "sessionModel.hasRetainedSession()"));
+        assertTrue(retainedPrompt.contains("sessionModel.records().pending != null"));
     }
 
     private static String consoleActivitySource() throws IOException {

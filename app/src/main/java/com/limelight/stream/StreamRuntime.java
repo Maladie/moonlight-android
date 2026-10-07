@@ -4,6 +4,8 @@ import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamInput;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.input.KeyboardPacket;
+import com.limelight.session.SessionEvent;
+import com.limelight.session.SessionModel;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,7 +23,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * detaches; detaching never stops a transport that is allowed to survive.
  */
 public final class StreamRuntime implements NvConnectionListener,
-        RetainedStreamSessionCoordinator.Controller {
+        SessionModel.Controller {
 
     /** The native transport plus the renderers bound to it at start. */
     public interface Transport extends StreamInput {
@@ -52,30 +54,34 @@ public final class StreamRuntime implements NvConnectionListener,
         void clearReconnectRecord(String streamSessionId);
         void controlGenerationBound(String streamSessionId, long controlGeneration);
         /** Host-side whole-session termination for a runtime without a presentation. */
-        void terminateHost(StreamRuntime runtime, RetainedStreamSessionCoordinator.Snapshot session,
-                           RetainedStreamSessionCoordinator.TerminationCallback completion);
+        void terminateHost(StreamRuntime runtime, SessionModel.Snapshot session,
+                           SessionModel.TerminationCallback completion);
         /** The transport generation ended; release presentation-less host-side owners. */
         void runtimeEnded();
         Executor stopExecutor();
         Executor mainExecutor();
         Executor inputExecutor();
         void record(String level, String event, Object... fields);
+        /** The process session model this transport reports to. */
+        SessionModel sessionModel();
     }
 
     /** The Activity-side adapter. Callbacks arrive only while it is the current attachment. */
     public interface Presentation extends NvConnectionListener {
-        boolean parkPreparingTransport(RetainedStreamSessionCoordinator.Snapshot preparing);
-        boolean cancelPreparingTransport(RetainedStreamSessionCoordinator.Snapshot preparing);
-        boolean preparingHomeFrameSubmitted(RetainedStreamSessionCoordinator.Snapshot preparing);
-        void switchGame(RetainedStreamSessionCoordinator.SwitchRequest request,
-                        RetainedStreamSessionCoordinator.SwitchCallback completion);
-        void terminateRetainedSession(RetainedStreamSessionCoordinator.TerminationCallback completion);
+        boolean parkPreparingTransport(SessionModel.Snapshot preparing);
+        boolean cancelPreparingTransport(SessionModel.Snapshot preparing);
+        boolean preparingHomeFrameSubmitted(SessionModel.Snapshot preparing);
+        void switchGame(SessionModel.SwitchRequest request,
+                        SessionModel.SwitchCallback completion);
+        void terminateRetainedSession(SessionModel.TerminationCallback completion);
         /** The runtime parked the stream (decoder detached, audio muted); hide video and input. */
         void onTransportParked();
         /** The runtime finished an explicit disconnect; the presentation may finish itself. */
         void onRuntimeDisconnected();
         /** Presentation-owned effects that must run before the native stop. */
         void onTransportStopping();
+        /** False while this presentation shows the stream (resumed with a valid surface). */
+        boolean canPark();
     }
 
     /** Immutable identity of one presentation's attachment to one transport generation. */
@@ -130,8 +136,28 @@ public final class StreamRuntime implements NvConnectionListener,
         this.executionProfileId = executionProfileId;
         this.transport = transport;
         this.platform = platform;
-        this.stopCoordinator = new TransportStopCoordinator(transport::stop,
+        this.stopCoordinator = new TransportStopCoordinator(this::stopNative,
                 platform.stopExecutor());
+    }
+
+    /**
+     * The native stop (on the stop executor, never the main thread) waits for every in-flight
+     * native call of this generation and runs alone: the core holds one connection per process
+     * and aborts on a call after its teardown. Callers never wait for it: they check the stop
+     * flag first and only try the lock, so a slow LiStopConnection cannot stall the main thread.
+     */
+    private void stopNative() {
+        inputLock.writeLock().lock();
+        try {
+            transport.stop();
+        } finally {
+            inputLock.writeLock().unlock();
+        }
+    }
+
+    /** A native control call is legal only on this connected generation before its stop. */
+    private synchronized boolean controlAllowed(Attachment attachment) {
+        return isCurrent(attachment) && !stopRequested && state == State.CONNECTED;
     }
 
     /**
@@ -180,7 +206,7 @@ public final class StreamRuntime implements NvConnectionListener,
         }
         if (runtime == null || !runtime.streamSessionId.equals(streamSessionId)
                 || runtime.generation() != generation) return;
-        RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
+        runtime.platform.sessionModel().post(new SessionEvent.Cleared(streamSessionId));
         runtime.platform.clearReconnectRecord(streamSessionId);
         runtime.stop(result -> {
             Presentation attached = runtime.attached();
@@ -383,40 +409,72 @@ public final class StreamRuntime implements NvConnectionListener,
 
     // ---- presentation-driven effects (identity fenced) ---------------------------------------
 
+    /** A stopping transport never gets a decoder (and so never a frame) again. */
     public boolean attachDecoder(Attachment attachment, VideoDecoderRenderer decoder) {
-        if (!isCurrent(attachment)) return false;
+        synchronized (this) {
+            if (!isCurrent(attachment) || stopRequested) return false;
+        }
         return transport.attachDecoder(decoder);
     }
 
+    /** Muting always applies; a stopping transport is never unmuted. */
     public void setAudioVolume(Attachment attachment, float volume) {
-        if (isCurrent(attachment)) transport.setAudioVolume(volume);
+        synchronized (this) {
+            if (!isCurrent(attachment) || (volume > 0f && stopRequested)) return;
+        }
+        transport.setAudioVolume(volume);
     }
 
     public void requestIdrFrame(Attachment attachment) {
-        if (isCurrent(attachment)) transport.requestIdrFrame();
+        if (!controlAllowed(attachment) || !inputLock.readLock().tryLock()) return;
+        try {
+            if (controlAllowed(attachment)) transport.requestIdrFrame();
+        } finally {
+            inputLock.readLock().unlock();
+        }
     }
 
+    /** False, without waiting, while the native stop runs or the generation is not live. */
     public boolean reauthorizeControlGeneration(Attachment attachment, long expected,
                                                 long generation) {
-        return isCurrent(attachment)
-                && transport.reauthorizeControlGeneration(expected, generation);
+        if (!controlAllowed(attachment) || !inputLock.readLock().tryLock()) return false;
+        try {
+            return controlAllowed(attachment)
+                    && transport.reauthorizeControlGeneration(expected, generation);
+        } finally {
+            inputLock.readLock().unlock();
+        }
     }
 
-    /** Parks the transport for background retention; false means the runtime is stopping it. */
+    /** Parks the transport for background retention; false means it was not parked. */
     public boolean park() {
+        return parkTransport() == SessionModel.ParkOutcome.PARKED;
+    }
+
+    /**
+     * The one park decision: a presentation that is showing the stream refuses it (the transport
+     * stays live and unchanged); a transport that cannot be protected is stopped instead.
+     */
+    private SessionModel.ParkOutcome parkTransport() {
+        Presentation shown = attached();
+        if (shown != null && !shown.canPark()) {
+            platform.record("INFO", "runtime.park_refused", "stream_session_id",
+                    streamSessionId, "generation", generation(), "reason", "presented");
+            return SessionModel.ParkOutcome.REFUSED;
+        }
         Presentation attached;
         boolean protectedPark;
         int minutes = platform.retentionMinutes();
         synchronized (this) {
-            if (state != State.CONNECTED || stopRequested) return false;
-            if (parked) return true;
+            if (state != State.CONNECTED || stopRequested) return SessionModel.ParkOutcome.STOPPED;
+            if (parked) return SessionModel.ParkOutcome.PARKED;
             protectedPark = foregroundService == ForegroundService.ESTABLISHED && minutes != 0;
             attached = presentation;
             if (protectedPark) parked = true;
         }
         if (!protectedPark) {
             stopUnprotected(minutes == 0 ? "retention_disabled" : "park_without_foreground_service");
-            return false;
+            return SessionModel.ParkOutcome.STOPPED;
         }
         transport.detachDecoder();
         transport.setAudioVolume(0f);
@@ -424,7 +482,7 @@ public final class StreamRuntime implements NvConnectionListener,
         platform.record("INFO", "runtime.parked", "stream_session_id", streamSessionId,
                 "generation", generation());
         if (attached != null) attached.onTransportParked();
-        return true;
+        return SessionModel.ParkOutcome.PARKED;
     }
 
     /** Presentation restored video: retention timer cancelled, service stays foreground. */
@@ -448,17 +506,9 @@ public final class StreamRuntime implements NvConnectionListener,
         });
     }
 
+    /** One owner-scoped report; the model decides from its own state what the loss means. */
     private void markReconnectRequired() {
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        if (!retained.streamSessionId.equals(streamSessionId)) return;
-        if (retained.state == RetainedStreamSessionCoordinator.State.PREPARING) {
-            RetainedStreamSessionCoordinator.markPreparingReconnectRequired(this,
-                    retained.streamSessionId, retained.hostId, retained.appId,
-                    retained.transitionId, retained.attempt);
-        } else {
-            RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
-        }
+        platform.sessionModel().post(new SessionEvent.TransportLost(this, streamSessionId));
     }
 
     /**
@@ -486,22 +536,47 @@ public final class StreamRuntime implements NvConnectionListener,
         }
     }
 
+    /**
+     * The presentation cancelled its own unstarted preparing attempt and is going away: nothing
+     * is retained, so the transport stops without saving reconnect material.
+     */
+    public void abandonPreparing(Attachment attachment) {
+        if (!isCurrent(attachment)) return;
+        detach(attachment);
+        platform.record("INFO", "runtime.preparing_abandoned",
+                "stream_session_id", streamSessionId, "generation", generation());
+        stop(result -> { });
+    }
+
+    /**
+     * The presentation's surface is gone: stop decoding into it and mute now, before any
+     * asynchronous park decision. Changes no session state; park tolerates the detached decoder.
+     * Returns whether the decoder was detached: the presentation must then reattach one.
+     */
+    public boolean surfaceLost(Attachment attachment) {
+        synchronized (this) {
+            if (!isCurrent(attachment) || state != State.CONNECTED) return false;
+        }
+        transport.detachDecoder();
+        transport.setAudioVolume(0f);
+        return true;
+    }
+
     private boolean retainedByCoordinator() {
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
+        SessionModel.Snapshot retained = platform.sessionModel().snapshot();
         return retained.streamSessionId.equals(streamSessionId)
-                && retained.state != RetainedStreamSessionCoordinator.State.NONE
-                && retained.state != RetainedStreamSessionCoordinator.State.TERMINATING;
+                && retained.state != SessionModel.State.NONE
+                && retained.state != SessionModel.State.TERMINATING;
     }
 
     boolean canSurviveWithoutPresentation() {
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
+        SessionModel model = platform.sessionModel();
+        SessionModel.Snapshot retained = model.snapshot();
         boolean retainedState = retained.streamSessionId.equals(streamSessionId)
-                && (retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE
-                || (retained.state == RetainedStreamSessionCoordinator.State.PREPARING
-                && RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                && (retained.state == SessionModel.State.HOME_LIVE
+                || retained.state == SessionModel.State.PARKED_LIVE
+                || (retained.state == SessionModel.State.PREPARING
+                && model.isPreparingHomeFrameAccepted(
                 retained.streamSessionId, retained.hostId, retained.appId,
                 retained.playniteGameId, retained.transitionId, retained.attempt)));
         synchronized (this) {
@@ -559,8 +634,8 @@ public final class StreamRuntime implements NvConnectionListener,
     @Override public void stageComplete(String stage) {
         long controlGeneration = transport.controlGeneration();
         if (controlGeneration > 0L && !isStopping()) {
-            RetainedStreamSessionCoordinator.bindControlGeneration(
-                    this, streamSessionId, controlGeneration);
+            platform.sessionModel().post(new SessionEvent.ControlGenerationBound(
+                    this, streamSessionId, controlGeneration));
             platform.controlGenerationBound(streamSessionId, controlGeneration);
         }
         Presentation p = attached();
@@ -654,7 +729,7 @@ public final class StreamRuntime implements NvConnectionListener,
         if (p != null) p.setControllerLED(controllerNumber, r, g, b);
     }
 
-    // ---- RetainedStreamSessionCoordinator.Controller ------------------------------------------
+    // ---- SessionModel.Controller ----------------------------------------------------------------
 
     @Override public boolean isRetainedTransportLive() {
         synchronized (this) {
@@ -666,10 +741,10 @@ public final class StreamRuntime implements NvConnectionListener,
 
     @Override public boolean hasAttachedPresentation() { return hasPresentation(); }
 
-    @Override public boolean parkRetainedTransport() { return park(); }
+    @Override public SessionModel.ParkOutcome parkRetainedTransport() { return parkTransport(); }
 
     @Override public boolean parkPreparingTransport(
-            RetainedStreamSessionCoordinator.Snapshot preparing) {
+            SessionModel.Snapshot preparing) {
         Presentation p = attached();
         if (p != null) return p.parkPreparingTransport(preparing);
         if (!canSurviveWithoutPresentation()) stopUnprotected("preparing_park_headless");
@@ -677,7 +752,7 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     @Override public boolean cancelPreparingTransport(
-            RetainedStreamSessionCoordinator.Snapshot preparing) {
+            SessionModel.Snapshot preparing) {
         Presentation p = attached();
         if (p != null) return p.cancelPreparingTransport(preparing);
         stopUnprotected("preparing_cancelled_headless");
@@ -685,13 +760,13 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     @Override public boolean preparingHomeFrameSubmitted(
-            RetainedStreamSessionCoordinator.Snapshot preparing) {
+            SessionModel.Snapshot preparing) {
         Presentation p = attached();
         return p != null && p.preparingHomeFrameSubmitted(preparing);
     }
 
     @Override public void disconnectRetainedStream(
-            RetainedStreamSessionCoordinator.TerminationCallback completion) {
+            SessionModel.TerminationCallback completion) {
         stop(result -> {
             boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
             if (stopped) {
@@ -706,7 +781,7 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     @Override public void terminateRetainedSession(
-            RetainedStreamSessionCoordinator.TerminationCallback completion) {
+            SessionModel.TerminationCallback completion) {
         Presentation p = attached();
         if (p != null) {
             p.terminateRetainedSession(completion);
@@ -718,17 +793,17 @@ public final class StreamRuntime implements NvConnectionListener,
         }
         transport.setAudioVolume(0f);
         platform.clearReconnectRecord(streamSessionId);
-        platform.terminateHost(this, RetainedStreamSessionCoordinator.snapshot(), completion);
+        platform.terminateHost(this, platform.sessionModel().snapshot(), completion);
     }
 
-    @Override public void switchGame(RetainedStreamSessionCoordinator.SwitchRequest request,
-                                     RetainedStreamSessionCoordinator.SwitchCallback completion) {
+    @Override public void switchGame(SessionModel.SwitchRequest request,
+                                     SessionModel.SwitchCallback completion) {
         Presentation p = attached();
         if (p != null) {
             p.switchGame(request, completion);
             return;
         }
-        completion.complete(RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
+        completion.complete(SessionModel.SwitchOutcome.FAILED,
                 "presentation_detached");
     }
 
@@ -739,9 +814,14 @@ public final class StreamRuntime implements NvConnectionListener,
     private static final byte TILT_UNKNOWN = (byte) 0xFF;
     private static final int LI_ERR_UNSUPPORTED = -5501;
 
+    /**
+     * Input runs on the main thread and never waits: while the native stop or the held-input
+     * release holds the write lock, the event is dropped (the gate is closing anyway).
+     */
     private boolean enter(long serial) {
-        inputLock.readLock().lock();
-        if (openInputSerial == serial && serial != 0L) return true;
+        if (openInputSerial != serial || serial == 0L) return false;
+        if (!inputLock.readLock().tryLock()) return false;
+        if (openInputSerial == serial) return true;
         inputLock.readLock().unlock();
         return false;
     }

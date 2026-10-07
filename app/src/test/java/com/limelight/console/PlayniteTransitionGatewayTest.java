@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.session.SessionModelDriver;
+
 import com.limelight.gateway.GatewayConnection;
 
 import org.json.JSONException;
@@ -21,6 +23,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class PlayniteTransitionGatewayTest {
+    private final SessionModelDriver m = new SessionModelDriver();
     private static final String FINGERPRINT =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     private static final String PROCESS_TOKEN =
@@ -32,7 +35,7 @@ public class PlayniteTransitionGatewayTest {
                 PlayniteTransitionGateway.ActorContext.child("kid", "parent");
         GatewayConnection connection = connection("kid");
         PlayniteTransitionGateway gateway =
-                new PlayniteTransitionGateway(connection, actor, client);
+                new PlayniteTransitionGateway(m.model, connection, actor, client);
 
         PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
         gateway.stopGame("steam:123", PROCESS_TOKEN);
@@ -55,8 +58,7 @@ public class PlayniteTransitionGatewayTest {
 
     @Test public void parentSnapshotRetainsHealthAndGameplayRoutes() throws Exception {
         RecordingClient client = new RecordingClient();
-        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(
-                connection("parent"),
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), client);
 
         PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
@@ -74,8 +76,7 @@ public class PlayniteTransitionGatewayTest {
     @Test public void rejectedObservationDoesNotLeakRawStateToConsumers() throws Exception {
         SessionStateResolver.resetProjectionOwnersForTests();
         RecordingClient client = new RecordingClient();
-        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(
-                connection("parent"),
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), client);
 
         client.revision = 2L;
@@ -97,10 +98,8 @@ public class PlayniteTransitionGatewayTest {
         // poll and the switch decided on the owner's evidence-free projection.
         SessionStateResolver.resetProjectionOwnersForTests();
         RecordingClient client = new RecordingClient();
-        PlayniteTransitionGateway switching = new PlayniteTransitionGateway(
-                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
-        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(
-                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway switching = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
         client.beforeReturn = () -> {
             try {
                 dashboard.snapshot();
@@ -116,6 +115,35 @@ public class PlayniteTransitionGatewayTest {
         assertTrue(snapshot.hasVerifiedProcessFor("steam:123"));
         assertEquals(PROCESS_TOKEN, snapshot.processToken);
         SessionStateResolver.resetProjectionOwnersForTests();
+    }
+
+    @Test public void cancelledReadPropagatesWithoutPublishingUnavailability() throws Exception {
+        SessionStateResolver.resetProjectionOwnersForTests();
+        SessionStateResolver.diagnosticSink = (level, component, event, fields) -> true;
+        RecordingClient client = new RecordingClient();
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, "host",
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"),
+                client, () -> 0L);
+        SessionStateResolver.ProjectionOwner owner =
+                SessionStateResolver.owner(m.model, "host", "parent", "parent");
+        gateway.snapshot();
+        long published = owner.diagnosticEventsForTests();
+        client.failure = new java.io.InterruptedIOException("interrupted");
+        try {
+            for (int read = 0; read < 2; read++) {
+                try {
+                    if (read == 0) gateway.snapshot();
+                    else gateway.snapshotWithinControl(permit("op", "session-1", 2L, 3L));
+                    fail("cancelled read must propagate");
+                } catch (java.io.InterruptedIOException expected) {
+                    assertTrue(Thread.interrupted());
+                }
+                assertEquals(published, owner.diagnosticEventsForTests());
+            }
+        } finally {
+            Thread.interrupted();
+            SessionStateResolver.resetProjectionOwnersForTests();
+        }
     }
 
     private static com.limelight.gateway.ControlOperationClient.Permit permit(
@@ -137,8 +165,7 @@ public class PlayniteTransitionGatewayTest {
         client.streamSessionId = "session-1";
         client.controlGeneration = 2L;
         client.actorLeaseEpoch = 3L;
-        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(
-                connection("parent"),
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), client);
 
         PlayniteTransitionGateway.Snapshot fenced = gateway.snapshotWithinControl(
@@ -170,10 +197,8 @@ public class PlayniteTransitionGatewayTest {
         client.streamSessionId = "session-1";
         client.controlGeneration = 2L;
         client.actorLeaseEpoch = 3L;
-        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(
-                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
-        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(
-                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
         client.beforeReturn = () -> {
             try {
                 dashboard.snapshot();
@@ -213,8 +238,7 @@ public class PlayniteTransitionGatewayTest {
         client.controlGeneration = 2L;
         client.actorLeaseEpoch = 3L;
         client.processPending = true;
-        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(
-                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
         client.beforeReturn = () -> client.processPending = false;
 
         PlayniteTransitionGateway.Snapshot settled = termination.stopEvidenceWithinControl(
@@ -249,10 +273,8 @@ public class PlayniteTransitionGatewayTest {
         client.controlGeneration = 2L;
         client.actorLeaseEpoch = 3L;
         client.idle = true;
-        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(
-                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
-        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(
-                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
         client.beforeReturn = () -> {
             client.idle = false;
             try {
@@ -275,11 +297,9 @@ public class PlayniteTransitionGatewayTest {
     @Test public void capturedContextSurvivesDeterministicActorRebindOrdering()
             throws Exception {
         RecordingClient trace = new RecordingClient();
-        PlayniteTransitionGateway child = new PlayniteTransitionGateway(
-                connection("kid"),
+        PlayniteTransitionGateway child = new PlayniteTransitionGateway(m.model, connection("kid"),
                 PlayniteTransitionGateway.ActorContext.child("kid", "parent"), trace);
-        PlayniteTransitionGateway parent = new PlayniteTransitionGateway(
-                connection("parent"),
+        PlayniteTransitionGateway parent = new PlayniteTransitionGateway(m.model, connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), trace);
 
         child.snapshot();
@@ -295,7 +315,7 @@ public class PlayniteTransitionGatewayTest {
 
     @Test public void connectionCannotBeBoundToAnotherActor() {
         try {
-            new PlayniteTransitionGateway(connection("parent"),
+            new PlayniteTransitionGateway(m.model, connection("parent"),
                     PlayniteTransitionGateway.ActorContext.child("kid", "parent"),
                     new RecordingClient());
             fail("Expected actor mismatch rejection");
@@ -415,6 +435,7 @@ public class PlayniteTransitionGatewayTest {
         String gameEvidence = "VERIFIED";
         String gameId = "steam:123";
         int parsedObservations;
+        IOException failure;
 
         @Override SessionObservation getSessionObservation(
                 GatewayConnection connection, String executionProfileId,
@@ -433,6 +454,11 @@ public class PlayniteTransitionGatewayTest {
                 throws IOException {
             requests.add(method + " " + path);
             profiles.add(connection.profileId());
+            if (failure != null) {
+                // The transport restores the interrupt that okhttp consumed.
+                Thread.currentThread().interrupt();
+                throw failure;
+            }
             try {
                 if (path.startsWith("/api/v1/session/observation?")) {
                     long ordinal = Long.parseLong(path.replaceFirst(

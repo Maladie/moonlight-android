@@ -27,7 +27,7 @@ public class GameChildSessionContractTest {
         }
         String home = text.substring(text.indexOf("private void openConsoleHome()"),
                 text.indexOf("private void openPreparingConsoleHome()"));
-        assertTrue(home.contains("RetainedStreamSessionCoordinator.enterHome"));
+        assertTrue(home.contains("new SessionEvent.EnterHome"));
         assertTrue(home.contains("currentProfileId()"));
         String destroy = text.substring(text.indexOf("protected void onDestroy()"),
                 text.indexOf("protected void onPause()"));

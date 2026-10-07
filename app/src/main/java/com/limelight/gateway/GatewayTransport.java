@@ -15,6 +15,7 @@ import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.ProtocolException;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -118,8 +119,11 @@ public final class GatewayTransport {
                     status, startedNanos, wrapped);
             throw wrapped;
         } catch (IOException | RuntimeException error) {
-            recordRequest("request.failed", "GET", path, requestId, connection,
-                    status, startedNanos, error);
+            if (!recordCancelled("GET", path, requestId, connection, status, startedNanos,
+                    error, Thread.currentThread().isInterrupted())) {
+                recordRequest("request.failed", "GET", path, requestId, connection,
+                        status, startedNanos, error);
+            }
             throw error;
         } finally {
             if (http != null) http.disconnect();
@@ -167,8 +171,11 @@ public final class GatewayTransport {
                     status, requestStartedNanos, wrapped);
             throw wrapped;
         } catch (IOException | RuntimeException error) {
-            recordRequest("request.failed", "GET", path, requestId, connection,
-                    status, requestStartedNanos, error);
+            if (!recordCancelled("GET", path, requestId, connection, status,
+                    requestStartedNanos, error, Thread.currentThread().isInterrupted())) {
+                recordRequest("request.failed", "GET", path, requestId, connection,
+                        status, requestStartedNanos, error);
+            }
             throw error;
         } finally {
             if (http != null) http.disconnect();
@@ -425,6 +432,8 @@ public final class GatewayTransport {
                 throw wrapped;
             } catch (IOException | RuntimeException error) {
                 boolean threadInterrupted = Thread.currentThread().isInterrupted();
+                if (recordCancelled(method, path, effectiveRequestId, connection, status,
+                        startedNanos, error, threadInterrupted)) throw error;
                 if (status > 0 && ("response_stream".equals(phase)
                         || "response_body".equals(phase))) {
                     MoonWakerDiagnostics.record("ERROR", "android.gateway",
@@ -508,10 +517,29 @@ public final class GatewayTransport {
         return path.substring(0, end);
     }
 
+    /**
+     * A worker interrupted by its owner's teardown cancels the request; okhttp may consume
+     * the interrupt flag and report only an {@link InterruptedIOException}, so the flag is
+     * restored for the caller. A read timeout is a real failure. Returns whether the request
+     * was recorded (INFO) as cancelled.
+     */
+    static boolean recordCancelled(String method, String path, String requestId,
+                                   GatewayConnection connection, int httpStatus,
+                                   long startedNanos, Throwable error,
+                                   boolean threadInterrupted) {
+        if (!threadInterrupted && (!(error instanceof InterruptedIOException)
+                || error instanceof SocketTimeoutException)) return false;
+        Thread.currentThread().interrupt();
+        recordRequest("request.cancelled", method, path, requestId, connection,
+                httpStatus, startedNanos, error);
+        return true;
+    }
+
     private static void recordRequest(String event, String method, String path,
                                       String requestId, GatewayConnection connection,
                                       int httpStatus, long startedNanos, Throwable error) {
-        MoonWakerDiagnostics.record(error == null ? "INFO" : "ERROR",
+        MoonWakerDiagnostics.record(error == null || "request.cancelled".equals(event)
+                        ? "INFO" : "ERROR",
                 "android.gateway", event,
                 "method", method,
                 "route", diagnosticRoute(path),

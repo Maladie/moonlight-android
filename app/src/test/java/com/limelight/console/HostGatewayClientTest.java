@@ -1,5 +1,8 @@
 package com.limelight.console;
 
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionModelDriver;
+
 import com.limelight.gateway.GatewayTransport;
 
 import org.json.JSONObject;
@@ -15,6 +18,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class HostGatewayClientTest {
+    private final SessionModelDriver m = new SessionModelDriver();
     @Test public void coherentObservationRequiresExactSchemaScopeAndEvidence()
             throws Exception {
         long now = 1_700_000_000_000L;
@@ -62,7 +66,7 @@ public class HostGatewayClientTest {
         SessionStateResolver.resetProjectionOwnersForTests();
         try {
             SessionStateResolver.ProjectionOwner owner =
-                    SessionStateResolver.owner("host", "kid", "parent");
+                    SessionStateResolver.owner(m.model, "host", "kid", "parent");
             long ordinal = owner.nextRequestOrdinal();
             HostGatewayClient.SessionObservation parsed =
                     HostGatewayClient.parseSessionObservation(
@@ -70,18 +74,18 @@ public class HostGatewayClientTest {
                             "kid", "parent", ordinal, "", deviceWall);
             assertEquals(providerWall, parsed.observedAtUnixMs);
             assertNotNull(owner.accept(parsed,
-                    com.limelight.stream.RetainedStreamSessionCoordinator.snapshot(),
+                    m.snapshot(),
                     1_000L));
 
             SessionSnapshot locallyStale = owner.current(
-                    com.limelight.stream.RetainedStreamSessionCoordinator.snapshot(),
+                    m.snapshot(),
                     7_000L);
             assertEquals("UNAVAILABLE", locallyStale.processEvidence);
             assertEquals(SessionSnapshot.ObservationState.PENDING,
                     locallyStale.observationState);
             assertEquals(SessionSnapshot.ObservationState.UNAVAILABLE,
                     owner.current(
-                            com.limelight.stream.RetainedStreamSessionCoordinator.snapshot(),
+                            m.snapshot(),
                             16_000L).observationState);
         } finally {
             SessionStateResolver.resetProjectionOwnersForTests();

@@ -1,10 +1,12 @@
 package com.limelight.console;
 
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionModelDriver;
+
 import com.limelight.console.transition.LaunchTransitionController;
 import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionState;
 import com.limelight.console.transition.LaunchTransitionType;
-import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -27,6 +29,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleStreamTransitionCoordinatorTest {
+    private static final SessionModelDriver m = new SessionModelDriver();
     private static final String HOST = "host-1";
     private static final String GAME = "11111111-2222-3333-4444-555555555555";
     private static final String PROCESS_TOKEN =
@@ -1670,21 +1673,21 @@ public class ConsoleStreamTransitionCoordinatorTest {
                     oldCoordinator.providerProcessIdentityForTransfer();
             assertTrue(process != null);
             FakeRetainedController retained = new FakeRetainedController("parent");
-            RetainedStreamSessionCoordinator.enterHome(
+            m.enterHome(
                     retained, "stream-1", HOST, actors[0], 42, GAME);
-            assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+            assertTrue(m.bindControlGeneration(
                     retained, "stream-1", 4));
-            RetainedStreamSessionCoordinator.ProviderTransferAuthorization authorization =
-                    RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
+            SessionModel.ProviderTransferAuthorization authorization =
+                    m.commitProviderTransferReauthorization(
                             retained, "stream-1", "parent", actors[1], oldSpec.id, nextSpec.id,
                             HOST, 42, GAME, process.processToken, process.processId,
                             4, 5, 9, () -> true);
 
             assertTrue(authorization != null);
-            assertTrue(oldCoordinator.transferProviderOwnershipTo(replacement, authorization));
-            assertFalse(oldCoordinator.transferProviderOwnershipTo(replacement, authorization));
-            RetainedStreamSessionCoordinator.Snapshot snapshot =
-                    RetainedStreamSessionCoordinator.snapshot();
+            assertTrue(oldCoordinator.transferProviderOwnershipTo(replacement, authorization, m.model));
+            assertFalse(oldCoordinator.transferProviderOwnershipTo(replacement, authorization, m.model));
+            SessionModel.Snapshot snapshot =
+                    m.snapshot();
             assertEquals("stream-1", snapshot.streamSessionId);
             assertEquals("parent", snapshot.executionProfileId);
             assertEquals(42, snapshot.appId);
@@ -1767,18 +1770,18 @@ public class ConsoleStreamTransitionCoordinatorTest {
         oldCoordinator.start();
         Thread.interrupted();
         FakeRetainedController retained = new FakeRetainedController("parent");
-        RetainedStreamSessionCoordinator.enterHome(retained, "stream-1", HOST,
+        m.enterHome(retained, "stream-1", HOST,
                 "parent", 42, GAME);
-        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(retained, "stream-1", 4));
-        RetainedStreamSessionCoordinator.ProviderTransferAuthorization authorization =
-                RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
+        assertTrue(m.bindControlGeneration(retained, "stream-1", 4));
+        SessionModel.ProviderTransferAuthorization authorization =
+                m.commitProviderTransferReauthorization(
                         retained, "stream-1", "parent", "child", oldSpec.id, nextSpec.id,
                         HOST, 42, GAME,
                         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                         42, 4, 5, 9, () -> true);
 
         assertTrue(authorization != null);
-        assertFalse(oldCoordinator.transferProviderOwnershipTo(replacement, authorization));
+        assertFalse(oldCoordinator.transferProviderOwnershipTo(replacement, authorization, m.model));
         assertEquals(1, gateway.startGameCalls);
         assertEquals(0, gateway.stopGameCalls);
     }
@@ -2149,7 +2152,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     private static final class FakeRetainedController
-            implements RetainedStreamSessionCoordinator.Controller {
+            implements SessionModel.Controller {
         private final String executionProfileId;
         private int disconnectCalls;
         private int terminateCalls;
@@ -2160,26 +2163,23 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         @Override public boolean isRetainedTransportLive() { return true; }
         @Override public String getExecutionProfileId() { return executionProfileId; }
-        @Override public boolean parkRetainedTransport() { return true; }
+        @Override public SessionModel.ParkOutcome parkRetainedTransport() { return SessionModel.ParkOutcome.PARKED; }
         @Override public void disconnectRetainedStream(
-                RetainedStreamSessionCoordinator.TerminationCallback completion) {
+                SessionModel.TerminationCallback completion) {
             disconnectCalls++;
             completion.complete(true);
         }
         @Override public void terminateRetainedSession(
-                RetainedStreamSessionCoordinator.TerminationCallback completion) {
+                SessionModel.TerminationCallback completion) {
             terminateCalls++;
             completion.complete(true);
         }
-        @Override public void switchGame(RetainedStreamSessionCoordinator.SwitchRequest request,
-                                         RetainedStreamSessionCoordinator.SwitchCallback completion) { }
+        @Override public void switchGame(SessionModel.SwitchRequest request,
+                                         SessionModel.SwitchCallback completion) { }
     }
 
     private static void resetRetainedStream() throws Exception {
-        java.lang.reflect.Method clear =
-                RetainedStreamSessionCoordinator.class.getDeclaredMethod("clear");
-        clear.setAccessible(true);
-        clear.invoke(null);
+        m.clear();
     }
 
     private static class FakeGateway implements ConsoleStreamTransitionCoordinator.Gateway {

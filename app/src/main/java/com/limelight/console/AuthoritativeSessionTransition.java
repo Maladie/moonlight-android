@@ -1,6 +1,6 @@
 package com.limelight.console;
 
-import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.session.SessionModel;
 
 final class AuthoritativeSessionTransition {
     enum SunshineStopAction { COMPLETE, QUIT, FAILED }
@@ -21,9 +21,9 @@ final class AuthoritativeSessionTransition {
 
     static boolean lostRetainedTransport(boolean hostOnline, int currentRunningAppId,
                                          boolean sameHost,
-                                         RetainedStreamSessionCoordinator.State retainedState) {
+                                         SessionModel.State retainedState) {
         return hostOnline && currentRunningAppId == 0 && sameHost
-                && retainedState == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
+                && retainedState == SessionModel.State.RECONNECT_REQUIRED;
     }
 
     static SunshineStopAction sunshineStopAction(int capturedRunningAppId,

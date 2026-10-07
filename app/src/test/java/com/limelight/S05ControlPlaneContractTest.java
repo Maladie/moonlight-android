@@ -61,12 +61,12 @@ public class S05ControlPlaneContractTest {
                 "private void finishCloseHostStream(");
         String hard = between(console, "private void requestHardTerminateSession(",
                 "private void finishHardTerminate(");
-        assertTrue(terminate.contains("RetainedStreamSessionCoordinator.terminate("));
-        assertTrue(close.contains("RetainedStreamSessionCoordinator.terminate("));
-        assertFalse(hard.contains("RetainedStreamSessionCoordinator.terminate("));
+        assertTrue(terminate.contains("new SessionEvent.TerminateRequested("));
+        assertTrue(close.contains("new SessionEvent.TerminateRequested("));
+        assertFalse(hard.contains("new SessionEvent.TerminateRequested("));
         assertTrue(hard.contains("clearHardResetSessionState(host, profileKey)"));
         assertTrue(hard.contains("hardResetHost(gateway, childSessionId)"));
-        assertFalse(close.contains("RetainedStreamSessionCoordinator.disconnect("));
+        assertFalse(close.contains("new SessionEvent.Disconnect("));
     }
 
     @Test public void ordinaryQuitAcceptsAlreadyIdleProviderAndDoesNotPoisonBarrier()
@@ -166,18 +166,18 @@ public class S05ControlPlaneContractTest {
         String transfer = between(game, "private void beginNewRetainedGameAttempt(",
                 "private void releaseUnusedAllowance(");
         assertTrue(transfer.contains("RetainedControlHandoff.finish("));
-        assertTrue(transfer.contains("RetainedStreamSessionCoordinator.commitReauthorization("));
+        assertTrue(transfer.contains("new SessionEvent.Reauthorize("));
         assertTrue(transfer.contains(
-                "RetainedStreamSessionCoordinator.commitProviderTransferReauthorization("));
+                "new SessionEvent.ProviderReauthorize("));
         assertTrue(transfer.contains("providerIdentity.processToken"));
         assertTrue(transfer.contains("providerIdentity.processId"));
         assertTrue(transfer.contains("authorization.actorLeaseEpoch"));
-        assertFalse(transfer.contains("RetainedStreamSessionCoordinator.bindActor("));
+        assertFalse(transfer.contains("new SessionEvent.ActorBound("));
         assertTrue(transfer.contains("authorizationCompensated.compareAndSet(false, true)"));
         assertTrue(transfer.contains("authorization.streamSessionId, authorization.sunshineAppId"));
         assertTrue(transfer.contains("authorization.generation,"));
         assertTrue(transfer.contains("targetGateway, allowance.sessionId, \"cancelled\""));
-        assertTrue(transfer.contains("RetainedStreamSessionCoordinator.discardReauthorization("));
+        assertTrue(transfer.contains("new SessionEvent.ReauthorizationDiscarded("));
     }
 
     @Test public void savedRecoveryRebindsActorWithinTheSameExecutionLifecycle()
@@ -210,8 +210,8 @@ public class S05ControlPlaneContractTest {
         assertTrue(start.contains(
                 "\"reauthorize\".equals(controlBinding.intent) ? \"reauthorize\""));
         assertTrue(start.contains("acquireBootstrapAfterReplay("));
-        assertTrue(game.contains("markSessionEndedForExecutionIfMatches(this,"));
-        assertTrue(console.contains("SuspendedSessionStore.recentlyEndedForExecution("));
+        assertTrue(game.contains("SessionEvent.SuspendedEnded.forExecution("));
+        assertTrue(console.contains("records().recentlyEndedForExecution("));
         String compensation = between(console, "private void failClosedActorHandoff(",
                 "private SessionOrchestrator.CloseResult switchRetainedProviderGame(");
         assertTrue(compensation.indexOf("releaseNewChildTimeAttachmentAndWait(newBinding)")

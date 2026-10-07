@@ -78,7 +78,7 @@ public class ConsoleChildProfileUiContractTest {
     @Test public void childConsoleCloseUsesCommonTerminationAndBadgeAcceptsCurrentGame() throws Exception {
         String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
         int start = activity.indexOf("private void requestTerminateSession(ComputerDetails host, String expectedProviderGameId)");
-        int retained = activity.indexOf("RetainedStreamSessionCoordinator.terminate(", start);
+        int retained = activity.indexOf("new SessionEvent.TerminateRequested(", start);
         int stop = activity.indexOf("terminateKnownControlPlane(host, profileKey.profileId",
                 retained);
         assertTrue(start >= 0 && retained > start && stop > retained);

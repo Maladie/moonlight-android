@@ -1,0 +1,1499 @@
+package com.limelight.session;
+
+import org.junit.Test;
+
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
+public class SessionModelTest {
+    private final SessionModelDriver m = new SessionModelDriver();
+    private static final String SESSION_A = "session-a";
+
+    private static class FakeController
+            implements SessionModel.Controller {
+        String origin;
+        @Override public String getExecutionProfileId() { return origin; }
+        boolean parkResult = true;
+        boolean disconnected;
+        boolean terminated;
+        int terminations;
+        boolean completeTermination = true;
+        boolean terminationResult = true;
+        boolean live = true;
+        SessionModel.TerminationCallback terminationCompletion;
+        SessionModel.SwitchCallback switchCompletion;
+        SessionModel.SwitchRequest switchRequest;
+        SessionModel.Snapshot preparingPark;
+        SessionModel.Snapshot preparingCancel;
+        boolean preparingParkResult = true;
+        boolean preparingCancelResult = true;
+        int preparingCancels;
+        int submittedPreparingFrames;
+        boolean preparingFrameResult = true;
+        int switches;
+
+        @Override public boolean isRetainedTransportLive() { return live; }
+        @Override public SessionModel.ParkOutcome parkRetainedTransport() {
+            return parkResult ? SessionModel.ParkOutcome.PARKED : SessionModel.ParkOutcome.STOPPED;
+        }
+        @Override public boolean parkPreparingTransport(
+                SessionModel.Snapshot preparing) {
+            preparingPark = preparing;
+            return preparingParkResult;
+        }
+        @Override public boolean cancelPreparingTransport(
+                SessionModel.Snapshot preparing) {
+            preparingCancel = preparing;
+            preparingCancels++;
+            return preparingCancelResult;
+        }
+        @Override public boolean preparingHomeFrameSubmitted(
+                SessionModel.Snapshot preparing) {
+            submittedPreparingFrames++;
+            return preparingFrameResult;
+        }
+        @Override public void disconnectRetainedStream(
+                SessionModel.TerminationCallback completion) {
+            disconnected = true;
+            terminationCompletion = completion;
+            if (completeTermination && completion != null) {
+                completion.complete(terminationResult);
+            }
+        }
+        @Override public void terminateRetainedSession(
+                SessionModel.TerminationCallback completion) {
+            terminated = true;
+            terminations++;
+            terminationCompletion = completion;
+            if (completeTermination && completion != null) {
+                completion.complete(terminationResult);
+            }
+        }
+        @Override public void switchGame(
+                SessionModel.SwitchRequest request,
+                SessionModel.SwitchCallback completion) {
+            switches++;
+            switchRequest = request;
+            switchCompletion = completion;
+        }
+    }
+
+    @Test public void transportGenerationIsMonotonicAndIndependentOfRemoteControl() {
+        FakeController owner = new FakeController();
+        m.enterHome(owner, SESSION_A, "host", 7, "game-a");
+        long first = m.snapshot().transportGeneration;
+        assertTrue(first > 0L);
+        assertTrue(m.bindControlGeneration(owner, SESSION_A, 77L));
+        assertEquals(first, m.snapshot().transportGeneration);
+        assertEquals(77L, m.snapshot().controlGeneration);
+        m.enterHome(owner, SESSION_A, "host", 7, "game-a");
+        assertEquals(first, m.snapshot().transportGeneration);
+        m.clear();
+        m.enterHome(owner, "session-b", "host", 7, "game-b");
+        assertTrue(m.snapshot().transportGeneration > first);
+        assertEquals(0L, m.snapshot().controlGeneration);
+    }
+
+    @Test public void reauthorizationCommitsConnectionActorAndGenerationAtomically() {
+        FakeController owner = new FakeController(); owner.origin = "parent";
+        m.enterHome(owner, SESSION_A, "host", "child", 7, "");
+        m.bindControlGeneration(owner, SESSION_A, 4);
+        AtomicInteger connectionGeneration = new AtomicInteger(4);
+        assertFalse(m.commitReauthorization(owner, SESSION_A,
+                "parent", "parent", 4, 5, () -> false));
+        assertEquals("child", m.snapshot().profileId);
+        assertEquals(4, m.snapshot().controlGeneration);
+        assertTrue(m.commitReauthorization(owner, SESSION_A,
+                "parent", "parent", 4, 5, () -> connectionGeneration.compareAndSet(4, 5)));
+        assertEquals("parent", m.snapshot().profileId);
+        assertEquals(5, m.snapshot().controlGeneration);
+        assertEquals(5, connectionGeneration.get());
+        assertFalse(m.commitReauthorization(owner, SESSION_A,
+                "parent", "child", 4, 6, () -> { fail("Stale commit reached connection"); return true; }));
+        assertFalse(m.discardReauthorization(owner, SESSION_A, 3, 4));
+        assertEquals(5, m.snapshot().controlGeneration);
+        assertTrue(m.discardReauthorization(owner, SESSION_A, 4, 5));
+        assertEquals(SessionModel.State.NONE, m.snapshot().state);
+    }
+
+    @Test public void providerTransferProofRequiresEveryRetainedFenceAndIsOneShot() {
+        FakeController owner = new FakeController(); owner.origin = "parent";
+        m.enterHome(
+                owner, SESSION_A, "host", "child-a", 7, "game-a");
+        assertTrue(m.bindControlGeneration(owner, SESSION_A, 4));
+        assertNull(m.commitProviderTransferReauthorization(
+                owner, SESSION_A, "parent", "child-b", "old", "next", "wrong-host",
+                7, "game-a", token('a'), 71, 4, 5, 9, () -> true));
+        assertEquals("child-a", m.snapshot().profileId);
+        assertNull(m.commitProviderTransferReauthorization(
+                owner, SESSION_A, "parent", "child-b", "old", "next", "host",
+                8, "game-a", token('a'), 71, 4, 5, 9, () -> true));
+        assertNull(m.commitProviderTransferReauthorization(
+                owner, SESSION_A, "parent", "child-b", "old", "next", "host",
+                7, "game-b", token('a'), 71, 4, 5, 9, () -> true));
+        SessionModel.ProviderTransferAuthorization proof =
+                m.commitProviderTransferReauthorization(
+                        owner, SESSION_A, "parent", "child-b", "old", "next", "host",
+                        7, "game-a", token('a'), 71, 4, 5, 9, () -> true);
+        assertTrue(proof != null);
+        assertEquals(9, proof.actorLeaseEpoch);
+        assertEquals(71, proof.processId);
+        assertEquals(token('a'), proof.processToken);
+        assertTrue(m.consumeProviderTransferAuthorization(proof));
+        assertFalse(m.consumeProviderTransferAuthorization(proof));
+    }
+
+    @Test public void ongoingTerminationCannotBeReauthorizedOrDiscardedByHandoff() {
+        FakeController owner = new FakeController(); owner.origin = "parent";
+        m.enterHome(owner, SESSION_A, "host", "parent", 7, "");
+        m.bindControlGeneration(owner, SESSION_A, 4);
+        assertTrue(m.markTerminating(SESSION_A, "host", 7, ""));
+        assertFalse(m.commitReauthorization(owner, SESSION_A,
+                "parent", "child", 4, 5, () -> { fail("Termination reached commit"); return true; }));
+        assertFalse(m.discardReauthorization(owner, SESSION_A, 4, 5));
+        assertEquals(SessionModel.State.TERMINATING,
+                m.snapshot().state);
+    }
+
+    @Test public void replacedRetainedOwnerRejectsOldCommitAndCompensation() {
+        FakeController oldOwner = new FakeController(); oldOwner.origin = "parent";
+        FakeController parent = new FakeController(); parent.origin = "parent";
+        m.enterHome(parent, SESSION_A, "host", "parent", 7, "");
+        m.bindControlGeneration(parent, SESSION_A, 6);
+        assertFalse(m.commitReauthorization(oldOwner, SESSION_A,
+                "parent", "child", 4, 5, () -> { fail("Old owner reached connection"); return true; }));
+        assertFalse(m.discardReauthorization(oldOwner, SESSION_A, 4, 5));
+        assertEquals(6, m.snapshot().controlGeneration);
+    }
+
+    @Test public void familySwitchRetainsTransportButRebindsActorAndRejectsOtherOrigins() {
+        FakeController owner = new FakeController();
+        owner.origin = "parent";
+        m.enterHome(owner, SESSION_A, "host", "parent", 7, "game-a");
+        for (String actor : new String[] {"child-a", "child-b", "parent"}) {
+            SessionModel.Snapshot before = m.snapshot();
+            assertFalse(m.canSwitchOrigin("host", "other", 7));
+            assertFalse(m.canSwitchOrigin("other-host", "parent", 7));
+            assertEquals(SessionModel.SwitchResult.STARTED,
+                    m.switchGame("host", "parent", actor,
+                            !actor.equals("parent"), 7, "game-b", "Game", "Stream", "", () -> false,
+                            (outcome, error) -> { }));
+            assertEquals(actor, owner.switchRequest.targetProfileId);
+            assertEquals("parent", owner.switchRequest.executionProfileId);
+            assertTrue(m.bindActor(owner, SESSION_A, actor, "parent"));
+            assertTrue(m.updateOwnedSwitchGame(owner,
+                    owner.switchRequest, before.playniteGameId, "game-b"));
+            owner.switchCompletion.complete(SessionModel.SwitchOutcome.REUSED, "");
+            m.drain();
+            m.finishSwitch(SESSION_A, owner);
+            assertFalse(m.canResumeInstantly(before));
+            assertEquals(actor, m.snapshot().profileId);
+            assertEquals(SESSION_A, m.snapshot().streamSessionId);
+            assertFalse(owner.disconnected);
+            assertFalse(owner.terminated);
+        }
+    }
+
+    @Test public void parkedFamilyTransportCanChangeGameWithoutDisconnect() {
+        FakeController owner = new FakeController();
+        owner.origin = "parent";
+        m.enterHome(owner, SESSION_A, "host", "child-a", 7, "game-a");
+        assertTrue(m.parkForBackground(SESSION_A));
+        assertTrue(m.canSwitchOrigin("host", "parent", 7));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame("host", "parent", "child-b", true,
+                        7, "game-b", "Game", "Stream", "", () -> false, (outcome, error) -> { }));
+        assertTrue(m.bindActor(owner, SESSION_A, "child-b", "parent"));
+        assertTrue(m.updateOwnedSwitchGame(owner,
+                owner.switchRequest, "game-a", "game-b"));
+        assertFalse(owner.disconnected);
+    }
+
+    @Test public void childAndParentReturnInstantlyFromDashboardAndBackground() {
+        for (String profile : new String[] {"parent", "child"}) {
+            m.clear();
+            FakeController owner = new FakeController();
+            m.enterHome(owner, SESSION_A,
+                    "host", profile, 7, "steam:367520");
+            assertTrue(m.canResumeInstantly());
+            assertTrue(m.parkForBackground(SESSION_A));
+            assertTrue(m.canResumeInstantly());
+            assertEquals(profile, m.snapshot().profileId);
+            assertFalse(owner.disconnected);
+            assertFalse(owner.terminated);
+            m.clearIfMatches(SESSION_A);
+            assertFalse(m.canResumeInstantly());
+        }
+    }
+
+    @Test public void exactSwitchSnapshotRejectsStaleTokenAndDeadOwner() {
+        FakeController owner = new FakeController();
+        owner.live = false;
+        m.beginPreparing(owner, SESSION_A, "host", 7, "", "a", 1);
+        SessionModel.Snapshot preparing = m.snapshot();
+        assertTrue(m.canSwitchGame(preparing));
+        m.clear();
+        m.beginPreparing(owner, SESSION_A, "host", 7, "", "b", 2);
+        assertFalse(m.canSwitchGame(preparing));
+        m.clear();
+        m.enterHome(owner, SESSION_A, "host", 7, "");
+        SessionModel.Snapshot home = m.snapshot();
+        assertFalse(m.canSwitchGame(home));
+        owner.live = true;
+        m.enterHome(owner, SESSION_A, "host", 7, "");
+        home = m.snapshot();
+        assertTrue(m.canSwitchGame(home));
+        m.enterHome(owner, "other", "foreign", 8, "");
+        assertFalse(m.canSwitchGame(home));
+    }
+
+    @Test public void snapshotSwitchEligibilityPreservesNonDefaultProfile() {
+        for (String gameId : new String[] { "", "old" }) {
+            m.clear();
+            FakeController owner = new FakeController();
+            String profile = "profile-a";
+            assertTrue(m.beginPreparing(
+                    owner, SESSION_A, "host", profile, 7, gameId,
+                    "transition-a", 1L));
+            SessionModel.Snapshot preparing =
+                    m.snapshot();
+            assertTrue(m.canSwitchGame(preparing));
+
+            m.enterHome(
+                    owner, SESSION_A, "host", profile, 7, gameId);
+            SessionModel.Snapshot home =
+                    m.snapshot();
+            assertTrue(m.canSwitchGame(home));
+        }
+    }
+
+    @Test public void snapshotSwitchEligibilityRejectsStaleProfile() {
+        FakeController owner = new FakeController();
+        m.enterHome(
+                owner, SESSION_A, "host", "profile-a", 7, "old");
+        SessionModel.Snapshot stale =
+                m.snapshot();
+
+        m.enterHome(
+                owner, SESSION_A, "host", "profile-b", 7, "old");
+        assertFalse(m.canSwitchGame(stale));
+    }
+
+    @Test public void ownedSwitchCanPublishAcceptedGameButDashboardCannotPreclearIt() {
+        for (String oldGame : new String[] { "", "old" }) {
+            m.clear();
+            FakeController owner = new FakeController();
+            m.enterHome(owner, SESSION_A, "host", 7, oldGame);
+            assertEquals(SessionModel.SwitchResult.STARTED,
+                    m.switchGame(
+                            "host", 7, "new", "New", "MoonWaker Stream", "",
+                            () -> false, null));
+            assertFalse(m.updateOwnedSwitchGame(
+                    new FakeController(), owner.switchRequest, oldGame, ""));
+            assertTrue(m.updateOwnedSwitchGame(
+                    owner, owner.switchRequest, oldGame, ""));
+            assertTrue(m.updateOwnedSwitchGame(
+                    owner, owner.switchRequest, "", "new"));
+            assertEquals("new", m.snapshot().playniteGameId);
+            assertEquals(1, owner.switches);
+            assertFalse(owner.terminated);
+            m.enterHome(
+                    new FakeController(), "session-b", "other", 8, "other-game");
+            assertFalse(m.updateOwnedSwitchGame(
+                    owner, owner.switchRequest, "new", ""));
+            assertEquals("other-game", m.snapshot().playniteGameId);
+        }
+    }
+
+    @Test public void homeParksAndRemainsInstantlyResumable() {
+        FakeController controller = new FakeController();
+        m.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        assertTrue(m.parkForBackground(SESSION_A));
+        assertEquals(SessionModel.State.PARKED_LIVE,
+                m.state());
+        assertTrue(m.canResumeInstantly());
+        SessionModel.Snapshot parked =
+                m.snapshot();
+        assertTrue(m.canResumeInstantly(parked));
+
+        m.enterHome(
+                controller, "session-b", "other", 8, "other-game");
+        assertFalse(m.canResumeInstantly(parked));
+    }
+
+    @Test public void externalPreparingCancelCapturesTheExactOwnerAndToken() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 11L));
+        SessionModel.Snapshot expected =
+                m.snapshot();
+
+        assertTrue(m.cancelPreparing(expected));
+        assertEquals(1, owner.preparingCancels);
+        assertEquals(expected, owner.preparingCancel);
+        assertEquals(SessionModel.State.PREPARING,
+                m.state());
+    }
+
+    @Test public void submittedHomeFrameReachesOnlyTheExactPreparingOwner() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        SessionModel.Snapshot expected =
+                m.snapshot();
+
+        assertTrue(m.preparingHomeFrameSubmitted(expected));
+        assertEquals(1, owner.submittedPreparingFrames);
+        assertFalse(m.preparingHomeFrameSubmitted(expected));
+        assertEquals(1, owner.submittedPreparingFrames);
+        assertTrue(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+        assertFalse(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 12L));
+        assertTrue(m.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 11L));
+        assertTrue(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+        m.enterHome(
+                owner, SESSION_A, "host", 7, "game");
+        assertFalse(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+    }
+
+    @Test public void completedPreparingStateDuringFrameCallbackCommitsExactAttempt() {
+        FakeController owner = new FakeController() {
+            @Override public boolean preparingHomeFrameSubmitted(
+                    SessionModel.Snapshot preparing) {
+                assertTrue(m.completePreparing(
+                        this, SESSION_A, "host", 7, "transition-a", 11L));
+                return true;
+            }
+        };
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        SessionModel.Snapshot expected =
+                m.snapshot();
+
+        assertTrue(m.preparingHomeFrameSubmitted(expected));
+        assertEquals(SessionModel.State.HOME_LIVE,
+                m.state());
+        SessionModel.Snapshot completed =
+                m.snapshot();
+        assertEquals("", completed.transitionId);
+        assertEquals(0L, completed.attempt);
+        assertTrue(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+    }
+
+    @Test public void staleHomeFrameCannotCommitAfterSameOwnerStartsNewAttempt() {
+        FakeController owner = new FakeController() {
+            @Override public boolean preparingHomeFrameSubmitted(
+                    SessionModel.Snapshot preparing) {
+                if (preparing.attempt == 12L) {
+                    assertEquals("transition-b", preparing.transitionId);
+                    return true;
+                }
+                assertEquals(11L, preparing.attempt);
+                assertTrue(m.cancelPreparing(
+                        this, SESSION_A, "host", 7, "transition-a", 11L));
+                assertTrue(m.beginPreparing(
+                        this, SESSION_A, "host", 7, "game", "transition-b", 12L));
+                SessionModel.Snapshot replacement =
+                        m.snapshot();
+                assertTrue(m.preparingHomeFrameSubmitted(
+                        replacement));
+                return true;
+            }
+        };
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        SessionModel.Snapshot stale =
+                m.snapshot();
+
+        assertFalse(m.preparingHomeFrameSubmitted(stale));
+        SessionModel.Snapshot current =
+                m.snapshot();
+        assertEquals(SessionModel.State.PREPARING, current.state);
+        assertEquals("transition-b", current.transitionId);
+        assertEquals(12L, current.attempt);
+        assertFalse(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+        assertTrue(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-b", 12L));
+    }
+
+    @Test public void cancelledFrameClaimCannotBecomeAccepted() {
+        FakeController owner = new FakeController() {
+            @Override public boolean preparingHomeFrameSubmitted(
+                    SessionModel.Snapshot preparing) {
+                assertTrue(m.cancelPreparing(
+                        this, SESSION_A, "host", 7, "transition-a", 11L));
+                return true;
+            }
+        };
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        SessionModel.Snapshot expected =
+                m.snapshot();
+
+        assertFalse(m.preparingHomeFrameSubmitted(expected));
+        assertEquals(SessionModel.State.NONE,
+                m.state());
+        assertFalse(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+    }
+
+    @Test public void staleExternalCancelCannotReachANewerOwner() {
+        FakeController oldOwner = new FakeController();
+        assertTrue(m.beginPreparing(
+                oldOwner, SESSION_A, "host", 7, "", "transition-a", 11L));
+        SessionModel.Snapshot stale =
+                m.snapshot();
+        assertTrue(m.cancelPreparing(
+                oldOwner, SESSION_A, "host", 7, "transition-a", 11L));
+        FakeController newOwner = new FakeController();
+        assertTrue(m.beginPreparing(
+                newOwner, "session-b", "host", 7, "", "transition-b", 12L));
+
+        assertFalse(m.cancelPreparing(stale));
+        assertEquals(0, newOwner.preparingCancels);
+        assertEquals("session-b", m.snapshot().streamSessionId);
+    }
+
+    @Test public void externalCancelNeverClosesLiveOrParkedSessions() {
+        for (boolean parked : new boolean[] { false, true }) {
+            FakeController owner = new FakeController();
+            m.enterHome(owner, SESSION_A, "host", 7, "");
+            if (parked) m.markParked(SESSION_A);
+            SessionModel.Snapshot live =
+                    m.snapshot();
+
+            assertFalse(m.cancelPreparing(live));
+            assertEquals(0, owner.preparingCancels);
+            m.clear();
+        }
+    }
+
+    @Test public void failedParkRequiresReconnect() {
+        FakeController controller = new FakeController();
+        controller.parkResult = false;
+        m.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        assertFalse(m.parkForBackground(SESSION_A));
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
+        assertFalse(m.canResumeInstantly());
+    }
+
+    @Test public void terminateInvokesOwnerAndRemovesResumeState() {
+        FakeController controller = new FakeController();
+        m.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        assertEquals(SessionModel.TerminationResult.STARTED,
+                m.terminate(SESSION_A, null));
+        assertTrue(controller.terminated);
+        assertFalse(m.hasRetainedSession());
+        assertFalse(m.canResumeInstantly());
+    }
+
+
+    @Test public void hardResetClearsEvenPreparingStateOnlyForTheExactHost() {
+        FakeController controller = new FakeController();
+        m.beginPreparing(
+                controller, SESSION_A, "host", 7, "game", "transition", 1L);
+
+        assertFalse(m.hardResetIfHostMatches("other"));
+        assertEquals(SessionModel.State.PREPARING,
+                m.state());
+        assertTrue(m.hardResetIfHostMatches("HOST"));
+        assertEquals(SessionModel.State.NONE,
+                m.state());
+        assertEquals(1, controller.preparingCancels);
+        assertEquals(SESSION_A, controller.preparingCancel.streamSessionId);
+        assertFalse(controller.disconnected);
+    }
+
+    @Test public void lostOwnerFallsBackToReconnect() {
+        m.enterHome(
+                new FakeController(), SESSION_A, "host", 7, "game");
+        m.markReconnectRequired(SESSION_A);
+
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
+        assertFalse(m.canResumeInstantly());
+    }
+
+    @Test public void deadOwnerCannotResumeSwitchOrTerminate() {
+        FakeController controller = new FakeController();
+        controller.live = false;
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "game");
+
+        assertFalse(m.canResumeInstantly());
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
+        assertFalse(m.canSwitchGame("host", 7));
+        assertEquals(SessionModel.TerminationResult.NO_CONTROLLER,
+                m.terminate(SESSION_A, null));
+        assertFalse(controller.terminated);
+    }
+
+
+    @Test public void failedTerminationRestoresNeutralizedLiveOwner() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "game");
+        assertEquals(SessionModel.TerminationResult.STARTED,
+                m.terminate(SESSION_A, null));
+
+        controller.terminationCompletion.complete(false);
+
+        m.drain();
+
+        SessionModel.Snapshot retained =
+                m.snapshot();
+        assertEquals(SessionModel.State.HOME_LIVE, retained.state);
+        assertEquals("game", retained.playniteGameId);
+        assertTrue(m.canResumeInstantly());
+    }
+
+    @Test public void snapshotKeepsRetainedGameIdentity() {
+        m.enterHome(
+                new FakeController(), SESSION_A, "host", 7, "game");
+        SessionModel.Snapshot snapshot =
+                m.snapshot();
+        assertEquals(SESSION_A, snapshot.streamSessionId);
+        assertEquals("host", snapshot.hostId);
+        assertEquals(7, snapshot.appId);
+        assertEquals("game", snapshot.playniteGameId);
+    }
+
+    @Test public void preparingRequiresFullCorrelationAndIsNotResumeReady() {
+        FakeController owner = new FakeController();
+        FakeController staleOwner = new FakeController();
+
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 1L));
+        SessionModel.Snapshot snapshot =
+                m.snapshot();
+        assertEquals(SessionModel.State.PREPARING, snapshot.state);
+        assertEquals("game", snapshot.playniteGameId);
+        assertEquals("transition-a", snapshot.transitionId);
+        assertEquals(1L, snapshot.attempt);
+        assertFalse(m.canResumeInstantly());
+        assertTrue(m.parkForBackground(SESSION_A));
+        assertFalse(m.clearIfMatches(SESSION_A));
+        assertEquals(SessionModel.TerminationResult.NO_CONTROLLER,
+                m.terminate(SESSION_A, null));
+
+        assertFalse(m.completePreparing(
+                staleOwner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertFalse(m.completePreparing(
+                owner, "stale-session", "host", 7, "transition-a", 1L));
+        assertFalse(m.completePreparing(
+                owner, SESSION_A, "stale-host", 7, "transition-a", 1L));
+        assertFalse(m.completePreparing(
+                owner, SESSION_A, "host", 8, "transition-a", 1L));
+        assertFalse(m.completePreparing(
+                owner, SESSION_A, "host", 7, "stale-transition", 1L));
+        assertFalse(m.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 2L));
+        assertTrue(m.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertEquals(SessionModel.State.HOME_LIVE,
+                m.state());
+        assertEquals("", m.snapshot().transitionId);
+        assertEquals(0L, m.snapshot().attempt);
+        assertTrue(m.canResumeInstantly());
+    }
+
+    @Test public void preparingCancelOnlyClearsTheExactAttempt() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+
+        assertFalse(m.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 2L));
+        assertTrue(m.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+        assertFalse(m.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertTrue(m.isPreparing(
+                owner, SESSION_A, "host", 7, "transition-b", 2L));
+    }
+
+    @Test public void preparingParkDelegatesTheExactTokenWithoutChangingState() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 1L));
+
+        assertTrue(m.parkForBackground(SESSION_A));
+
+        assertEquals(SessionModel.State.PREPARING,
+                m.state());
+        assertEquals(SESSION_A, owner.preparingPark.streamSessionId);
+        assertEquals("host", owner.preparingPark.hostId);
+        assertEquals(7, owner.preparingPark.appId);
+        assertEquals("game", owner.preparingPark.playniteGameId);
+        assertEquals("transition-a", owner.preparingPark.transitionId);
+        assertEquals(1L, owner.preparingPark.attempt);
+    }
+
+    @Test public void preparingReconnectRequiresTheFullTokenAndRejectsLateCompletion() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+
+        assertFalse(m.markPreparingReconnectRequired(
+                owner, SESSION_A, "host", 7, "transition-a", 2L));
+        assertTrue(m.markPreparingReconnectRequired(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+
+        SessionModel.Snapshot snapshot =
+                m.snapshot();
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                snapshot.state);
+        assertEquals("", snapshot.transitionId);
+        assertEquals(0L, snapshot.attempt);
+        assertFalse(m.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+    }
+
+    @Test public void stalePreparingParkCannotMutateAReplacementAttempt() {
+        FakeController replacement = new FakeController();
+        FakeController owner = new FakeController() {
+            @Override public boolean parkPreparingTransport(
+                    SessionModel.Snapshot preparing) {
+                assertTrue(m.cancelPreparing(
+                        this, SESSION_A, "host", 7, "transition-a", 1L));
+                assertTrue(m.beginPreparing(
+                        replacement, "session-b", "host", 7, "",
+                        "transition-b", 2L));
+                return true;
+            }
+        };
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+
+        assertTrue(m.parkForBackground(SESSION_A));
+
+        assertTrue(m.isPreparing(
+                replacement, "session-b", "host", 7, "transition-b", 2L));
+    }
+
+    @Test public void preparingSwitchCarriesItsTokenWithoutRequiringLiveTransport() {
+        FakeController owner = new FakeController();
+        owner.live = false;
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+
+        assertTrue(m.canSwitchGame("host", 7));
+        assertFalse(m.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 3L));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertTrue(m.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 3L));
+        assertFalse(m.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 4L));
+        assertEquals(SessionModel.SwitchResult.NOT_ELIGIBLE,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertEquals(1, owner.switches);
+        assertTrue(owner.switchRequest.preparing);
+        assertEquals("old", owner.switchRequest.oldGameId);
+        assertEquals("transition-a", owner.switchRequest.transitionId);
+        assertEquals(3L, owner.switchRequest.attempt);
+        owner.switchCompletion.complete(
+                SessionModel.SwitchOutcome.REUSED, "");
+        m.drain();
+        assertTrue(m.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 3L));
+        assertFalse(m.finishSwitch(SESSION_A, owner));
+        assertTrue(m.finishSwitch(
+                SESSION_A, "transition-a", 3L, owner));
+        assertFalse(m.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 3L));
+    }
+
+    @Test public void preMutationSwitchFenceRequiresExactOwnerActorAndGeneration() {
+        FakeController owner = new FakeController();
+        owner.origin = "parent";
+        m.enterHome(
+                owner, SESSION_A, "host", "child", 7, "game");
+        assertTrue(m.bindControlGeneration(
+                owner, SESSION_A, 4L));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", "parent", "parent", false, 7,
+                        "game", "Game", "MoonWaker Stream", "",
+                        () -> false, null));
+        SessionModel.SwitchRequest request = owner.switchRequest;
+
+        assertTrue(m.ownsSwitchBeforeMutation(
+                owner, request, 4L));
+        assertFalse(m.ownsSwitchBeforeMutation(
+                new FakeController(), request, 4L));
+        assertFalse(m.ownsSwitchBeforeMutation(
+                owner, request, 5L));
+
+        assertTrue(m.bindControlGeneration(
+                owner, SESSION_A, 5L));
+        assertFalse(m.ownsSwitchBeforeMutation(
+                owner, request, 4L));
+        m.enterHome(
+                new FakeController(), "session-b", "host", "child", 7, "game");
+        assertFalse(m.ownsSwitchBeforeMutation(
+                owner, request, 5L));
+    }
+
+    @Test public void stalePreparingSwitchCallbackCannotChangeANewerAttempt() {
+        FakeController owner = new FakeController();
+        AtomicReference<SessionModel.SwitchOutcome> outcome =
+                new AtomicReference<>();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, (result, error) -> outcome.set(result)));
+        SessionModel.SwitchCallback stale = owner.switchCompletion;
+        assertTrue(m.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+
+        stale.complete(SessionModel.SwitchOutcome.FAILED, "stale");
+
+        assertTrue(m.isPreparing(
+                owner, SESSION_A, "host", 7, "transition-b", 2L));
+        assertTrue(m.canSwitchGame("host", 7));
+        assertNull(outcome.get());
+    }
+
+    @Test public void completedPreparingSwitchUsesTheExistingHomeFinish() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertTrue(m.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+
+        assertTrue(m.finishSwitch(SESSION_A, owner));
+    }
+
+    @Test public void reusedPreparingSwitchReleasesItsCapturedLockBeforeConnection() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "same", "Same", "MoonWaker Stream", "",
+                        () -> false, null));
+
+        owner.switchCompletion.complete(
+                SessionModel.SwitchOutcome.REUSED, "");
+
+        m.drain();
+        assertFalse(m.canSwitchGame("host", 7));
+        assertTrue(m.finishSwitch(
+                SESSION_A, "transition-a", 3L, owner));
+        assertTrue(m.canSwitchGame("host", 7));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "next", "Next", "MoonWaker Stream", "",
+                        () -> false, null));
+    }
+
+    @Test public void stalePreparingFinishCannotReleaseAReplacementSwitch() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "old", "Old", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertTrue(m.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+
+        assertFalse(m.finishSwitch(
+                SESSION_A, "transition-a", 1L, owner));
+        assertFalse(m.canSwitchGame("host", 7));
+        assertTrue(m.finishSwitch(
+                SESSION_A, "transition-b", 2L, owner));
+    }
+
+    @Test public void preparingSwitchUpdateRequiresTheFullCapturedToken() {
+        FakeController owner = new FakeController();
+        FakeController staleOwner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        SessionModel.SwitchRequest request = owner.switchRequest;
+
+        assertFalse(m.updatePreparingSwitch(
+                staleOwner, request, "transition-a", "old", "", "transition-b"));
+        assertFalse(m.updatePreparingSwitch(
+                owner, request, "stale", "old", "", "transition-b"));
+        assertFalse(m.updatePreparingSwitch(
+                owner, request, "transition-a", "other", "", "transition-b"));
+        assertTrue(m.updatePreparingSwitch(
+                owner, request, "transition-a", "old", "", "transition-b"));
+
+        SessionModel.Snapshot updated =
+                m.snapshot();
+        assertEquals(SessionModel.State.PREPARING, updated.state);
+        assertEquals("", updated.playniteGameId);
+        assertEquals("transition-b", updated.transitionId);
+        assertEquals(3L, updated.attempt);
+        assertFalse(m.updatePreparingSwitch(
+                owner, request, "transition-a", "", "new", "transition-c"));
+        assertTrue(m.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-b", 3L));
+        assertTrue(m.beginPreparing(
+                staleOwner, SESSION_A, "host", 7, "", "transition-c", 4L));
+        assertFalse(m.updatePreparingSwitch(
+                owner, request, "transition-b", "", "new", "transition-d"));
+        assertTrue(m.isPreparing(
+                staleOwner, SESSION_A, "host", 7, "transition-c", 4L));
+    }
+
+    @Test public void preparingSwitchCarriesTheAcceptedHomeFrameToItsReplacementTransition() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertTrue(m.preparingHomeFrameSubmitted(
+                m.snapshot()));
+        SessionModel.Snapshot ownerIdentity =
+                m.snapshot();
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", ownerIdentity.executionProfileId, ownerIdentity.profileId,
+                        false, 7, "old", "Old", "MoonWaker Stream", "", 19L,
+                        () -> false, null));
+        SessionModel.SwitchRequest request = owner.switchRequest;
+        assertEquals(19L, request.orchestrationId);
+
+        assertTrue(m.updatePreparingSwitch(
+                owner, request, "transition-a", "old", "old", "transition-b"));
+
+        assertTrue("the same attempt keeps its accepted Home proof",
+                m.isPreparingHomeFrameAccepted(
+                        SESSION_A, "host", 7, "old", "transition-b", 3L));
+        assertFalse(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertFalse("a different attempt never inherits it",
+                m.isPreparingHomeFrameAccepted(
+                        SESSION_A, "host", 7, "old", "transition-b", 4L));
+        assertFalse("a second Home frame is not accepted for the same attempt",
+                m.preparingHomeFrameSubmitted(
+                        m.snapshot()));
+    }
+
+    @Test public void staleOwnerCannotMoveTheAcceptedHomeFrame() {
+        FakeController owner = new FakeController();
+        FakeController stale = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertTrue(m.preparingHomeFrameSubmitted(
+                m.snapshot()));
+        m.switchGame(
+                "host", 7, "old", "Old", "MoonWaker Stream", "", () -> false, null);
+
+        assertFalse(m.updatePreparingSwitch(
+                stale, owner.switchRequest, "transition-a", "old", "old", "transition-b"));
+        assertTrue(m.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "old", "transition-a", 3L));
+    }
+
+    @Test public void repeatedTerminationDoesNotStartASecondRequest() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicInteger first = new AtomicInteger();
+        AtomicInteger second = new AtomicInteger();
+        m.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        assertEquals(SessionModel.TerminationResult.STARTED,
+                m.terminate(SESSION_A,
+                        success -> first.set(success ? 1 : -1)));
+        assertEquals(SessionModel.TerminationResult.IN_PROGRESS,
+                m.terminate(SESSION_A,
+                        success -> second.set(success ? 1 : -1)));
+        assertEquals(SessionModel.State.TERMINATING,
+                m.state());
+        assertEquals(1, controller.terminations);
+        assertEquals(0, first.get());
+        assertEquals(0, second.get());
+
+        controller.terminationCompletion.complete(true);
+
+        m.drain();
+        assertEquals(1, first.get());
+        assertEquals(1, second.get());
+        assertEquals(SessionModel.State.NONE,
+                m.state());
+    }
+
+    @Test public void ownerCompletionClearsTerminatingAndPublishesSuccess() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicReference<SessionModel.State> observed =
+                new AtomicReference<>();
+        m.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        m.terminate(SESSION_A,
+                success -> observed.set(m.state()));
+        assertEquals(SessionModel.State.TERMINATING,
+                m.state());
+        controller.terminationCompletion.complete(true);
+        m.drain();
+
+        assertEquals(SessionModel.State.NONE, observed.get());
+        assertEquals(SessionModel.State.NONE,
+                m.state());
+    }
+
+    @Test public void oneThrowingTerminationJoinerDoesNotBlockTheNext() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicInteger observed = new AtomicInteger();
+        m.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        m.terminate(SESSION_A, success -> {
+            throw new IllegalStateException("observer failed");
+        });
+        m.terminate(SESSION_A,
+                success -> observed.set(success ? 1 : -1));
+        controller.terminationCompletion.complete(true);
+        m.drain();
+
+        assertEquals(1, observed.get());
+    }
+
+
+    @Test public void directStreamQuitIsVisibleUntilMatchingQuitCompletes() {
+        assertTrue(m.markTerminating(
+                SESSION_A, "host", 7, "game"));
+
+        SessionModel.Snapshot snapshot =
+                m.snapshot();
+        assertEquals(SessionModel.State.TERMINATING, snapshot.state);
+        assertEquals("host", snapshot.hostId);
+        assertEquals(7, snapshot.appId);
+
+        assertFalse(m.clearIfMatches("other-session"));
+        assertEquals(SessionModel.State.TERMINATING,
+                m.state());
+        assertFalse(m.clearAfterAuthoritativeEndIfMatches(
+                SESSION_A));
+        assertEquals(SessionModel.State.TERMINATING,
+                m.state());
+        assertTrue(m.clearIfMatches(SESSION_A));
+        assertEquals(SessionModel.State.NONE,
+                m.state());
+    }
+
+    @Test public void directWholeQuitRegistersAndCompletesCompatibleJoiners() {
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        SessionModel.DirectTermination direct =
+                m.beginDirectTermination(
+                        SESSION_A, "host", 7, "game");
+        assertTrue(direct != null);
+
+        assertEquals(SessionModel.TerminationResult.IN_PROGRESS,
+                m.terminate(SESSION_A, joined::set));
+        assertNull(joined.get());
+        m.completeDirectTermination(direct, true);
+
+        assertEquals(Boolean.TRUE, joined.get());
+        assertEquals(SessionModel.State.NONE,
+                m.state());
+    }
+
+    @Test public void failedDirectWholeQuitRestoresStateBeforeJoinersReturn() {
+        FakeController controller = new FakeController();
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "game");
+        SessionModel.DirectTermination direct =
+                m.beginDirectTermination(
+                        SESSION_A, "host", 7, "game");
+        assertTrue(direct != null);
+        m.terminate(SESSION_A, joined::set);
+
+        m.completeDirectTermination(direct, false);
+
+        assertEquals(Boolean.FALSE, joined.get());
+        assertEquals(SessionModel.State.HOME_LIVE,
+                m.state());
+        assertTrue(m.canResumeInstantly());
+    }
+
+    @Test public void staleDirectTokenCannotClearReusedSessionId() {
+        SessionModel.DirectTermination old =
+                m.beginDirectTermination(
+                        SESSION_A, "host", 7, "old");
+        assertTrue(old != null);
+        assertTrue(m.clearIfMatches(SESSION_A));
+        m.enterHome(
+                new FakeController(), SESSION_A, "host", 8, "new");
+        SessionModel.DirectTermination current =
+                m.beginDirectTermination(
+                        SESSION_A, "host", 8, "new");
+        assertTrue(current != null);
+
+        m.completeDirectTermination(old, true);
+
+        assertEquals(SessionModel.State.TERMINATING,
+                m.state());
+        assertEquals(8, m.snapshot().appId);
+        m.completeDirectTermination(current, true);
+        assertEquals(SessionModel.State.NONE,
+                m.state());
+    }
+
+    @Test public void staleDirectHostFailureCannotRestoreOverReusedExactIdentity() {
+        FakeController oldOwner = new FakeController();
+        m.enterHome(
+                oldOwner, SESSION_A, "host", 7, "game");
+        SessionModel.DirectTermination old =
+                m.beginDirectTermination(
+                        SESSION_A, "host", 7, "game");
+        assertTrue(old != null);
+        assertTrue(m.clearIfMatches(SESSION_A));
+
+        FakeController newOwner = new FakeController();
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        m.enterHome(
+                newOwner, SESSION_A, "host", 7, "game");
+        SessionModel.DirectTermination current =
+                m.beginDirectTermination(
+                        SESSION_A, "host", 7, "game");
+        assertTrue(current != null);
+        m.terminate(SESSION_A, joined::set);
+
+        m.completeDirectTermination(old, false);
+
+        assertNull(joined.get());
+        assertEquals(SessionModel.State.TERMINATING,
+                m.state());
+        assertFalse(m.ownsLiveOrParkedSession(
+                oldOwner, SESSION_A, "host", 7));
+        assertFalse(m.ownsLiveOrParkedSession(
+                newOwner, SESSION_A, "host", 7));
+        m.completeDirectTermination(current, false);
+        assertEquals(Boolean.FALSE, joined.get());
+        assertEquals(SessionModel.State.HOME_LIVE,
+                m.state());
+        assertTrue(m.ownsLiveOrParkedSession(
+                newOwner, SESSION_A, "host", 7));
+        assertTrue(m.hardResetIfHostMatches("host"));
+        assertTrue(newOwner.disconnected);
+        assertFalse(oldOwner.disconnected);
+    }
+
+    @Test public void unsafeDirectTransportTerminalNeverRestoresLiveOwner() {
+        {
+            FakeController controller = new FakeController();
+            AtomicReference<Boolean> joined = new AtomicReference<>();
+            m.enterHome(
+                    controller, SESSION_A, "host", 7, "game");
+            SessionModel.DirectTermination direct =
+                    m.beginDirectTermination(
+                            SESSION_A, "host", 7, "game");
+            m.terminate(SESSION_A, joined::set);
+
+            m.abandonDirectTermination(direct);
+
+            assertEquals(Boolean.FALSE, joined.get());
+            assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                    m.state());
+            assertFalse(m.canResumeInstantly());
+            assertEquals(SESSION_A,
+                    m.snapshot().streamSessionId);
+            m.clear();
+        }
+    }
+
+    @Test public void unsafeCoordinatorTransportTerminalNeverRestoresLiveOwner() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "game");
+        m.terminate(SESSION_A, joined::set);
+
+        controller.terminationCompletion.transportUnsafe();
+
+        m.drain();
+        controller.terminationCompletion.complete(false);
+        m.drain();
+
+        assertEquals(Boolean.FALSE, joined.get());
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
+        assertFalse(m.canResumeInstantly());
+    }
+
+    @Test public void unsafeCoordinatorDisconnectNeverRestoresLiveOwner() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicReference<Boolean> first = new AtomicReference<>();
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "game");
+
+        assertEquals(SessionModel.TerminationResult.STARTED,
+                m.terminate(SESSION_A, first::set));
+        assertEquals(SessionModel.TerminationResult.IN_PROGRESS,
+                m.terminate(SESSION_A, joined::set));
+        controller.terminationCompletion.transportUnsafe();
+        m.drain();
+        controller.terminationCompletion.complete(false);
+        m.drain();
+
+        assertEquals(Boolean.FALSE, first.get());
+        assertEquals(Boolean.FALSE, joined.get());
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
+        assertFalse(m.canResumeInstantly());
+    }
+
+    @Test public void directStreamQuitCannotOverwriteAnotherSession() {
+        m.enterHome(
+                new FakeController(), "session-b", "other-host", 8, "other");
+
+        assertFalse(m.markTerminating(
+                SESSION_A, "host", 7, "game"));
+        assertEquals("session-b",
+                m.snapshot().streamSessionId);
+        assertEquals(SessionModel.State.HOME_LIVE,
+                m.state());
+    }
+
+    @Test public void staleParkResultCannotOverwriteNewSession() {
+        FakeController old = new FakeController() {
+            @Override public SessionModel.ParkOutcome parkRetainedTransport() {
+                m.enterHome(
+                        new FakeController(), "session-b", "host", 8, "other");
+                return SessionModel.ParkOutcome.PARKED;
+            }
+        };
+        m.enterHome(old, SESSION_A, "host", 7, "game");
+
+        assertFalse(m.parkForBackground(SESSION_A));
+        SessionModel.Snapshot snapshot =
+                m.snapshot();
+        assertEquals("session-b", snapshot.streamSessionId);
+        assertEquals(SessionModel.State.HOME_LIVE, snapshot.state);
+    }
+
+    @Test public void staleTerminationCompletionCannotClearNewSession() {
+        FakeController old = new FakeController();
+        old.completeTermination = false;
+        AtomicReference<Boolean> completed = new AtomicReference<>();
+        m.enterHome(old, SESSION_A, "host", 7, "game");
+        assertEquals(SessionModel.TerminationResult.STARTED,
+                m.terminate(SESSION_A, completed::set));
+        m.enterHome(
+                new FakeController(), "session-b", "host", 8, "other");
+
+        old.terminationCompletion.complete(true);
+
+        m.drain();
+
+        assertEquals(Boolean.FALSE, completed.get());
+        assertEquals("session-b", m.snapshot().streamSessionId);
+        assertEquals(SessionModel.State.HOME_LIVE,
+                m.state());
+    }
+
+    @Test public void terminationWithoutControllerDoesNotRemainWedged() {
+        m.enterHome(
+                new FakeController(), SESSION_A, "host", 7, "game");
+        m.markReconnectRequired(SESSION_A);
+
+        assertEquals(SessionModel.TerminationResult.NO_CONTROLLER,
+                m.terminate(SESSION_A, null));
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
+        assertEquals(SessionModel.TerminationResult.NO_CONTROLLER,
+                m.terminate(SESSION_A, null));
+    }
+
+    @Test public void rejectedTerminationRestoresTheLiveOwner() {
+        FakeController controller = new FakeController();
+        controller.terminationResult = false;
+        m.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        assertEquals(SessionModel.TerminationResult.STARTED,
+                m.terminate(SESSION_A, null));
+
+        assertEquals(SessionModel.State.HOME_LIVE,
+                m.state());
+        assertTrue(m.canResumeInstantly());
+        assertTrue(m.hasRetainedSession());
+    }
+
+    @Test public void onlyOneCorrelatedSwitchCanBeInFlight() {
+        FakeController controller = new FakeController();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "old");
+
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertEquals(SessionModel.SwitchResult.NOT_ELIGIBLE,
+                m.switchGame(
+                        "host", 7, "other", "Other", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertEquals(1, controller.switches);
+
+        controller.switchCompletion.complete(
+                SessionModel.SwitchOutcome.REUSED, "");
+
+        m.drain();
+        assertFalse(m.canSwitchGame("host", 7));
+        assertEquals(SessionModel.SwitchResult.NOT_ELIGIBLE,
+                m.switchGame(
+                        "host", 7, "other", "Other", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertEquals(1, controller.switches);
+
+        assertTrue(m.finishSwitch(SESSION_A, controller));
+        assertTrue(m.canSwitchGame("host", 7));
+    }
+
+
+    @Test public void parkedTransportReusesOnlyTheSameHostAndApp() {
+        FakeController controller = new FakeController();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "old");
+        assertFalse(m.canSwitchGame("other", 7));
+        assertFalse(m.canSwitchGame("host", 8));
+
+        m.markParked(SESSION_A);
+
+        assertTrue(m.canSwitchGame("host", 7));
+    }
+
+    @Test public void terminalCallbackReleasesSwitchButNotBeforeItArrives() {
+        FakeController controller = new FakeController();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "old");
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+
+        assertEquals(SessionModel.SwitchResult.NOT_ELIGIBLE,
+                m.switchGame(
+                        "host", 7, "other", "Other", "MoonWaker Stream", "",
+                        () -> false, null));
+
+        controller.switchCompletion.complete(
+                SessionModel.SwitchOutcome.FAILED, "cleanup_failed");
+
+        m.drain();
+        assertTrue(m.canSwitchGame("host", 7));
+    }
+
+    @Test public void neutralLiveStreamCanSwitchToManagedGame() {
+        FakeController controller = new FakeController();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "");
+
+        assertTrue(m.canSwitchGame("host", 7));
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertEquals("", m.snapshot().playniteGameId);
+        assertEquals(1, controller.switches);
+    }
+
+    @Test public void foregroundNaturalStopClaimsAnEmptyCoordinatorAsNeutralHome() {
+        FakeController controller = new FakeController();
+
+        assertTrue(m.retainNeutralAfterGameStopped(
+                controller, SESSION_A, "host", 7, "old"));
+
+        SessionModel.Snapshot retained =
+                m.snapshot();
+        assertEquals(SessionModel.State.HOME_LIVE, retained.state);
+        assertEquals(SESSION_A, retained.streamSessionId);
+        assertEquals("host", retained.hostId);
+        assertEquals(7, retained.appId);
+        assertEquals("", retained.playniteGameId);
+        assertTrue(m.canSwitchGame("host", 7));
+    }
+
+    @Test public void duplicateNaturalStopKeepsTheSettledNeutralSession() {
+        FakeController controller = new FakeController();
+        assertTrue(m.retainNeutralAfterGameStopped(
+                controller, SESSION_A, "host", 7, "old"));
+
+        assertTrue(m.retainNeutralAfterGameStopped(
+                controller, SESSION_A, "host", 7, "old"));
+
+        SessionModel.Snapshot retained =
+                m.snapshot();
+        assertEquals(SessionModel.State.HOME_LIVE, retained.state);
+        assertEquals(SESSION_A, retained.streamSessionId);
+        assertEquals("", retained.playniteGameId);
+        assertTrue(m.canSwitchGame("host", 7));
+    }
+
+    @Test public void dashboardStopCanPreclearExactGameBeforeOwnerSettlesNeutral() {
+        FakeController controller = new FakeController();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "old");
+        assertTrue(m.retainNeutralAfterGameStopped(
+                controller, SESSION_A, "host", 7, "old"));
+        assertFalse(m.retainNeutralAfterGameStopped(
+                new FakeController(), SESSION_A, "host", 7, "old"));
+        assertEquals("", m.snapshot().playniteGameId);
+    }
+
+    @Test public void parkedNaturalStopClearsOnlyTheExactGameAndKeepsParking() {
+        FakeController controller = new FakeController();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "old");
+        m.markParked(SESSION_A);
+
+        assertTrue(m.retainNeutralAfterGameStopped(
+                controller, SESSION_A, "host", 7, "old"));
+
+        SessionModel.Snapshot retained =
+                m.snapshot();
+        assertEquals(SessionModel.State.PARKED_LIVE, retained.state);
+        assertEquals(SESSION_A, retained.streamSessionId);
+        assertEquals(7, retained.appId);
+        assertEquals("", retained.playniteGameId);
+    }
+
+    @Test public void naturalStopCannotTakeOverAForeignRetainedSession() {
+        FakeController foreign = new FakeController();
+        m.enterHome(
+                foreign, "session-b", "other-host", 8, "other");
+
+        assertFalse(m.retainNeutralAfterGameStopped(
+                new FakeController(), SESSION_A, "host", 7, "old"));
+
+        SessionModel.Snapshot retained =
+                m.snapshot();
+        assertEquals("session-b", retained.streamSessionId);
+        assertEquals("other-host", retained.hostId);
+        assertEquals(8, retained.appId);
+        assertEquals("other", retained.playniteGameId);
+    }
+
+    @Test public void naturalStopCannotMutateReconnectOrTerminatingSession() {
+        FakeController controller = new FakeController();
+        m.enterHome(
+                controller, SESSION_A, "host", 7, "old");
+        m.markReconnectRequired(SESSION_A);
+
+        assertFalse(m.retainNeutralAfterGameStopped(
+                controller, SESSION_A, "host", 7, "old"));
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
+        assertEquals("old", m.snapshot().playniteGameId);
+
+        m.clear();
+        assertTrue(m.markTerminating(
+                SESSION_A, "host", 7, "old"));
+        assertFalse(m.retainNeutralAfterGameStopped(
+                controller, SESSION_A, "host", 7, "old"));
+        assertEquals(SessionModel.State.TERMINATING,
+                m.state());
+        assertEquals("old", m.snapshot().playniteGameId);
+    }
+
+    @Test public void replacedSessionSurvivesStaleSwitchCompletion() {
+        FakeController old = new FakeController();
+        AtomicReference<SessionModel.SwitchOutcome> outcome =
+                new AtomicReference<>();
+        m.enterHome(
+                old, SESSION_A, "host", 7, "old");
+        assertEquals(SessionModel.SwitchResult.STARTED,
+                m.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, (result, error) -> outcome.set(result)));
+
+        m.enterHome(
+                new FakeController(), "session-b", "host", 8, "other");
+        old.switchCompletion.complete(
+                SessionModel.SwitchOutcome.FAILED, "stale");
+        m.drain();
+
+        assertEquals(SessionModel.SwitchOutcome.FAILED, outcome.get());
+        SessionModel.Snapshot retained =
+                m.snapshot();
+        assertEquals("session-b", retained.streamSessionId);
+        assertEquals(8, retained.appId);
+        assertEquals("other", retained.playniteGameId);
+    }
+
+    @Test public void controlGenerationBindsOnlyToTheExactLiveOwnerAndClears() {
+        FakeController owner = new FakeController();
+        m.enterHome(
+                owner, SESSION_A, "host", 7, "game");
+        assertTrue(m.bindControlGeneration(
+                owner, SESSION_A, 11L));
+        assertEquals(11L, m.snapshot().controlGeneration);
+
+        m.enterHome(
+                new FakeController(), "session-b", "host", 7, "game");
+        assertFalse(m.bindControlGeneration(
+                owner, SESSION_A, 12L));
+        assertEquals(0L, m.snapshot().controlGeneration);
+    }
+
+    @Test public void exactPreparingOwnerCanBeginTerminalChildCleanup() {
+        FakeController owner = new FakeController();
+        assertTrue(m.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition", 1L));
+
+        SessionModel.DirectTermination token =
+                m.beginDirectTermination(
+                        owner, SESSION_A, "host", 7, "game");
+
+        assertTrue(token != null);
+        assertEquals(SessionModel.State.TERMINATING,
+                m.state());
+        m.completeDirectTermination(token, true);
+        assertEquals(SessionModel.State.NONE,
+                m.state());
+    }
+
+    private static String token(char value) {
+        return String.valueOf(value).repeat(64);
+    }
+}

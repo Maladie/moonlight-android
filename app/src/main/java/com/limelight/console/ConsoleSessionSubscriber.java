@@ -1,40 +1,39 @@
 package com.limelight.console;
 
 import com.limelight.R;
-import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.session.SessionModel;
 
 import java.util.function.IntConsumer;
 
 /**
- * The retained-stream snapshot a Console screen renders: delivered by the coordinator while
+ * The retained-stream snapshot a Console screen renders: delivered by the session model while
  * the screen is started, then held (never re-read) until the next delivery.
  */
-final class ConsoleSessionSubscriber implements RetainedStreamSessionCoordinator.Listener {
+final class ConsoleSessionSubscriber implements SessionModel.Listener {
     private final IntConsumer render;
     /** Null until the first {@link #start()}; every reader treats that as nothing delivered. */
-    private RetainedStreamSessionCoordinator.Snapshot delivered;
+    private SessionModel.Snapshot delivered;
 
     /** {@code render} receives the console update channels a session change invalidates. */
     ConsoleSessionSubscriber(IntConsumer render) {
         this.render = render;
     }
 
-    void start() {
-        RetainedStreamSessionCoordinator.Snapshot current =
-                RetainedStreamSessionCoordinator.subscribe(this);
+    void start(SessionModel model) {
+        SessionModel.Snapshot current = model.subscribe(this);
         if (delivered == null) delivered = current;
         else onSnapshot(current);
     }
 
-    void stop() {
-        RetainedStreamSessionCoordinator.unsubscribe(this);
+    void stop(SessionModel model) {
+        model.unsubscribe(this);
     }
 
-    RetainedStreamSessionCoordinator.Snapshot snapshot() {
+    SessionModel.Snapshot snapshot() {
         return delivered;
     }
 
-    @Override public void onSnapshot(RetainedStreamSessionCoordinator.Snapshot snapshot) {
+    @Override public void onSnapshot(SessionModel.Snapshot snapshot) {
         if (snapshot == delivered) return;
         delivered = snapshot;
         render.accept(ConsoleUpdateChannels.HOST_SELECTION
@@ -55,18 +54,18 @@ final class ConsoleSessionSubscriber implements RetainedStreamSessionCoordinator
 
     boolean reconnectRequired(String hostId) {
         return delivered != null
-                && delivered.state == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED
+                && delivered.state == SessionModel.State.RECONNECT_REQUIRED
                 && delivered.hostId.equalsIgnoreCase(hostId);
     }
 
     /** Warm-up status string for {@code hostId}, or 0 when the retained stream says nothing. */
     int warmUpStatus(String hostId, boolean neutralStreamTarget) {
         if (delivered == null || !delivered.hostId.equalsIgnoreCase(hostId)) return 0;
-        if (delivered.state == RetainedStreamSessionCoordinator.State.PREPARING) {
+        if (delivered.state == SessionModel.State.PREPARING) {
             return R.string.console_warm_up_preparing;
         }
-        boolean live = delivered.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                || delivered.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE;
+        boolean live = delivered.state == SessionModel.State.HOME_LIVE
+                || delivered.state == SessionModel.State.PARKED_LIVE;
         return live && delivered.playniteGameId.isEmpty() && neutralStreamTarget
                 ? R.string.console_warm_up_ready : 0;
     }
