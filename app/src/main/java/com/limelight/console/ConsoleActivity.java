@@ -504,8 +504,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
 
         ChildLaunchFailure(String reason, boolean cancelled) {
-            this.reason = reason == null || reason.trim().isEmpty()
-                    ? "child_not_playable" : reason.trim();
+            super(reason == null || reason.trim().isEmpty() ? "child_not_playable" : reason.trim());
+            this.reason = getMessage();
             this.cancelled = cancelled;
         }
     }
@@ -12232,20 +12232,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         orchestrationId, intent, target);
             }
 
-            @Override public void reconnectSavedSession() {
-                SessionResumeManager.PendingSession pending =
-                        sessionModel.records().pending;
-                Intent resume = SessionResumeManager.buildResumeIntent(
-                        ConsoleActivity.this, pending);
-                if (resume == null) return;
-                refreshSessionOnResume = true;
-                startActivity(resume);
-                overridePendingTransition(0, 0);
-            }
-
             @Override public void reconnectSavedSession(PlayIntent intent) {
                 reconnectSavedSessionForActor(intent);
             }
+            @Override public boolean warmUpCarriesGame() { return warmUpCarriesPendingGame(
+                    sessionModel.records().pending); }
             @Override public void reject(SessionOrchestrator.Rejection reason) {
                 int message;
                 switch (reason) {
@@ -12713,9 +12704,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     /** For failures outside the orchestrator: records, then shows the failure screen. */
     private void sessionFailed(SessionFailure reason, long orchestrationId,
-                               String hostId, String profileId) {
+                               String hostId, String profileId, String detail) {
         reason.record(orchestrationId, hostId, profileId,
-                resolveSessionSnapshot(currentHost(hostId), profileId), "");
+                resolveSessionSnapshot(currentHost(hostId), profileId), detail);
         showSessionFailure(reason);
     }
 
@@ -12808,7 +12799,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 mainHandler.post(() -> {
                     if (token != hostPreparationGeneration.get() || !active) return;
                     sessionFailed(SessionFailure.SUPPORT_PREVIOUS_NOT_CLOSED, 0L,
-                            host.uuid, transitionProfileId);
+                            host.uuid, transitionProfileId, "");
                 });
                 return;
             }
@@ -12816,7 +12807,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (token != hostPreparationGeneration.get() || !active) return;
                 if (ready == null) {
                     sessionFailed(SessionFailure.SUPPORT_HOST_NOT_READY, 0L,
-                            host.uuid, transitionProfileId);
+                            host.uuid, transitionProfileId, "");
                     return;
                 }
                 launchPreparedStream(ready, app, "", transition, loadingArtworkPath,
@@ -13083,7 +13074,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     "host_id", intent.hostId, "profile_id", intent.profileId,
                     "app_id", target.getAppId(), "game_id", intent.playniteGameId);
             sessionFailed(SessionFailure.ATTACH_RESUME_INTENT_MISSING, orchestrationId,
-                    intent.hostId, intent.profileId);
+                    intent.hostId, intent.profileId, "");
             return;
         }
         attach.putExtra(Game.EXTRA_PENDING_SWITCH_HOST_ID, intent.hostId)
@@ -13107,7 +13098,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     "host_id", intent.hostId, "profile_id", intent.profileId,
                     "app_id", target.getAppId(), "game_id", intent.playniteGameId);
             sessionFailed(SessionFailure.ATTACH_START_ACTIVITY_FAILED, orchestrationId,
-                    intent.hostId, intent.profileId);
+                    intent.hostId, intent.profileId, "");
             return;
         }
         MoonWakerDiagnostics.record("INFO", "android.console",
@@ -13138,11 +13129,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         SessionResumeManager.PendingSession pending =
                 sessionModel.records().pending;
         String targetExecution = executionProfileId(intent.hostId, intent.profileId);
-        if (pending == null || !intent.hostId.equalsIgnoreCase(pending.hostUuid)
-                || !targetExecution.equals(pending.executionProfileId)) return;
-        boolean actorHandoff = !intent.profileId.equals(pending.profileId);
+        String savedRefusal = pending == null ? "no_saved_session"
+                : intent.hostId.equalsIgnoreCase(pending.hostUuid)
+                && targetExecution.equals(pending.executionProfileId) ? null : "saved_session_mismatch";
+        boolean actorHandoff = savedRefusal == null && !intent.profileId.equals(pending.profileId);
         if (!actorHandoff) {
-            startResumeActivity(intent, pending, null, false, 0L);
+            String refusal = savedRefusal != null ? savedRefusal
+                    : startResumeActivity(intent, pending, null, false, 0L);
+            if (refusal != null) sessionFailed(SessionFailure.RECONNECT_SAVED_SESSION_UNAVAILABLE,
+                    0L, intent.hostId, intent.profileId, refusal);
             return;
         }
         BooleanSupplier cancelled = () -> !active
@@ -13165,18 +13160,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ChildLaunchBinding accepted = binding;
                 long acceptedHandoffGeneration = hostHandoffGeneration;
                 mainHandler.post(() -> {
-                    if (cancelled.getAsBoolean()) {
-                        failClosedActorHandoff(intent, pending, accepted);
-                        return;
-                    }
-                    if (!startResumeActivity(intent, pending, accepted, true,
-                            acceptedHandoffGeneration)) {
-                        failClosedActorHandoff(intent, pending, accepted);
-                    }
+                    boolean handoffCancelled = cancelled.getAsBoolean();
+                    String refusal = handoffCancelled ? "actor_handoff_cancelled"
+                            : startResumeActivity(intent, pending, accepted, true, acceptedHandoffGeneration);
+                    if (refusal == null) return;
+                    failClosedActorHandoff(intent, pending, accepted);
+                    if (!handoffCancelled) sessionFailed(SessionFailure.RECONNECT_ACTOR_HANDOFF_FAILED,
+                            0L, intent.hostId, intent.profileId, refusal);
                 });
             } catch (IOException | RuntimeException error) {
                 LimeLog.warning("Saved session actor handoff failed: " + error.getMessage());
                 if (timeAttachmentChanged) failClosedActorHandoff(intent, pending, binding);
+                mainHandler.post(() -> { if (!cancelled.getAsBoolean()) sessionFailed(
+                        SessionFailure.RECONNECT_ACTOR_HANDOFF_FAILED, 0L, intent.hostId,
+                        intent.profileId, error.getMessage()); });
             }
         });
     }
@@ -13200,13 +13197,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return ended;
     }
 
-    private boolean startResumeActivity(PlayIntent intent,
-                                        SessionResumeManager.PendingSession pending,
-                                        ChildLaunchBinding binding,
-                                        boolean actorHandoff,
-                                        long hostHandoffGeneration) {
+    private String startResumeActivity(PlayIntent intent,
+                                       SessionResumeManager.PendingSession pending,
+                                       ChildLaunchBinding binding,
+                                       boolean actorHandoff,
+                                       long hostHandoffGeneration) {
         Intent resume = SessionResumeManager.buildResumeIntent(this, pending);
-        if (resume == null) return false;
+        if (resume == null) return "resume_intent_unavailable";
         resume.putExtra(Game.EXTRA_PROFILE_ID, intent.profileId);
         resume.putExtra(Game.EXTRA_EXECUTION_PROFILE_ID,
                 executionProfileId(intent.hostId, intent.profileId));
@@ -13239,23 +13236,26 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         SessionModel.Snapshot retained =
                 sessionModel.snapshot();
         if (pending.neutralStreamTarget
-                && retained.state == SessionModel.State.RECONNECT_REQUIRED) {
-            if (warmUpClientAttempt <= 0L
-                    || !retained.hostId.equalsIgnoreCase(pending.hostUuid)
-                    || !retained.executionProfileId.equals(pending.executionProfileId)
-                    || retained.appId != pending.appId
-                    || !retained.streamSessionId.equals(pending.streamSessionId)) return false;
-            LaunchTransitionSpec transition = LaunchTransitionSpec.create(
-                    pending.hostUuid, intent.profileId,
-                    LaunchTransitionType.GENERIC, pending.appId, "",
-                    System.currentTimeMillis());
-            applyWarmUpIntent(resume, transition, intent, warmUpClientAttempt);
-        }
+                && retained.state == SessionModel.State.RECONNECT_REQUIRED
+                && (!retained.hostId.equalsIgnoreCase(pending.hostUuid)
+                || !retained.executionProfileId.equals(pending.executionProfileId)
+                || retained.appId != pending.appId
+                || !retained.streamSessionId.equals(pending.streamSessionId))) return "retained_mismatch";
+        if (warmUpCarriesPendingGame(pending)) applyWarmUpIntent(resume, LaunchTransitionSpec.create(
+                pending.hostUuid, intent.profileId, LaunchTransitionType.GENERIC,
+                pending.appId, "", System.currentTimeMillis()), intent, warmUpClientAttempt);
         if (binding != null) binding.handedToPlayer = true;
         refreshSessionOnResume = true;
         startActivity(resume);
         overridePendingTransition(0, 0);
-        return true;
+        return null;
+    }
+
+    /** The live warm-up attempt carries the intent's game into this saved neutral stream. */
+    private boolean warmUpCarriesPendingGame(SessionResumeManager.PendingSession pending) {
+        return warmUpClientAttempt > 0L && pending != null && pending.neutralStreamTarget
+                && warmUpClientHostId.equalsIgnoreCase(pending.hostUuid)
+                && sessionModel.snapshot().state == SessionModel.State.RECONNECT_REQUIRED;
     }
 
     private void failClosedActorHandoff(PlayIntent intent,
