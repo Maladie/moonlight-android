@@ -65,6 +65,15 @@ public class ConsoleHostTileLookTest {
         assertEquals(ConsoleHostTileLook.AMBER, unpaired.dot);
     }
 
+    @Test public void checkingSpinsANeutralDotInsteadOfAskingToPair() {
+        ConsoleHostTileLook checking = look(State.CHECKING);
+        assertTrue(checking.spinner);
+        assertEquals(R.string.console_status_checking, checking.label);
+        assertEquals(Badge.NONE, checking.badge);
+        assertFalse(checking.dimmed);
+        assertFalse(look(State.UNPAIRED).spinner);
+    }
+
     @Test public void profileAttentionNamesWindowsSignInOnlyWhenThatIsTheReason() {
         ConsoleHostTileLook signIn = ConsoleHostTileLook.of(State.PROFILE_ATTENTION,
                 ProfileState.SIGN_IN_REQUIRED, false);

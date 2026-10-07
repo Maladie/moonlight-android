@@ -236,6 +236,34 @@ public class ConsoleProfileGateTest {
         assertFalse(pause.contains("clearPinEntry()"));
     }
 
+    @Test public void profileTileShowsAtMostTwoLinesOneBadgeAndGatesAutomaticLogin() {
+        HostGatewayClient.IntegrationProfile child = new HostGatewayClient.IntegrationProfile(
+                "kid", "Kid", false, false, false, false, false, false, false, true, false,
+                "active", "available", false, false, 0,
+                "child", "basia", "kid", "", true, 1L, 1L,
+                4_800L, 60L, "", "", "none", "");
+        HostGatewayClient.IntegrationProfile locked = new HostGatewayClient.IntegrationProfile(
+                "locked", "locked", false, false, false, false, false, false, false,
+                true, false, "locked", "unavailable", true);
+
+        ConsoleProfileTileLook childLook = ConsoleProfileTileLook.of(child, false);
+        assertEquals(Arrays.asList(ConsoleProfileTileLook.Line.CHILD,
+                ConsoleProfileTileLook.Line.REMAINING), childLook.lines);
+        assertEquals(ConsoleProfileTileLook.Badge.NONE, childLook.badge);
+        assertFalse(childLook.automaticToggle);
+
+        ConsoleProfileTileLook lockedLook = ConsoleProfileTileLook.of(locked, true);
+        assertTrue(lockedLook.lines.isEmpty());
+        assertEquals(ConsoleProfileTileLook.Badge.LOCK, lockedLook.badge);
+        assertFalse(lockedLook.automaticToggle);
+
+        ConsoleProfileTileLook openLook = ConsoleProfileTileLook.of(profile("open"), true);
+        assertEquals(Collections.singletonList(ConsoleProfileTileLook.Line.ACTIVE),
+                openLook.lines);
+        assertEquals(ConsoleProfileTileLook.Badge.AUTOMATIC, openLook.badge);
+        assertTrue(openLook.automaticToggle);
+    }
+
     private static HostGatewayClient.IntegrationProfile profile(String id) {
         return profile(id, true);
     }

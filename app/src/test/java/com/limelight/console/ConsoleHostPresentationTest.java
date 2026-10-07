@@ -18,7 +18,7 @@ public class ConsoleHostPresentationTest {
         host.macAddress = "00:11:22:33:44:55";
 
         assertEquals(ConsoleHostPresentation.State.WAKING,
-                ConsoleHostPresentation.state(host, true));
+                ConsoleHostPresentation.state(host, true, true));
     }
 
     @Test
@@ -27,7 +27,7 @@ public class ConsoleHostPresentationTest {
         host.macAddress = "00:11:22:33:44:55";
 
         assertEquals(ConsoleHostPresentation.State.OFFLINE,
-                ConsoleHostPresentation.state(host, false));
+                ConsoleHostPresentation.state(host, false, true));
         assertTrue(ConsoleHostPresentation.canWake(host));
     }
 
@@ -37,19 +37,38 @@ public class ConsoleHostPresentationTest {
         host.manualAddress = new ComputerDetails.AddressTuple("192.168.1.20", 47989);
 
         assertEquals(ConsoleHostPresentation.State.OFFLINE,
-                ConsoleHostPresentation.state(host, false));
+                ConsoleHostPresentation.state(host, false, true));
     }
 
     @Test
-    public void unknownPairedHostIsOffline() {
-        assertEquals(ConsoleHostPresentation.State.OFFLINE,
-                ConsoleHostPresentation.state(host(ComputerDetails.State.UNKNOWN), false));
+    public void rememberedStateIsCheckingUntilAPollAnswers() {
+        ConsoleHostStateController controller = new ConsoleHostStateController(() -> 1L);
+        // As loaded at start: the database keeps no pairing, the state is the remembered one.
+        ComputerDetails loaded = host(ComputerDetails.State.UNKNOWN);
+        loaded.uuid = "host";
+        loaded.pairState = null;
+        controller.remember("host", ComputerDetails.State.ONLINE);
+        controller.observe(loaded, false);
+        assertEquals(ComputerDetails.State.ONLINE, loaded.state);
+        assertEquals(ConsoleHostPresentation.State.CHECKING, controller.state(loaded));
+
+        ComputerDetails answered = host(ComputerDetails.State.ONLINE);
+        answered.uuid = "host";
+        controller.observe(answered, true);
+        assertEquals(ConsoleHostPresentation.State.ONLINE, controller.state(answered));
+        answered.pairState = PairingManager.PairState.NOT_PAIRED;
+        assertEquals(ConsoleHostPresentation.State.UNPAIRED, controller.state(answered));
+
+        // Offline since the start: pairing never reported, so unavailable rather than unpaired.
+        loaded.state = ComputerDetails.State.OFFLINE;
+        controller.observe(loaded, true);
+        assertEquals(ConsoleHostPresentation.State.OFFLINE, controller.state(loaded));
     }
 
     @Test
     public void onlinePairedHostWithoutSessionIsOnline() {
         assertEquals(ConsoleHostPresentation.State.ONLINE,
-                ConsoleHostPresentation.state(host(ComputerDetails.State.ONLINE), false));
+                ConsoleHostPresentation.state(host(ComputerDetails.State.ONLINE), false, true));
     }
 
     @Test
@@ -59,7 +78,7 @@ public class ConsoleHostPresentationTest {
         host.runningGameId = 42;
 
         assertEquals(ConsoleHostPresentation.State.ACTIVE_SESSION,
-                ConsoleHostPresentation.state(host, false));
+                ConsoleHostPresentation.state(host, false, true));
     }
 
     @Test

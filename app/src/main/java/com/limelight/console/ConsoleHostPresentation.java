@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.R;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.PairingManager;
 
@@ -13,7 +14,8 @@ final class ConsoleHostPresentation {
         ASLEEP,
         UNREACHABLE,
         OFFLINE,
-        UNPAIRED
+        UNPAIRED,
+        CHECKING
     }
 
     private ConsoleHostPresentation() { }
@@ -76,14 +78,23 @@ final class ConsoleHostPresentation {
                 ? State.PROFILE_ATTENTION : state;
     }
 
-    static State state(ComputerDetails host, boolean waking) {
+    /**
+     * {@code polled}: a poll has answered for this host since the app started. Until then its
+     * state is a remembered one and its pairing is unknown (the database does not keep it), so
+     * it is checking, not unpaired. Only a host that answers reports its pairing: a host
+     * offline since the start is unavailable, not unpaired.
+     */
+    static State state(ComputerDetails host, boolean waking, boolean polled) {
         if (host == null) return State.OFFLINE;
+        if (!polled) return waking ? State.WAKING : State.CHECKING;
         if (host.state == ComputerDetails.State.ONLINE) {
             if (host.pairState != PairingManager.PairState.PAIRED) return State.UNPAIRED;
             return host.runningGameId != 0 ? State.ACTIVE_SESSION : State.ONLINE;
         }
         if (waking) return State.WAKING;
-        if (host.pairState != PairingManager.PairState.PAIRED) return State.UNPAIRED;
+        if (host.pairState != null && host.pairState != PairingManager.PairState.PAIRED) {
+            return State.UNPAIRED;
+        }
         return State.OFFLINE;
     }
 
@@ -103,6 +114,7 @@ final class ConsoleHostPresentation {
             case CONNECTING:
                 return 0xFFFFC857;
             case ASLEEP:
+            case CHECKING:
                 return 0xFF8FA6BC;
             case UNPAIRED:
                 return 0xFFFFB74D;
@@ -110,6 +122,28 @@ final class ConsoleHostPresentation {
             case OFFLINE:
             default:
                 return 0xFFFF6464;
+        }
+    }
+
+    /** The host's status line for a state that has no more specific text. */
+    static int status(State state) {
+        switch (state) {
+            case WAKING:
+                return R.string.console_status_waking;
+            case ASLEEP:
+                return R.string.console_status_asleep;
+            case UNREACHABLE:
+                return R.string.console_status_unreachable;
+            case CONNECTING:
+                return R.string.console_status_connecting;
+            case UNPAIRED:
+                return R.string.console_status_unpaired;
+            case OFFLINE:
+                return R.string.console_status_offline;
+            case CHECKING:
+                return R.string.console_status_checking;
+            default:
+                return R.string.console_status_online;
         }
     }
 

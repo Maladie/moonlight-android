@@ -18,11 +18,7 @@ final class ConsolePinEntry {
                 || keyCode == KeyEvent.KEYCODE_BACK;
         if (digit < 0 && !submit && !back) return Action.IGNORED;
         if (action != KeyEvent.ACTION_UP) return Action.CONSUMED;
-        if (back) {
-            if (length == 0) return Action.BACK;
-            digits[--length] = '\0';
-            return Action.CHANGED;
-        }
+        if (back) return length == 0 ? Action.BACK : deleteLast();
         if (submit) return length == digits.length ? Action.SUBMIT : Action.CONSUMED;
         if (length < digits.length) digits[length++] = (char) ('0' + digit);
         return length == digits.length ? Action.SUBMIT : Action.CHANGED;
@@ -42,6 +38,13 @@ final class ConsolePinEntry {
         if (digit < 0 || digit > 9) return Action.IGNORED;
         if (length < digits.length) digits[length++] = (char) ('0' + digit);
         return length == digits.length ? Action.SUBMIT : Action.CHANGED;
+    }
+
+    /** The keypad's delete key: removes the last digit, never leaves the screen. */
+    Action deleteLast() {
+        if (length == 0) return Action.IGNORED;
+        digits[--length] = '\0';
+        return Action.CHANGED;
     }
 
     int length() {
