@@ -404,7 +404,7 @@ final class ConsoleEntryShell extends FrameLayout {
     }
 
     /** Mockup "radial": exp(-3 d^2) falloff reaching zero at the edge, white, tinted per bloom. */
-    private static synchronized Bitmap bloomBitmap() {
+    static synchronized Bitmap bloomBitmap() {
         if (bloomBitmap == null) {
             int size = 128;
             int[] pixels = new int[size * size];
@@ -520,7 +520,7 @@ final class ConsoleEntryShell extends FrameLayout {
     }
 
     /** Static dust and vignette above the blooms, drawn once (it is never invalidated). */
-    private static final class Atmosphere extends View {
+    static final class Atmosphere extends View {
         /** Mockup dust: 26 dots, x 80..1840, y 300..900, r 1.5..3.5 px, alpha 18..45. */
         private static final int DUST = 26;
         private static final int DUST_COLOR = 0xFFFFDCBE;

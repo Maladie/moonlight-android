@@ -621,6 +621,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean contentPanelOpen;
     private ConsoleProfileSelectView profileSelectView;
     private ConsolePinEntryView pinEntryView;
+    private ConsoleIntroView introView; // Null over a retained stream: no entry intro there.
+    private final Set<String> loadingPosterTags = new HashSet<>(); // Prefetch not yet done.
+    private String settledBackdropTag = ""; // Last card whose backdrop request ended.
     private final ConsoleHostStateController hostStateController =
             new ConsoleHostStateController(SystemClock::uptimeMillis);
     private LinearLayout homeContent;
@@ -707,7 +710,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String renderedControllersSignature;
     private String renderedControllerDevicesSignature;
     private Future<?> playniteRequest;
-    private Future<?> playniteArtworkPrefetch;
     private Future<?> streamingAutopilotTask;
     private final AtomicInteger streamingAutopilotGeneration = new AtomicInteger();
     private String playniteArtworkPrefetchSignature;
@@ -1152,6 +1154,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         showCommunityPanel(shell);
                     }
 
+                    @Override public ConsoleMenuBackdrop menuBackdrop() { return menuBackdrop; }
+                    @Override public String dmShortcutTrigger() { return discordDmShortcut.trigger(); }
+
                     @Override public void toast(String message) {
                         ConsoleUiFeedback.makeText(ConsoleActivity.this, message,
                                 Toast.LENGTH_LONG).show();
@@ -1256,6 +1261,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         String address = host.activeAddress == null ? null : host.activeAddress.address;
                         discordPanelController.performCommunityHostAction(host.uuid, address, host.name,
                                 action, callback);
+                    }
+
+                    @Override public String hostName() {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        return host == null || host.name == null ? "" : host.name;
                     }
 
                     @Override public void requestAudio(
@@ -1405,6 +1415,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return true;
             }
             if (event.getAction() == KeyEvent.ACTION_DOWN) resetScreenSaverTimer();
+            if (introView != null && introView.handleKey(event)) return true;
             if (event.getAction() == KeyEvent.ACTION_DOWN
                     && isDirectionalNavigationKey(event.getKeyCode())) {
                 lastDirectionalNavigationAt = event.getEventTime();
@@ -1793,6 +1804,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         pendingHostPreparation = null;
         cancelOfflinePinAttempt();
         hostEntryAttempt.end();
+        if (introView != null) introView.end();
         if (pinProfileId != null) {
             profileGateGeneration.incrementAndGet();
             pinEntry.clear();
@@ -2296,6 +2308,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         buildHostSelectionLayer(container);
         profileSelectView = new ConsoleProfileSelectView(this, entryShell);
         pinEntryView = new ConsolePinEntryView(this, entryShell, profileSelectView);
+        if (!isStreamHome()) container.addView(introView = new ConsoleIntroView(this, entryShell,
+                profileSelectView, pinEntryView, homeLayer, appRow, () -> reducedMotion,
+                () -> initialLocalPresentationReady(selectedHostUuid, initialLocalAppsHostId,
+                initialLocalLibraryHostId), loadingPosterTags, tag -> pendingArtworkKey == null
+                && loadingArtworkKey == null
+                && (displayedArtworkKey != null || settledBackdropTag.equals(tag))), match());
         buildSidePanel();
         buildLoadingLayer(container);
         buildScreenSaverLayer(container);
@@ -2512,6 +2530,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 showPinEntry(host, gate.profile, focusApps, prepareHost, true);
                 return;
             }
+            if (introView != null) introView.start(gate.profile, host.uuid,
+                    ConsoleIntroView.Entry.AUTOMATIC);
             changeSelectedProfile(host, gate.profile.id);
         }
         enterHostAfterProfileGate(host, focusApps, prepareHost);
@@ -2537,11 +2557,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     @Override public void onProfileSelected(String profileId) {
                         if (!host.uuid.equals(profileGateHostUuid)) return;
                         HostGatewayClient.IntegrationProfile profile =
-                                profileForGate(host.uuid, profileId);
+                                hostGatewayStore.profileSelection(host.uuid).find(profileId);
                         if (profile == null) return;
                         if (profile.pinRequired) {
                             showPinEntry(host, profile, focusApps, prepareHost, true);
                         } else {
+                            if (introView != null) introView.start(profile, host.uuid,
+                                    ConsoleIntroView.Entry.PROFILE);
                             changeSelectedProfile(host, profileId);
                             enterHostAfterProfileGate(
                                     currentHost(host.uuid), focusApps, prepareHost);
@@ -2551,7 +2573,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     @Override public void onAutomaticProfileToggled(String profileId) {
                         if (!host.uuid.equals(profileGateHostUuid)) return;
                         HostGatewayClient.IntegrationProfile profile =
-                                profileForGate(host.uuid, profileId);
+                                hostGatewayStore.profileSelection(host.uuid).find(profileId);
                         if (profile == null || profile.pinRequired) return;
                         String automatic = hostGatewayStore.automaticIntegrationProfileId(
                                 host.uuid);
@@ -2564,15 +2586,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         closeProfileGate();
                     }
                 });
-    }
-
-    private HostGatewayClient.IntegrationProfile profileForGate(
-            String hostId, String profileId) {
-        for (HostGatewayClient.IntegrationProfile profile
-                : hostGatewayStore.profileSelection(hostId).profiles) {
-            if (profile.id.equals(profileId)) return profile;
-        }
-        return null;
     }
 
     private static String childProfileMetadataKey(String hostId, String profileId) {
@@ -3535,9 +3548,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (gatewayError == null && transportError == null) {
             ComputerDetails host = currentHost(hostId);
             HostGatewayClient.IntegrationProfile profile =
-                    profileForGate(hostId, profileId);
+                    hostGatewayStore.profileSelection(hostId).find(profileId);
             if (host == null || profile == null || !profile.pinRequired) return;
             if (pinCompleteHostEntry) {
+                if (introView != null) introView.start(profile, hostId, ConsoleIntroView.Entry.PIN);
                 changeSelectedProfile(host, profileId);
                 enterHostAfterProfileGate(host, pinFocusApps, pinPrepareHost);
             } else {
@@ -3592,12 +3606,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         pinSubmitting = false;
         pinCooldownUntil = 0L;
         pinCompleteHostEntry = false;
-        // FLAG_SECURE stays until the PIN page has faded out, unless a PIN screen reopened.
-        if (pinEntryView != null) pinEntryView.hide(() -> {
+        // FLAG_SECURE stays until the PIN page has faded out and a starting entry intro has
+        // covered its last frame on screen, unless a PIN screen reopened.
+        if (pinEntryView != null) pinEntryView.hide(() -> ConsoleIntroView.shown(introView, () -> {
             if (pinProfileId != null || !pinSecureFlagAdded) return;
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
             pinSecureFlagAdded = false;
-        });
+        }));
     }
 
     private void enterHostAfterProfileGate(ComputerDetails host, boolean focusApps,
@@ -4215,7 +4230,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void selectProfile(ComputerDetails host, String profileId) {
         HostGatewayClient.IntegrationProfile profile =
-                profileForGate(host == null ? null : host.uuid, profileId);
+                hostGatewayStore.profileSelection(host == null ? null : host.uuid).find(profileId);
         if (profile == null) return;
         if (profile.pinRequired) {
             ProfileAuthorization.revoke();
@@ -7397,16 +7412,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         selectedHostUuid = host.uuid;
         ProfileAuthorization.grant(host.uuid);
         refreshDiscordAccess();
+        initialLocalAppsHostId = "";
+        initialLocalLibraryHostId = "";
         if (requiresPreparedInitialCarouselFrame()) {
-            initialLocalAppsHostId = "";
-            initialLocalLibraryHostId = "";
             resetInitialCarouselArtworkWarmup();
             suppressInitialCarouselMotion = true;
             libraryTransitionCoordinator.setReducedMotion(true);
         }
-        if (changed) {
-            currentSunshineApps = Collections.emptyList();
-        }
+        if (changed) currentSunshineApps = Collections.emptyList();
         restoreHostLibraryState(host.uuid);
         boolean restoredInitialPresentation = requiresPreparedInitialCarouselFrame()
                 && restoreInitialLocalPresentationData(host);
@@ -7416,18 +7429,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         appsLabel.setText(getString(R.string.console_apps_host,
                 host.name.toUpperCase(Locale.ROOT)));
         updateHostSelector();
-        if (requiresPreparedInitialCarouselFrame()) {
-            deferInitialHostProfileRefresh = true;
-        } else {
-            refreshHostProfiles(host);
-        }
+        if (requiresPreparedInitialCarouselFrame()) deferInitialHostProfileRefresh = true;
+        else refreshHostProfiles(host);
         refreshDiscordIndicator();
         startAppListPoller(host);
         if (restoredInitialPresentation) settleInitialLocalPresentation(host);
         renderAppsAsync(host, focusApps);
         if (!restoredInitialPresentation && (changed || currentPlayniteGames.isEmpty())) {
             loadPlayniteForHost(host);
-        }
+        } else initialLocalLibraryHostId = host.uuid; // This host's library is in memory.
     }
 
     private void cancelOwnedWarmUp(String hostId, boolean relinquishForHostChange) {
@@ -10120,6 +10130,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
     }
 
+    /** Executor thread: this card's backdrop request ended, art or not (the intro waits). */
+    private void settleBackdrop(String expectedTag) {
+        mainHandler.post(() -> settledBackdropTag = expectedTag);
+    }
+
     /** Executor thread: decodes into the LRU, then hands the main thread the bitmap. */
     private void deliverPlaynitePoster(HostProfileKey profileKey, ComputerDetails host,
                                        PlayniteDashboardItem item, ImageView poster,
@@ -10172,13 +10187,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void schedulePlayniteArtworkPrefetch(ComputerDetails host,
                                                   List<PlayniteDashboardItem> items,
-                                                  boolean includeBackdrops) {
-        schedulePlayniteArtworkPrefetch(host, items,
-                includeBackdrops ? stableIds(items) : Collections.emptySet());
-    }
-
-    private void schedulePlayniteArtworkPrefetch(ComputerDetails host,
-                                                  List<PlayniteDashboardItem> items,
                                                   Set<String> backdropIds) {
         HostProfileKey profileKey = currentPlayniteProfileKey;
         if (!active || host == null || items.isEmpty()
@@ -10211,6 +10219,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (connection == null) return;
         int token = playniteArtworkGeneration.incrementAndGet();
         List<PlayniteDashboardItem> snapshot = new ArrayList<>(items);
+        for (PlayniteDashboardItem item : snapshot) loadingPosterTags.add(playniteArtworkTag(item));
         int workers = Math.min(PLAYNITE_ARTWORK_PREFETCH_WORKERS, snapshot.size());
         for (int worker = 0; worker < workers; worker++) {
             final int offset = worker;
@@ -10219,12 +10228,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     if (Thread.currentThread().isInterrupted()
                             || token != playniteArtworkGeneration.get()
                             || !currentPlayniteProjectionMatches(profileKey)) return;
+                    String tag = playniteArtworkTag(snapshot.get(index));
                     prefetchPlayniteArtwork(connection, latestHost, snapshot.get(index),
                             backdropIds.contains(snapshot.get(index).stableId()), token);
+                    mainHandler.post(() -> { // After its poster's post; failed ones settle too.
+                        if (token == playniteArtworkGeneration.get()) loadingPosterTags.remove(tag);
+                    });
                 }
             });
             playniteArtworkPrefetchTasks.add(task);
-            if (playniteArtworkPrefetch == null) playniteArtworkPrefetch = task;
         }
     }
 
@@ -10296,10 +10308,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void cancelPlayniteArtworkPrefetch() {
         playniteArtworkGeneration.incrementAndGet();
-        if (playniteArtworkPrefetch != null) {
-            playniteArtworkPrefetch.cancel(true);
-            playniteArtworkPrefetch = null;
-        }
+        loadingPosterTags.clear();
         synchronized (playniteArtworkPrefetchTasks) {
             for (Future<?> task : playniteArtworkPrefetchTasks) task.cancel(true);
             playniteArtworkPrefetchTasks.clear();
@@ -10451,20 +10460,25 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (host == null || !currentPlayniteProjectionMatches(profileKey)
                 || !profileKey.hostId.equalsIgnoreCase(host.uuid)) return;
         PlayniteArtworkSpec spec = PlayniteArtworkSpec.forBackdrop(item.game);
-        if (!spec.available()) return;
+        String expectedTag = playniteArtworkTag(item);
+        if (!spec.available()) {
+            settledBackdropTag = expectedTag;
+            return;
+        }
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection = allowNetwork
                 ? hostGatewayStore.loadForHost(host.uuid, address, profileKey.profileId)
                 : null;
-        String expectedTag = playniteArtworkTag(item);
         executor.execute(() -> {
             ArtworkResult cached = cachedPlayniteArtwork(host.uuid, item, spec);
             if (cached != null) postCardBackdrop(profileKey, poster, expectedTag, cached.file);
-            if (connection == null || cached != null && spec.kind.equals(cached.kind)) return;
-            try {
-                postCardBackdrop(profileKey, poster, expectedTag,
-                        fetchPlayniteArtwork(connection, host.uuid, item, spec).file);
-            } catch (IOException ignored) { }
+            if (connection != null && (cached == null || !spec.kind.equals(cached.kind))) {
+                try {
+                    postCardBackdrop(profileKey, poster, expectedTag,
+                            fetchPlayniteArtwork(connection, host.uuid, item, spec).file);
+                } catch (IOException ignored) { }
+            }
+            settleBackdrop(expectedTag); // After the art's own post, which the intro then sees.
         });
     }
 
@@ -10488,20 +10502,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             parent = parent.getParent();
         }
         return false;
-    }
-
-    private void loadPlayniteBitmap(File file, ImageView poster,
-                                    String expectedTag, String kind) {
-        Bitmap cached = playniteBitmapCache.get(playniteBitmapCacheKey(file));
-        if (cached != null) {
-            applyPlayniteBitmap(poster, expectedTag, kind, cached);
-            return;
-        }
-        executor.execute(() -> {
-            Bitmap bitmap = cachePlayniteBitmap(file);
-            mainHandler.post(() -> applyPlayniteBitmap(
-                    poster, expectedTag, kind, bitmap));
-        });
     }
 
     private Bitmap cachePlayniteBitmap(File file) {
@@ -11678,13 +11678,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         };
         mainHandler.postDelayed(pendingArtworkCommit,
-                reducedMotion || suppressInitialCarouselMotion
-                        ? 0L : ARTWORK_FOCUS_SETTLE_MS);
+                instantArtwork() ? 0L : ARTWORK_FOCUS_SETTLE_MS);
+    }
+
+    /** Without motion, or under the entry intro, whose exit then reveals the art at rest. */
+    private boolean instantArtwork() {
+        return reducedMotion || suppressInitialCarouselMotion
+                || introView != null && introView.holding();
     }
 
     private void showArtworkSettled(File file, Drawable preview, String artworkKey) {
         int token = artworkGeneration.incrementAndGet();
-        boolean immediate = reducedMotion || suppressInitialCarouselMotion;
+        boolean immediate = instantArtwork();
         loadingArtworkKey = artworkKey;
         if (preview != null && !CONSOLE_UI_V2) {
             Drawable next = cloneDrawable(preview);
@@ -11782,6 +11787,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         pendingArtworkKey = null;
         loadingArtworkKey = null;
         displayedArtworkKey = null;
+        settledBackdropTag = "";
         int token = artworkGeneration.incrementAndGet();
         glassAccent = 0xFF73D7FF;
         animateArtworkScrimTo(.42f);
@@ -14520,11 +14526,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         currentPanelKey = "discord.community";
         sidePanelScroll.animate().cancel();
         sidePanelScroll.setVisibility(View.GONE);
-        sidePanelScroll.setScrollLocked(false);
         communityPanelHost.setVisibility(View.VISIBLE);
-        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13});
-        communityPanelHost.setBackground(background);
         if (!alreadyShowing) {
             captureMenuBackdrop();
             sideDialog.show();
@@ -14682,7 +14684,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(sidePanelBusyBanner);
             sidePanelBusyBanner = null;
         }
-        applySidePanelFrame(false);
+        applySidePanelFrame();
         String nextKey = eyebrow + "\n" + title;
         boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
         boolean samePanel = alreadyShowing && nextKey.equals(currentPanelKey);
@@ -14708,7 +14710,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             contentPanelOpen = true;
             updateContentLayerAccess();
         } else if (!sidePanelTransient && currentPanelKey != null
-                && !currentPanelKey.equals(nextKey)) {
+                && !currentPanelKey.equals(nextKey) && !"discord.community".equals(currentPanelKey)) {
+            // Community lives in communityPanelHost; sidePanel holds no rows of it to restore.
             PanelSnapshot snapshot = capturePanelSnapshot();
             if (snapshot != null) panelHistory.push(snapshot);
         }
@@ -14755,25 +14758,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private void applySidePanelFrame(boolean communityShell) {
+    private void applySidePanelFrame() {
         if (sidePanelScroll == null || sidePanel == null) return;
-        sidePanelScroll.setScrollLocked(communityShell);
         FrameLayout.LayoutParams frame = (FrameLayout.LayoutParams) sidePanelScroll.getLayoutParams();
-        int margin = communityShell ? 0 : dp(ConsolePanel.MARGIN_DP);
-        frame.width = communityShell ? ViewGroup.LayoutParams.MATCH_PARENT : dp(ConsolePanel.WIDTH_DP);
+        int margin = dp(ConsolePanel.MARGIN_DP);
+        frame.width = dp(ConsolePanel.WIDTH_DP);
         frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
-        frame.gravity = communityShell ? Gravity.CENTER : Gravity.END;
+        frame.gravity = Gravity.END;
         frame.setMargins(margin, margin, margin, margin);
-        if (communityShell) {
-            sidePanelScroll.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13}));
-            consolePanel.leaveGlass(sidePanel);
-        } else {
-            consolePanel.floatOnGlass(sidePanel);
-        }
+        consolePanel.floatOnGlass(sidePanel);
         ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
-        content.height = communityShell ? ViewGroup.LayoutParams.MATCH_PARENT
-                : ViewGroup.LayoutParams.WRAP_CONTENT;
+        content.height = ViewGroup.LayoutParams.WRAP_CONTENT;
         sidePanel.setLayoutParams(content);
     }
 
@@ -14830,7 +14825,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sidePanelScroll.setAlpha(1f);
         sidePanelScroll.setScaleX(1f);
         sidePanelScroll.setScaleY(1f);
-        applySidePanelFrame(false);
+        applySidePanelFrame();
         panelHistory.clear();
         currentPanelKey = null;
         sidePanelBusyBanner = null;
@@ -14877,7 +14872,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!panelHistory.isEmpty()) {
             prepareChildSharingForDeparture();
             PanelSnapshot snapshot = panelHistory.pop();
-            applySidePanelFrame("discord.community".equals(snapshot.key));
             sidePanel.removeAllViews();
             for (View child : snapshot.children) {
                 sidePanel.addView(child);

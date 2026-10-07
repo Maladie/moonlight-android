@@ -1,13 +1,14 @@
 package com.limelight.console;
 
 import android.content.Context;
-import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.text.InputFilter;
+import android.text.format.DateFormat;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
@@ -16,6 +17,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -25,16 +27,20 @@ import com.limelight.discord.DiscordSocialClient;
 import com.limelight.ui.ControllerGlyphs;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Native, full-screen Community composition.  It deliberately owns the stable shell, rather
- * than rebuilding a generic side-panel action list when Social/Gateway snapshots refresh.
+ * Native, full-screen Community composition in the v4 look (mockups 19-discord-*-v4): header,
+ * tabs and feed on the blurred Home, the selected item's detail on the glass side panel, and a
+ * conversation with the on-screen keyboard on glass. It deliberately owns the stable shell,
+ * rather than rebuilding a generic side-panel action list when Social/Gateway snapshots refresh.
  */
-final class DiscordCommunityView extends LinearLayout {
+final class DiscordCommunityView extends FrameLayout {
     interface Callback {
         void onTab(DiscordCommunityState.Tab tab);
         void onDestinationFocused(DiscordCommunityPresentation.Destination destination);
@@ -89,19 +95,8 @@ final class DiscordCommunityView extends LinearLayout {
         final boolean directMessagesScopeAvailable;
         final boolean directMessagesCapable;
         final boolean dmNotificationsEnabled;
-
-        Model(DiscordSocialClient.Snapshot snapshot, DiscordCommunityState state,
-              List<DiscordCommunityPresentation.Destination> active,
-              List<DiscordCommunityPresentation.Destination> recent,
-              List<DiscordCommunityPresentation.Destination> guildChannels,
-              boolean homeLoading, boolean homeUnavailable, boolean guildLoading,
-              boolean guildUnavailable, String error, HostGatewayClient.DiscordVoice voice) {
-            this(snapshot, state, active, recent, guildChannels, homeLoading, homeUnavailable,
-                    guildLoading, guildUnavailable, error, voice, false, false, null, false, "",
-                    null, false, false, "", null, Collections.emptyList(),
-                    new DiscordDirectMessageState.SendState(false, false, 0, ""), "", false, false,
-                    true);
-        }
+        /** The paired host's name, for the audio detail's "Devices on host …" subtitle. */
+        final String hostName;
 
         Model(DiscordSocialClient.Snapshot snapshot, DiscordCommunityState state,
               List<DiscordCommunityPresentation.Destination> active,
@@ -116,7 +111,7 @@ final class DiscordCommunityView extends LinearLayout {
               List<DiscordDirectMessageState.Message> directMessages,
               DiscordDirectMessageState.SendState directSendState, String directDraft,
               boolean directMessagesScopeAvailable, boolean directMessagesCapable,
-              boolean dmNotificationsEnabled) {
+              boolean dmNotificationsEnabled, String hostName) {
             this.snapshot = snapshot;
             this.state = state;
             this.active = active;
@@ -145,42 +140,54 @@ final class DiscordCommunityView extends LinearLayout {
             this.directMessagesScopeAvailable = directMessagesScopeAvailable;
             this.directMessagesCapable = directMessagesScopeAvailable && directMessagesCapable;
             this.dmNotificationsEnabled = dmNotificationsEnabled;
+            this.hostName = hostName == null ? "" : hostName;
         }
     }
 
-    private static final int WHITE = 0xFFF4F7FF;
-    private static final int MUTED = 0xFFA2A9BB;
-    private static final int CYAN = 0xFF77E5FF;
-    private static final int CARD = 0xFF171E2B;
-    private static final int ROW = 0x18000000;
-    // These are deliberately calibrated for the 960dp-wide, 540dp-tall 1080p TV viewport.
-    // The visual mock is expressed in physical 1080p pixels, so the old 78/54dp tokens were
-    // visibly twice as tall on the BRAVIA's density=2 configuration.
+    // Mockup geometry at the TV's 960x540 dp viewport (1080p pixels halved).
+    private static final int COLUMN_LEFT_DP = 48;
+    private static final int COLUMN_GAP_DP = 23;
+    private static final int PANEL_MARGIN_DP = 12;
     private static final int ACTIVITY_HEIGHT_DP = 56;
-    private static final int DESTINATION_HEIGHT_DP = 44;
+    private static final int DESTINATION_HEIGHT_DP = 42;
+    /** Ten 66 dp key columns (120 px keys, 12 px gaps) and the keyboard's 2 dp padding. */
+    private static final int KEYBOARD_WIDTH_DP = 664;
+    private static final int KEYBOARD_CARD_DP = 150;
+    /** The keyboard's four 36 dp rows and its 2 dp padding. */
+    private static final int KEYBOARD_HEIGHT_DP = 148;
+    /** In a chat the account chip keeps its feed position (right end x 1150 px). */
+    private static final int CHAT_HEADER_RIGHT_DP = ConsolePanel.WIDTH_DP + PANEL_MARGIN_DP
+            + COLUMN_GAP_DP - COLUMN_LEFT_DP;
     private static final float HISTORY_SCROLL_DEAD_ZONE = .45f;
     private static final long HISTORY_SCROLL_REPEAT_MS = 110L;
-    enum ActionTone { NEUTRAL, POSITIVE_JOIN, DESTRUCTIVE_LEAVE }
+    private interface Styler { void style(boolean focused); }
     private final Callback callback;
-    private final LinearLayout topChrome;
+    private final ConsoleMenuBackdrop backdrop;
+    /** The DM shortcut's trigger; it decides which button opens "Więcej". */
+    private final String dmShortcutTrigger;
+    private final LinearLayout column;
+    private final LinearLayout eyebrowRow;
     private final LinearLayout tabBar;
     private final LinearLayout activeContainer;
     private final TextView recentLabel;
     private final ScrollView recentScroll;
     private final LinearLayout recentList;
-    private final ScrollView detailScroll;
-    private final LinearLayout detail;
+    private final DiscordCommunityDetailPanel detailPanel;
+    private final LockableScrollView detailScroll;
     private final TextView accountName;
     private final FrameLayout accountAvatar;
     private final LinearLayout account;
     private final LinearLayout feedColumn;
-    private final View contentDivider;
     private final LinearLayout directWorkspace;
+    private final LinearLayout conversation;
+    private final FrameLayout keyboardCard;
     private final ScrollView directHistoryScroll;
     private final LinearLayout directHistory;
-    private final LinearLayout communityFooter;
+    private final LinearLayout legendRow;
+    private final LinearLayout moreCard;
+    private String boundLegendKey = "";
+    private boolean moreVisible;
     private EditText directComposer;
-    private TextView directSend;
     private EmbeddedTvKeyboardView directKeyboard;
     private boolean directKeyboardVisible = true;
     private int directKeyboardBackKeyCode = KeyEvent.KEYCODE_UNKNOWN;
@@ -192,15 +199,14 @@ final class DiscordCommunityView extends LinearLayout {
     private TextView pendingNewMessageView;
     private final List<DirectMediaRow> directMediaRows = new ArrayList<>();
     private final Map<String, View> feedDestinationViews = new HashMap<>();
-    private final Map<String, View> detailDestinationViews = new HashMap<>();
-    private final Map<String, View> detailFocusViewsByTag = new HashMap<>();
+    private final Map<String, View> detailDestinationViews;
+    private final Map<String, View> detailFocusViewsByTag;
     private final Map<View, ScrollView> feedFocusOwners = new HashMap<>();
     private final List<List<View>> feedFocusRows = new ArrayList<>();
-    private final List<View> detailFocusables = new ArrayList<>();
+    private final List<View> detailFocusables;
     private final List<TextView> tabs = new ArrayList<>();
     private Model model;
     private View firstDestination;
-    private View detailAction;
     private String boundFeedKey = "";
     private DiscordCommunityState.Tab boundFeedTab;
     private String logicalFocusTag = "";
@@ -221,149 +227,242 @@ final class DiscordCommunityView extends LinearLayout {
         }
     }
 
-    DiscordCommunityView(Context context, Callback callback) {
+    DiscordCommunityView(Context context, ConsoleMenuBackdrop backdrop, String dmShortcutTrigger,
+                         Callback callback) {
         super(context);
         this.callback = callback;
-        setOrientation(VERTICAL);
-        setPadding(dp(38), dp(48), dp(38), dp(20));
-        setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        topChrome = new LinearLayout(context);
-        topChrome.setGravity(Gravity.BOTTOM);
-        LinearLayout heading = new LinearLayout(context);
-        heading.setOrientation(VERTICAL);
-        TextView title = text(context.getString(R.string.discord_community_title), 28, WHITE);
-        heading.addView(title);
-        tabBar = new LinearLayout(context);
-        tabBar.setOrientation(HORIZONTAL);
-        heading.addView(tabBar);
-        topChrome.addView(heading, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
-        account = new LinearLayout(context);
-        account.setGravity(Gravity.CENTER_VERTICAL);
-        accountName = text("Discord", 13, MUTED);
-        account.addView(accountName);
-        accountAvatar = DiscordCommunityPresentation.avatar(context, "Discord", "", 34);
-        LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(34), dp(34));
-        avatarParams.leftMargin = dp(8);
-        account.addView(accountAvatar, avatarParams);
-        topChrome.addView(account);
-        LinearLayout.LayoutParams topParams = new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT);
-        topParams.bottomMargin = dp(22);
-        addView(topChrome, topParams);
+        this.backdrop = backdrop;
+        this.dmShortcutTrigger = dmShortcutTrigger;
+        // The blurred Home comes from the menu backdrop under this view, lightly scrimmed.
+        setBackgroundColor(DiscordCommunityStyle.SCRIM);
+        setLayoutParams(new ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT));
 
         LinearLayout content = new LinearLayout(context);
-        content.setOrientation(HORIZONTAL);
+        content.setOrientation(LinearLayout.HORIZONTAL);
+        // Feed rows draw their focus fill 7 dp left of the column (mockup "feed_row").
+        content.setClipChildren(false);
+        addView(content, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        column = new LinearLayout(context);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setClipChildren(false);
+        LinearLayout.LayoutParams columnParams = new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f);
+        columnParams.leftMargin = dp(COLUMN_LEFT_DP);
+        columnParams.rightMargin = dp(COLUMN_GAP_DP);
+        content.addView(column, columnParams);
+
+        // Header (mockup "discord_shell"): eyebrow with the account chip, title, tabs.
+        eyebrowRow = new LinearLayout(context);
+        eyebrowRow.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView logo = new ImageView(context);
+        logo.setImageResource(R.drawable.ic_console_discord);
+        logo.setColorFilter(DiscordCommunityStyle.TEXT);
+        LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(dp(20), dp(20));
+        logoParams.leftMargin = dp(2);
+        eyebrowRow.addView(logo, logoParams);
+        LinearLayout.LayoutParams eyebrowParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        eyebrowParams.leftMargin = dp(6);
+        eyebrowRow.addView(DiscordCommunityStyle.eyebrow(context, "Discord"), eyebrowParams);
+        account = new LinearLayout(context);
+        account.setGravity(Gravity.CENTER_VERTICAL);
+        account.setPadding(dp(5), 0, dp(18), 0);
+        accountAvatar = new FrameLayout(context);
+        account.addView(accountAvatar, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        accountName = text("Discord", 13, DiscordCommunityStyle.TEXT, false);
+        accountName.setSingleLine(true);
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        nameParams.leftMargin = dp(5);
+        account.addView(accountName, nameParams);
+        eyebrowRow.addView(account, new LinearLayout.LayoutParams(WRAP_CONTENT, dp(28)));
+        column.addView(eyebrowRow, margins(MATCH_PARENT, dp(28), 33, 0));
+        column.addView(text(context.getString(R.string.discord_community_title), 22,
+                DiscordCommunityStyle.TEXT, true), margins(MATCH_PARENT, WRAP_CONTENT, 5, 0));
+        tabBar = new LinearLayout(context);
+        tabBar.setOrientation(LinearLayout.HORIZONTAL);
+        // Mockup tab pill: x 92 for the first tab (4 px left of the column), y 204-260.
+        LinearLayout.LayoutParams tabBarParams = margins(MATCH_PARENT, WRAP_CONTENT, 10, 0);
+        tabBarParams.leftMargin = -dp(2);
+        column.addView(tabBar, tabBarParams);
+
         feedColumn = new LinearLayout(context);
-        feedColumn.setOrientation(VERTICAL);
+        feedColumn.setOrientation(LinearLayout.VERTICAL);
+        feedColumn.setClipChildren(false);
         activeContainer = new LinearLayout(context);
-        activeContainer.setOrientation(VERTICAL);
+        activeContainer.setOrientation(LinearLayout.VERTICAL);
         feedColumn.addView(activeContainer, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        recentLabel = section(context.getString(R.string.discord_community_recent));
+        recentLabel = DiscordCommunityStyle.eyebrow(context,
+                context.getString(R.string.discord_community_recent));
         recentLabel.setVisibility(GONE);
-        feedColumn.addView(recentLabel, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        feedColumn.addView(recentLabel, margins(MATCH_PARENT, WRAP_CONTENT, 18, 0));
         recentScroll = new ScrollView(context);
         recentScroll.setFillViewport(true);
+        // The feed column lets rows draw left of it, so the list clips itself above the legend.
+        recentScroll.setOutlineProvider(android.view.ViewOutlineProvider.BOUNDS);
+        recentScroll.setClipToOutline(true);
         recentScroll.setVerticalScrollBarEnabled(false);
         recentList = new LinearLayout(context);
-        recentList.setOrientation(VERTICAL);
+        recentList.setOrientation(LinearLayout.VERTICAL);
         recentScroll.addView(recentList, new ScrollView.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        feedColumn.addView(recentScroll, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
-        content.addView(feedColumn, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1.4f));
-        contentDivider = new View(context);
-        contentDivider.setBackgroundColor(0x24FFFFFF);
-        LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(dp(1), MATCH_PARENT);
-        dividerParams.leftMargin = dp(24);
-        content.addView(contentDivider, dividerParams);
-        detailScroll = new ScrollView(context);
-        detailScroll.setFillViewport(true);
-        detailScroll.setVerticalScrollBarEnabled(false);
-        detail = new LinearLayout(context);
-        detail.setOrientation(VERTICAL);
-        detail.setPadding(dp(18), 0, 0, 0);
-        detailScroll.addView(detail, new ScrollView.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        content.addView(detailScroll, new LinearLayout.LayoutParams(0, MATCH_PARENT, .8f));
+        // Rows draw their focus fill 7 dp left of the column (mockup "feed_row").
+        LinearLayout.LayoutParams recentParams = margins(MATCH_PARENT, 0, 6, 0);
+        recentParams.weight = 1f;
+        recentParams.leftMargin = -dp(7);
+        feedColumn.addView(recentScroll, recentParams);
+        LinearLayout.LayoutParams feedParams = new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f);
+        column.addView(feedColumn, feedParams);
+
+        // Conversation (mockup "discord_dm"): one wide glass card, the keyboard on glass below.
         directWorkspace = new LinearLayout(context);
-        directWorkspace.setOrientation(VERTICAL);
+        directWorkspace.setOrientation(LinearLayout.VERTICAL);
         directWorkspace.setVisibility(GONE);
+        conversation = glass(new LinearLayout(context));
+        conversation.setOrientation(LinearLayout.VERTICAL);
+        directWorkspace.addView(conversation, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+        // Mockup "keyboard": glass y 662-962 px, the first key row 24 px below its top edge.
+        keyboardCard = glass(new FrameLayout(context));
+        keyboardCard.setPadding(0, dp(7), 0, 0);
+        directWorkspace.addView(keyboardCard, margins(MATCH_PARENT, dp(KEYBOARD_CARD_DP), 8, 0));
+        // Mockup "discord_dm": the conversation card y 290-646 px, the keyboard ending at 962.
+        LinearLayout.LayoutParams workspaceParams = margins(MATCH_PARENT, 0, 11, 3);
+        workspaceParams.weight = 1f;
+        column.addView(directWorkspace, workspaceParams);
         directHistoryScroll = new ScrollView(context);
         directHistoryScroll.setFillViewport(true);
         directHistoryScroll.setVerticalScrollBarEnabled(false);
         directHistory = new LinearLayout(context);
-        directHistory.setOrientation(VERTICAL);
-        directHistory.setPadding(0, dp(8), 0, dp(8));
+        directHistory.setOrientation(LinearLayout.VERTICAL);
+        directHistory.setPadding(dp(20), dp(4), dp(20), dp(8));
         directHistoryScroll.addView(directHistory, new ScrollView.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
         directHistoryScroll.getViewTreeObserver().addOnScrollChangedListener(() -> {
             directNearBottom = isNearBottom(directHistoryScroll);
             if (directNearBottom && pendingNewMessagePill) clearPendingNewMessagePill();
         });
-        content.addView(directWorkspace, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
-        addView(content, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
 
-        communityFooter = addCommunityFooter(context);
+        // Screen legend centred on y = 1004 px.
+        legendRow = new LinearLayout(context);
+        legendRow.setGravity(Gravity.CENTER_VERTICAL);
+        column.addView(legendRow, margins(MATCH_PARENT, dp(20), 8, 28));
+
+        detailPanel = new DiscordCommunityDetailPanel(context, backdrop, callback);
+        detailScroll = detailPanel.scroll;
+        detailFocusables = detailPanel.focusables;
+        detailFocusViewsByTag = detailPanel.byTag;
+        detailDestinationViews = detailPanel.destinations;
+        LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
+                dp(ConsolePanel.WIDTH_DP), MATCH_PARENT);
+        detailParams.setMargins(0, dp(PANEL_MARGIN_DP), dp(PANEL_MARGIN_DP), dp(PANEL_MARGIN_DP));
+        content.addView(detailScroll, detailParams);
+
+        // "Więcej" in a chat: the whole shortcut list on glass just above the legend.
+        moreCard = glass(new LinearLayout(context));
+        moreCard.setOrientation(LinearLayout.VERTICAL);
+        moreCard.setPadding(dp(14), dp(10), dp(18), dp(10));
+        moreCard.setVisibility(GONE);
+        FrameLayout.LayoutParams moreParams = new FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.START);
+        moreParams.leftMargin = dp(COLUMN_LEFT_DP);
+        moreParams.bottomMargin = dp(56);
+        addView(moreCard, moreParams);
         buildTabs();
     }
 
-    /** Fixed footer: use the installed controller glyph font, never look-alike Unicode symbols. */
-    private LinearLayout addCommunityFooter(Context context) {
-        LinearLayout footer = new LinearLayout(context);
-        footer.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        footer.setPadding(0, dp(8), 0, 0);
-        boolean playStation = ControllerGlyphs.hasPlayStationController();
-        addFooterItem(footer, ControllerGlyphs.text(playStation, ControllerGlyphs.Button.CONFIRM),
-                context.getString(R.string.console_select_hint));
-        addFooterItem(footer, ControllerGlyphs.text(playStation, ControllerGlyphs.Button.CANCEL),
-                context.getString(R.string.playnite_legend_back));
-        addView(footer, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        return footer;
-    }
-
-    private void addFooterItem(LinearLayout footer, String glyph, String label) {
-        TextView icon = text(glyph, 16, WHITE);
-        icon.setTypeface(ControllerGlyphs.typeface(getContext()));
-        footer.addView(icon, new LinearLayout.LayoutParams(dp(20), dp(20)));
-        TextView description = text(label, 11, MUTED);
-        LinearLayout.LayoutParams descriptionParams = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-        descriptionParams.leftMargin = dp(4);
-        descriptionParams.rightMargin = dp(14);
-        footer.addView(description, descriptionParams);
+    /** A surface cropping the menu backdrop's blurred copy (UX_MENU_PL.md 4.3). */
+    private <T extends View> T glass(T view) {
+        view.setBackground(new ConsoleGlass(view, backdrop));
+        view.setClipToOutline(true);
+        return view;
     }
 
     void bind(Model value) {
         String focusId = focusedDestinationId();
         model = value;
         boolean chatOnly = isChatOnlyPresentation(value.state.detail);
-        setChatOnlyPresentation(chatOnly);
+        // A chat keeps focus in the composer: a focused tab would switch tabs and leave the chat,
+        // and removing the composer on a rebind must not hand focus to the header.
+        tabBar.setDescendantFocusability(chatOnly ? FOCUS_BLOCK_DESCENDANTS : FOCUS_AFTER_DESCENDANTS);
+        bindAccount(value.snapshot, chatOnly);
+        bindTabs();
+        feedColumn.setVisibility(chatOnly ? GONE : VISIBLE);
+        detailScroll.setVisibility(chatOnly ? GONE : VISIBLE);
+        directWorkspace.setVisibility(chatOnly ? VISIBLE : GONE);
+        // The conversation spans to the right safe area where the detail panel was.
+        LinearLayout.LayoutParams columnParams = (LinearLayout.LayoutParams) column.getLayoutParams();
+        int right = dp(chatOnly ? COLUMN_LEFT_DP : COLUMN_GAP_DP);
+        if (columnParams.rightMargin != right) {
+            columnParams.rightMargin = right;
+            column.setLayoutParams(columnParams);
+            LinearLayout.LayoutParams eyebrowParams = (LinearLayout.LayoutParams) eyebrowRow.getLayoutParams();
+            eyebrowParams.rightMargin = chatOnly ? dp(CHAT_HEADER_RIGHT_DP) : 0;
+            eyebrowRow.setLayoutParams(eyebrowParams);
+        }
+        if (!chatOnly) setMoreVisible(false);
+        bindLegend(chatOnly);
         if (chatOnly) {
-            feedColumn.setVisibility(GONE);
-            contentDivider.setVisibility(GONE);
-            detailScroll.setVisibility(GONE);
-            directWorkspace.setVisibility(VISIBLE);
             bindDirectMessage();
             return;
         }
-        bindAccount(value.snapshot);
-        bindTabs();
-        feedColumn.setVisibility(VISIBLE);
-        contentDivider.setVisibility(VISIBLE);
-        detailScroll.setVisibility(VISIBLE);
-        directWorkspace.setVisibility(GONE);
         String nextFeedKey = feedKey(value);
         if (!nextFeedKey.equals(boundFeedKey)) {
             boundFeedKey = nextFeedKey;
             bindFeed();
         }
-        updateDetail(find(value.state.selectedId));
+        detailPanel.render(value, find(value.state.selectedId));
+        if (tabs.contains(findFocus())) showTabLegend();
         wireCommunityFocus();
         if (focusId != null) logicalFocusTag = focusId;
         if (!logicalFocusTag.isEmpty()) restoreFocus(logicalFocusTag);
     }
 
-    private void setChatOnlyPresentation(boolean chatOnly) {
-        topChrome.setVisibility(chatOnly ? GONE : VISIBLE);
-        communityFooter.setVisibility(chatOnly ? GONE : VISIBLE);
-        int horizontal = dp(chatOnly ? 22 : 38);
-        setPadding(horizontal, dp(chatOnly ? 18 : 48), horizontal, dp(chatOnly ? 18 : 20));
+    /**
+     * At most four legend items (UX_MENU_PL.md 4.1). A chat has more shortcuts: the rest are
+     * listed under "☰ Więcej"; every button keeps its function whether listed in the row or not.
+     */
+    private void bindLegend(boolean chatOnly) {
+        String key = chatOnly + "|" + (chatOnly && model.directMessagesCapable);
+        if (key.equals(boundLegendKey)) return;
+        boundLegendKey = key;
+        DiscordCommunityLegend.Item back = legendItem(R.string.discord_legend_key_back,
+                R.string.discord_legend_close);
+        if (!chatOnly) {
+            DiscordCommunityLegend.fillRow(legendRow, Arrays.asList(
+                    legendItem(R.string.discord_legend_key_bumpers, R.string.discord_legend_tabs),
+                    legendItem(R.string.discord_legend_key_ok, R.string.console_select_hint), back));
+            return;
+        }
+        if (!model.directMessagesCapable) {
+            DiscordCommunityLegend.fillRow(legendRow, Collections.singletonList(back));
+            return;
+        }
+        boolean playStation = ControllerGlyphs.hasPlayStationController();
+        List<DiscordCommunityLegend.Item> all = Arrays.asList(
+                legendItem(R.string.discord_legend_key_bumpers, R.string.discord_legend_cursor),
+                legendItem(R.string.discord_legend_key_r2, R.string.discord_dm_send),
+                legendItem(R.string.discord_legend_key_right_stick, R.string.discord_legend_scroll),
+                back,
+                legendItem(R.string.discord_legend_key_l2, R.string.discord_legend_shift),
+                glyphItem(playStation, ControllerGlyphs.Button.WEST, R.string.discord_legend_delete),
+                legendItem(R.string.discord_legend_key_r3, R.string.discord_legend_open_content),
+                glyphItem(playStation, ControllerGlyphs.Button.NORTH, R.string.discord_dm_keyboard_space));
+        DiscordCommunityLegend.Item more = DiscordCommunityLegend.moreOnSelect(dmShortcutTrigger)
+                ? legendItem(R.string.overlay_trigger_select, R.string.console_section_more)
+                : glyphItem(playStation, ControllerGlyphs.Button.MENU, R.string.console_section_more);
+        DiscordCommunityLegend.fillRow(legendRow, DiscordCommunityLegend.visible(all, more));
+        DiscordCommunityLegend.fillColumn(moreCard, all);
+    }
+
+    private DiscordCommunityLegend.Item legendItem(int key, int label) {
+        return new DiscordCommunityLegend.Item(getContext().getString(key), false,
+                getContext().getString(label));
+    }
+
+    private DiscordCommunityLegend.Item glyphItem(boolean playStation, ControllerGlyphs.Button key,
+                                                  int label) {
+        return new DiscordCommunityLegend.Item(ControllerGlyphs.text(playStation, key), true,
+                getContext().getString(label));
+    }
+
+    private void setMoreVisible(boolean visible) {
+        moreVisible = visible;
+        moreCard.setVisibility(visible ? VISIBLE : GONE);
     }
 
     static boolean isChatOnlyPresentation(DiscordCommunityState.Detail detail) {
@@ -371,9 +470,10 @@ final class DiscordCommunityView extends LinearLayout {
     }
 
     void focusDetailAction() {
-        if (detailAction != null) detailAction.post(() -> {
-            detailAction.requestFocus();
-            revealInOwner(detailScroll, detailAction);
+        View action = detailPanel.firstAction;
+        if (action != null) action.post(() -> {
+            action.requestFocus();
+            revealInOwner(detailScroll, action);
         });
     }
 
@@ -403,6 +503,16 @@ final class DiscordCommunityView extends LinearLayout {
     boolean handleNavigationKey(KeyEvent event) {
         if (event == null) return false;
         int key = event.getKeyCode();
+        if (model != null && model.state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE
+                && model.directMessagesCapable
+                && DiscordCommunityLegend.isMoreKey(dmShortcutTrigger, key)) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                setMoreVisible(!moreVisible);
+            }
+            return true;
+        }
+        // Any other button closes the list and still does its own thing.
+        if (moreVisible && event.getAction() == KeyEvent.ACTION_DOWN) setMoreVisible(false);
         if (model != null && model.state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE
                 && directKeyboardVisible && directKeyboard != null
                 && directKeyboard.handleNavigationKey(event)) return true;
@@ -465,6 +575,10 @@ final class DiscordCommunityView extends LinearLayout {
                 : event.getAxisValue(MotionEvent.AXIS_Y);
         int direction = motionDirection(horizontal, vertical, hasHat ? .45f : .85f,
                 activeMotionDirection);
+        // Analog L2/R2 and the right stick close "Więcej" like any other button.
+        if (moreVisible && (direction != KeyEvent.KEYCODE_UNKNOWN || triggerHandled || historyHandled)) {
+            setMoreVisible(false);
+        }
         if (shouldRouteMotionHatToKeyboard(model == null ? null : model.state.detail,
                 directKeyboardVisible, directKeyboard != null)) {
             activeMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
@@ -584,18 +698,24 @@ final class DiscordCommunityView extends LinearLayout {
     private void buildTabs() {
         for (DiscordCommunityState.Tab tab : DiscordCommunityState.Tab.values()) {
             LinearLayout holder = new LinearLayout(getContext());
-            holder.setOrientation(VERTICAL);
-            TextView view = text(tabLabel(tab), 14, MUTED);
+            holder.setOrientation(LinearLayout.VERTICAL);
+            TextView view = text(tabLabel(tab), 14, DiscordCommunityStyle.TEXT_SECONDARY, false);
+            view.setGravity(Gravity.CENTER);
+            view.setSingleLine(true);
+            view.setPadding(dp(11), 0, dp(11), 0);
+            ConsoleText.centreOnGlyphs(view);
             view.setId(View.generateViewId());
             view.setTag("discord.community.tab." + tab.name().toLowerCase(java.util.Locale.US));
             view.setFocusable(true);
             view.setFocusableInTouchMode(true);
             view.setClickable(true);
-            view.setPadding(0, dp(10), 0, dp(7));
             View underline = new View(getContext());
+            underline.setBackground(DiscordCommunityStyle.surface(getContext(),
+                    DiscordCommunityStyle.ACCENT, 1));
             view.setOnFocusChangeListener((ignored, focused) -> {
                 styleTab(view, underline, tab, focused);
                 if (focused && (model == null || model.state.tab != tab)) callback.onTab(tab);
+                if (focused) showTabLegend();
             });
             view.setOnClickListener(ignored -> callback.onTab(tab));
             final int index = tabs.size();
@@ -616,17 +736,17 @@ final class DiscordCommunityView extends LinearLayout {
                 return false;
             });
             tabs.add(view);
-            holder.addView(view);
-            // MATCH_PARENT below a WRAP_CONTENT holder creates a measure cycle on Android TV.
-            // Keep the cyan marker to the actual label width; right padding remains the tab gap.
-            int underlineWidth = Math.max(1, (int) Math.ceil(view.getPaint()
-                    .measureText(view.getText().toString())));
-            holder.addView(underline, new LinearLayout.LayoutParams(underlineWidth, dp(2)));
+            // Mockup tab: 56 px pill, the active one underlined 2 px below it in the accent.
+            holder.addView(view, new LinearLayout.LayoutParams(WRAP_CONTENT, dp(28)));
+            LinearLayout.LayoutParams underlineParams = new LinearLayout.LayoutParams(1, dp(2));
+            underlineParams.leftMargin = dp(11);
+            underlineParams.topMargin = dp(1);
+            holder.addView(underline, underlineParams);
             // A horizontal LinearLayout defaults children without params to MATCH_PARENT width.
             // Tabs must retain their label footprint; otherwise the first tab pushes the rest off TV.
             LinearLayout.LayoutParams holderParams = new LinearLayout.LayoutParams(
                     WRAP_CONTENT, WRAP_CONTENT);
-            holderParams.rightMargin = dp(26);
+            holderParams.rightMargin = dp(8);
             tabBar.addView(holder, holderParams);
         }
     }
@@ -639,29 +759,40 @@ final class DiscordCommunityView extends LinearLayout {
         }
     }
 
-    private void bindAccount(DiscordSocialClient.Snapshot snapshot) {
-        String name = snapshot.authorizationRequired ? getContext().getString(R.string.discord_social_connect_action)
-                : snapshot.displayName.isEmpty() ? "Discord" : snapshot.displayName;
-        accountName.setText(name);
+    private void bindAccount(DiscordSocialClient.Snapshot snapshot, boolean chatOnly) {
+        boolean connect = snapshot.authorizationRequired;
+        String name = snapshot.displayName.isEmpty() ? "Discord" : snapshot.displayName;
+        accountName.setText(connect ? getContext().getString(R.string.discord_social_connect_action)
+                : name + "  ·  " + getContext().getString(R.string.console_host_options_hint));
         accountAvatar.removeAllViews();
-        FrameLayout replacement = DiscordCommunityPresentation.avatar(getContext(), name, snapshot.avatarUrl, 34);
-        while (replacement.getChildCount() > 0) {
-            View child = replacement.getChildAt(0);
-            replacement.removeView(child);
-            accountAvatar.addView(child);
+        if (connect) {
+            accountAvatar.setBackground(null);
+            ImageView link = new ImageView(getContext());
+            link.setImageResource(R.drawable.ic_console_link);
+            accountAvatar.addView(link, new FrameLayout.LayoutParams(dp(15), dp(15), Gravity.CENTER));
+        } else {
+            FrameLayout replacement = avatar(name, snapshot.avatarUrl, 20);
+            accountAvatar.setBackground(replacement.getBackground());
+            while (replacement.getChildCount() > 0) {
+                View child = replacement.getChildAt(0);
+                replacement.removeView(child);
+                accountAvatar.addView(child);
+            }
         }
         // Host options are meaningful even when the optional Social SDK is unavailable.  The
         // header always enters the inline options detail; authorization stays an explicit
         // action inside that detail instead of making the header a dead D-pad target.
         account.setId(account.getId() == View.NO_ID ? View.generateViewId() : account.getId());
         account.setTag("discord.community.options");
-        account.setFocusable(true);
-        account.setFocusableInTouchMode(true);
+        account.setFocusable(!chatOnly);
+        account.setFocusableInTouchMode(!chatOnly);
         account.setClickable(true);
         account.setContentDescription(getContext().getString(R.string.discord_community_options));
-        accountName.setText(name + " · " + getContext().getString(R.string.discord_community_options));
         account.setOnClickListener(ignored -> callback.onOptions());
-        account.setOnFocusChangeListener((ignored, focused) -> styleAccount(focused));
+        account.setOnFocusChangeListener((ignored, focused) -> {
+            styleAccount(focused);
+            if (focused) detailPanel.restoreLegend();
+        });
         styleAccount(account.hasFocus());
     }
 
@@ -675,9 +806,11 @@ final class DiscordCommunityView extends LinearLayout {
         feedFocusRows.clear();
         firstDestination = null;
         if (!model.active.isEmpty()) {
-            activeContainer.addView(section(getContext().getString(R.string.discord_community_active)));
+            activeContainer.addView(section(R.string.discord_community_active),
+                    margins(MATCH_PARENT, WRAP_CONTENT, 21, 0));
+            // Mockup "together_feed": two 519x112 px cards per row, 16 px apart.
             LinearLayout grid = new LinearLayout(getContext());
-            grid.setOrientation(VERTICAL);
+            grid.setOrientation(LinearLayout.VERTICAL);
             for (int index = 0; index < model.active.size(); index += 2) {
                 LinearLayout row = new LinearLayout(getContext());
                 DiscordCommunityPresentation.Destination left = model.active.get(index);
@@ -689,21 +822,43 @@ final class DiscordCommunityView extends LinearLayout {
                     View right = activity(model.active.get(index + 1));
                     LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(
                             0, dp(ACTIVITY_HEIGHT_DP), 1f);
-                    rightParams.leftMargin = dp(12);
+                    rightParams.leftMargin = dp(8);
                     row.addView(right, rightParams);
                     focusRow.add(right);
-                } else row.addView(new View(getContext()), new LinearLayout.LayoutParams(
-                        0, dp(ACTIVITY_HEIGHT_DP), 1f));
-                LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT);
-                if (index > 0) rowParams.topMargin = dp(12);
-                grid.addView(row, rowParams);
+                } else {
+                    LinearLayout.LayoutParams spacer = new LinearLayout.LayoutParams(
+                            0, dp(ACTIVITY_HEIGHT_DP), 1f);
+                    spacer.leftMargin = dp(8);
+                    row.addView(new View(getContext()), spacer);
+                }
+                grid.addView(row, margins(MATCH_PARENT, WRAP_CONTENT, index > 0 ? 8 : 0, 0));
                 feedFocusRows.add(focusRow);
             }
-            activeContainer.addView(grid);
+            activeContainer.addView(grid, margins(MATCH_PARENT, WRAP_CONTENT, 8, 0));
         }
         if (!model.recent.isEmpty()) {
             recentLabel.setVisibility(VISIBLE);
+            recentLabel.setLayoutParams(margins(MATCH_PARENT, WRAP_CONTENT,
+                    model.active.isEmpty() ? 21 : 18, 0));
+            // Friends: "Online · n" over the list and "Offline · n" before the first offline row.
+            boolean friends = model.state.tab == DiscordCommunityState.Tab.FRIENDS;
+            int online = 0;
+            int offline = 0;
+            for (DiscordSocialClient.Friend friend : model.snapshot.friendDetails) {
+                if (DiscordCommunityPresentation.isPresent(friend.group)) online++; else offline++;
+            }
+            recentLabel.setText(friendsHeader(!friends ? R.string.discord_community_recent
+                    : online > 0 ? R.string.discord_community_online_count
+                    : R.string.discord_community_offline_count, online > 0 ? online : offline));
+            boolean offlineHeaderDue = friends && online > 0;
             for (DiscordCommunityPresentation.Destination item : model.recent) {
+                if (offlineHeaderDue && item.kind == DiscordCommunityPresentation.Kind.FRIEND && !item.active) {
+                    offlineHeaderDue = false;
+                    LinearLayout.LayoutParams headerParams = margins(MATCH_PARENT, WRAP_CONTENT, 9, 6);
+                    headerParams.leftMargin = dp(7);
+                    recentList.addView(DiscordCommunityStyle.eyebrow(getContext(),
+                            friendsHeader(R.string.discord_community_offline_count, offline)), headerParams);
+                }
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(MATCH_PARENT, dp(DESTINATION_HEIGHT_DP));
                 params.bottomMargin = dp(4);
                 View row = destination(item);
@@ -718,64 +873,132 @@ final class DiscordCommunityView extends LinearLayout {
                     : model.homeUnavailable ? getContext().getString(R.string.discord_community_host_unavailable)
                     : model.snapshot.connected ? getContext().getString(R.string.discord_community_no_active)
                     : model.error;
-            recentList.addView(text(empty, 14, MUTED));
+            View card = emptyCard(empty);
+            if (card != null) {
+                activeContainer.addView(section(R.string.discord_community_active),
+                        margins(MATCH_PARENT, WRAP_CONTENT, 21, 0));
+                activeContainer.addView(card, margins(MATCH_PARENT, WRAP_CONTENT, 8, 0));
+            }
         } else {
             recentLabel.setVisibility(GONE);
         }
         if (tabChanged) recentScroll.scrollTo(0, 0);
     }
 
-    private View activity(DiscordCommunityPresentation.Destination item) {
-        FrameLayout card = new FrameLayout(getContext());
-        card.setMinimumHeight(dp(ACTIVITY_HEIGHT_DP));
-        LinearLayout copy = new LinearLayout(getContext());
-        copy.setGravity(Gravity.CENTER_VERTICAL);
-        copy.setPadding(dp(9), dp(7), dp(9), dp(7));
-        copy.addView(DiscordCommunityPresentation.avatar(getContext(), item.title, item.avatarUrl, 32),
-                new LinearLayout.LayoutParams(dp(32), dp(32)));
+    /** Mockup "discord_disconnected": the empty feed as one glass card with the Discord mark. */
+    private View emptyCard(String message) {
+        boolean linked = isLinked(model.snapshot);
+        if (linked && TextUtils.isEmpty(message)) return null;
+        LinearLayout card = new LinearLayout(getContext());
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setBackground(DiscordCommunityStyle.outlined(getContext(),
+                DiscordCommunityStyle.CARD_GLASS, 16, DiscordCommunityStyle.CARD_HAIRLINE));
+        card.setPadding(dp(25), dp(20), dp(24), dp(20));
+        ImageView mark = new ImageView(getContext());
+        mark.setImageResource(R.drawable.ic_console_discord);
+        mark.setColorFilter(DiscordCommunityStyle.TEXT_SECONDARY);
+        card.addView(mark, new LinearLayout.LayoutParams(dp(20), dp(20)));
         LinearLayout words = new LinearLayout(getContext());
-        words.setOrientation(VERTICAL);
-        TextView title = text(item.title, 15, WHITE);
-        title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.END);
-        words.addView(title);
-        TextView meta = text(subtitle(item), 11, MUTED);
-        meta.setSingleLine(true); meta.setEllipsize(TextUtils.TruncateAt.END); words.addView(meta);
+        words.setOrientation(LinearLayout.VERTICAL);
+        if (!linked) {
+            words.addView(text(getContext().getString(R.string.discord_community_disconnected), 15,
+                    DiscordCommunityStyle.TEXT, true));
+        }
+        if (!TextUtils.isEmpty(message)) {
+            TextView body = text(message, 13, DiscordCommunityStyle.TEXT_SECONDARY, false);
+            body.setLineSpacing(dp(3), 1f);
+            words.addView(body, margins(MATCH_PARENT, WRAP_CONTENT, linked ? 0 : 6, 0));
+        }
         LinearLayout.LayoutParams wordsParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
-        wordsParams.leftMargin = dp(8);
-        // The compact context label lives on top of the card; reserve its footprint so title
-        // and activity never run beneath it on the 56dp TV card.
-        wordsParams.rightMargin = dp(46);
-        copy.addView(words, wordsParams);
-        card.addView(copy, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
-        TextView pill = pill(actionLabel(item), item.kind == DiscordCommunityPresentation.Kind.CHANNEL
-                ? ActionTone.POSITIVE_JOIN : ActionTone.NEUTRAL);
-        pill.setFocusable(false); pill.setClickable(false);
-        FrameLayout.LayoutParams pillParams = new FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT,
-                Gravity.RIGHT | Gravity.CENTER_VERTICAL);
-        pillParams.rightMargin = dp(8); card.addView(pill, pillParams);
-        bindDestination(card, item, true);
+        wordsParams.leftMargin = dp(20);
+        card.addView(words, wordsParams);
         return card;
     }
 
+    /** Mockup "feed_card": glass at rest, the light fill with dark ink on focus. */
+    private View activity(DiscordCommunityPresentation.Destination item) {
+        LinearLayout card = new LinearLayout(getContext());
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(10), 0, dp(11), 0);
+        FrameLayout portrait = new FrameLayout(getContext());
+        portrait.addView(avatar(item.title, item.avatarUrl, 32), new FrameLayout.LayoutParams(dp(32), dp(32)));
+        if (item.unread) {
+            // 18 px red badge on the avatar's lower right, ringed in the card colour.
+            View badge = new View(getContext());
+            badge.setBackground(DiscordCommunityStyle.dot(DiscordCommunityStyle.LIVE, 0xFF16181F, dp(1.5f)));
+            FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(dp(10), dp(10));
+            badgeParams.leftMargin = dp(23);
+            badgeParams.topMargin = dp(22);
+            portrait.addView(badge, badgeParams);
+        }
+        card.addView(portrait, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        LinearLayout words = new LinearLayout(getContext());
+        words.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text(item.title, 15, DiscordCommunityStyle.TEXT, true);
+        title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.END);
+        words.addView(title);
+        TextView meta = text(subtitle(item), 12, DiscordCommunityStyle.TEXT_SECONDARY, false);
+        meta.setSingleLine(true); meta.setEllipsize(TextUtils.TruncateAt.END);
+        words.addView(meta, margins(MATCH_PARENT, WRAP_CONTENT, 3, 0));
+        LinearLayout.LayoutParams wordsParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        wordsParams.leftMargin = dp(6);
+        card.addView(words, wordsParams);
+        boolean voice = item.kind == DiscordCommunityPresentation.Kind.CHANNEL;
+        TextView pill = text(actionLabel(item), 12, DiscordCommunityStyle.TEXT, true);
+        pill.setGravity(Gravity.CENTER);
+        pill.setPadding(dp(8.5f), 0, dp(8.5f), 0);
+        ConsoleText.centreOnGlyphs(pill);
+        LinearLayout.LayoutParams pillParams = new LinearLayout.LayoutParams(WRAP_CONTENT, dp(22));
+        pillParams.leftMargin = dp(8);
+        card.addView(pill, pillParams);
+        bindDestination(card, item, true, focused -> {
+            card.setBackground(focused ? fill(DiscordCommunityStyle.FOCUS_FILL, 14)
+                    : DiscordCommunityStyle.outlined(getContext(), DiscordCommunityStyle.CARD_GLASS,
+                    14, DiscordCommunityStyle.CARD_HAIRLINE));
+            title.setTextColor(focused ? DiscordCommunityStyle.INK : DiscordCommunityStyle.TEXT);
+            meta.setTextColor(focused ? DiscordCommunityStyle.INK_SECONDARY
+                    : DiscordCommunityStyle.TEXT_SECONDARY);
+            // Join pills are green (state colour); the others are a faint white capsule.
+            pill.setBackground(fill(voice ? (focused ? DiscordCommunityStyle.ONLINE : 0x3C30D694)
+                    : focused ? 0x28FFFFFF : 0x24FFFFFF, 11));
+            pill.setTextColor(focused ? DiscordCommunityStyle.INK
+                    : voice ? DiscordCommunityStyle.ONLINE : DiscordCommunityStyle.TEXT);
+        });
+        return card;
+    }
+
+    /** Mockup "feed_row": avatar, two lines and a chevron; the selected row's name in the accent. */
     private View destination(DiscordCommunityPresentation.Destination item) {
         LinearLayout row = new LinearLayout(getContext());
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(9), dp(5), dp(9), dp(5));
-        row.addView(DiscordCommunityPresentation.avatar(getContext(), item.title, item.avatarUrl, 30),
-                new LinearLayout.LayoutParams(dp(30), dp(30)));
-        LinearLayout copy = new LinearLayout(getContext()); copy.setOrientation(VERTICAL);
-        TextView title = text(item.title, 14, WHITE); title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.END);
+        row.setPadding(dp(7), 0, dp(7), 0);
+        row.addView(avatar(item.title, item.avatarUrl, 26), new LinearLayout.LayoutParams(dp(26), dp(26)));
+        LinearLayout copy = new LinearLayout(getContext()); copy.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text(item.title, 15, DiscordCommunityStyle.TEXT, false);
+        title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.END);
         copy.addView(title);
-        TextView meta = text(subtitle(item), 11, MUTED); meta.setSingleLine(true); meta.setEllipsize(TextUtils.TruncateAt.END);
-        copy.addView(meta);
+        TextView meta = text(subtitle(item), 12, DiscordCommunityStyle.TEXT_SECONDARY, false);
+        meta.setSingleLine(true); meta.setEllipsize(TextUtils.TruncateAt.END);
+        copy.addView(meta, margins(MATCH_PARENT, WRAP_CONTENT, 3, 0));
         LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
         copyParams.leftMargin = dp(9); row.addView(copy, copyParams);
-        TextView chevron = text("›", 20, MUTED); row.addView(chevron);
-        bindDestination(row, item, false);
+        ImageView chevron = new ImageView(getContext());
+        chevron.setImageResource(R.drawable.ic_console_chevron);
+        row.addView(chevron, new LinearLayout.LayoutParams(dp(15), dp(15)));
+        bindDestination(row, item, false, focused -> {
+            row.setBackground(focused ? fill(DiscordCommunityStyle.FOCUS_FILL, 12) : null);
+            title.setTextColor(focused ? DiscordCommunityStyle.INK
+                    : isSelected(item) ? DiscordCommunityStyle.ACCENT : DiscordCommunityStyle.TEXT);
+            meta.setTextColor(focused ? DiscordCommunityStyle.INK_SECONDARY
+                    : DiscordCommunityStyle.TEXT_SECONDARY);
+            chevron.setColorFilter(focused ? DiscordCommunityStyle.INK
+                    : DiscordCommunityStyle.TEXT_SECONDARY);
+        });
         return row;
     }
 
-    private void bindDestination(View view, DiscordCommunityPresentation.Destination item, boolean card) {
+    private void bindDestination(View view, DiscordCommunityPresentation.Destination item, boolean card,
+                                 Styler styler) {
         view.setId(View.generateViewId());
         view.setTag(item.id);
         view.setFocusable(true);
@@ -783,12 +1006,12 @@ final class DiscordCommunityView extends LinearLayout {
         view.setClickable(true);
         view.setContentDescription(item.title + ", " + subtitle(item));
         view.setOnFocusChangeListener((ignored, focused) -> {
-            styleDestination(view, card, focused, isSelected(item));
+            styler.style(focused);
             if (focused) {
                 ScrollView owner = feedOwner(view);
                 if (owner != null) revealInOwner(owner, view);
                 callback.onDestinationFocused(item);
-                updateDetail(item);
+                detailPanel.render(model, item);
                 wireCommunityFocus();
             }
         });
@@ -796,70 +1019,7 @@ final class DiscordCommunityView extends LinearLayout {
         feedDestinationViews.put(item.id, view);
         feedFocusOwners.put(view, focusOwnerIsRecent(card) ? recentScroll : null);
         if (firstDestination == null) firstDestination = view;
-        styleDestination(view, card, false, isSelected(item));
-    }
-
-    private void updateDetail(DiscordCommunityPresentation.Destination selected) {
-        detail.removeAllViews();
-        detailDestinationViews.clear();
-        detailFocusViewsByTag.clear();
-        detailFocusables.clear();
-        detailAction = null;
-        detailScroll.scrollTo(0, 0);
-        if (model != null && model.state.detail == DiscordCommunityState.Detail.OPTIONS) {
-            addOptions();
-            return;
-        }
-        if (model != null && model.state.detail == DiscordCommunityState.Detail.AUDIO) {
-            addAudio();
-            return;
-        }
-        if (model != null && model.state.detail == DiscordCommunityState.Detail.SOCIAL) {
-            addSocial();
-            return;
-        }
-        detail.addView(section(getContext().getString(R.string.discord_community_selected)));
-        if (model == null || selected == null) return;
-        detail.addView(DiscordCommunityPresentation.avatar(getContext(), selected.title, selected.avatarUrl, 40),
-                new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = text(selected.title, 18, WHITE); title.setPadding(0, dp(7), 0, 0); detail.addView(title);
-        detail.addView(text(subtitle(selected), 12, MUTED));
-        if (selected.participantCount > 0) {
-            TextView people = text(getContext().getString(R.string.discord_community_people,
-                    selected.participantCount), 12, MUTED);
-            people.setPadding(0, dp(10), 0, 0); detail.addView(people);
-        }
-        if (selected.source instanceof HostGatewayClient.DiscordChannel
-                && isConnectedChannel(selected)) {
-            // Voice state is authoritative even when the surrounding route was restored as FEED.
-            addActiveVoiceDetail(selected);
-        } else if (model.state.detail == DiscordCommunityState.Detail.SERVER_CHANNELS) {
-            addGuildChannels(selected);
-        } else if (model.state.detail == DiscordCommunityState.Detail.CHANNEL
-                && selected.source instanceof HostGatewayClient.DiscordChannel) {
-            addJoinAction((HostGatewayClient.DiscordChannel) selected.source);
-        } else if (model.state.detail == DiscordCommunityState.Detail.FRIEND) {
-            int label = model.directMessagesCapable ? R.string.discord_dm_send_message
-                    : model.directMessagesScopeAvailable ? R.string.discord_dm_chat_open_elsewhere
-                    : R.string.discord_dm_upgrade;
-            TextView message = pill(getContext().getString(label), ActionTone.POSITIVE_JOIN);
-            message.setTag("discord.community.friend.message");
-            message.setOnClickListener(ignored -> {
-                if (model.directMessagesCapable) callback.onOpenDirectMessage(selected);
-                else if (!model.directMessagesScopeAvailable) callback.onUpgradeDirectMessages();
-            });
-            message.setEnabled(model.directMessagesCapable || !model.directMessagesScopeAvailable);
-            detailAction = message;
-            addAction(message, ActionTone.POSITIVE_JOIN, false);
-        } else if (selected.kind == DiscordCommunityPresentation.Kind.SERVER) {
-            detailAction = pill(getContext().getString(R.string.discord_community_open));
-            detailAction.setOnClickListener(ignored -> callback.onDestinationOpened(selected));
-            addAction(detailAction);
-        } else if (selected.kind == DiscordCommunityPresentation.Kind.CHANNEL) {
-            detailAction = pill(getContext().getString(R.string.discord_community_join), ActionTone.POSITIVE_JOIN);
-            detailAction.setOnClickListener(ignored -> callback.onDestinationOpened(selected));
-            addAction(detailAction, ActionTone.POSITIVE_JOIN, false);
-        }
+        styler.style(false);
     }
 
     private void bindDirectMessage() {
@@ -883,46 +1043,63 @@ final class DiscordCommunityView extends LinearLayout {
                 latestChanged, latestIncoming);
         boundDirectRecipientId = recipientId;
         directLastMessageId = latestMessageId;
-        directWorkspace.removeAllViews();
+        conversation.removeAllViews();
         DiscordSocialClient.Friend friend = model.directFriend;
         String name = friend == null ? "Discord" : friend.displayName;
         String avatar = friend == null ? "" : friend.avatarUrl;
 
+        // Mockup "discord_dm" header: avatar, name, "Wiadomość prywatna · activity", disclosure.
         LinearLayout header = new LinearLayout(getContext());
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(4), dp(4), dp(4), dp(10));
-        header.addView(DiscordCommunityPresentation.avatar(getContext(), name, avatar, 38),
-                new LinearLayout.LayoutParams(dp(38), dp(38)));
-        TextView title = text(name, 19, WHITE);
-        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
-        titleParams.leftMargin = dp(10); header.addView(title, titleParams);
-        directWorkspace.addView(header, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        header.setPadding(dp(14), dp(7.5f), dp(12), dp(4));
+        header.addView(avatar(name, avatar, 28), new LinearLayout.LayoutParams(dp(28), dp(28)));
+        LinearLayout words = new LinearLayout(getContext());
+        words.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text(name, 16, DiscordCommunityStyle.TEXT, true);
+        title.setSingleLine(true); title.setEllipsize(TextUtils.TruncateAt.END);
+        words.addView(title);
+        String presence = getContext().getString(R.string.discord_dm_private);
+        if (friend != null && !friend.activityName.isEmpty()) presence += " · " + friend.activityName;
+        TextView presenceView = text(presence, 12, DiscordCommunityStyle.TEXT_SECONDARY, false);
+        presenceView.setSingleLine(true); presenceView.setEllipsize(TextUtils.TruncateAt.END);
+        words.addView(presenceView, margins(MATCH_PARENT, WRAP_CONTENT, 0, 0));
+        LinearLayout.LayoutParams wordsParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        wordsParams.leftMargin = dp(8);
+        header.addView(words, wordsParams);
+        // Mockup "discord_dm": the disclosure at the header's right; while sending, the send state.
+        TextView disclosure = text(getContext().getString(model.directSendState.inFlight
+                ? R.string.discord_dm_sending : R.string.discord_community_dm_disclosure), 12,
+                DiscordCommunityStyle.HEADER, false);
+        LinearLayout.LayoutParams disclosureParams = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        disclosureParams.leftMargin = dp(12);
+        header.addView(disclosure, disclosureParams);
+        conversation.addView(header, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         if (!model.directMessagesCapable) {
             if (directKeyboard != null) directKeyboard.cancelKeyboardHold();
             directComposer = null;
-            directSend = null;
             directKeyboard = null;
             directKeyboardVisible = false;
+            keyboardCard.removeAllViews();
+            keyboardCard.setVisibility(GONE);
             TextView unavailable = text(getContext().getString(model.directMessagesScopeAvailable
-                    ? R.string.discord_dm_chat_open_elsewhere : R.string.discord_dm_upgrade), 13, MUTED);
-            unavailable.setPadding(dp(8), dp(12), dp(8), dp(12));
-            directWorkspace.addView(unavailable, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+                    ? R.string.discord_dm_chat_open_elsewhere : R.string.discord_dm_upgrade), 13,
+                    DiscordCommunityStyle.TEXT_SECONDARY, false);
+            unavailable.setPadding(dp(20), dp(12), dp(20), dp(12));
+            conversation.addView(unavailable, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
             return;
         }
 
         directHistory.removeAllViews();
         pendingNewMessageView = null;
         directMediaRows.clear();
+        String selfName = model.snapshot.displayName.isEmpty() ? "Discord" : model.snapshot.displayName;
+        java.text.DateFormat timeFormat = DateFormat.getTimeFormat(getContext());
         for (DiscordDirectMessageState.Message message : model.directMessages) {
-            if (message.disclosure) {
-                TextView disclosure = text(getContext().getString(R.string.discord_dm_disclosure), 12, MUTED);
-                disclosure.setGravity(Gravity.CENTER); disclosure.setPadding(dp(12), dp(8), dp(12), dp(8));
-                directHistory.addView(disclosure, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-                continue;
-            }
+            if (message.disclosure) continue;
             boolean self = safeUserId(model.snapshot.userId) == message.authorId;
             if (!message.content.isEmpty()) addDirectMessageText(message, self);
+            addMessageMeta(message, self, self ? selfName : name, timeFormat);
             if (shouldRenderAdditionalNotice(message.additionalContentType, message.additionalContentCount)) {
                 addAdditionalContent(message, self);
             } else if (shouldRenderGenericUnsupportedContent(message.content, message.additionalContentType,
@@ -931,34 +1108,45 @@ final class DiscordCommunityView extends LinearLayout {
             }
         }
         if (pendingNewMessagePill) {
-            TextView newMessage = pill(getContext().getString(R.string.discord_dm_new_message));
+            TextView newMessage = text(getContext().getString(R.string.discord_dm_new_message), 12,
+                    DiscordCommunityStyle.TEXT, true);
+            newMessage.setGravity(Gravity.CENTER);
+            newMessage.setPadding(dp(10), 0, dp(10), 0);
+            newMessage.setBackground(fill(0x28FFFFFF, 11));
+            ConsoleText.centreOnGlyphs(newMessage);
             newMessage.setOnClickListener(ignored -> {
                 clearPendingNewMessagePill();
                 directHistoryScroll.post(() -> directHistoryScroll.fullScroll(View.FOCUS_DOWN));
             });
-            LinearLayout.LayoutParams newParams = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-            newParams.gravity = Gravity.CENTER_HORIZONTAL; newParams.topMargin = dp(6);
+            LinearLayout.LayoutParams newParams = new LinearLayout.LayoutParams(WRAP_CONTENT, dp(22));
+            newParams.gravity = Gravity.CENTER_HORIZONTAL; newParams.topMargin = dp(8);
             directHistory.addView(newMessage, newParams);
             pendingNewMessageView = newMessage;
         }
-        directWorkspace.addView(directHistoryScroll, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+        conversation.addView(directHistoryScroll, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
 
         if (!model.directSendState.errorType.isEmpty()) {
             int retrySeconds = (int) Math.ceil(model.directSendState.retryAfterSeconds);
             TextView sendError = text(model.directSendState.retryable && retrySeconds > 0
                     ? getContext().getString(R.string.discord_dm_retry_after, retrySeconds)
-                    : getContext().getString(R.string.discord_dm_send_failed), 12, MUTED);
-            sendError.setPadding(0, dp(4), 0, dp(4));
-            directWorkspace.addView(sendError, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+                    : getContext().getString(R.string.discord_dm_send_failed), 12,
+                    DiscordCommunityStyle.TEXT_SECONDARY, false);
+            sendError.setPadding(dp(20), dp(4), dp(20), dp(4));
+            conversation.addView(sendError, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
         }
+        // Composer (mockup: 56 px capsule, white at 30/255 with a 120/255 hairline).
         LinearLayout composerRow = new LinearLayout(getContext());
-        composerRow.setGravity(Gravity.BOTTOM);
+        composerRow.setGravity(Gravity.CENTER_VERTICAL);
         directComposer = new EditText(getContext());
         directComposer.setId(View.generateViewId());
-        directComposer.setTextColor(WHITE);
-        directComposer.setTextSize(15);
-        directComposer.setHintTextColor(MUTED);
+        directComposer.setTextColor(DiscordCommunityStyle.TEXT);
+        directComposer.setTextSize(14);
+        directComposer.setHintTextColor(DiscordCommunityStyle.TEXT_SECONDARY);
         directComposer.setHint(R.string.discord_dm_placeholder);
+        directComposer.setBackground(DiscordCommunityStyle.outlined(getContext(),
+                DiscordCommunityStyle.BUBBLE, 14, 0x78FFFFFF));
+        directComposer.setPadding(dp(14), dp(5), dp(14), dp(5));
+        directComposer.setMinHeight(dp(28));
         directComposer.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         directComposer.setSingleLine(false);
@@ -972,10 +1160,6 @@ final class DiscordCommunityView extends LinearLayout {
             @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
                 callback.onDirectMessageDraftChanged(model.state.directMessageRecipientId, value.toString());
-                if (directSend != null && !model.directSendState.inFlight) {
-                    directSend.setEnabled(!value.toString().trim().isEmpty());
-                    styleDirectSend(directSend.hasFocus());
-                }
             }
             @Override public void afterTextChanged(Editable value) { }
         });
@@ -986,19 +1170,14 @@ final class DiscordCommunityView extends LinearLayout {
             }
             return false;
         });
+        // "Wyślij" lives on the keyboard and under R2; the field spans the card (mockup).
         composerRow.addView(directComposer, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
-        directSend = pill(getContext().getString(model.directSendState.inFlight
-                ? R.string.discord_dm_sending : R.string.discord_dm_send));
-        directSend.setId(View.generateViewId());
-        directSend.setEnabled(!model.directSendState.inFlight && !directComposer.getText().toString().trim().isEmpty());
-        directSend.setOnClickListener(ignored -> sendDirectMessage());
-        directSend.setFocusable(false);
-        directSend.setFocusableInTouchMode(false);
-        LinearLayout.LayoutParams sendParams = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-        sendParams.leftMargin = dp(8); composerRow.addView(directSend, sendParams);
-        directWorkspace.addView(composerRow, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-        styleDirectSend(directSend.hasFocus());
+        LinearLayout.LayoutParams composerParams = margins(MATCH_PARENT, WRAP_CONTENT, 4, 4);
+        composerParams.leftMargin = dp(15);
+        composerParams.rightMargin = dp(15);
+        conversation.addView(composerRow, composerParams);
         if (!preserveComposer || directKeyboard == null || directKeyboardRecipientId != recipientId) {
+            // The screen legend lists the chat shortcuts, so the keyboard shows none of its own.
             directKeyboard = new EmbeddedTvKeyboardView(getContext(), new EmbeddedTvKeyboardView.Callback() {
                 @Override public void onText(String value) { replaceComposerText(value); }
                 @Override public void onBackspace() { deleteComposerCodePoint(); }
@@ -1011,18 +1190,15 @@ final class DiscordCommunityView extends LinearLayout {
                 @Override public void onOpenVisibleAdditionalContent() { openVisibleAdditionalContent(); }
             }, getContext().getString(R.string.discord_dm_keyboard_microphone),
                     getContext().getString(R.string.discord_dm_keyboard_space),
-                    getContext().getString(R.string.discord_dm_send),
-                    getContext().getString(R.string.discord_dm_keyboard_shift_legend),
-                    getContext().getString(R.string.discord_dm_keyboard_backspace_legend),
-                    getContext().getString(R.string.discord_dm_keyboard_cursor_legend),
-                    getContext().getString(R.string.discord_dm_keyboard_send_legend),
-                    getContext().getString(R.string.discord_dm_keyboard_history_scroll_legend),
-                    getContext().getString(R.string.discord_dm_keyboard_media_open_legend));
+                    getContext().getString(R.string.discord_dm_send), "", "", "", "", "", "");
+            directKeyboard.setCompactMode(true);
             directKeyboardRecipientId = recipientId;
             directKeyboardVisible = true;
         }
-        directKeyboard.setVisibility(directKeyboardVisible ? VISIBLE : GONE);
-        directWorkspace.addView(directKeyboard, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        keyboardCard.removeAllViews();
+        keyboardCard.addView(directKeyboard, new FrameLayout.LayoutParams(dp(KEYBOARD_WIDTH_DP),
+                dp(KEYBOARD_HEIGHT_DP), Gravity.CENTER_HORIZONTAL));
+        keyboardCard.setVisibility(directKeyboardVisible ? VISIBLE : GONE);
         directHistoryScroll.post(() -> {
             if (scrollHistoryToBottom) directHistoryScroll.fullScroll(View.FOCUS_DOWN);
         });
@@ -1035,18 +1211,30 @@ final class DiscordCommunityView extends LinearLayout {
         callback.onSendDirectMessage(model.state.directMessageRecipientId, directComposer.getText().toString());
     }
 
+    /** Mockup "bubble": 64 px high, 26 px corners; own messages in Discord blurple. */
     private void addDirectMessageText(DiscordDirectMessageState.Message message, boolean self) {
-        TextView bubble = text(message.content, 14, WHITE);
-        bubble.setPadding(dp(11), dp(8), dp(11), dp(8));
+        TextView bubble = text(message.content, 14, DiscordCommunityStyle.TEXT, false);
+        bubble.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        bubble.setPadding(dp(12), dp(8), dp(12), dp(8));
         bubble.setTextIsSelectable(false);
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(self ? 0xFF1F6388 : CARD);
-        background.setCornerRadius(dp(14));
-        bubble.setBackground(background);
+        bubble.setBackground(fill(self ? DiscordCommunityStyle.BUBBLE_SELF : DiscordCommunityStyle.BUBBLE, 13));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
         params.gravity = self ? Gravity.END : Gravity.START;
-        params.topMargin = dp(4);
+        params.topMargin = directHistory.getChildCount() == 0 ? 0 : dp(10);
         directHistory.addView(bubble, params);
+    }
+
+    /** "Ola · 20:41" under the message. */
+    private void addMessageMeta(DiscordDirectMessageState.Message message, boolean self, String author,
+                                java.text.DateFormat timeFormat) {
+        String time = message.sentTimestampMs > 0
+                ? timeFormat.format(new Date(message.sentTimestampMs)) : "";
+        TextView meta = text(time.isEmpty() ? author : author + " · " + time, 12,
+                DiscordCommunityStyle.HEADER, false);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        params.gravity = self ? Gravity.END : Gravity.START;
+        params.topMargin = dp(3);
+        directHistory.addView(meta, params);
     }
 
     private void addAdditionalContent(DiscordDirectMessageState.Message message, boolean self) {
@@ -1057,19 +1245,19 @@ final class DiscordCommunityView extends LinearLayout {
         addDirectContentNotice(message, self, getContext().getString(R.string.discord_dm_unsupported_content));
     }
 
+    /** Mockup attachment line: 300 dp outlined capsule, white 70/255 hairline. */
     private void addDirectContentNotice(DiscordDirectMessageState.Message message, boolean self, String label) {
-        TextView content = text(label, 11, CYAN);
-        content.setPadding(dp(11), dp(7), dp(11), dp(7));
+        TextView content = text(label, 12, DiscordCommunityStyle.TEXT_SECONDARY, false);
+        content.setPadding(dp(12), dp(4), dp(12), dp(4));
+        content.setMinHeight(dp(25));
+        content.setMinWidth(dp(300));
         content.setClickable(true);
         content.setFocusable(false);
         content.setOnClickListener(ignored -> callback.onOpenDirectMessageInDiscord(message.id));
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(ROW);
-        background.setCornerRadius(dp(12));
-        content.setBackground(background);
+        content.setBackground(DiscordCommunityStyle.outlined(getContext(), 0, 10, 0x46FFFFFF));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
         params.gravity = self ? Gravity.END : Gravity.START;
-        params.topMargin = message.content.isEmpty() ? dp(4) : dp(2);
+        params.topMargin = dp(3);
         directHistory.addView(content, params);
         directMediaRows.add(new DirectMediaRow(content, message.id));
     }
@@ -1192,6 +1380,7 @@ final class DiscordCommunityView extends LinearLayout {
         }
         if (directKeyboard != null && directKeyboard.handleAccentCancel(event)) return true;
         if (!isDirectMessageBackKey(event.getKeyCode())) return false;
+        if (moreVisible && event.getAction() == KeyEvent.ACTION_DOWN) setMoreVisible(false);
         int key = event.getKeyCode();
         if (directKeyboardBackKeyCode == key) {
             if (event.getAction() == KeyEvent.ACTION_UP) directKeyboardBackKeyCode = KeyEvent.KEYCODE_UNKNOWN;
@@ -1235,7 +1424,7 @@ final class DiscordCommunityView extends LinearLayout {
     }
 
     private void showEmbeddedKeyboard() {
-        if (directKeyboard != null) directKeyboard.setVisibility(VISIBLE);
+        if (directKeyboard != null) keyboardCard.setVisibility(VISIBLE);
         directKeyboardVisible = true;
         if (directComposer != null) directComposer.requestFocus();
     }
@@ -1244,7 +1433,7 @@ final class DiscordCommunityView extends LinearLayout {
         directKeyboardVisible = false;
         if (directKeyboard != null) {
             directKeyboard.cancelKeyboardHold();
-            directKeyboard.setVisibility(GONE);
+            keyboardCard.setVisibility(GONE);
         }
         if (directComposer != null) directComposer.requestFocus();
     }
@@ -1285,326 +1474,10 @@ final class DiscordCommunityView extends LinearLayout {
                 && model.state.directMessageGeneration == directMessageGeneration;
     }
 
-    static boolean directSendUsesFocusedStyle(boolean focused, boolean enabled, boolean inFlight) {
-        return focused && enabled && !inFlight;
-    }
-
-    private void styleDirectSend(boolean focused) {
-        if (directSend == null || model == null) return;
-        boolean enabled = directSend.isEnabled();
-        styleAction(directSend, ActionTone.POSITIVE_JOIN,
-                directSendUsesFocusedStyle(focused, enabled, model.directSendState.inFlight),
-                model.directSendState.inFlight || !enabled);
-    }
-
-    private void addJoinAction(HostGatewayClient.DiscordChannel channel) {
-        TextView joinAction = pill(getContext().getString(R.string.discord_join_channel, channel.name),
-                ActionTone.POSITIVE_JOIN);
-        joinAction.setTag("discord.community.join");
-        if (model.voiceBusy) joinAction.setText(getContext().getString(R.string.discord_joining_channel));
-        joinAction.setOnClickListener(ignored -> {
-            if (!model.voiceBusy) callback.onJoin(channel);
-        });
-        detailAction = joinAction;
-        addAction(joinAction, ActionTone.POSITIVE_JOIN, model.voiceBusy);
-    }
-
-    private void addActiveVoiceDetail(DiscordCommunityPresentation.Destination selected) {
-        TextView status = text(getContext().getString(R.string.discord_community_connected), 14, CYAN);
-        status.setPadding(0, dp(14), 0, dp(4));
-        detail.addView(status);
-        HostGatewayClient.DiscordVoice voice = model.voice;
-        if (voice == null) return;
-        HostGatewayClient.DiscordChannel channel = selected.source instanceof HostGatewayClient.DiscordChannel
-                ? (HostGatewayClient.DiscordChannel) selected.source : null;
-        String guild = channel != null && !channel.guildName.isEmpty() ? channel.guildName : voice.guildId;
-        if (!guild.isEmpty()) detail.addView(text(guild, 12, MUTED));
-        detail.addView(text(getContext().getString(R.string.discord_community_people,
-                voice.participants), 12, MUTED));
-        if (voice.participantList.isEmpty()) {
-            detail.addView(text(model.voiceLoading ? getContext().getString(R.string.discord_community_loading)
-                    : getContext().getString(R.string.discord_no_participants), 12, MUTED));
-        } else {
-            for (HostGatewayClient.DiscordParticipant participant : voice.participantList) {
-                TextView person = text((participant.speaking ? "●  " : "") + participant.name
-                        + (participant.self ? getContext().getString(R.string.discord_you_suffix) : ""),
-                        13, participant.speaking ? CYAN : WHITE);
-                person.setPadding(0, dp(5), 0, 0);
-                detail.addView(person);
-            }
-        }
-        if (model.voiceBusy) {
-            TextView busy = text(getContext().getString(R.string.discord_community_updating_voice), 12, MUTED);
-            busy.setPadding(0, dp(14), 0, dp(2)); detail.addView(busy);
-        }
-        addVoiceAction(model.voice.muted ? R.string.overlay_discord_unmute : R.string.overlay_discord_mute,
-                DiscordPanelController.CommunityVoiceAction.MUTE);
-        addVoiceAction(model.voice.deafened ? R.string.discord_enable_audio : R.string.discord_disable_audio,
-                DiscordPanelController.CommunityVoiceAction.DEAFEN);
-        addVoiceAction(R.string.overlay_discord_leave, DiscordPanelController.CommunityVoiceAction.LEAVE);
-    }
-
-    private void addVoiceAction(int label, DiscordPanelController.CommunityVoiceAction action) {
-        ActionTone tone = action == DiscordPanelController.CommunityVoiceAction.LEAVE
-                ? ActionTone.DESTRUCTIVE_LEAVE : ActionTone.NEUTRAL;
-        TextView view = pill(getContext().getString(label), tone);
-        view.setTag("discord.community.voice." + action.name().toLowerCase(java.util.Locale.US));
-        if (model.voiceBusy) {
-            view.setAlpha(.58f);
-        }
-        view.setOnClickListener(ignored -> {
-            if (!model.voiceBusy) callback.onVoiceAction(action);
-        });
-        addAction(view, tone, model.voiceBusy);
-    }
-
-    private void addOptions() {
-        detail.addView(section(getContext().getString(R.string.discord_community_options)));
-        String account = model.snapshot.displayName.isEmpty() ? "Discord" : model.snapshot.displayName;
-        detail.addView(text(account, 15, WHITE));
-        boolean linked = model.snapshot.connected || !model.snapshot.userId.isEmpty();
-        detail.addView(text(linked ? getContext().getString(R.string.discord_community_connected)
-                : getContext().getString(R.string.discord_social_connect_action), 12, MUTED));
-        if (!linked) {
-            TextView connect = pill(getContext().getString(R.string.discord_social_connect_action),
-                    ActionTone.POSITIVE_JOIN);
-            connect.setTag("discord.community.social.connect");
-            if (model.optionsLoading) connect.setAlpha(.58f);
-            connect.setOnClickListener(ignored -> {
-                if (!model.optionsLoading) callback.onAuthorize();
-            });
-            addAction(connect, ActionTone.POSITIVE_JOIN, model.optionsLoading);
-        }
-        TextView audio = pill(getContext().getString(R.string.discord_audio_devices_action));
-        audio.setTag("discord.community.options.audio");
-        audio.setOnClickListener(ignored -> callback.onOpenAudio());
-        addAction(audio);
-        TextView social = pill(getContext().getString(R.string.discord_community_title));
-        social.setTag("discord.community.options.social");
-        social.setOnClickListener(ignored -> callback.onOpenSocial());
-        addAction(social);
-        if (model.optionsLoading) {
-            TextView busy = text(getContext().getString(R.string.discord_community_loading), 13, MUTED);
-            busy.setPadding(0, dp(8), 0, dp(2));
-            detail.addView(busy);
-            // A refresh after a setting action must retain the existing lane: the focused
-            // TextView is rebuilt under its stable tag and remains a valid D-pad target.
-            if (!optionsActionsVisible(model.options != null)) return;
-        }
-        if (!model.optionsError.isEmpty()) {
-            detail.addView(text(model.optionsError, 13, MUTED));
-        }
-        DiscordPanelController.CommunityOptions options = model.options;
-        if (options == null) return;
-        addSetting(R.string.discord_community_integration, options.integrationEnabled,
-                DiscordPanelController.CommunitySetting.INTEGRATION);
-        addSetting(R.string.discord_community_auto_connect, options.autoConnect,
-                DiscordPanelController.CommunitySetting.AUTO_CONNECT);
-        addSetting(R.string.discord_community_auto_join, options.autoJoinLast,
-                DiscordPanelController.CommunitySetting.AUTO_JOIN_LAST);
-        addHostAction(R.string.discord_start_on_host, DiscordPanelController.CommunityHostAction.START);
-        addHostAction(R.string.discord_connect_rpc, DiscordPanelController.CommunityHostAction.RECONNECT);
-        addHostAction(R.string.discord_refresh_status, DiscordPanelController.CommunityHostAction.REFRESH_STATUS);
-        if (options.status != null) {
-            detail.addView(text(getContext().getString(R.string.discord_community_host_status,
-                    options.status.bridgeOnline ? getContext().getString(R.string.discord_state_online)
-                            : getContext().getString(R.string.discord_state_offline),
-                    options.status.rpcConnected ? getContext().getString(R.string.discord_state_online)
-                            : getContext().getString(R.string.discord_state_offline),
-                    options.status.authenticated ? getContext().getString(R.string.discord_state_on)
-                            : getContext().getString(R.string.discord_state_off)), 12, MUTED));
-        }
-        if (linked) addUnlink();
-    }
-
-    private void addSocial() {
-        detail.addView(section(getContext().getString(R.string.discord_community_title)));
-        TextView notifications = pill(getContext().getString(
-                R.string.discord_dm_notifications_setting,
-                getContext().getString(model.dmNotificationsEnabled
-                        ? R.string.discord_state_on : R.string.discord_state_off)));
-        notifications.setTag("discord.community.social.dm_notifications");
-        notifications.setOnClickListener(ignored -> callback.onDmNotificationsChanged(
-                !model.dmNotificationsEnabled));
-        addAction(notifications);
-        String account = model.snapshot.displayName.isEmpty() ? "Discord" : model.snapshot.displayName;
-        detail.addView(text(account, 15, WHITE));
-        boolean linked = model.snapshot.connected || !model.snapshot.userId.isEmpty();
-        detail.addView(text(linked ? getContext().getString(R.string.discord_community_connected)
-                : getContext().getString(R.string.discord_social_connect_action), 12, MUTED));
-        if (!linked) {
-            TextView connect = pill(getContext().getString(R.string.discord_social_connect_action),
-                    ActionTone.POSITIVE_JOIN);
-            connect.setTag("discord.community.social.connect");
-            connect.setOnClickListener(ignored -> callback.onAuthorize());
-            addAction(connect, ActionTone.POSITIVE_JOIN, false);
-        } else addUnlink();
-    }
-
-    private void addAudio() {
-        detail.addView(section(getContext().getString(R.string.discord_audio_title)));
-        if (model.audioLoading && model.audio == null) {
-            addPassiveDetailEntry("discord.community.audio.loading",
-                    getContext().getString(R.string.discord_community_loading));
-            return;
-        }
-        if (!model.audioError.isEmpty()) detail.addView(text(model.audioError, 13, MUTED));
-        HostGatewayClient.DiscordAudioState audio = model.audio;
-        if (audio == null) return;
-        if (audio.systemAvailable) {
-            detail.addView(text(getContext().getString(R.string.discord_windows_audio,
-                    audio.systemVolume, audio.systemMuted
-                            ? getContext().getString(R.string.discord_muted_suffix) : ""), 13, MUTED));
-            TextView down = pill(getContext().getString(R.string.discord_system_volume_change, -5));
-            down.setTag("discord.community.audio.volume.down");
-            down.setOnClickListener(ignored -> { if (!model.audioBusy) callback.onAudioVolume(-5); });
-            addAction(down);
-            TextView up = pill(getContext().getString(R.string.discord_system_volume_change, 5));
-            up.setTag("discord.community.audio.volume.up");
-            up.setOnClickListener(ignored -> { if (!model.audioBusy) callback.onAudioVolume(5); });
-            addAction(up);
-            TextView mute = pill(getContext().getString(audio.systemMuted
-                    ? R.string.discord_unmute_system : R.string.discord_mute_system));
-            mute.setTag("discord.community.audio.mute");
-            mute.setOnClickListener(ignored -> { if (!model.audioBusy) callback.onAudioMute(); });
-            addAction(mute);
-        }
-        addAudioDevices(getContext().getString(R.string.discord_system_devices), audio.systemDevices);
-        addAudioDevices(getContext().getString(R.string.discord_discord_devices), audio.discordDevices);
-        if (!audio.error.isEmpty()) detail.addView(text(audio.error, 12, MUTED));
-        if (model.audioBusy) detail.addView(text(getContext().getString(R.string.discord_community_loading), 12, MUTED));
-    }
-
-    private void addAudioDevices(String title, List<HostGatewayClient.AudioDevice> devices) {
-        if (devices.isEmpty()) return;
-        detail.addView(section(title));
-        for (HostGatewayClient.AudioDevice device : devices) {
-            TextView action = pill((device.current ? "•  " : "") + device.name + "  ·  " + device.flow);
-            action.setTag("discord.community.audio.device." + device.system + "." + device.flow + "." + device.id);
-            action.setOnClickListener(ignored -> { if (!model.audioBusy) callback.onAudioDevice(device); });
-            addAction(action);
-        }
-    }
-
-    private void addUnlink() {
-        TextView unlink = pill(getContext().getString(R.string.discord_social_unlink),
-                ActionTone.DESTRUCTIVE_LEAVE);
-        unlink.setTag("discord.community.unlink");
-        if (model.optionsLoading) unlink.setAlpha(.58f);
-        unlink.setOnClickListener(ignored -> {
-            if (!model.optionsLoading) callback.onUnlink();
-        });
-        addAction(unlink, ActionTone.DESTRUCTIVE_LEAVE, model.optionsLoading);
-    }
-
-    private void addSetting(int label, boolean enabled, DiscordPanelController.CommunitySetting setting) {
-        TextView view = pill(getContext().getString(label, getContext().getString(enabled
-                ? R.string.discord_state_on : R.string.discord_state_off)));
-        view.setTag("discord.community.setting." + setting.name().toLowerCase(java.util.Locale.US));
-        if (model.optionsLoading) view.setAlpha(.58f);
-        view.setOnClickListener(ignored -> {
-            if (!model.optionsLoading) callback.onOption(setting, !enabled);
-        });
-        addAction(view);
-    }
-
-    private void addHostAction(int label, DiscordPanelController.CommunityHostAction action) {
-        TextView view = pill(getContext().getString(label));
-        view.setTag("discord.community.host." + action.name().toLowerCase(java.util.Locale.US));
-        if (model.optionsLoading) view.setAlpha(.58f);
-        view.setOnClickListener(ignored -> {
-            if (!model.optionsLoading) callback.onHostAction(action);
-        });
-        addAction(view);
-    }
-
-    private void addGuildChannels(DiscordCommunityPresentation.Destination selected) {
-        if (model.guildLoading) { detail.addView(text(getContext().getString(R.string.discord_community_loading), 13, MUTED)); return; }
-        if (model.guildUnavailable) {
-            detail.addView(text(getContext().getString(R.string.discord_community_host_unavailable), 13, MUTED));
-            if (selected.kind == DiscordCommunityPresentation.Kind.SERVER) {
-                detailAction = pill(getContext().getString(R.string.discord_social_retry));
-                detailAction.setOnClickListener(ignored -> callback.onDestinationOpened(selected));
-                addAction(detailAction);
-            }
-            return;
-        }
-        for (DiscordCommunityPresentation.Destination channel : model.guildChannels) {
-            View row = detailChannel(channel);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(MATCH_PARENT, dp(56));
-            params.topMargin = dp(4); detail.addView(row, params);
-        }
-    }
-
-    private View detailChannel(DiscordCommunityPresentation.Destination item) {
-        LinearLayout row = new LinearLayout(getContext());
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(12), dp(6), dp(12), dp(6));
-        row.addView(DiscordCommunityPresentation.avatar(getContext(), item.title, item.avatarUrl, 34),
-                new LinearLayout.LayoutParams(dp(34), dp(34)));
-        TextView title = text(item.title, 15, WHITE);
-        title.setSingleLine(true);
-        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
-        titleParams.leftMargin = dp(10);
-        row.addView(title, titleParams);
-        row.setId(View.generateViewId());
-        row.setTag(item.id);
-        row.setFocusable(true);
-        row.setFocusableInTouchMode(true);
-        row.setClickable(true);
-        row.setContentDescription(item.title + ", " + subtitle(item));
-        row.setOnFocusChangeListener((ignored, focused) -> {
-            styleDestination(row, false, focused);
-            if (focused) {
-                revealInOwner(detailScroll, row);
-                callback.onDestinationFocused(item);
-            }
-        });
-        row.setOnClickListener(ignored -> callback.onDestinationOpened(item));
-        detailDestinationViews.put(item.id, row);
-        detailFocusables.add(row);
-        styleDestination(row, false, false);
-        return row;
-    }
-
-    private void addAction(View action) { addAction(action, ActionTone.NEUTRAL, false); }
-
-    private void addAction(View action, ActionTone tone, boolean busy) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-        params.topMargin = dp(8);
-        if (action.getId() == View.NO_ID) action.setId(View.generateViewId());
-        action.setFocusableInTouchMode(true);
-        action.setOnFocusChangeListener((ignored, focused) -> {
-            if (action instanceof TextView) styleAction((TextView) action, tone, focused, busy);
-            if (focused) revealInOwner(detailScroll, action);
-        });
-        if (action instanceof TextView) styleAction((TextView) action, tone, action.hasFocus(), busy);
-        detail.addView(action, params);
-        detailFocusables.add(action);
-        Object tag = action.getTag();
-        if (!(tag instanceof String)) {
-            tag = "discord.community.detail." + detailFocusables.size();
-            action.setTag(tag);
-        }
-        detailFocusViewsByTag.put((String) tag, action);
-        if (detailAction == null) detailAction = action;
-    }
-
-    private void addPassiveDetailEntry(String tag, String label) {
-        TextView entry = text(label, 13, MUTED);
-        entry.setTag(tag);
-        entry.setFocusable(true);
-        entry.setFocusableInTouchMode(true);
-        entry.setContentDescription(label);
-        entry.setOnFocusChangeListener((ignored, focused) -> {
-            if (focused) revealInOwner(detailScroll, entry);
-        });
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-        params.topMargin = dp(8);
-        detail.addView(entry, params);
-        detailFocusables.add(entry);
-        detailFocusViewsByTag.put(tag, entry);
-        if (detailAction == null) detailAction = entry;
+    /** Mockup 19-discord-friends: with a tab focused the panel legend explains the tabs. */
+    private void showTabLegend() {
+        if (model != null && model.state.detail == DiscordCommunityState.Detail.FEED
+                && isLinked(model.snapshot)) detailPanel.showTabLegend();
     }
 
     private DiscordCommunityPresentation.Destination find(String id) {
@@ -1619,40 +1492,39 @@ final class DiscordCommunityView extends LinearLayout {
         return model != null && item != null && item.id.equals(model.state.selectedId);
     }
 
-    private void styleDestination(View view, boolean card, boolean focused) {
-        styleDestination(view, card, focused, false);
-    }
-
-    private void styleDestination(View view, boolean card, boolean focused, boolean selected) {
-        GradientDrawable surface = new GradientDrawable();
-        surface.setCornerRadius(dp(card ? 16 : 10));
-        surface.setColor(focused ? (card ? 0xFF22354A : 0xFF1D2C3B)
-                : selected ? 0xFF193344 : (card ? CARD : ROW));
-        if (focused) surface.setStroke(dp(2), WHITE);
-        else if (selected) surface.setStroke(dp(1), CYAN);
-        else surface.setStroke(0, Color.TRANSPARENT);
-        view.setBackground(surface);
-        view.setElevation(focused ? dp(6) : selected ? dp(2) : 0);
-    }
-
+    /** Account chip: faint glass capsule at rest, the light fill on focus (4.2). */
     private void styleAccount(boolean focused) {
-        GradientDrawable background = new GradientDrawable();
-        background.setCornerRadius(dp(10));
-        background.setColor(focused ? 0x1F77E5FF : Color.TRANSPARENT);
-        background.setStroke(focused ? dp(2) : 0, focused ? WHITE : Color.TRANSPARENT);
-        account.setBackground(background);
-        account.setPadding(dp(7), dp(4), dp(7), dp(4));
+        account.setBackground(focused ? fill(DiscordCommunityStyle.FOCUS_FILL, 14)
+                : DiscordCommunityStyle.outlined(getContext(), 0x16FFFFFF, 14, 0x3CFFFFFF));
+        accountName.setTextColor(focused ? DiscordCommunityStyle.INK : DiscordCommunityStyle.TEXT);
+        View icon = accountAvatar.getChildCount() == 1 ? accountAvatar.getChildAt(0) : null;
+        if (icon instanceof ImageView) {
+            ((ImageView) icon).setColorFilter(focused ? DiscordCommunityStyle.INK : DiscordCommunityStyle.TEXT);
+        }
     }
 
+    /** Tabs: the active one semibold and underlined in the accent; focus is the light pill. */
     private void styleTab(TextView tab, View underline, DiscordCommunityState.Tab value, boolean focused) {
         boolean active = model != null && model.state.tab == value;
-        tab.setTextColor(active || focused ? WHITE : MUTED);
-        underline.setBackgroundColor(active ? CYAN : Color.TRANSPARENT);
+        tab.setTypeface(active ? DiscordCommunityStyle.MEDIUM : Typeface.DEFAULT);
+        tab.setTextColor(focused ? DiscordCommunityStyle.INK
+                : active ? DiscordCommunityStyle.TEXT : DiscordCommunityStyle.TEXT_SECONDARY);
+        tab.setBackground(focused ? fill(DiscordCommunityStyle.FOCUS_FILL, 14) : null);
+        underline.setVisibility(active && !focused ? VISIBLE : INVISIBLE);
+        int width = Math.max(1, Math.round(tab.getPaint().measureText(tab.getText().toString())));
+        ViewGroup.LayoutParams params = underline.getLayoutParams();
+        if (params.width != width) {
+            params.width = width;
+            underline.setLayoutParams(params);
+        }
     }
 
     private boolean focusFirstDestination() {
         if (firstDestination != null && firstDestination.isAttachedToWindow()) {
             focusTarget(firstDestination, feedOwner(firstDestination));
+        } else if (firstDestination == null && !detailFocusables.isEmpty()) {
+            // An empty feed (e.g. no account yet) leads straight into the panel's actions.
+            focusTarget(detailFocusables.get(0), detailScroll);
         }
         return true;
     }
@@ -1706,10 +1578,12 @@ final class DiscordCommunityView extends LinearLayout {
     }
 
     private boolean navigateDetail(int index, int key) {
+        if (detailPanel.stepVolume(detailFocusables.get(index), key)) return true;
         if (key == KeyEvent.KEYCODE_DPAD_LEFT) {
             View selected = feedDestinationViews.get(model.state.selectedId);
             View target = selected == null ? firstDestination : selected;
-            focusTarget(target, feedOwner(target));
+            if (target == null) focusActiveTab();
+            else focusTarget(target, feedOwner(target));
         } else if (key == KeyEvent.KEYCODE_DPAD_UP) {
             focusTarget(detailFocusables.get(Math.max(0, index - 1)), detailScroll);
         } else if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
@@ -1823,19 +1697,7 @@ final class DiscordCommunityView extends LinearLayout {
     private ScrollView feedOwner(View view) { return feedFocusOwners.get(view); }
 
     private void revealInOwner(ScrollView owner, View target) {
-        target.post(() -> {
-            if (!target.isAttachedToWindow() || !owner.isAttachedToWindow()) return;
-            android.graphics.Rect bounds = new android.graphics.Rect();
-            target.getDrawingRect(bounds);
-            owner.offsetDescendantRectToMyCoords(target, bounds);
-            int margin = dp(8);
-            int top = owner.getScrollY() + margin;
-            int bottom = owner.getScrollY() + owner.getHeight() - margin;
-            int next = owner.getScrollY();
-            if (bounds.bottom > bottom) next += bounds.bottom - bottom;
-            else if (bounds.top < top) next -= top - bounds.top;
-            if (next != owner.getScrollY()) owner.smoothScrollTo(0, Math.max(0, next));
-        });
+        DiscordCommunityStyle.reveal(owner, target);
     }
 
     @Override
@@ -1879,7 +1741,8 @@ final class DiscordCommunityView extends LinearLayout {
 
     private String feedKey(Model value) {
         StringBuilder key = new StringBuilder(value.state.tab.name()).append('|').append(value.homeLoading)
-                .append('|').append(value.homeUnavailable);
+                .append('|').append(value.homeUnavailable).append('|').append(isLinked(value.snapshot))
+                .append('|').append(value.error);
         appendDestinations(key, value.active);
         appendDestinations(key, value.recent);
         return key.toString();
@@ -1924,51 +1787,42 @@ final class DiscordCommunityView extends LinearLayout {
         return model != null && isConnectedChannel(item.id, model.voice);
     }
     private String subtitle(DiscordCommunityPresentation.Destination item) {
-        if (isConnectedChannel(item)) {
-            return getContext().getString(R.string.discord_community_connected);
-        }
-        return item.participantCount > 0 ? item.subtitle + " · " + getContext().getString(
-                R.string.discord_community_people, item.participantCount) : item.subtitle;
-    }
-    private TextView section(String value) {
-        TextView label = text(value.toUpperCase(java.util.Locale.US), 12, MUTED);
-        label.setLetterSpacing(.08f); label.setPadding(dp(6), dp(7), 0, dp(4)); return label;
-    }
-    private TextView pill(String value) { return pill(value, ActionTone.NEUTRAL); }
-
-    private TextView pill(String value, ActionTone tone) {
-        TextView action = text(value, 12, 0xFF111721); action.setGravity(Gravity.CENTER);
-        action.setPadding(dp(10), dp(5), dp(10), dp(5)); action.setFocusable(true); action.setClickable(true);
-        styleAction(action, tone, false, false);
-        return action;
+        return DiscordCommunityDetailPanel.subtitle(getContext(), item, model == null ? null : model.voice);
     }
 
-    static int actionBackground(ActionTone tone, boolean focused) {
-        if (tone == ActionTone.POSITIVE_JOIN) return focused ? 0xFF1998D0 : 0xFF166D9B;
-        if (tone == ActionTone.DESTRUCTIVE_LEAVE) return focused ? 0xFFC34B58 : 0xFF963B47;
-        return focused ? 0xFF2A4054 : 0xFFEAF1F8;
+    private String friendsHeader(int label, int count) {
+        return getContext().getString(label, count).toUpperCase(java.util.Locale.ROOT);
     }
 
-    static int actionTextColor(ActionTone tone, boolean focused) {
-        return tone == ActionTone.NEUTRAL && !focused ? 0xFF111721 : WHITE;
+    private TextView section(int label) {
+        return DiscordCommunityStyle.eyebrow(getContext(), getContext().getString(label));
     }
 
-    private void styleAction(TextView action, ActionTone tone, boolean focused, boolean busy) {
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(actionBackground(tone, focused));
-        background.setCornerRadius(dp(18));
-        background.setStroke(dp(focused ? 2 : 1), focused ? WHITE :
-                tone == ActionTone.POSITIVE_JOIN ? CYAN : tone == ActionTone.DESTRUCTIVE_LEAVE
-                        ? 0xFFFFA5A5 : 0x334B6577);
-        action.setBackground(background);
-        action.setTextColor(actionTextColor(tone, focused));
-        action.setAlpha(busy ? .68f : 1f);
-        action.setElevation(focused ? dp(5) : 0);
+    static boolean isLinked(DiscordSocialClient.Snapshot snapshot) {
+        return snapshot.connected || !snapshot.userId.isEmpty();
     }
-    private TextView text(String value, float size, int color) {
-        TextView view = new TextView(getContext()); view.setText(value); view.setTextSize(size); view.setTextColor(color); return view;
+
+    private FrameLayout avatar(String title, String url, int sizeDp) {
+        return DiscordCommunityPresentation.avatar(getContext(), title, url, sizeDp);
     }
-    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    private GradientDrawable fill(int color, float radiusDp) {
+        return DiscordCommunityStyle.surface(getContext(), color, radiusDp);
+    }
+
+    private TextView text(CharSequence value, float size, int color, boolean medium) {
+        return DiscordCommunityStyle.text(getContext(), value, size, color, medium);
+    }
+
+    /** Linear params with top and bottom margins in dp. */
+    private LinearLayout.LayoutParams margins(int width, int height, int topDp, int bottomDp) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(width, height);
+        params.topMargin = dp(topDp);
+        params.bottomMargin = dp(bottomDp);
+        return params;
+    }
+
+    private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private static final int MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT;
     private static final int WRAP_CONTENT = ViewGroup.LayoutParams.WRAP_CONTENT;
 }

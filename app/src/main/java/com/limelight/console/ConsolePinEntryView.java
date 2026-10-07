@@ -289,6 +289,11 @@ final class ConsolePinEntryView extends FrameLayout {
         keys[0].post(keys[0]::requestFocus);
     }
 
+    /** The profile's avatar at the top, for a screen that takes it over. */
+    View avatar() {
+        return avatar;
+    }
+
     /**
      * Closes the screen; the page beneath is shown by the caller, or the shell hides. Dots and
      * key focus clear at once; {@code onGone} runs once the page has faded off the screen

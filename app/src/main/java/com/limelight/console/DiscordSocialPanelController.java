@@ -40,6 +40,8 @@ final class DiscordSocialPanelController {
                                DiscordPanelController.CommunityAudioCallback callback);
         void changeSystemVolume(int delta, DiscordPanelController.CommunityAudioCallback callback);
         void toggleSystemMute(DiscordPanelController.CommunityAudioCallback callback);
+        /** The selected host's name, or "" without one. */
+        String hostName();
     }
 
     interface Ui {
@@ -47,6 +49,10 @@ final class DiscordSocialPanelController {
         TextView label(String label);
         void show(String eyebrow, String title, String details, View... actions);
         void showCommunity(View shell);
+        /** The blurred backdrop the Community screen's glass surfaces crop. */
+        ConsoleMenuBackdrop menuBackdrop();
+        /** The DM shortcut's trigger ("select", "start", "guide" or "lb_rb"). */
+        String dmShortcutTrigger();
         void toast(String message);
         void backPanel();
         void requestCommunityDictation(long recipientId, long directMessageGeneration);
@@ -403,7 +409,8 @@ final class DiscordSocialPanelController {
                 directMessages.history(state.directMessageRecipientId),
                 directMessages.sendState(state.directMessageRecipientId),
                 directMessageDraft(state.directMessageRecipientId), DiscordSocialClient.canUseDirectMessages(),
-                hasMessageEventLease(), DiscordDmNotificationPreferences.isEnabled(activity)));
+                hasMessageEventLease(), DiscordDmNotificationPreferences.isEnabled(activity),
+                source.hostName()));
         if (state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE) {
             directMessages.clearUnreadAfterRendered(state.directMessageRecipientId);
         }
@@ -412,7 +419,8 @@ final class DiscordSocialPanelController {
 
     private void ensureView() {
         if (communityView != null) return;
-        communityView = new DiscordCommunityView(activity, new DiscordCommunityView.Callback() {
+        communityView = new DiscordCommunityView(activity, ui.menuBackdrop(), ui.dmShortcutTrigger(),
+                new DiscordCommunityView.Callback() {
             @Override public void onTab(DiscordCommunityState.Tab tab) {
                 state = state.tab(tab);
                 promoteConnectedVoiceIfAppropriate();
@@ -490,7 +498,8 @@ final class DiscordSocialPanelController {
         List<DiscordCommunityPresentation.Destination> guilds = home == null ? Collections.emptyList()
                 : DiscordCommunityPresentation.guilds(home.guilds);
         if (state.tab == DiscordCommunityState.Tab.FRIENDS) {
-            active.addAll(playing);
+            // Mockup 19-discord-friends: one list, "Online · n" (playing first) then "Offline · n".
+            recent.addAll(playing);
             recent.addAll(online);
             if (!offline.isEmpty()) {
                 int preview = Math.min(8, offline.size());
@@ -744,6 +753,11 @@ final class DiscordSocialPanelController {
         loadOptions(true);
     }
 
+    /** Opening Options from the account chip moves focus onto the panel's first row. */
+    private void focusOpenedOptions() {
+        if (state.detail == DiscordCommunityState.Detail.OPTIONS) communityView.focusDetailEntry("");
+    }
+
     private void loadOptions(boolean refresh) {
         final int expected = generation;
         source.requestOptions(refresh, new DiscordPanelController.CommunityOptionsCallback() {
@@ -751,11 +765,13 @@ final class DiscordSocialPanelController {
                 if (!visible || expected != generation) return;
                 options = value; optionsLoading = false; optionsError = "";
                 render(DiscordSocialClient.getSnapshot());
+                focusOpenedOptions();
             }
             @Override public void onError(String safeMessage) {
                 if (!visible || expected != generation) return;
                 optionsLoading = false; optionsError = safeMessage;
                 render(DiscordSocialClient.getSnapshot());
+                focusOpenedOptions();
             }
         });
     }
@@ -799,7 +815,7 @@ final class DiscordSocialPanelController {
         state = state.openAudio();
         if (audio != null || audioLoading) {
             render(DiscordSocialClient.getSnapshot());
-            communityView.focusDetailEntry("discord.community.audio.volume.down");
+            communityView.focusDetailEntry("discord.community.audio.volume");
             return;
         }
         audioLoading = true;
@@ -811,12 +827,13 @@ final class DiscordSocialPanelController {
                 if (!visible || expected != generation) return;
                 audio = value; audioLoading = false; audioError = "";
                 render(DiscordSocialClient.getSnapshot());
-                communityView.focusDetailEntry("discord.community.audio.volume.down");
+                communityView.focusDetailEntry("discord.community.audio.volume");
             }
             @Override public void onError(String safeMessage) {
                 if (!visible || expected != generation) return;
                 audioLoading = false; audioError = safeMessage;
                 render(DiscordSocialClient.getSnapshot());
+                communityView.focusDetailEntry("discord.community.audio.retry");
             }
         });
     }
@@ -854,7 +871,7 @@ final class DiscordSocialPanelController {
                 if (!visible || expected != generation) return;
                 audio = value; audioBusy = false; audioError = "";
                 render(DiscordSocialClient.getSnapshot());
-                communityView.focusDetailEntry("discord.community.audio.volume.down");
+                communityView.focusDetailEntry("discord.community.audio.volume");
             }
             @Override public void onError(String safeMessage) {
                 if (!visible || expected != generation) return;

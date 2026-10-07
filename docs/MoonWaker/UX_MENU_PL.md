@@ -227,8 +227,11 @@ i przejścia.
 
 ### 3.8 Animacja wejścia
 
-Animacja zasłania pierwsze ładowanie karuzeli po wybraniu profilu albo po poprawnym
-PIN-ie. Odniesienie: makiety `17-intro-1-v4.png` … `17-intro-4-v4.png` i końcówka
+Animacja zasłania pierwsze ładowanie karuzeli po wybraniu profilu, po poprawnym PIN-ie
+albo przy automatycznym wejściu na profil (bramka pominięta przy starcie lub przy wyborze
+hosta; wtedy awatar zaczyna na środku). Po PIN-ie i wejściu automatycznym animacja startuje
+na gładkim tle powłoki — z ekranu PIN nie powstaje żaden zrzut, a `FLAG_SECURE` znika
+dopiero, gdy pierwsza klatka animacji zakryła ekran PIN. Odniesienie: makiety `17-intro-1-v4.png` … `17-intro-4-v4.png` i końcówka
 przejścia `flow-host-to-carousel-v4.webp` (osobno `intro-v4.webp`).
 
 | Czas | Co się dzieje |
@@ -238,19 +241,23 @@ przejścia `flow-host-to-carousel-v4.webp` (osobno `intro-v4.webp`).
 | 400–1000 ms | pojawia się znak półksiężyca i „Witaj, <profil>" (32 px); trzymają się do gotowości |
 | wyjście, ok. 450 ms | ekran główny wchodzi z przybliżenia 1,04 → 1,0; widoczne okładki podnoszą się o 24 px z opóźnieniem 30 ms jedna po drugiej; poświata przechodzi w grafikę gry z fokusem |
 
-- **Warunek gotowości:** `prepareInitialCarouselFrame()` (dane lokalne i pierwsze okładki
-  zdekodowane) oraz odświeżenie profili.
-- **Czas:** co najmniej 900 ms. Po 2,5 s animacja przestaje czekać i pokazuje ekran
-  główny ze szklanymi zaślepkami okładek.
+- **Warunek gotowości:** dane lokalne pokazane, karuzela widoczna, żadna widoczna okładka
+  nie czeka na ładowanie (zdekodowana albo bez grafiki / z nieudanym pobraniem), a dla
+  okładki z fokusem grafika tła jest pokazana albo jej pobranie skończyło się bez grafiki. Odświeżenie profili nie
+  wchodzi do warunku: bramka właśnie pobrała profile, a ponowne `/profiles` + `/capabilities`
+  trwa sekundy i nie zmienia karuzeli.
+- **Czas:** co najmniej 1,8 s (jak `intro-v4.webp`). Po 4,5 s animacja przestaje czekać
+  i pokazuje ekran główny ze szklanymi zaślepkami okładek.
 - **Pominięcie:** dowolny klawisz po 300 ms, jeśli ekran jest gotowy.
 - **Kiedy się nie pokazuje:** po powrocie ze streamu (ta ścieżka już jest natychmiastowa)
   ani po zamknięciu szybkiego menu. Przy zmianie hosta wersja skrócona do 600 ms.
 - **Ograniczenie animacji:** bez drobin, smugi i przybliżenia; statyczny znak i przenikanie
   200 ms, nadal z czekaniem na warunek gotowości.
 - **Koszt na API 31 (BRAVIA):** tylko przesunięcia, skala i alfa na GPU; smuga to gotowa
-  bitmapa (ok. 512 × 1080) przesuwana po ekranie; drobiny rysuje jeden widok z jednym
-  sprite'em z cache; poświata to wcześniej rozmyta bitmapa 480 × 270; żadnego rozmycia
-  co klatkę.
+  bitmapa (ok. 512 × 1080) przesuwana po ekranie; drobiny rysuje jeden widok ze sprite'ami
+  z cache; poświata to wcześniej rozmyta bitmapa 480 × 270; żadnego rozmycia co klatkę.
+  Smuga, znak i drobiny powstają raz na proces w tle; kolory to stała fioletowa paleta
+  makiety, niezależna od profilu.
 
 ## 4. Język wizualny (v4)
 
@@ -294,7 +301,7 @@ Koniec z grubymi cyjanowymi obrysami.
   zrzucie w ćwierć rozdzielczości w chwili otwarcia menu; tint rgb(6,8,12) 30 %
   (szybkie menu: rośnie do 50 % ku dołowi pod rząd ikon).
 - **Same panele są szkłem:** własne rozmycie 40 px, tint rgb(16,18,26) 50 %, nasycenie
-  ×1,3, biały woal 7 %, kontur 1,5 px jaśniejszy u góry, promień narożników 36 px,
+  ×1,3, biały woal 7/255 (2,7 %), kontur 1,5 px jaśniejszy u góry, promień narożników 36 px,
   panel pływa z marginesami (np. x 1196–1896, y 24–1056 przy 1080p).
 - **Małe pływające menu** (Opcje) mają lżejszą drugą warstwę (rozmycie 10 px, tint 15 %),
   żeby karty za nimi pozostały rozpoznawalne.
@@ -386,7 +393,7 @@ Dalej:
   - **7c. Ekran PIN.**
   - **7d. Animacja wejścia.** Najpierw pomiar rzeczywistego czasu do gotowości
     `prepareInitialCarouselFrame()` na telewizorze lub w laboratorium, przy zimnym i ciepłym
-    starcie; dopiero potem strojenie minimum (900 ms) i limitu (2,5 s).
+    starcie; dopiero potem strojenie minimum (1,8 s) i limitu (ustalony przez właściciela: 4,5 s).
 
   Każdy podkrok: build → zrzuty (emulator laboratorium, gdzie się da; ekran PIN okiem na
   telewizorze, bo `FLAG_SECURE`) → akceptacja właściciela → commit. Nowe ekrany są
