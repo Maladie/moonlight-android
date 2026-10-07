@@ -13,15 +13,19 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.text.InputType;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.style.AbsoluteSizeSpan;
+import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
+import android.view.inputmethod.EditorInfo;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -35,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import java.util.function.IntConsumer;
+import java.util.function.IntFunction;
 import java.util.function.Predicate;
 
 /**
@@ -54,6 +59,9 @@ final class ConsolePanel {
     static final float LABEL_SP = 15f;
     static final float SECONDARY_SP = 13f;
     static final float CAPTION_SP = 12f;
+    /** Mockup 18 value and stepper text (28 px) and the stepper arrows (32 px). */
+    static final float VALUE_SP = 14f;
+    static final float ARROW_SP = 16f;
     static final int SECTION_TOP_DP = 16;
     /** The focus fill spans 13 dp from the panel edge; text sits 14 dp inside it. */
     static final int PAD_X_DP = 13;
@@ -62,6 +70,8 @@ final class ConsolePanel {
     /** Bottom padding of the scroll view kept for the pinned legend (1004 px baseline). */
     static final int LEGEND_AREA_DP = 50;
     static final int LEGEND_BOTTOM_DP = 22;
+    /** Mockup 18 legend: centred 48 px above the card's bottom edge (side panels: 52 px). */
+    static final int CARD_LEGEND_BOTTOM_DP = 19;
     static final int SCROLL_TOP_DP = 18;
     static final int STEPS = 10;
     static final int TEXT = 0xFFF5F6F9;
@@ -73,8 +83,19 @@ final class ConsolePanel {
     static final int INK_SECONDARY = 0xFF4E5462;
     /** Destructive rows stay red on the light focus fill, deep enough to read on it. */
     static final int DANGER_INK = 0xFFC62833;
+    /** Mockup 18: a disabled row's label and its reason line. */
+    static final int DISABLED_TEXT = 0xFF6E7482;
+    static final int DISABLED_REASON = 0xFF606674;
+    /** Mockup 18 toggle: 60 x 34 px with a 24 px knob. */
+    static final int TOGGLE_WIDTH_DP = 30;
+    static final int TOGGLE_HEIGHT_DP = 17;
+    /**
+     * Mockup 18 slider under a focused stepper: a 72 px band (40 dp drawn 4 dp up into the
+     * line), 6 px track 4 px below the line, 22 px knob, 24 px range labels.
+     */
+    static final int SLIDER_HEIGHT_DP = 40;
 
-    private enum Kind { DESTRUCTIVE, STEPPER }
+    private enum Kind { DESTRUCTIVE, STEPPER, TOGGLE }
 
     private final Context context;
     private final LockableScrollView scroll;
@@ -82,6 +103,8 @@ final class ConsolePanel {
     /** Drawn by the scroll view, outside the scrolled rows. */
     private final TextView legend;
     private boolean legendStepper;
+    /** Set by {@link #setLegend}; the next {@link #updateLegend} replaces it. */
+    private boolean customLegend;
     private final int accent;
     private final int danger;
     private final int secondary;
@@ -97,12 +120,23 @@ final class ConsolePanel {
     private final Map<ColorStateList, Map<Integer, Drawable.ConstantState>> icons =
             new IdentityHashMap<>();
     private boolean reducedMotion;
+    private final boolean card;
 
     ConsolePanel(Context context, LockableScrollView scroll, ConsoleMenuBackdrop backdrop,
                  boolean reducedMotion) {
+        this(context, scroll, backdrop, reducedMotion, false);
+    }
+
+    /**
+     * {@code card}: the settings card of mockup 18 instead of a side panel (mockup 4): 32 px
+     * focus radius instead of 20, its own header spacing and legend line.
+     */
+    ConsolePanel(Context context, LockableScrollView scroll, ConsoleMenuBackdrop backdrop,
+                 boolean reducedMotion, boolean card) {
         this.context = context;
         this.scroll = scroll;
         this.reducedMotion = reducedMotion;
+        this.card = card;
         glass = new ConsoleGlass(scroll, backdrop);
         accent = context.getResources().getColor(R.color.console_accent);
         danger = context.getResources().getColor(R.color.console_state_error);
@@ -111,7 +145,7 @@ final class ConsolePanel {
         dangerColors = stateColors(danger, DANGER_INK);
         valueColors = stateColors(secondary, INK_SECONDARY);
         stepperColors = stateColors(accent, INK);
-        focusFill = focusFill().getConstantState();
+        focusFill = focusFill(card ? 16 : 10).getConstantState();
         // Parse the row icons once off the main thread; the first card then hits the cache.
         ConsoleMenuBackdrop.inBackground(() -> {
             context.getDrawable(R.drawable.ic_console_chevron);
@@ -144,15 +178,8 @@ final class ConsolePanel {
         // The top inset keeps scrolled-away header text fading out inside the glass instead of
         // being cut by its rounded top edge.
         scroll.setPadding(0, dp(SCROLL_TOP_DP), 0, dp(LEGEND_AREA_DP));
-        scroll.setFooter(legend, dp(LEGEND_BOTTOM_DP));
+        scroll.setFooter(legend, dp(card ? CARD_LEGEND_BOTTOM_DP : LEGEND_BOTTOM_DP));
         content.setPadding(dp(PAD_X_DP), dp(25 - SCROLL_TOP_DP), dp(PAD_X_DP), dp(4));
-    }
-
-    /** Undoes {@link #floatOnGlass} for a full-screen composition that brings its own surface. */
-    void leaveGlass(LinearLayout content) {
-        scroll.setPadding(0, 0, 0, 0);
-        scroll.setFooter(null, 0);
-        content.setPadding(0, 0, 0, 0);
     }
 
     /**
@@ -165,11 +192,34 @@ final class ConsolePanel {
             stepper |= container.getChildAt(index).getTag(R.id.console_panel_row_kind)
                     == Kind.STEPPER;
         }
-        if (stepper == legendStepper && legend.getText().length() > 0) return;
+        if (!customLegend && stepper == legendStepper && legend.getText().length() > 0) return;
+        customLegend = false;
         legendStepper = stepper;
         legend.setText(stepper ? R.string.console_panel_legend_stepper
                 : R.string.console_panel_legend);
         scroll.requestLayout();
+    }
+
+    /** A legend chosen by the caller, e.g. for the focused row of the settings screen. */
+    void setLegend(CharSequence text) {
+        customLegend = true;
+        if (TextUtils.equals(legend.getText(), text)) return;
+        legend.setText(text);
+        scroll.requestLayout();
+    }
+
+    static boolean isStepper(View row) {
+        return row.getTag(R.id.console_panel_row_kind) == Kind.STEPPER;
+    }
+
+    static boolean isToggle(View row) {
+        return row.getTag(R.id.console_panel_row_kind) == Kind.TOGGLE;
+    }
+
+    /** The legend's "−/+ step" text of a stepper row. */
+    static String stepLabel(View row) {
+        Object label = row.getTag(R.id.console_panel_step_label);
+        return label == null ? "" : label.toString();
     }
 
     /** Replaces the container content with header and rows (destructive ones last). */
@@ -180,11 +230,14 @@ final class ConsolePanel {
         container.addView(inset(header(eyebrow)), wrap(0, 0));
         TextView titleView = inset(text(title, TITLE_SP, TEXT));
         titleView.setTypeface(medium);
-        container.addView(titleView, wrap(dp(4), 0));
+        // Mockup 18 card baselines: eyebrow, title +60 px, subtitle +44 px, rows 30 px below
+        // the subtitle or 34 px below the title (the mockups use 26-32 and 36: 18-game starts
+        // its rows 6 px above 18-video). Side panels (mockup 4): title +56, subtitle +42.
+        container.addView(titleView, wrap(dp(card ? 7 : 4), 0));
         TextView detailView = inset(text(details, SECONDARY_SP, secondary));
         detailView.setVisibility(TextUtils.isEmpty(details) ? View.GONE : View.VISIBLE);
         if (scrollableDetails) makeScrollable(detailView);
-        container.addView(detailView, wrap(dp(3), dp(12)));
+        container.addView(detailView, wrap(dp(card ? 4 : 3), dp(card ? 0 : 12)));
 
         List<View> ordered = destructiveLast(Arrays.asList(rows), ConsolePanel::isDestructive);
         int firstDestructive = 0;
@@ -193,7 +246,7 @@ final class ConsolePanel {
         for (int index = 0; index < ordered.size(); index++) {
             View row = ordered.get(index);
             if (index == firstDestructive && index > 0) container.addView(divider(), dividerParams());
-            container.addView(row, wrap(0, 0));
+            container.addView(row, wrap(card && index == 0 ? dp(12) : 0, 0));
         }
         updateLegend(container);
     }
@@ -290,8 +343,31 @@ final class ConsolePanel {
     LinearLayout toggle(String label, boolean checked) {
         LinearLayout row = labelledRow(label);
         row.setTag("settings.toggle:" + label);
-        row.addView(new Toggle(context, accent), new LinearLayout.LayoutParams(dp(38), dp(22)));
+        row.setTag(R.id.console_panel_row_kind, Kind.TOGGLE);
+        row.addView(new Toggle(context, accent), new LinearLayout.LayoutParams(
+                dp(TOGGLE_WIDTH_DP), dp(TOGGLE_HEIGHT_DP)));
         setChecked(row, checked);
+        return row;
+    }
+
+    /**
+     * Mockup 18 "row disabled with a reason": dimmed label, the reason on a smaller second line,
+     * a faded control; the row leaves the focus chain.
+     */
+    <T extends View> T disabled(T row, String reason) {
+        row.setEnabled(false);
+        row.setFocusable(false);
+        TextView title = (TextView) ((ViewGroup) row).getChildAt(0);
+        CharSequence label = title.getText();
+        SpannableString text = new SpannableString(label + "\n" + reason);
+        int start = label.length() + 1;
+        text.setSpan(new AbsoluteSizeSpan(Math.round(CAPTION_SP
+                        * context.getResources().getDisplayMetrics().scaledDensity)), start,
+                text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        text.setSpan(new ForegroundColorSpan(DISABLED_REASON), start, text.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        title.setText(text);
+        title.setLineSpacing(dp(3), 1f);
         return row;
     }
 
@@ -305,17 +381,22 @@ final class ConsolePanel {
     /** A value picker row: label, current value and a chevron to the choice panel. */
     LinearLayout value(String label, CharSequence value) {
         LinearLayout row = labelledRow(label);
-        TextView valueView = text(value, SECONDARY_SP, secondary);
+        // Mockup 18: values 28 px with the chevron 9 px after them.
+        TextView valueView = text(value, VALUE_SP, secondary);
         valueView.setTextColor(valueColors);
         valueView.setDuplicateParentStateEnabled(true);
         valueView.setSingleLine(true);
         valueView.setEllipsize(TextUtils.TruncateAt.END);
-        valueView.setMaxWidth(dp(WIDTH_DP / 2));
+        valueView.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
         valueView.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
                 tinted(R.drawable.ic_console_chevron, valueColors), null);
-        valueView.setCompoundDrawablePadding(dp(8));
+        valueView.setCompoundDrawablePadding(dp(4));
+        // Label and value both take their full width; only when together they do not fit do
+        // both give up the overflow equally (the label wraps, the value ellipsizes).
+        row.getChildAt(0).setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         params.leftMargin = dp(16);
         row.addView(valueView, params);
         setValue(row, value);
@@ -328,46 +409,126 @@ final class ConsolePanel {
         row.setContentDescription(((TextView) group.getChildAt(0)).getText() + ". " + value);
     }
 
-    /** A 0–10 value stored as a 0–100 percentage; left/right step it, OK steps up and wraps. */
+    /** A 0–10 value stored as a 0–100 percentage. */
     LinearLayout stepper(String label, int percent, IntConsumer onPercentChanged) {
-        LinearLayout row = labelledRow(label);
-        row.setTag(R.id.console_panel_row_kind, Kind.STEPPER);
-        TextView valueView = text("", SECONDARY_SP, accent);
+        return stepper(label, stepFromPercent(percent), 0, STEPS, 1,
+                step -> step + "/" + STEPS, "1", null,
+                step -> onPercentChanged.accept(percentFromStep(step)));
+    }
+
+    /**
+     * A stepped value in {@code [min, max]}: left/right step it (held keys 5x, then 10x faster),
+     * OK steps up to the maximum. Non-null {@code sliderTicks} adds mockup 18's slider under the
+     * focused row, with dots at those values.
+     */
+    LinearLayout stepper(String label, int value, int min, int max, int step,
+                         IntFunction<String> format, String stepLabel, int[] sliderTicks,
+                         IntConsumer onChanged) {
+        LinearLayout line = labelledRow(label);
+        TextView valueView = text("", VALUE_SP, accent);
         valueView.setTypeface(medium);
         valueView.setTextColor(stepperColors);
         valueView.setDuplicateParentStateEnabled(true);
-        row.addView(valueView, new LinearLayout.LayoutParams(
+        line.addView(valueView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        int[] step = {stepFromPercent(percent)};
+        LinearLayout row = line;
+        Slider slider = null;
+        if (sliderTicks != null) {
+            // The focus fill and the keys move to a column holding the line and the slider.
+            row = new LinearLayout(context);
+            row.setOrientation(LinearLayout.VERTICAL);
+            styleRow(row);
+            line.setFocusable(false);
+            line.setClickable(false);
+            line.setBackground(null);
+            line.setOnFocusChangeListener(null);
+            line.setPadding(0, 0, 0, 0);
+            line.setMinimumHeight(dp(ROW_HEIGHT_DP - 8));
+            line.setDuplicateParentStateEnabled(true);
+            row.addView(line, wrap(0, 0));
+            slider = new Slider(context, min, max, sliderTicks, format.apply(min),
+                    format.apply(max));
+            slider.setVisibility(View.GONE);
+            row.addView(slider, wrap(-dp(4), 0));
+            slider.getLayoutParams().height = dp(SLIDER_HEIGHT_DP);
+            Slider shown = slider;
+            View.OnFocusChangeListener styled = row.getOnFocusChangeListener();
+            row.setOnFocusChangeListener((view, focused) -> {
+                shown.setVisibility(focused ? View.VISIBLE : View.GONE);
+                styled.onFocusChange(view, focused);
+            });
+        }
+        LinearLayout result = row;
+        Slider bar = slider;
+        result.setTag(R.id.console_panel_row_kind, Kind.STEPPER);
+        result.setTag(R.id.console_panel_step_label, stepLabel);
+        int[] current = {Math.max(min, Math.min(max, value))};
         Runnable show = () -> {
-            valueView.setText(stepperText(step[0]));
-            row.setContentDescription(label + ". " + step[0] + "/" + STEPS);
+            String formatted = format.apply(current[0]);
+            SpannableString text = new SpannableString(
+                    stepperText(current[0], min, max, formatted));
+            int arrow = Math.round(ARROW_SP * context.getResources().getDisplayMetrics().scaledDensity);
+            for (int index = 0; index < text.length(); index++) {
+                char glyph = text.charAt(index);
+                if (glyph == '‹' || glyph == '›') {
+                    text.setSpan(new AbsoluteSizeSpan(arrow), index, index + 1,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+            }
+            valueView.setText(text);
+            if (bar != null) bar.setValue(current[0]);
+            result.setContentDescription(label + ". " + formatted);
         };
         IntConsumer set = next -> {
-            int clamped = Math.max(0, Math.min(STEPS, next));
-            if (clamped == step[0]) return;
-            step[0] = clamped;
+            if (next == current[0]) return;
+            current[0] = next;
             show.run();
-            onPercentChanged.accept(percentFromStep(clamped));
+            onChanged.accept(next);
         };
-        row.setOnKeyListener((view, keyCode, event) -> {
+        result.setOnKeyListener((view, keyCode, event) -> {
             if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) {
                 return false;
             }
             int direction = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1;
-            // At the end of the range the key is ordinary navigation (e.g. back to a column).
-            if (!canStep(step[0], direction)) return false;
-            if (event.getAction() == KeyEvent.ACTION_DOWN) set.accept(step[0] + direction);
+            if (!handlesStepKey(current[0], direction, min, max, event.getRepeatCount())) {
+                return false;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                int repeat = event.getRepeatCount();
+                int stride = step * (repeat >= 20 ? 10 : repeat >= 6 ? 5 : 1);
+                set.accept(stepValue(current[0], direction, min, max, stride));
+            }
             return true;
         });
-        row.setOnClickListener(view -> set.accept(step[0] >= STEPS ? 0 : step[0] + 1));
+        // No wrap: none of the values is cyclic, and max → min would e.g. drop the bitrate.
+        result.setOnClickListener(view -> set.accept(stepValue(current[0], 1, min, max, step)));
         show.run();
-        return row;
+        return result;
+    }
+
+    /** A number field row; OK opens the TV's number keyboard. */
+    EditText numberField(String hint, CharSequence value, boolean decimal) {
+        EditText field = new EditText(context);
+        field.setText(value);
+        field.setHint(hint);
+        field.setTextSize(LABEL_SP);
+        field.setTextColor(textColors);
+        field.setHintTextColor(LEGEND);
+        field.setSingleLine(true);
+        field.setInputType(InputType.TYPE_CLASS_NUMBER
+                | (decimal ? InputType.TYPE_NUMBER_FLAG_DECIMAL : 0));
+        field.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        field.setMinHeight(dp(ROW_HEIGHT_DP));
+        field.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        styleRow(field);
+        return field;
     }
 
     TextView section(String label) {
         TextView header = header(label);
-        header.setPadding(dp(ROW_INSET_DP), dp(SECTION_TOP_DP), dp(ROW_INSET_DP), dp(6));
+        // Mockup 18 card "head": 66 px, baseline 50 px down; side panels keep 16 + 6 dp.
+        header.setPadding(dp(ROW_INSET_DP), dp(card ? 14 : SECTION_TOP_DP), dp(ROW_INSET_DP),
+                dp(card ? 5 : 6));
         header.setFocusable(false);
         return header;
     }
@@ -380,15 +541,29 @@ final class ConsolePanel {
         return note;
     }
 
-    static boolean canStep(int step, int direction) {
-        int next = step + direction;
-        return next >= 0 && next <= STEPS;
+    static boolean canStep(int value, int direction, int min, int max) {
+        return direction > 0 ? value < max : value > min;
     }
 
-    /** "6/10" with a "‹" or "›" only on the sides where a step is still possible. */
-    static String stepperText(int step) {
-        return (canStep(step, -1) ? "‹  " : "") + step + "/" + STEPS
-                + (canStep(step, 1) ? "  ›" : "");
+    /**
+     * Whether a stepper keeps a left/right key. At the end of the range a fresh press is
+     * ordinary navigation (e.g. back to a column); a held key's repeats stay with the stepper.
+     */
+    static boolean handlesStepKey(int value, int direction, int min, int max, int repeatCount) {
+        return canStep(value, direction, min, max) || repeatCount > 0;
+    }
+
+    /** One step of {@code step} towards {@code direction}, on multiples of it, kept in range. */
+    static int stepValue(int value, int direction, int min, int max, int step) {
+        int next = direction > 0 ? Math.floorDiv(value, step) * step + step
+                : -Math.floorDiv(-value, step) * step - step;
+        return Math.max(min, Math.min(max, next));
+    }
+
+    /** The value with a "‹" or "›" only on the sides where a step is still possible. */
+    static String stepperText(int value, int min, int max, String formatted) {
+        return (canStep(value, -1, min, max) ? "‹  " : "") + formatted
+                + (canStep(value, 1, min, max) ? "  ›" : "");
     }
 
     static int stepFromPercent(int percent) {
@@ -434,7 +609,9 @@ final class ConsolePanel {
         row.setClickable(true);
         row.setSoundEffectsEnabled(false);
         // Background first: the inset fill would otherwise replace the row padding with its own.
-        row.setBackground(focusFill.newDrawable(context.getResources()));
+        // No Resources here: InsetDrawable/GradientDrawable states built in code are 160 dpi, and
+        // newDrawable(res) would rescale the px inset and radius again (70 px fill became 64).
+        row.setBackground(focusFill.newDrawable());
         row.setPadding(dp(ROW_INSET_DP), dp(4), dp(ROW_INSET_DP), dp(4));
         row.setOnFocusChangeListener((view, hasFocus) -> {
             if (DiscordPanelViews.isTile(view)) DiscordPanelViews.styleTile(view, hasFocus);
@@ -443,9 +620,9 @@ final class ConsolePanel {
     }
 
     /** Section 4.2 text-row focus: a near-white pill, 1.5 dp inside the row's top and bottom. */
-    private Drawable focusFill() {
+    Drawable focusFill(int radiusDp) {
         GradientDrawable fill = new GradientDrawable();
-        fill.setCornerRadius(dp(10));
+        fill.setCornerRadius(dp(radiusDp));
         fill.setColor(FOCUS_FILL);
         int inset = Math.round(1.5f * context.getResources().getDisplayMetrics().density);
         StateListDrawable background = new StateListDrawable();
@@ -505,6 +682,22 @@ final class ConsolePanel {
         return false;
     }
 
+    /** Mockup 18 "sep": a hairline across the text span in a 25 px (12.5 dp) band. */
+    View separator() {
+        // A plain View measures to all the height left to it, which a fill-viewport card offers.
+        View separator = new View(context) {
+            @Override protected void onMeasure(int width, int height) {
+                setMeasuredDimension(getDefaultSize(getSuggestedMinimumWidth(), width),
+                        getSuggestedMinimumHeight());
+            }
+        };
+        separator.setBackground(new InsetDrawable(new ColorDrawable(0x1EFFFFFF),
+                dp(ROW_INSET_DP), dp(6), dp(ROW_INSET_DP), dp(6)));
+        separator.setMinimumHeight(dp(12) + Math.max(1, dp(1) / 2));
+        separator.setFocusable(false);
+        return separator;
+    }
+
     private View divider() {
         View divider = new View(context);
         divider.setBackgroundColor(0x1EFFFFFF);
@@ -529,7 +722,7 @@ final class ConsolePanel {
      * switch to {@code focused} ink.
      */
     private static ColorStateList stateColors(int color, int focused) {
-        int disabled = (color & 0x00FFFFFF) | 0x73000000;
+        int disabled = color == TEXT ? DISABLED_TEXT : (color & 0x00FFFFFF) | 0x73000000;
         return new ColorStateList(new int[][]{
                 {android.R.attr.state_activated, -android.R.attr.state_enabled},
                 {android.R.attr.state_activated},
@@ -598,21 +791,81 @@ final class ConsolePanel {
             invalidate();
         }
 
+        /** Mockup 18 toggle_sprite: track accent/grey, ink knob; on the focus fill ink/light. */
         @Override protected void onDraw(Canvas canvas) {
             View row = (View) getParent();
-            int alpha = row == null || row.isEnabled() ? 255 : 115;
+            boolean focused = row != null && row.isFocused();
+            int alpha = row == null || row.isEnabled() ? 255 : 102;
             float height = getHeight();
             float radius = height / 2f;
             track.set(0, 0, getWidth(), height);
-            paint.setColor(checked ? accent : 0xFF3A434C);
+            paint.setColor(checked ? focused ? INK : accent : focused ? 0xFFBEC2CC : 0xFF5A606E);
             paint.setAlpha(alpha);
             canvas.drawRoundRect(track, radius, radius, paint);
-            paint.setColor(checked ? 0xFF05060A : 0xFFE6EAF0);
+            paint.setColor(focused ? Color.WHITE : INK);
             paint.setAlpha(alpha);
-            float inset = height * .14f;
-            float knob = radius - inset;
+            float knob = height * 12f / 34f;
             float cx = checked ? getWidth() - radius : radius;
             canvas.drawCircle(cx, radius, knob, paint);
+        }
+    }
+
+    /** Mockup 18 slider band under a focused stepper; drawn with preallocated paint. */
+    private static final class Slider extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF track = new RectF();
+        private final int min;
+        private final int max;
+        private final int[] ticks;
+        private final String low;
+        private final String high;
+        private int value;
+
+        Slider(Context context, int min, int max, int[] ticks, String low, String high) {
+            super(context);
+            this.min = min;
+            this.max = max;
+            this.ticks = ticks;
+            this.low = low;
+            this.high = high;
+            setFocusable(false);
+            setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+            paint.setTextSize(CAPTION_SP * context.getResources().getDisplayMetrics().scaledDensity);
+        }
+
+        void setValue(int value) {
+            if (this.value == value) return;
+            this.value = value;
+            invalidate();
+        }
+
+        private float x(int at) {
+            float fraction = max == min ? 0f : (at - min) / (float) (max - min);
+            return Math.max(0f, Math.min(1f, fraction)) * getWidth();
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            float dp = getResources().getDisplayMetrics().density;
+            // Mockup 18: the track 80 px below the row top (ROW_H + 4); the band starts 60 px down.
+            float y = 10f * dp;
+            float half = 1.5f * dp;
+            track.set(0, y - half, getWidth(), y + half);
+            paint.setColor(INK_SECONDARY);
+            paint.setAlpha(70);
+            canvas.drawRoundRect(track, half, half, paint);
+            paint.setColor(INK);
+            track.right = x(value);
+            canvas.drawRoundRect(track, half, half, paint);
+            paint.setColor(INK_SECONDARY);
+            for (int tick : ticks) canvas.drawCircle(x(tick), y, half, paint);
+            paint.setColor(INK);
+            canvas.drawCircle(x(value), y, 5.5f * dp, paint);
+            paint.setColor(INK_SECONDARY);
+            float baseline = y + 17f * dp;
+            paint.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText(low, 0, baseline, paint);
+            paint.setTextAlign(Paint.Align.RIGHT);
+            canvas.drawText(high, getWidth(), baseline, paint);
         }
     }
 }

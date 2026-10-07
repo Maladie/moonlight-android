@@ -20,6 +20,9 @@ final class ConsoleAudioSynthesis {
         }
     }
 
+    static final double LIMIT_KNEE = 0.5;
+    static final double LIMIT_CEILING = 0.98;
+
     private ConsoleAudioSynthesis() { }
 
     static short[] renderCue(Cue cue, int sampleRate) {
@@ -122,8 +125,15 @@ final class ConsoleAudioSynthesis {
     }
 
     private static short pcm(double value) {
-        double safe = Math.max(-0.98, Math.min(0.98, value));
-        return (short) Math.round(safe * Short.MAX_VALUE);
+        return (short) Math.round(softLimit(value) * Short.MAX_VALUE);
+    }
+
+    /** Identity below the knee, then a tanh shoulder that never reaches the ceiling. */
+    static double softLimit(double value) {
+        double magnitude = Math.abs(value);
+        if (magnitude <= LIMIT_KNEE) return value;
+        double over = (magnitude - LIMIT_KNEE) / (LIMIT_CEILING - LIMIT_KNEE);
+        return Math.signum(value) * (LIMIT_KNEE + (LIMIT_CEILING - LIMIT_KNEE) * Math.tanh(over));
     }
 
     private static void writeInt(BufferedOutputStream output, int value) throws IOException {

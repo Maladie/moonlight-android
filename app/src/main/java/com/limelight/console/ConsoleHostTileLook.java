@@ -22,14 +22,22 @@ final class ConsoleHostTileLook {
     final boolean dimmed;
     /** String replacing the host status text, or 0 to show that text. */
     final int label;
+    /** The dot is a turning arc: the host has not been polled yet. */
+    final boolean spinner;
 
     private ConsoleHostTileLook(Badge badge, int dot, boolean wakingRing, boolean dimmed,
                                 int label) {
+        this(badge, dot, wakingRing, dimmed, label, false);
+    }
+
+    private ConsoleHostTileLook(Badge badge, int dot, boolean wakingRing, boolean dimmed,
+                                int label, boolean spinner) {
         this.badge = badge;
         this.dot = dot;
         this.wakingRing = wakingRing;
         this.dimmed = dimmed;
         this.label = label;
+        this.spinner = spinner;
     }
 
     /** {@code wakingTimed}: this client started the wake, so its seconds can be counted. */
@@ -57,6 +65,9 @@ final class ConsoleHostTileLook {
             case UNPAIRED:
                 return new ConsoleHostTileLook(Badge.PAIR, AMBER, false, false,
                         R.string.console_host_tile_pair);
+            case CHECKING:
+                return new ConsoleHostTileLook(Badge.NONE, ASLEEP, false, false,
+                        R.string.console_status_checking, true);
             case ONLINE:
             default:
                 return new ConsoleHostTileLook(Badge.NONE, ONLINE, false, false, 0);

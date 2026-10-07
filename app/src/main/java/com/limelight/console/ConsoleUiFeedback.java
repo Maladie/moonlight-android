@@ -67,6 +67,7 @@ final class ConsoleUiFeedback {
     private final Activity activity;
     private final FrameLayout root;
     private final LinearLayout notificationStack;
+    private final FrameLayout.LayoutParams stackParams;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayDeque<View> notifications = new ArrayDeque<>();
     private final ConsoleAudioEngine audio;
@@ -83,13 +84,29 @@ final class ConsoleUiFeedback {
         notificationStack.setOrientation(LinearLayout.VERTICAL);
         notificationStack.setGravity(Gravity.END);
         notificationStack.setClipChildren(false);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+        stackParams = new FrameLayout.LayoutParams(
                 dp(390), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
-        params.setMargins(dp(24), dp(24), dp(30), 0);
-        root.addView(notificationStack, params);
+        stackParams.setMargins(dp(24), dp(24), dp(30), 0);
+        root.addView(notificationStack, stackParams);
         synchronized (INSTANCES) {
             INSTANCES.put(activity, this);
         }
+    }
+
+    /**
+     * Shows {@code activity}'s notifications in {@code host}, the root of a full-screen window
+     * over it (Settings), so they stay visible there; null returns them to the Activity.
+     */
+    static void showNotificationsIn(Activity activity, FrameLayout host) {
+        ConsoleUiFeedback feedback = find(activity);
+        if (feedback != null) feedback.moveStack(host == null ? feedback.root : host);
+    }
+
+    private void moveStack(FrameLayout host) {
+        ViewGroup parent = (ViewGroup) notificationStack.getParent();
+        if (parent == host) return;
+        if (parent != null) parent.removeView(notificationStack);
+        host.addView(notificationStack, stackParams);
     }
 
     static Message makeText(Context context, int textResource, int duration) {
@@ -235,7 +252,8 @@ final class ConsoleUiFeedback {
         dismissModal();
         notifications.clear();
         notificationStack.removeAllViews();
-        if (notificationStack.getParent() == root) root.removeView(notificationStack);
+        ViewGroup parent = (ViewGroup) notificationStack.getParent();
+        if (parent != null) parent.removeView(notificationStack);
         synchronized (INSTANCES) {
             INSTANCES.remove(activity);
         }

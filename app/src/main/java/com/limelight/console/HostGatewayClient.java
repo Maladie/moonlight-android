@@ -19,7 +19,9 @@ import java.util.Locale;
 class HostGatewayClient {
     static final int DEFAULT_PORT = 8785;
     static final int REQUIRED_GAMEPLAY_PERMISSIONS = 0x07001F00;
-    private static final int READ_TIMEOUT_MS = 5_000;
+    /** Also host entry's profile fetch, which falls back to the cached list on a slow Gateway. */
+    static final int READ_TIMEOUT_MS = 5_000;
+    private static final int PROFILES_READ_TIMEOUT_MS = 15_000;
     private static final int MANAGEMENT_TIMEOUT_MS = 15_000;
     private static final long MAX_OBSERVATION_WALL_SKEW_MS = 365L * 24L * 60L * 60L * 1_000L;
     private static final int NETWORK_PROBE_BYTES = 8 * 1024 * 1024;
@@ -1162,8 +1164,13 @@ class HostGatewayClient {
     }
 
     IntegrationProfiles getIntegrationProfiles(GatewayConnection connection) throws IOException {
+        return getIntegrationProfiles(connection, PROFILES_READ_TIMEOUT_MS);
+    }
+
+    IntegrationProfiles getIntegrationProfiles(GatewayConnection connection, int readTimeoutMs)
+            throws IOException {
         JSONObject response = request(connection, "/api/v1/profiles", "GET",
-                null, 15_000);
+                null, readTimeoutMs);
         return parseIntegrationProfiles(response);
     }
 

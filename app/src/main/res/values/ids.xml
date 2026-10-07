@@ -6,4 +6,5 @@
     <item name="playnite_card_views" type="id" />
     <item name="playnite_chip_style" type="id" />
     <item name="console_panel_row_kind" type="id" />
+    <item name="console_panel_step_label" type="id" />
 </resources>

@@ -1,0 +1,4 @@
+<!-- Back key (mockup ic_back): arrow head into a returning hook, 2.6 px stroke at 40 px. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="15dp" android:height="15dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="3.12" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M17,9L8,18L17,27M9,18H27A12,12 0,0 1,27 42H14" />
+</vector>

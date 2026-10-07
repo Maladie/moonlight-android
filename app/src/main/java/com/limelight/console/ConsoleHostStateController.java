@@ -2,8 +2,10 @@ package com.limelight.console;
 
 import com.limelight.nvstream.http.ComputerDetails;
 
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /** Owns transient host presentation state that isn't part of Moonlight discovery. */
 final class ConsoleHostStateController {
@@ -14,6 +16,8 @@ final class ConsoleHostStateController {
     private final Clock clock;
     private final Map<String, Long> waking = new LinkedHashMap<>();
     private final Map<String, ComputerDetails.State> lastConfirmed = new LinkedHashMap<>();
+    /** Hosts a poll has answered for since the start, so their state and pairing are real. */
+    private final Set<String> polled = new HashSet<>();
 
     ConsoleHostStateController(Clock clock) {
         this.clock = clock;
@@ -46,6 +50,7 @@ final class ConsoleHostStateController {
     boolean observe(ComputerDetails host, boolean fresh) {
         if (host == null) return false;
         if (fresh) {
+            if (host.uuid != null) polled.add(host.uuid);
             remember(host.uuid, host.state);
             return host.state == ComputerDetails.State.ONLINE
                     && waking.remove(host.uuid) != null;
@@ -67,6 +72,6 @@ final class ConsoleHostStateController {
 
     ConsoleHostPresentation.State state(ComputerDetails host) {
         return ConsoleHostPresentation.state(host,
-                host != null && isWaking(host.uuid));
+                host != null && isWaking(host.uuid), host != null && polled.contains(host.uuid));
     }
 }

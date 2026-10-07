@@ -6,7 +6,6 @@
     <string name="discord_show_all_servers">Show all servers · %1$d</string>
     <string name="discord_show_fewer_servers">Show less</string>
     <string name="discord_community_title">Community</string>
-    <string name="discord_community_details">Friends and voice places available now.</string>
     <string name="discord_community_together">Together</string>
     <string name="discord_community_friends">Friends</string>
     <string name="discord_community_servers">Servers</string>
@@ -19,12 +18,10 @@
     <string name="discord_community_online">Online</string>
     <string name="discord_community_offline">Offline</string>
     <string name="discord_community_connected">Connected</string>
-    <string name="discord_community_voice_channels">Voice channels</string>
     <string name="discord_community_people">%1$d here</string>
     <string name="discord_community_selected">SELECTED</string>
     <string name="discord_community_open">Open</string>
     <string name="discord_community_back">Back</string>
-    <string name="discord_community_footer">✕ Open   ○ Close</string>
     <string name="discord_community_join">Join</string>
     <string name="discord_community_profile">Profile</string>
     <string name="discord_social_show_offline">Show offline · %1$d</string>
@@ -37,8 +34,46 @@
     <string name="discord_community_voice_updated">Voice settings updated</string>
     <string name="discord_community_voice_failed">Unable to update voice: %1$s</string>
     <string name="discord_community_updating_voice">Updating voice…</string>
-    <string name="discord_community_integration">Integration: %1$s</string>
-    <string name="discord_community_auto_connect">Auto-connect: %1$s</string>
-    <string name="discord_community_auto_join">Auto-join last: %1$s</string>
+    <string name="discord_community_integration">Integration</string>
+    <string name="discord_community_auto_connect">Connect automatically</string>
+    <string name="discord_community_auto_join">Join the last channel</string>
     <string name="discord_community_host_status">Bridge: %1$s · RPC: %2$s · Account: %3$s</string>
+    <string name="discord_community_voice_channel">Voice channel</string>
+    <string name="discord_community_host_section">Host</string>
+    <string name="discord_community_device_section">This device</string>
+    <string name="discord_community_audio_devices">Audio devices</string>
+    <string name="discord_community_account">Account and notifications</string>
+    <string name="discord_community_connect_title">Connect account</string>
+    <string name="discord_community_connect_details">Show friends and messages in MoonWaker</string>
+    <string name="discord_community_host_state">Host status</string>
+    <string name="discord_community_disconnected">Discord is not connected on this device</string>
+    <string name="discord_community_windows_volume">Windows volume</string>
+    <string name="discord_community_volume_value" translatable="false">%1$d %%</string>
+    <string name="discord_community_legend_feed">"OK Open  ·  ► Details"</string>
+    <string name="discord_community_legend_detail">"OK Select  ·  ◄ List"</string>
+    <string name="discord_community_legend_options">"OK Toggle  ·  Back List"</string>
+    <string name="discord_community_legend_audio" formatted="false">"◄ ► −/+ 5 %  ·  Back Options"</string>
+    <string name="discord_community_legend_social">"OK Select  ·  Back Options"</string>
+    <string name="discord_legend_key_bumpers" translatable="false">L1/R1</string>
+    <string name="discord_legend_key_ok" translatable="false">OK</string>
+    <string name="discord_legend_key_back">Back</string>
+    <string name="discord_legend_key_l2" translatable="false">L2</string>
+    <string name="discord_legend_key_r2" translatable="false">R2</string>
+    <string name="discord_legend_key_r3" translatable="false">R3</string>
+    <string name="discord_legend_key_right_stick">Right stick</string>
+    <string name="discord_legend_tabs">Tabs</string>
+    <string name="discord_legend_close">Close</string>
+    <string name="discord_legend_cursor">Cursor</string>
+    <string name="discord_legend_scroll">Scroll chat</string>
+    <string name="discord_legend_shift" translatable="false">Shift/Caps</string>
+    <string name="discord_legend_delete">Delete</string>
+    <string name="discord_legend_open_content">Open content</string>
+    <string name="discord_dm_private">Direct message</string>
+    <string name="discord_community_legend_tabs">"▼ List  ·  ◄ ► Tabs"</string>
+    <string name="discord_community_audio_subtitle">Devices on host %1$s</string>
+    <string name="discord_community_online_count">Online · %1$d</string>
+    <string name="discord_community_offline_count">Offline · %1$d</string>
+    <string name="discord_community_dm_disclosure">Messages may also appear in Discord</string>
+    <string name="discord_community_host_not_ready">Discord is not ready on the host. Check that Discord Bridge and the Discord app are running.</string>
+    <string name="discord_community_audio_failed">Could not load audio devices from the host.</string>
 </resources>

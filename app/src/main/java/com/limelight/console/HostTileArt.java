@@ -34,16 +34,26 @@ final class HostTileArt {
         return Color.HSVToColor(new float[]{hue(id), .6f, 1f});
     }
 
-    static synchronized Bitmap bitmap(String id) {
-        Bitmap cached = CACHE.get(id);
+    static Bitmap bitmap(String id) {
+        return cached(id, true);
+    }
+
+    /** The same recipe without the dark veil: the mockup's profile avatar ("blob_avatar"). */
+    static Bitmap avatar(String id) {
+        return cached(id, false);
+    }
+
+    private static synchronized Bitmap cached(String id, boolean veiled) {
+        String key = veiled + ":" + id;
+        Bitmap cached = CACHE.get(key);
         if (cached == null) {
-            cached = render(id);
-            CACHE.put(id, cached);
+            cached = render(id, veiled);
+            CACHE.put(key, cached);
         }
         return cached;
     }
 
-    private static Bitmap render(String id) {
+    private static Bitmap render(String id, boolean veiled) {
         int n = SIZE;
         float hue = hue(id);
         Random random = new Random(id == null ? 0 : id.hashCode());
@@ -101,7 +111,7 @@ final class HostTileArt {
 
         bitmap.getPixels(pixels, 0, n, 0, 0, n, n);
         ConsoleMenuBackdrop.blur(pixels, n, n, 1, 2);
-        for (int p = 0; p < pixels.length; p++) {
+        for (int p = 0; veiled && p < pixels.length; p++) {
             int c = pixels[p];
             pixels[p] = Color.rgb(veil(Color.red(c), Color.red(VEIL)),
                     veil(Color.green(c), Color.green(VEIL)), veil(Color.blue(c), Color.blue(VEIL)));

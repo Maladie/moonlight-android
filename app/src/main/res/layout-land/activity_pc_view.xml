@@ -12,8 +12,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_alignParentTop="true"
-        android:layout_toRightOf="@+id/settingsButton"
-        android:layout_toEndOf="@+id/settingsButton"
+        android:layout_toRightOf="@+id/overridesToggleButton"
+        android:layout_toEndOf="@+id/overridesToggleButton"
         android:layout_alignParentRight="true"
         android:layout_alignParentEnd="true" />
 
@@ -22,8 +22,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_below="@+id/quickLaunchSection"
-        android:layout_toRightOf="@+id/settingsButton"
-        android:layout_toEndOf="@+id/settingsButton"
+        android:layout_toRightOf="@+id/overridesToggleButton"
+        android:layout_toEndOf="@+id/overridesToggleButton"
         android:layout_alignParentRight="true"
         android:layout_alignParentEnd="true" />
 
@@ -34,8 +34,8 @@
         android:gravity="center"
         android:layout_alignParentBottom="true"
         android:layout_below="@+id/overridesSection"
-        android:layout_toRightOf="@+id/settingsButton"
-        android:layout_toEndOf="@+id/settingsButton">
+        android:layout_toRightOf="@+id/overridesToggleButton"
+        android:layout_toEndOf="@+id/overridesToggleButton">
 
         <RelativeLayout
             android:id="@+id/no_pc_found_layout"
@@ -64,19 +64,6 @@
     </RelativeLayout>
 
     <ImageButton
-        android:id="@+id/settingsButton"
-        android:layout_width="70dp"
-        android:layout_height="65dp"
-        android:cropToPadding="false"
-        android:scaleType="fitXY"
-        android:nextFocusForward="@id/overridesToggleButton"
-        android:layout_alignParentStart="true"
-        android:layout_alignParentLeft="true"
-        android:layout_alignParentTop="true"
-        android:src="@drawable/ic_settings"
-        style="?android:attr/borderlessButtonStyle"/>
-
-    <ImageButton
         android:id="@+id/overridesToggleButton"
         android:layout_width="70dp"
         android:layout_height="65dp"
@@ -85,7 +72,7 @@
         android:nextFocusForward="@id/autoResumeToggleButton"
         android:layout_alignParentStart="true"
         android:layout_alignParentLeft="true"
-        android:layout_below="@id/settingsButton"
+        android:layout_alignParentTop="true"
         android:src="@drawable/ic_overrides_enabled"
         android:contentDescription="Toggle Overrides Section"
         style="?android:attr/borderlessButtonStyle"/>
