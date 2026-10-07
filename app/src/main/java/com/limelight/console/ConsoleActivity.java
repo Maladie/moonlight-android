@@ -75,7 +75,6 @@ import com.limelight.AppView;
 import com.limelight.BuildConfig;
 import com.limelight.Game;
 import com.limelight.LimeLog;
-import com.limelight.PcView;
 import com.limelight.R;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.audio.UsbMicrophoneService;
@@ -99,10 +98,8 @@ import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.wol.WakeOnLanSender;
 import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.AppPreferences;
-import com.limelight.preferences.AppStreamSettings;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
-import com.limelight.preferences.StreamSettings;
 import com.limelight.stream.BackgroundStreamPreferences;
 import com.limelight.stream.BackgroundStreamService;
 import com.limelight.stream.RetainedStreamSessionCoordinator;
@@ -637,6 +634,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private ConsolePanel consolePanel;
     private ConsoleMenuBackdrop menuBackdrop;
     private ConsoleSettingsScreen settingsScreen;
+    private ConsoleStreamSettings streamSettings;
     private FrameLayout communityPanelHost;
     private android.app.Dialog sideDialog;
     private final CommunityDictationSession communityDictationSession = new CommunityDictationSession();
@@ -2032,7 +2030,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     if (host != null) showHostSelectionOptions(host);
                 }, this::showDiscordPanel, this::showUsbMicrophonePanel,
                 this::openLibrarySearch,
-                () -> showProfileSelection(hosts.get(selectedHostUuid)), this::showSettings);
+                () -> showProfileSelection(hosts.get(selectedHostUuid)), () -> showSettings(0));
         homeContent.addView(topBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(ConsoleTopBar.HEIGHT_DP)));
 
@@ -3977,6 +3975,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         libraryFiltersPanel = new LibraryFiltersPanel(this, consolePanel, hostGatewayStore,
                 libraryFiltersHost());
         settingsScreen = new ConsoleSettingsScreen(this, reducedMotion, isStreamHome());
+        streamSettings = new ConsoleStreamSettings(this, settingsScreen);
         modalLayer.addView(sidePanelScroll, new FrameLayout.LayoutParams(dp(ConsolePanel.WIDTH_DP),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
         // Community is a full-screen, bounded composition with its own feed/detail scrollers.
@@ -5895,11 +5894,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         TextView settings = consolePanel.action(getString(R.string.quick_launch_settings));
         settings.setOnClickListener(view -> {
             hideSidePanel();
-            Intent intent = new Intent(this, AppStreamSettings.class);
-            intent.putExtra(AppStreamSettings.EXTRA_APP_KEY, item.key);
-            intent.putExtra(AppStreamSettings.EXTRA_APP_NAME,
-                    "Quick Launch: " + item.getDisplayNameLong());
-            startActivity(intent);
+            new ConsoleAppStreamSettings(this, settingsScreen).open(getString(
+                    R.string.console_quick_launch_eyebrow), item.key, item.getDisplayNameLong(),
+                    false, null);
         });
         TextView rename = consolePanel.action(getString(R.string.quick_launch_rename));
         rename.setOnClickListener(view -> renameQuickLaunchItem(item));
@@ -6207,8 +6204,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         }
         TextView settings = consolePanel.action(getString(R.string.console_usb_microphone_settings));
-        settings.setOnClickListener(view ->
-                startActivity(new Intent(this, StreamSettings.class)));
+        settings.setOnClickListener(view -> {
+            showSettings(ConsoleStreamSettings.SETTINGS_CATEGORY_STREAMING);
+            streamSettings.open(ConsoleStreamSettings.CATEGORY_AUDIO);
+        });
         actions.add(settings);
         showSidePanel(getString(R.string.console_action_usb_microphone),
                 getString(R.string.console_usb_microphone_panel_title),
@@ -10700,10 +10699,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             break;
                         case STREAM_SETTINGS:
                             hideSidePanel();
-                            startActivity(new Intent(this, AppStreamSettings.class)
-                                    .putExtra(AppStreamSettings.EXTRA_APP_KEY, streamSettingsKey)
-                                    .putExtra(AppStreamSettings.EXTRA_APP_NAME, item.game.name)
-                                    .putExtra(AppStreamSettings.EXTRA_INHERIT_APP_SETTINGS, true));
+                            new ConsoleAppStreamSettings(this, settingsScreen).open(
+                                    getString(R.string.console_game_card), streamSettingsKey,
+                                    item.game.name, true, item.sunshineAppId == null ? null
+                                            : host.uuid + ":" + item.sunshineAppId);
                             break;
                         case OPTIMIZE_STREAMING:
                             NvApp target = PlayniteTargetResolver.findById(
@@ -11485,11 +11484,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 anotherAppRunning, quickLaunch, isHidden, hasArtwork, shortcutsSupported,
                 false, () -> {
                     hideSidePanel();
-                    Intent intent = new Intent(this, AppStreamSettings.class);
-                    intent.putExtra(AppStreamSettings.EXTRA_APP_KEY,
-                            host.uuid + ":" + app.getAppId());
-                    intent.putExtra(AppStreamSettings.EXTRA_APP_NAME, app.getAppName());
-                    startActivity(intent);
+                    new ConsoleAppStreamSettings(this, settingsScreen).open(
+                            getString(R.string.console_apps_eyebrow),
+                            host.uuid + ":" + app.getAppId(), app.getAppName(), false, null);
                 });
         if (online && paired) {
             resolved.add(ConsoleAction.enabled("app.streaming_autopilot",
@@ -13936,7 +13933,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private void showSettings() {
+    private void showSettings(int category) {
         settingsScreen.show(Arrays.asList(
                 new ConsoleSettingsScreen.Category(
                         getString(R.string.console_settings_appearance), this::appearanceSettings),
@@ -13947,8 +13944,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         this::streamingSettings),
                 new ConsoleSettingsScreen.Category(getString(R.string.console_settings_hosts),
                         this::hostSettings),
+                new ConsoleSettingsScreen.Category(getString(R.string.console_settings_discord),
+                        streamSettings::discordRows),
                 new ConsoleSettingsScreen.Category(getString(R.string.console_settings_about),
-                        this::aboutSettings)));
+                        this::aboutSettings)), category);
     }
 
     private View[] appearanceSettings(ConsolePanel panel) {
@@ -14025,7 +14024,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private View[] streamingSettings(ConsolePanel panel) {
         TextView settings = panel.navigation(getString(R.string.console_streaming_settings));
-        settings.setOnClickListener(v -> startActivity(new Intent(this, StreamSettings.class)));
+        settings.setOnClickListener(v -> streamSettings.open(0));
         TextView autopilot = panel.navigation(getString(R.string.console_streaming_autopilot_global));
         autopilot.setOnClickListener(v -> showStreamingAutopilotPanel());
         TextView overrides = panel.navigation(getString(R.string.console_options_overrides));
@@ -14469,6 +14468,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @SuppressWarnings("deprecation")
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (streamSettings.onActivityResult(requestCode, resultCode, data)) return;
         if (requestCode != REQUEST_COMMUNITY_DICTATION || !communityDictationSession.isActive()) return;
         long recipientId = communityDictationSession.recipientId();
         long directMessageGeneration = communityDictationSession.directMessageGeneration();

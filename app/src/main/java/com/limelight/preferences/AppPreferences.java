@@ -239,7 +239,7 @@ public class AppPreferences {
         return applyOverrides ? applyPreferenceOverrides(context, config) : config;
     }
 
-    private static PreferenceConfiguration applyPreferenceOverrides(Context context, PreferenceConfiguration config) {
+    public static PreferenceConfiguration applyPreferenceOverrides(Context context, PreferenceConfiguration config) {
         // Apply global overrides only if overrides are enabled (highest priority)
         // This override applies to all streams regardless of other settings
         SharedPreferences defaultPrefs = PreferenceManager.getDefaultSharedPreferences(context);

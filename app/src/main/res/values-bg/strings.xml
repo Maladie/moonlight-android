@@ -31,8 +31,6 @@
     <string name="yes">Да</string>
     <string name="applist_menu_hide_app">Скриване на приложението</string>
     <string name="applist_refresh_title">Списък с приложения</string>
-    <string name="summary_resolution_list">Увеличете, за да подобрите яснотата на изображението. Намалете за по-добра производителност на устройства от по-нисък клас и по-бавни мрежи.</string>
-    <string name="title_fps_list">Кадрова честота на видео</string>
     <string name="scut_deleted_pc">Компютърът е изтрит</string>
     <string name="scut_not_paired">Компютърът не е сдвоен</string>
     <string name="scut_pc_not_found">Компютърът не е намерен</string>
@@ -80,8 +78,6 @@
     <string name="audioconf_51surround">5.1 съраунд звук</string>
     <string name="videoformat_auto">Автоматично</string>
     <string name="videoformat_hevcalways">Винаги използване на HEVC (може да крашне)</string>
-    <string name="summary_frame_pacing">Посочете как да се балансира забавянето и плавността на видеото</string>
-    <string name="title_frame_pacing">Стъпка на видео кадрите</string>
     <string name="pacing_balanced">Балансирано</string>
     <string name="check_ports_msg">Проверете вашата защитна стена и правилата за препращане на портове за порт(ове):</string>
     <string name="conn_establishing_title">Установяване на връзка</string>
@@ -119,24 +115,9 @@
     <string name="applist_quit_confirmation">Сигурни ли сте, че искате да затворите работещото приложение\? Всички незапазени данни ще бъдат загубени.</string>
     <string name="title_add_pc">Ръчно добавяне на компютър</string>
     <string name="addpc_fail">Неуспешна връзка с посочения компютър. Уверете се, че необходимите портове са разрешени през защитната стена.</string>
-    <string name="category_basic_settings">Основни настройки</string>
     <string name="addpc_success">Успешно добавен компютър</string>
     <string name="addpc_enter_ip">Трябва да въведете IP адрес</string>
     <string name="addpc_wrong_sitelocal">Този адрес не изглежда правилен. Трябва да използвате публичния IP адрес на вашия рутер за стриймване през интернет.</string>
-    <string name="title_resolution_list">Видео резолюция</string>
-    <string name="summary_fps_list">Увеличете за по-плавен видео поток. Намалете за по-добра производителност на устройства от по-нисък клас.</string>
-    <string name="title_seekbar_bitrate">Видео битрейт</string>
-    <string name="suffix_seekbar_bitrate_mbps">Mbps</string>
-    <string name="title_audio_config_list">Конфигурация на съраунд звук</string>
-    <string name="summary_audio_config_list">Активиране на 5.1 или 7.1 съраунд звук за системи за домашно кино</string>
-    <string name="summary_seekbar_bitrate">Увеличете за по-добро качество на изображението. Намалете, за да подобрите производителността при по-бавни връзки.</string>
     <string name="resolution_prefix_native_portrait">(Портрет)</string>
-    <string name="title_checkbox_enable_audiofx">Активиране на поддръжката на системния еквалайзер</string>
-    <string name="title_checkbox_stretch_video">Разтегляне на видеото на цял екран</string>
     <string name="resolution_prefix_native_landscape">(Пейзаж)</string>
-    <string name="category_audio_settings">Аудио настройки</string>
-    <string name="category_input_settings">Настройки за въвеждане</string>
-    <string name="title_checkbox_touchscreen_trackpad">Използване на сензорния екран като тракпад</string>
-    <string name="title_checkbox_multi_controller">Автоматично откриване на наличен контролер</string>
-    <string name="summary_checkbox_multi_controller">Премахването на отметката от тази опция принуждава контролер винаги да присъства</string>
 </resources>

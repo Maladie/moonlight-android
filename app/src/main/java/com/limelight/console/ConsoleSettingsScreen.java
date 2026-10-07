@@ -7,9 +7,11 @@ import android.graphics.PixelFormat;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.text.TextUtils;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
@@ -19,27 +21,60 @@ import android.widget.TextView;
 
 import com.limelight.R;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 import java.util.function.IntConsumer;
 
 /**
  * Full-screen settings (docs/MoonWaker/UX_MENU_PL.md section 3.2): categories on the left,
  * the selected category's {@link ConsolePanel} rows on the right. The caller owns what the rows
- * do; this class owns layout, category selection, choice sub-pages and D-pad/Back movement.
+ * do; this class owns layout, category selection, nested screens (Settings › Streaming ›
+ * Stream), sub-pages, the legend and D-pad/Back movement.
  */
 final class ConsoleSettingsScreen {
     static final int CATEGORY_WIDTH_DP = 240;
-    static final int SELECTION_BAR_DP = 3;
+    /** Mockup 18: a 4 x 36 px accent bar, text 26 px after its left edge. */
+    static final int SELECTION_BAR_DP = 2;
+    static final int SELECTION_GAP_DP = 11;
+    /** Mockup 18: card rows 32 px radius, category rows 20 px. */
+    static final int ROW_RADIUS_DP = 16;
+    static final int CATEGORY_RADIUS_DP = 10;
+    private static final String LEGEND_SEPARATOR = "  ·  ";
 
     static final class Category {
         final String title;
+        final CharSequence details;
         final Function<ConsolePanel, View[]> rows;
 
         Category(String title, Function<ConsolePanel, View[]> rows) {
+            this(title, "", rows);
+        }
+
+        Category(String title, CharSequence details, Function<ConsolePanel, View[]> rows) {
             this.title = title;
+            this.details = details;
             this.rows = rows;
+        }
+    }
+
+    /** One screen of categories; nested screens keep their parents for Back. */
+    private static final class Level {
+        final String crumb;
+        final String title;
+        final String eyebrow;
+        final List<Category> categories;
+        int selected;
+        int focusedRow = -1;
+
+        Level(String crumb, String title, String eyebrow, List<Category> categories) {
+            this.crumb = crumb;
+            this.title = title;
+            this.eyebrow = eyebrow;
+            this.categories = categories;
         }
     }
 
@@ -49,6 +84,8 @@ final class ConsoleSettingsScreen {
     private final ConsoleMenuBackdrop backdrop;
     private final LinearLayout columns;
     private final LinearLayout categoryColumn;
+    private final TextView crumb;
+    private final TextView title;
     private final LockableScrollView contentScroll;
     private final LinearLayout content;
     private final ConsolePanel panel;
@@ -56,10 +93,13 @@ final class ConsoleSettingsScreen {
     /** Opaque base tone under the blurred Home until its copy is ready. */
     private final int background;
     private final List<TextView> categoryRows = new ArrayList<>();
-    private List<Category> categories = new ArrayList<>();
+    private final Deque<Level> parents = new ArrayDeque<>();
+    private Level level = new Level("", "", "", new ArrayList<>());
     private int selected = -1;
-    /** Content row that opened the visible choice page, or -1 when the category is shown. */
-    private int choiceOrigin = -1;
+    /** Content child that opened the visible sub-page, or -1 when the category is shown. */
+    private int pageOrigin = -1;
+    /** Counts opened sub-pages, so a choice can tell whether it opened another one. */
+    private int pages;
     private boolean reducedMotion;
 
     ConsoleSettingsScreen(Activity activity, boolean reducedMotion, boolean overStream) {
@@ -81,12 +121,20 @@ final class ConsoleSettingsScreen {
 
         categoryColumn = new LinearLayout(activity);
         categoryColumn.setOrientation(LinearLayout.VERTICAL);
-        categoryColumn.setPadding(0, dp(25), dp(24), 0);
-        TextView title = new TextView(activity);
-        title.setText(R.string.console_settings_title);
+        Typeface medium = Typeface.create("sans-serif-medium", Typeface.NORMAL);
+        // Mockup 18 breadcrumb: 24 px tracked caps at baseline 84, above the 44 px title.
+        crumb = new TextView(activity);
+        crumb.setTextSize(ConsolePanel.CAPTION_SP);
+        crumb.setTextColor(ConsolePanel.HEADER);
+        crumb.setTypeface(medium);
+        crumb.setLetterSpacing(.08f);
+        crumb.setIncludeFontPadding(false);
+        crumb.setPadding(dp(ConsolePanel.ROW_INSET_DP), 0, 0, dp(9));
+        categoryColumn.addView(crumb);
+        title = new TextView(activity);
         title.setTextSize(ConsolePanel.TITLE_SP);
         title.setTextColor(ConsolePanel.TEXT);
-        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        title.setTypeface(medium);
         title.setIncludeFontPadding(false);
         title.setPadding(dp(ConsolePanel.ROW_INSET_DP), 0, 0, dp(18));
         categoryColumn.addView(title);
@@ -104,14 +152,19 @@ final class ConsoleSettingsScreen {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         columns.addView(contentScroll, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        panel = new ConsolePanel(activity, contentScroll, backdrop, reducedMotion);
+        panel = new ConsolePanel(activity, contentScroll, backdrop, reducedMotion, ROW_RADIUS_DP);
         panel.floatOnGlass(content);
+        root.getViewTreeObserver().addOnGlobalFocusChangeListener(
+                (oldFocus, newFocus) -> updateLegend());
 
         dialog = new Dialog(activity);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setContentView(root);
         dialog.setCanceledOnTouchOutside(false);
-        dialog.setOnDismissListener(owner -> backdrop.release());
+        dialog.setOnDismissListener(owner -> {
+            backdrop.release();
+            ConsoleUiFeedback.showNotificationsIn(activity, null);
+        });
         dialog.setOnKeyListener((owner, keyCode, event) -> {
             if (keyCode != KeyEvent.KEYCODE_BACK) return false;
             if (event.getAction() == KeyEvent.ACTION_UP) back();
@@ -157,14 +210,41 @@ final class ConsoleSettingsScreen {
         panel.setReducedMotion(reducedMotion);
     }
 
-    /** Opens with the first category selected and focused. */
-    void show(List<Category> categories) {
-        this.categories = categories;
+    /** Opens Settings with {@code category} selected and focused. */
+    void show(List<Category> categories, int category) {
+        String settings = activity.getString(R.string.console_settings_title);
+        show("", settings, settings, categories, category);
+    }
+
+    /** Opens a top-level screen (e.g. a game's overrides); Back from it closes the window. */
+    void show(String crumb, String title, String eyebrow, List<Category> categories,
+              int category) {
+        parents.clear();
+        enter(new Level(crumb, title, eyebrow, categories), category, -1);
+    }
+
+    /** Opens a nested screen; Back from its categories returns to the focused row here. */
+    void push(String crumb, String title, String eyebrow, List<Category> categories,
+              int category) {
+        level.focusedRow = focusedContentChild();
+        parents.push(level);
+        pageOrigin = -1;
+        enter(new Level(crumb, title, eyebrow, categories), category, -1);
+    }
+
+    private void enter(Level next, int category, int focusRow) {
+        level = next;
+        crumb.setText(next.crumb.toUpperCase(Locale.ROOT));
+        crumb.setVisibility(next.crumb.isEmpty() ? View.GONE : View.VISIBLE);
+        // The crumb sits where the title's top padding was (baseline 84 px, title 146 px).
+        categoryColumn.setPadding(0, dp(next.crumb.isEmpty() ? 25 : 5), dp(24), 0);
+        title.setText(next.title);
         for (TextView row : categoryRows) categoryColumn.removeView(row);
         categoryRows.clear();
-        for (int index = 0; index < categories.size(); index++) {
+        for (int index = 0; index < next.categories.size(); index++) {
             int position = index;
-            TextView row = panel.action(categories.get(index).title);
+            TextView row = panel.action(next.categories.get(index).title);
+            row.setBackground(panel.focusFill(CATEGORY_RADIUS_DP));
             View.OnFocusChangeListener styled = row.getOnFocusChangeListener();
             row.setOnFocusChangeListener((view, focused) -> {
                 styled.onFocusChange(view, focused);
@@ -177,17 +257,36 @@ final class ConsoleSettingsScreen {
         }
         chainVertically(new ArrayList<>(categoryRows));
         selected = -1;
-        select(0);
+        pageOrigin = -1;
+        select(Math.max(0, Math.min(category, next.categories.size() - 1)));
         if (!dialog.isShowing()) {
             backdrop.capture(activity.getWindow(), reducedMotion);
             dialog.show();
             makeOpaque();
+            // The opaque window would hide notifications drawn in the Activity below.
+            ConsoleUiFeedback.showNotificationsIn(activity, root);
             // Only the lists fade in; the background is opaque from the first frame and the
             // blurred Home fades in over it once its copy is ready.
             columns.setAlpha(reducedMotion ? 1f : 0f);
             if (!reducedMotion) columns.animate().alpha(1f).setDuration(150L).start();
         }
-        if (!categoryRows.isEmpty()) categoryRows.get(0).post(categoryRows.get(0)::requestFocus);
+        View target = null;
+        if (focusRow >= 0 && focusRow < content.getChildCount()) target = content.getChildAt(focusRow);
+        // A single category (a game's overrides) has nothing to pick on the left.
+        else if (next.categories.size() == 1 && !contentRows().isEmpty()) target = contentRows().get(0);
+        else if (!categoryRows.isEmpty()) target = categoryRows.get(selected);
+        if (target != null) target.post(target::requestFocus);
+        updateLegend();
+    }
+
+    /** Re-renders the shown category (e.g. after a dependency changed) keeping the focus. */
+    void refresh() {
+        if (pageOrigin >= 0 || selected < 0) return;
+        int focused = focusedContentChild();
+        int scrollY = contentScroll.getScrollY();
+        renderCategory();
+        contentScroll.scrollTo(0, scrollY);
+        if (focused >= 0) focusContentChild(focused);
     }
 
     /**
@@ -196,29 +295,58 @@ final class ConsoleSettingsScreen {
      */
     void showChoices(String title, String details, CharSequence[] labels, int current,
                      IntConsumer onChosen) {
-        choiceOrigin = Math.max(0, focusedContentIndex());
-        List<View> rows = new ArrayList<>();
+        View[] rows = new View[labels.length];
         for (int index = 0; index < labels.length; index++) {
             int position = index;
-            TextView row = panel.action(labels[index]);
-            mark(row, index == current);
+            TextView row = choiceRow(labels[index], index == current);
             row.setOnClickListener(view -> {
+                int shown = pages;
                 onChosen.accept(position);
-                closeChoices();
+                // A choice may open a further page (e.g. "Custom…"); otherwise go back.
+                if (shown == pages) closePage();
             });
-            rows.add(row);
+            rows[index] = row;
         }
-        panel.render(content, categories.get(selected).title, title, details, false,
-                rows.toArray(new View[0]));
-        wireContent();
-        View first = rows.isEmpty() ? null : rows.get(Math.max(0, current));
-        if (first != null) first.post(first::requestFocus);
+        showPage(title, details, rows, Math.max(0, current));
     }
 
-    private void select(int index) {
-        if (index == selected || index < 0 || index >= categories.size()) return;
+    /** The row factory of the content column, for sub-pages built by callers. */
+    ConsolePanel panel() {
+        return panel;
+    }
+
+    /** A choice-page row: the accent bar and accent text when {@code chosen}. */
+    TextView choiceRow(CharSequence label, boolean chosen) {
+        TextView row = panel.action(label);
+        mark(row, chosen);
+        return row;
+    }
+
+    /** A sub-page of the current category (choices, a numeric entry); Back returns. */
+    void showPage(String title, CharSequence details, View[] rows, int focus) {
+        pages++;
+        if (pageOrigin < 0) pageOrigin = Math.max(0, focusedContentChild());
+        panel.render(content, level.categories.get(selected).title, title, details, false, rows);
+        contentScroll.scrollTo(0, 0);
+        wireContent();
+        View first = rows.length == 0 ? null : rows[Math.min(focus, rows.length - 1)];
+        if (first != null) first.post(first::requestFocus);
+        updateLegend();
+    }
+
+    /** Leaves a sub-page for its category, focusing the row that opened it. */
+    void closePage() {
+        int origin = pageOrigin;
+        pageOrigin = -1;
+        renderCategory();
+        focusContentChild(origin);
+    }
+
+    void select(int index) {
+        if (index == selected || index < 0 || index >= level.categories.size()) return;
         selected = index;
-        choiceOrigin = -1;
+        level.selected = index;
+        pageOrigin = -1;
         for (int row = 0; row < categoryRows.size(); row++) {
             mark(categoryRows.get(row), row == index);
         }
@@ -226,29 +354,22 @@ final class ConsoleSettingsScreen {
     }
 
     private void renderCategory() {
-        Category category = categories.get(selected);
-        panel.render(content, activity.getString(R.string.console_settings_title), category.title,
-                "", false, category.rows.apply(panel));
+        Category category = level.categories.get(selected);
+        panel.render(content, level.eyebrow, category.title, category.details, false,
+                category.rows.apply(panel));
         contentScroll.scrollTo(0, 0);
         wireContent();
-    }
-
-    private void closeChoices() {
-        int origin = choiceOrigin;
-        choiceOrigin = -1;
-        renderCategory();
-        List<View> rows = contentRows();
-        if (rows.isEmpty()) return;
-        View target = rows.get(Math.min(origin, rows.size() - 1));
-        target.post(target::requestFocus);
+        updateLegend();
     }
 
     private void back() {
-        if (choiceOrigin >= 0) {
-            closeChoices();
-        } else if (focusedContentIndex() >= 0) {
-            TextView category = categoryRows.get(selected);
-            category.requestFocus();
+        if (pageOrigin >= 0) {
+            closePage();
+        } else if (focusedContentChild() >= 0 && level.categories.size() > 1) {
+            categoryRows.get(selected).requestFocus();
+        } else if (!parents.isEmpty()) {
+            Level parent = parents.pop();
+            enter(parent, parent.selected, parent.focusedRow);
         } else {
             columns.animate().cancel();
             columns.setAlpha(1f);
@@ -259,6 +380,20 @@ final class ConsoleSettingsScreen {
     private void focusContent() {
         List<View> rows = contentRows();
         if (!rows.isEmpty()) rows.get(0).requestFocus();
+    }
+
+    private void focusContentChild(int index) {
+        List<View> rows = contentRows();
+        if (rows.isEmpty()) return;
+        View target = rows.get(rows.size() - 1);
+        for (View row : rows) {
+            if (content.indexOfChild(row) >= index) {
+                target = row;
+                break;
+            }
+        }
+        View focus = target;
+        focus.post(focus::requestFocus);
     }
 
     /** Left from any content row returns to the selected category; right from it enters. */
@@ -282,9 +417,53 @@ final class ConsoleSettingsScreen {
         return rows;
     }
 
-    private int focusedContentIndex() {
+    /** Index of the content child holding the focus, or -1 outside the content column. */
+    private int focusedContentChild() {
         View focused = dialog.getCurrentFocus();
-        return focused == null ? -1 : contentRows().indexOf(focused);
+        while (focused != null) {
+            ViewParent parent = focused.getParent();
+            if (parent == content) return content.indexOfChild(focused);
+            focused = parent instanceof View ? (View) parent : null;
+        }
+        return -1;
+    }
+
+    /** Mockup 18 legend: what OK and the arrows do on the focused row, and where Back goes. */
+    private void updateLegend() {
+        if (selected < 0) return;
+        List<String> parts = new ArrayList<>();
+        int child = focusedContentChild();
+        String back;
+        if (pageOrigin >= 0) {
+            back = activity.getString(R.string.console_legend_back_unchanged);
+        } else if (child >= 0 && level.categories.size() > 1) {
+            back = activity.getString(R.string.console_legend_back_categories);
+        } else if (!parents.isEmpty()) {
+            Level parent = parents.peek();
+            back = activity.getString(R.string.console_legend_back_to,
+                    parent.categories.get(parent.selected).title);
+        } else {
+            back = activity.getString(R.string.console_legend_back_close);
+        }
+        View row = child >= 0 ? content.getChildAt(child) : null;
+        if (row != null && ConsolePanel.isStepper(row)) {
+            parts.add(activity.getString(R.string.console_legend_step, ConsolePanel.stepLabel(row)));
+            parts.add(activity.getString(R.string.console_legend_step_faster));
+        } else if (row != null && ConsolePanel.isToggle(row)) {
+            parts.add(activity.getString(R.string.console_legend_ok_toggle));
+        } else {
+            parts.add(activity.getString(R.string.console_legend_ok_select));
+            if (row != null && hasStepper()) parts.add(activity.getString(R.string.console_legend_change));
+        }
+        parts.add(back);
+        panel.setLegend(TextUtils.join(LEGEND_SEPARATOR, parts));
+    }
+
+    private boolean hasStepper() {
+        for (int index = 0; index < content.getChildCount(); index++) {
+            if (ConsolePanel.isStepper(content.getChildAt(index))) return true;
+        }
+        return false;
     }
 
     private static void chainVertically(List<View> rows) {
@@ -296,15 +475,16 @@ final class ConsoleSettingsScreen {
     }
 
     /**
-     * Selected entries use the accent text colour and a 3 dp accent bar in the icon column, so
+     * Selected entries use the accent text colour and the accent bar in the icon column, so
      * the focus fill keeps its inner padding on both sides.
      */
     private void mark(TextView row, boolean selected) {
         GradientDrawable bar = new GradientDrawable();
         bar.setColor(selected ? accent : Color.TRANSPARENT);
+        bar.setCornerRadius(dp(1));
         bar.setSize(dp(SELECTION_BAR_DP), dp(18));
         row.setCompoundDrawablesRelativeWithIntrinsicBounds(bar, null, null, null);
-        row.setCompoundDrawablePadding(dp(10));
+        row.setCompoundDrawablePadding(dp(SELECTION_GAP_DP));
         row.setTextColor(ConsolePanel.rowColors(selected ? accent : ConsolePanel.TEXT));
     }
 

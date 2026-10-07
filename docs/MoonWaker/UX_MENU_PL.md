@@ -70,10 +70,10 @@ Pasek górny zostaje, ale jest odchudzony; dawny pasek ikon z pięcioma przycisk
 | --- | --- |
 | Wygląd i dźwięk | dźwięki interfejsu, ambient, muzyka (wybór hosta / menu), efekty, ograniczenie animacji, wygaszacz ekranu, opis gry w karuzeli |
 | Biblioteka | „Odśwież bibliotekę" (lista aplikacji + Playnite), ukryte aplikacje, domyślne sortowanie i filtr, widoczne platformy |
-| Streaming | rozdzielczość, odświeżanie, bitrate, tempo klatek (dzisiejsze „Ustawienia streamingu"), nadpisania, Autopilot jako stan plus przycisk „Uruchom analizę" |
+| Streaming | ekran zagnieżdżony „Stream" (kategorie Obraz, Dźwięk, Kontroler, Menu w grze, Mysz i dotyk, Host, Interfejs, Zaawansowane; makiety 18), nadpisania, Autopilot jako stan plus przycisk „Uruchom analizę"; nadpisania gry otwiera karta gry |
 | Hosty i profile | host otwierany automatycznie, lista hostów; wybrany host otwiera: integracje, parowanie Gatewaya, test połączenia, odparuj |
 | Kontrolery i akcesoria | kontrolery (identyfikuj, wyłącz, rozparuj), mikrofon USB, Bluetooth |
-| Discord | logowanie, powiadomienia, dźwięki DM |
+| Discord | logowanie, powiadomienia, dźwięki DM, głośność Discorda w streamie, skróty wyciszenia i opuszczenia kanału |
 | Informacje | wersja aplikacji i hosta, eksport diagnostyki, pomoc dostępna offline |
 
 Wszystkie pozycje z dawnego „Opcje" mają tu swoje miejsce; żadna nie znika.
