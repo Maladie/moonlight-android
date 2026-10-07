@@ -70,6 +70,21 @@ public class ConsoleVisualLayerTest {
     }
 
     @Test
+    public void glassUnderTheBackdropTintSamplesTheTintedBackdrop() {
+        float[] glass = ConsoleGlass.colorMatrix(1.3f, 0x10121A, .5f, 7f / 255f);
+        float[] under = ConsoleGlass.under(glass, 0x4D06080C);
+        float a = 0x4D / 255f;
+        int[] direct = {0xFF000000 | Math.round(200 * (1 - a) + 6 * a) << 16
+                | Math.round(8 * a) << 8 | Math.round(12 * a)};
+        int[] composed = {0xFFC80000};
+        ConsoleGlass.applyColorMatrix(direct, glass);
+        ConsoleGlass.applyColorMatrix(composed, under);
+        for (int shift = 0; shift <= 16; shift += 8) {
+            assertEquals((direct[0] >> shift) & 0xFF, (composed[0] >> shift) & 0xFF, 1);
+        }
+    }
+
+    @Test
     public void baselineShiftCentresTheCapHeight() {
         // Roboto at 30 px: ascent -27.8, descent 7.3, cap height 21.3 -> already centred.
         assertEquals(0, ConsoleText.baselineShift(-27.8f, 7.3f, 21.3f));

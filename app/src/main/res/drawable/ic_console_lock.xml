@@ -1,0 +1,5 @@
+<!-- PIN badge (mockup ic_lock): body, shackle and keyhole dot, 2.6 px stroke at 40 px. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="13dp" android:height="13dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="3.12" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M15,21H33A6,6 0,0 1,39 27V37A6,6 0,0 1,33 43H15A6,6 0,0 1,9 37V27A6,6 0,0 1,15 21ZM15,21V18A9,9 0,0 1,33 18V21" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M24,29.4A2.6,2.6 0,1 1,24 34.6A2.6,2.6 0,1 1,24 29.4Z" />
+</vector>

@@ -15,20 +15,36 @@ import android.view.View;
 
 import com.limelight.R;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * Card surface around an image card (UX_MENU_PL.md section 4.2, type 1; mockup "focus_ring" and
- * "soft_shadow"): a soft drop shadow, and when focused a glow tinted from the card plus a 3 px
- * white ring 5 px outside it. Set as the background of a frame whose padding
- * ({@link #MARGIN_DP}) surrounds the card; shadow and glow spill past the frame unclipped. Both
- * are one blurred mask, made once per card size at quarter resolution and tinted when drawn.
+ * "soft_shadow"): a soft drop shadow, and when focused a glow tinted from the card plus a thin
+ * white ring outside it. Set as the background of a frame whose padding ({@link #MARGIN_DP})
+ * surrounds the card; shadow and glow spill past the frame unclipped. Each is a blurred mask,
+ * made once per card shape and blur at quarter resolution and tinted when drawn.
  */
 final class ConsoleCardFocus extends Drawable {
+    /** One blurred copy of the card: Gaussian sigma, downward offset and growth, all in dp. */
+    static final class Layer {
+        final float blurDp;
+        final float dyDp;
+        final float spreadDp;
+
+        Layer(float blurDp, float dyDp, float spreadDp) {
+            this.blurDp = blurDp;
+            this.dyDp = dyDp;
+            this.spreadDp = spreadDp;
+        }
+    }
+
     /** Ring room around the card. */
     static final int MARGIN_DP = 10;
     static final float GAP_DP = 2.5f;
     static final float RING_DP = 1.5f;
     static final int RING = 0xF5FFFFFF;
-    /** Mockup blur 30 px at 1080p, done on a quarter-size mask. */
+    /** Host tiles: one 30 px blur at 1080p for the shadow, the focus shadow and the glow. */
     static final float BLUR_DP = 15f;
     static final float SPREAD_DP = 2f;
     static final int MASK_SCALE = 4;
@@ -36,8 +52,8 @@ final class ConsoleCardFocus extends Drawable {
     static final float FOCUS_SHADOW_ALPHA = 150f / 255f;
     static final float SHADOW_ALPHA = 120f / 255f;
 
-    private static Bitmap mask;
-    private static int maskKey;
+    /** One mask per card shape and blur; the entry screens use a handful. */
+    private static final Map<String, Bitmap> MASKS = new HashMap<>();
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -46,8 +62,13 @@ final class ConsoleCardFocus extends Drawable {
     private final float density;
     private final float inset;
     private final float corner;
+    private Layer rest = new Layer(BLUR_DP, 6f, SPREAD_DP);
+    private Layer lift = new Layer(BLUR_DP, 8f, SPREAD_DP);
+    private Layer halo = new Layer(BLUR_DP, 2f, SPREAD_DP);
+    private float gap = GAP_DP;
     private boolean focused;
     private int glow = 0xFFFFFFFF;
+    private int shadowColor = 0xFF000000;
     private float shadow = SHADOW_ALPHA;
 
     /** {@code insetPx}: the frame padding; {@code cornerPx}: the card's corner radius. */
@@ -58,6 +79,19 @@ final class ConsoleCardFocus extends Drawable {
         ring.setStyle(Paint.Style.STROKE);
         ring.setStrokeWidth(RING_DP * density);
         ring.setColor(RING);
+    }
+
+    /** The resting shadow, the shadow under a focused card and its glow. */
+    void setLayers(Layer rest, Layer lift, Layer halo) {
+        this.rest = rest;
+        this.lift = lift;
+        this.halo = halo;
+    }
+
+    /** Distance of the ring from the card and its width, in dp. */
+    void setRing(float gapDp, float widthDp) {
+        gap = gapDp;
+        ring.setStrokeWidth(widthDp * density);
     }
 
     void setFocused(boolean focused) {
@@ -79,6 +113,11 @@ final class ConsoleCardFocus extends Drawable {
         invalidateSelf();
     }
 
+    /** Black unless the "shadow" is a light halo, as behind a focused menu row. */
+    void setShadowColor(int color) {
+        shadowColor = color;
+    }
+
     /** The card rectangle grown by {@code outsetPx}, for drawables that share this geometry. */
     static void cardRect(RectF out, Rect bounds, float insetPx, float outsetPx) {
         out.set(bounds);
@@ -87,22 +126,20 @@ final class ConsoleCardFocus extends Drawable {
 
     @Override
     public void draw(Canvas canvas) {
-        cardRect(rect, getBounds(), inset, 0f);
-        Bitmap shape = mask(Math.round(rect.width()), Math.round(rect.height()));
-        float pad = pad(density);
-        drawMask(canvas, shape, pad, focused ? 8f : 6f, 0xFF000000,
-                focused ? FOCUS_SHADOW_ALPHA : shadow);
+        if (focused) drawMask(canvas, lift, shadowColor, FOCUS_SHADOW_ALPHA);
+        else drawMask(canvas, rest, shadowColor, shadow);
         if (!focused) return;
-        drawMask(canvas, shape, pad, 2f, glow, GLOW_ALPHA);
-        float outset = (GAP_DP + RING_DP / 2f) * density;
+        drawMask(canvas, halo, glow, GLOW_ALPHA);
+        float outset = gap * density + ring.getStrokeWidth() / 2f;
         cardRect(rect, getBounds(), inset, outset);
         canvas.drawRoundRect(rect, corner + outset, corner + outset, ring);
     }
 
-    private void drawMask(Canvas canvas, Bitmap shape, float pad, float dyDp, int color,
-                          float alpha) {
-        cardRect(rect, getBounds(), inset, pad);
-        rect.offset(0f, dyDp * density);
+    private void drawMask(Canvas canvas, Layer layer, int color, float alpha) {
+        cardRect(rect, getBounds(), inset, 0f);
+        Bitmap shape = mask(Math.round(rect.width()), Math.round(rect.height()), layer);
+        cardRect(rect, getBounds(), inset, pad(layer));
+        rect.offset(0f, layer.dyDp * density);
         rect.round(dst);
         paint.setColorFilter(new PorterDuffColorFilter(color | 0xFF000000,
                 PorterDuff.Mode.SRC_IN));
@@ -110,16 +147,18 @@ final class ConsoleCardFocus extends Drawable {
         canvas.drawBitmap(shape, null, dst, paint);
     }
 
-    private static float pad(float density) {
-        return 3f * BLUR_DP * density;
+    private float pad(Layer layer) {
+        return 3f * layer.blurDp * density;
     }
 
-    /** White rounded card blurred by {@link #BLUR_DP}, alpha only, with room for the blur. */
-    private Bitmap mask(int width, int height) {
+    /** White rounded card blurred as {@code layer} asks, alpha only, with room for the blur. */
+    private Bitmap mask(int width, int height, Layer layer) {
         synchronized (ConsoleCardFocus.class) {
-            int key = width * 31 + height;
-            if (mask != null && maskKey == key) return mask;
-            float pad = pad(density);
+            String key = width + "x" + height + "r" + corner + "b" + layer.blurDp
+                    + "s" + layer.spreadDp;
+            Bitmap mask = MASKS.get(key);
+            if (mask != null) return mask;
+            float pad = pad(layer);
             int w = Math.round((width + 2 * pad) / MASK_SCALE);
             int h = Math.round((height + 2 * pad) / MASK_SCALE);
             Bitmap draw = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
@@ -127,7 +166,7 @@ final class ConsoleCardFocus extends Drawable {
             canvas.drawColor(0xFF000000);
             Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
             fill.setColor(0xFFFFFFFF);
-            float spread = SPREAD_DP * density;
+            float spread = layer.spreadDp * density;
             float scale = 1f / MASK_SCALE;
             canvas.drawRoundRect(new RectF((pad - spread) * scale, (pad - spread) * scale,
                             (pad + width + spread) * scale, (pad + height + spread) * scale),
@@ -135,14 +174,13 @@ final class ConsoleCardFocus extends Drawable {
             int[] pixels = new int[w * h];
             draw.getPixels(pixels, 0, w, 0, 0, w, h);
             ConsoleMenuBackdrop.blur(pixels, w, h,
-                    ConsoleMenuBackdrop.boxRadius(BLUR_DP * density * scale, 3), 3);
+                    ConsoleMenuBackdrop.boxRadius(layer.blurDp * density * scale, 3), 3);
             for (int index = 0; index < pixels.length; index++) {
                 pixels[index] = (pixels[index] & 0xFF) << 24 | 0xFFFFFF;
             }
             draw.setPixels(pixels, 0, w, 0, 0, w, h);
-            mask = draw;
-            maskKey = key;
-            return mask;
+            MASKS.put(key, draw);
+            return draw;
         }
     }
 

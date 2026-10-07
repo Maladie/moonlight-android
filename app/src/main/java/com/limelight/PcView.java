@@ -19,7 +19,6 @@ import com.limelight.nvstream.wol.WakeOnLanSender;
 import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
-import com.limelight.preferences.StreamSettings;
 import com.limelight.ui.AdapterFragment;
 import com.limelight.ui.AdapterFragmentCallbacks;
 import com.limelight.ui.OverridesView;
@@ -146,23 +145,13 @@ public class PcView extends Activity implements AdapterFragmentCallbacks, QuickL
             setShouldDockBigOverlays(false);
         }
 
-        // Set default preferences if we've never been run
-        PreferenceManager.setDefaultValues(this, R.xml.preferences, false);
-
         // Set the correct layout for the PC grid
         pcGridAdapter.updateLayoutWithPreferences(this, PreferenceConfiguration.readPreferences(this));
 
         // Setup the list view
-        ImageButton settingsButton = findViewById(R.id.settingsButton);
         ImageButton addComputerButton = findViewById(R.id.manuallyAddPc);
         ImageButton helpButton = findViewById(R.id.helpButton);
 
-        settingsButton.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                startActivity(new Intent(PcView.this, StreamSettings.class));
-            }
-        });
         addComputerButton.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {

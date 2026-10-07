@@ -1035,8 +1035,8 @@ final class DiscordPanelController {
                 HostGatewayClient.DiscordAudioState audio = client.getDiscordAudioState(current);
                 mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onAudio(audio); });
             } catch (Exception error) {
-                String message = safeCommunityJoinError(error);
-                LimeLog.warning("Community Discord audio refresh failed: " + message);
+                LimeLog.warning("Community Discord audio refresh failed: " + safeCommunityJoinError(error));
+                String message = communityAudioError(error);
                 mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
             }
         });
@@ -1074,8 +1074,8 @@ final class DiscordPanelController {
                 HostGatewayClient.DiscordAudioState audio = client.getDiscordAudioState(current);
                 mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onAudio(audio); });
             } catch (Exception error) {
-                String message = safeCommunityJoinError(error);
-                LimeLog.warning("Community Discord audio action failed: " + message);
+                LimeLog.warning("Community Discord audio action failed: " + safeCommunityJoinError(error));
+                String message = communityAudioError(error);
                 mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
             }
         });
@@ -1108,6 +1108,17 @@ final class DiscordPanelController {
 
     static boolean matchesJoinedVoice(String channelId, HostGatewayClient.DiscordVoice voice) {
         return voice != null && voice.connected && channelId != null && channelId.equals(voice.channelId);
+    }
+
+    /**
+     * Audio errors as readable resource text: the Gateway answers 409 while Discord is not ready
+     * on the host (Bridge offline, client not running or not authorized); anything else is generic.
+     */
+    private String communityAudioError(Throwable error) {
+        boolean notReady = error instanceof HostGatewayClient.GatewayException
+                && ((HostGatewayClient.GatewayException) error).statusCode == 409;
+        return context.getString(notReady ? R.string.discord_community_host_not_ready
+                : R.string.discord_community_audio_failed);
     }
 
     static String safeCommunityJoinError(Throwable error) {

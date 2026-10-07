@@ -128,6 +128,18 @@ public class SessionStateProjectionTest {
                         .observationState);
     }
 
+    @Test public void failedReadCannotPublishItsPreDispatchModelSnapshot() {
+        SessionModel.Snapshot before = m.snapshot();
+        long ordinal = owner.nextRequestOrdinal();
+        m.enterHome(new Controller(), "session", "host", "child", 42, "game");
+        owner.current(m.snapshot(), 16_000L);
+
+        SessionSnapshot failed = owner.unavailable(ordinal, before, 16_000L, "timeout");
+
+        assertEquals(SessionSnapshot.State.ACTIVE, failed.state);
+        assertTrue(failed.transportGeneration > 0L);
+    }
+
     @Test public void unavailableWithoutTransportConvergesAndVerifiedFactsTerminate() {
         long failed = owner.nextRequestOrdinal();
         SessionSnapshot pending = owner.unavailable(

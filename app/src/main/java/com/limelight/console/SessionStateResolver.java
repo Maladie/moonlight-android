@@ -329,21 +329,12 @@ final class SessionStateResolver {
         }
 
         /**
-         * A local session termination (for example the game stop this client verifies) is a
-         * boundary for host observations: one gathered before it, or by a poll dispatched before
-         * it finished, describes a game that is going or gone. The model's termination
-         * epoch advances on entering and leaving TERMINATING even if no owner sampled the state in
-         * between; on any change drop the observation and reject every request dispatched so
-         * far, so only a later poll can publish READY or IDLE again.
-         */
-        /**
-         * A caller's snapshot may predate blocking I/O; when a termination boundary passed
-         * meanwhile, project from the model's current state instead.
+         * A caller's snapshot may predate blocking I/O, so a publication always projects the
+         * model's current immutable snapshot and never a state older than one already
+         * published; a newer model at most fails an observation's correlation.
          */
         private SessionModel.Snapshot liveSnapshot(SessionModel.Snapshot retained) {
-            if (retained == null) return null;
-            SessionModel.Snapshot live = model.snapshot();
-            return live.terminationEpoch != retained.terminationEpoch ? live : retained;
+            return retained == null ? null : model.snapshot();
         }
 
         private void retireObservationAtTerminationBoundary(
@@ -351,6 +342,14 @@ final class SessionStateResolver {
             if (retained != null) retireObservationAtTerminationBoundary(retained.terminationEpoch);
         }
 
+        /**
+         * A local session termination (for example the game stop this client verifies) is a
+         * boundary for host observations: one gathered before it, or by a poll dispatched before
+         * it finished, describes a game that is going or gone. The model's termination
+         * epoch advances on entering and leaving TERMINATING even if no owner sampled the state in
+         * between; on any change drop the observation and reject every request dispatched so
+         * far, so only a later poll can publish READY or IDLE again.
+         */
         private void retireObservationAtTerminationBoundary(long terminationEpoch) {
             if (terminationEpoch == observedTerminationEpoch) return;
             observedTerminationEpoch = terminationEpoch;

@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
@@ -23,6 +25,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
+import android.view.animation.LinearInterpolator;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
@@ -84,8 +87,10 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
     static final int DIMMED_STATUS = 0xFF969CA8;
     /** Mockup "glass": tint rgb(18,22,32) at 35 % plus a 4 % white veil over the backdrop. */
     static final int GLASS_FILL = 0x14FFFFFF;
+    static final long DOT_SPIN_MS = 900L;
 
     private final ConsoleEntryShell shell;
+    private final ConsoleEntryShell.Page page;
     private final Listener listener;
     private final long wakingTimeoutMs;
     private final LinearLayout row;
@@ -105,6 +110,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
                           Listener listener) {
         super(context);
         this.shell = shell;
+        page = shell.addPage();
         this.listener = listener;
         this.wakingTimeoutMs = wakingTimeoutMs;
         setFillViewport(true);
@@ -119,11 +125,16 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
         row.setClipToPadding(false);
         addView(row, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        shell.setHeader(context.getString(R.string.console_entry_eyebrow),
+        page.setHeader(context.getString(R.string.console_entry_eyebrow),
                 context.getString(R.string.console_host_selection_title),
                 context.getString(R.string.console_host_selection_subtitle));
-        shell.setContent(this);
+        page.setContent(this);
         updateLegend(false);
+    }
+
+    /** Back from the profile screen cross-fades it into this row above the same shell. */
+    void show() {
+        shell.show(page);
     }
 
     static boolean isConfirmKey(int keyCode) {
@@ -138,7 +149,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
      * their names change. Returns whether the row was rebuilt.
      */
     boolean render(List<Tile> hosts, boolean searching) {
-        shell.setSubtitle(getContext().getString(searching
+        page.setSubtitle(getContext().getString(searching
                 ? R.string.console_host_selection_searching
                 : R.string.console_host_selection_subtitle));
         StringBuilder next = new StringBuilder();
@@ -148,6 +159,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
             return false;
         }
         signature = next.toString();
+        for (TileViews views : tiles.values()) spinDot(views, false);
         tiles.clear();
         row.removeAllViews();
         for (Tile tile : hosts) {
@@ -172,10 +184,16 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
         ConsoleHostTileLook look = ConsoleHostTileLook.of(tile.state, tile.profile,
                 tile.wakingSince >= 0L);
         views.look = look;
-        GradientDrawable dot = new GradientDrawable();
-        dot.setShape(GradientDrawable.OVAL);
-        dot.setColor(look.dot);
-        views.dot.setBackground(dot);
+        if (look.spinner) {
+            views.dot.setBackground(new CheckingArc(look.dot,
+                    getResources().getDisplayMetrics().density));
+        } else {
+            GradientDrawable dot = new GradientDrawable();
+            dot.setShape(GradientDrawable.OVAL);
+            dot.setColor(look.dot);
+            views.dot.setBackground(dot);
+        }
+        spinDot(views, look.spinner && !reducedMotion);
         boolean live = look.badge == ConsoleHostTileLook.Badge.LIVE;
         views.live.setVisibility(live ? VISIBLE : GONE);
         // The mockup lifts the monitor above the live tag.
@@ -323,6 +341,22 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
                 R.string.console_host_selection_description, tile.name, status));
     }
 
+    /** Turns the checking arc by the view's rotation alone, a GPU property: no redraws. */
+    private static void spinDot(TileViews views, boolean spin) {
+        if (spin == (views.spin != null)) return;
+        if (!spin) {
+            views.spin.cancel();
+            views.spin = null;
+            views.dot.setRotation(0f);
+            return;
+        }
+        views.spin = ObjectAnimator.ofFloat(views.dot, ROTATION, 0f, 360f);
+        views.spin.setDuration(DOT_SPIN_MS);
+        views.spin.setRepeatCount(ValueAnimator.INFINITE);
+        views.spin.setInterpolator(new LinearInterpolator());
+        views.spin.start();
+    }
+
     private void tickWaking() {
         boolean waking = false;
         for (TileViews views : tiles.values()) {
@@ -337,6 +371,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
     @Override
     protected void onDetachedFromWindow() {
         removeCallbacks(wakingTick);
+        for (TileViews views : tiles.values()) spinDot(views, false);
         super.onDetachedFromWindow();
     }
 
@@ -420,6 +455,7 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
         views.status = text("", 12, ConsoleEntryShell.TEXT_SECONDARY, Typeface.DEFAULT);
         views.status.setSingleLine(true);
         views.status.setEllipsize(TextUtils.TruncateAt.END);
+        views.dot.setTranslationY(ConsoleText.dotOffset(views.status, dp(6)));
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         statusParams.leftMargin = dp(4);
@@ -561,21 +597,21 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
     private void updateLegend(boolean options) {
         if (legendOptions != null && legendOptions == options) return;
         legendOptions = options;
-        shell.clearLegend();
+        page.clearLegend();
         String select = getContext().getString(R.string.console_select_hint);
         if (controllerPresent) {
-            shell.addLegendKey(ControllerGlyphs.text(playStation,
+            page.addLegendKey(ControllerGlyphs.text(playStation,
                     ControllerGlyphs.Button.CONFIRM), true, select);
         } else {
-            shell.addLegendKey("OK", false, select);
+            page.addLegendKey("OK", false, select);
         }
         if (!options) return;
         String hostOptions = getContext().getString(R.string.console_host_options_label);
         if (controllerPresent) {
-            shell.addLegendKey(ControllerGlyphs.text(playStation, ControllerGlyphs.Button.MENU),
+            page.addLegendKey(ControllerGlyphs.text(playStation, ControllerGlyphs.Button.MENU),
                     true, hostOptions);
         } else {
-            shell.addLegendIcon(R.drawable.ic_console_options, hostOptions);
+            page.addLegendIcon(R.drawable.ic_console_options, hostOptions);
         }
     }
 
@@ -668,14 +704,40 @@ final class ConsoleHostSelectView extends HorizontalScrollView {
         TextView name;
         LinearLayout statusRow;
         View dot;
+        ObjectAnimator spin;
         TextView status;
+    }
+
+    /** The status dot of a host not polled yet: a three-quarter ring in the dot's colour. */
+    private static final class CheckingArc extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+
+        CheckingArc(int color, float density) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.25f * density);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setColor(color);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            rect.set(getBounds());
+            float inset = paint.getStrokeWidth() / 2f;
+            rect.inset(inset, inset);
+            canvas.drawArc(rect, -90f, 270f, false, paint);
+        }
+
+        @Override public void setAlpha(int alpha) { }
+        @Override public void setColorFilter(ColorFilter colorFilter) { }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
     /**
      * Mockup "hairline" (and the fill of "glass"): a 1.5 px rounded edge lit from above, its
      * alpha fading to 35 % at the bottom.
      */
-    private static final class GlassEdge extends Drawable {
+    static final class GlassEdge extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
         private final float corner;

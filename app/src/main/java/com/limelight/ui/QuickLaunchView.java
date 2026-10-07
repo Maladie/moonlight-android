@@ -22,7 +22,6 @@ import com.limelight.R;
 import com.limelight.computers.ComputerManagerService;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
-import com.limelight.preferences.AppStreamSettings;
 import com.limelight.utils.QuickLaunchManager;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.UiHelper;
@@ -31,7 +30,6 @@ import java.util.List;
 
 public class QuickLaunchView {
     private static final int QUICK_LAUNCH_RENAME_ID = 1001;
-    private static final int QUICK_LAUNCH_SETTINGS_ID = 1002;
     private static final int QUICK_LAUNCH_DELETE_ID = 1003;
     private static final int QUICK_LAUNCH_QUIT_ID = 1004;
     private static final int QUICK_LAUNCH_MOVE_LEFT_ID = 1005;
@@ -107,7 +105,6 @@ public class QuickLaunchView {
                 }
 
                 menu.add(Menu.NONE, QUICK_LAUNCH_RENAME_ID, 2, activity.getString(R.string.quick_launch_rename));
-                menu.add(Menu.NONE, QUICK_LAUNCH_SETTINGS_ID, 3, activity.getString(R.string.quick_launch_settings));
                 menu.add(Menu.NONE, QUICK_LAUNCH_MOVE_LEFT_ID, 4, activity.getString(R.string.quick_launch_move_left));
                 menu.add(Menu.NONE, QUICK_LAUNCH_MOVE_RIGHT_ID, 5, activity.getString(R.string.quick_launch_move_right));
                 menu.add(Menu.NONE, QUICK_LAUNCH_DELETE_ID, 6, activity.getString(R.string.quick_launch_delete));
@@ -128,10 +125,6 @@ public class QuickLaunchView {
 
             case QUICK_LAUNCH_RENAME_ID:
                 showRenameQuickLaunchDialog(contextMenuQuickLaunchKey);
-                return true;
-
-            case QUICK_LAUNCH_SETTINGS_ID:
-                openQuickLaunchSettings(contextMenuQuickLaunchKey);
                 return true;
 
             case QUICK_LAUNCH_MOVE_LEFT_ID:
@@ -276,27 +269,6 @@ public class QuickLaunchView {
 
         // Use ServerHelper to launch the app with the Quick Launch key
         ServerHelper.doStart(activity, app, computer, managerBinder, item.key);
-    }
-    
-    private void openQuickLaunchSettings(String key) {
-        // Get the Quick Launch item details
-        List<QuickLaunchManager.QuickLaunchItem> items = quickLaunchManager.getAllQuickLaunchItems();
-        QuickLaunchManager.QuickLaunchItem targetItem = null;
-        
-        for (QuickLaunchManager.QuickLaunchItem item : items) {
-            if (item.key.equals(key)) {
-                targetItem = item;
-                break;
-            }
-        }
-        
-        if (targetItem != null) {
-            // Open AppStreamSettings with the Quick Launch key
-            Intent settingsIntent = new Intent(activity, AppStreamSettings.class);
-            settingsIntent.putExtra(AppStreamSettings.EXTRA_APP_KEY, key);
-            settingsIntent.putExtra(AppStreamSettings.EXTRA_APP_NAME, "Quick Launch: " + targetItem.getDisplayNameLong());
-            activity.startActivity(settingsIntent);
-        }
     }
     
     private void showRenameQuickLaunchDialog(final String key) {

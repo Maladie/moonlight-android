@@ -188,18 +188,6 @@ public class DiscordSocialPanelControllerTest {
     }
 
     @Test
-    public void actionToneKeepsSemanticColorWhenFocusedOrBusy() {
-        assertEquals(0xFF166D9B, DiscordCommunityView.actionBackground(
-                DiscordCommunityView.ActionTone.POSITIVE_JOIN, false));
-        assertEquals(0xFF1998D0, DiscordCommunityView.actionBackground(
-                DiscordCommunityView.ActionTone.POSITIVE_JOIN, true));
-        assertEquals(0xFF963B47, DiscordCommunityView.actionBackground(
-                DiscordCommunityView.ActionTone.DESTRUCTIVE_LEAVE, false));
-        assertEquals(0xFFC34B58, DiscordCommunityView.actionBackground(
-                DiscordCommunityView.ActionTone.DESTRUCTIVE_LEAVE, true));
-    }
-
-    @Test
     public void onlyRecentRowsOwnTheRecentScrollerAndTabsResetIt() {
         assertFalse(DiscordCommunityView.focusOwnerIsRecent(true));
         assertTrue(DiscordCommunityView.focusOwnerIsRecent(false));

@@ -14,7 +14,7 @@ public class ConsoleActivityStreamingAutopilotContractTest {
     @Test public void globalAndBothGameMenusExposeAutopilotWithoutSilentApply()
             throws IOException {
         String source = consoleActivitySource();
-        String options = between(source, "private void showSettings()",
+        String options = between(source, "private void showSettings(int category)",
                 "private void resetScreenSaverTimer()");
         String playnite = between(source, "private void showPlayniteGameActions(",
                 "private void confirmEndPlayniteGame(");
@@ -43,7 +43,7 @@ public class ConsoleActivityStreamingAutopilotContractTest {
             throws IOException {
         String source = consoleActivitySource();
         String request = between(source, "private void requestStreamingAutopilot(",
-                "private void showSettings()");
+                "private void showSettings(int category)");
         String destroy = between(source, "protected void onDestroy()",
                 "public void onBackPressed()");
         String selectHost = between(source, "private void selectHost(",
