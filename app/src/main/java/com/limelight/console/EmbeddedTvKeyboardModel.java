@@ -16,11 +16,17 @@ final class EmbeddedTvKeyboardModel {
     static final int MAX_DRAFT_LENGTH = 2000;
     static final float GRID_COLUMNS = 10f;
     static final float GRID_ROWS = 4f;
+    /**
+     * Mockup "keyboard" (19-discord-dm-v4): 120 px keys on a 132 px pitch; the bottom row's
+     * Dyktuj and Wyślij are 220 px and backspace 140 px, so in pitch units (width + 12 px gap):
+     */
+    private static final float WIDE_KEY = 232f / 132f;
+    private static final float BACKSPACE_KEY = 152f / 132f;
     private static final Map<String, String> CURATED_ACCENTS = curatedAccents();
 
     enum Page { ALPHA, SYMBOLS }
     enum Shift { LOWER, ONE_SHOT, CAPS }
-    enum Type { TEXT, SHIFT, BACKSPACE, SPACE, ALPHA, SYMBOLS, MICROPHONE, SEND }
+    enum Type { TEXT, BACKSPACE, SPACE, ALPHA, SYMBOLS, MICROPHONE, SEND }
     enum Action { NONE, TEXT, BACKSPACE, SPACE, MICROPHONE, SEND }
 
     static final class Key {
@@ -197,9 +203,6 @@ final class EmbeddedTvKeyboardModel {
                 String text = displayText(key);
                 if (shift == Shift.ONE_SHOT) shift = Shift.LOWER;
                 return new Activation(Action.TEXT, text);
-            case SHIFT:
-                cycleShift();
-                return new Activation(Action.NONE, "");
             case BACKSPACE:
                 return new Activation(Action.BACKSPACE, "");
             case SPACE:
@@ -220,7 +223,6 @@ final class EmbeddedTvKeyboardModel {
     }
 
     String displayLabel(Key key) {
-        if (key.type == Type.SHIFT) return shift == Shift.CAPS ? "⇪" : "⇧";
         return key.type == Type.TEXT ? displayText(key) : key.label;
     }
 
@@ -289,12 +291,16 @@ final class EmbeddedTvKeyboardModel {
     static List<String> accentVariants(String base, Shift shift, String languageTag) {
         String letter = base == null ? "" : base.toLowerCase(Locale.ROOT);
         String canonical = CURATED_ACCENTS.get(letter);
-        if (canonical == null) return Collections.emptyList();
+        boolean isLetter = letter.codePointCount(0, letter.length()) == 1
+                && Character.isLetter(letter.codePointAt(0));
+        if (canonical == null && !isLetter) return Collections.emptyList();
         String language = primaryLanguage(languageTag);
         Set<Integer> ordered = new LinkedHashSet<>();
         addCodePoints(ordered, localePriority(language, letter));
         addCodePoints(ordered, canonical);
         ArrayList<String> result = new ArrayList<>();
+        // The other case comes first: holding OK on a letter is Shift for a remote without L2.
+        if (isLetter) result.add(shift == Shift.LOWER ? uppercaseCodePoint(letter, language) : letter);
         for (int codePoint : ordered) {
             result.add(shift == Shift.LOWER ? new String(Character.toChars(codePoint))
                     : uppercaseCodePoint(codePoint, language));
@@ -338,6 +344,10 @@ final class EmbeddedTvKeyboardModel {
         values.put("u", "úùûüūŭůűų");
         values.put("y", "ýÿ");
         values.put("z", "źżž");
+        // The mockup's layout keeps only "," and "." on the letter page; holding OK on them
+        // offers the punctuation that had keys of its own (the 123 page has them too).
+        values.put(".", "?!…");
+        values.put(",", ";:'\"-");
         return Collections.unmodifiableMap(values);
     }
 
@@ -437,43 +447,42 @@ final class EmbeddedTvKeyboardModel {
                 && Character.isLowSurrogate(value.charAt(index));
     }
 
+    /**
+     * Mockup "keyboard": ten keys in the top row, nine centred below (the letter page ends with
+     * "," and "."), then 123/ABC, Dyktuj, Spacja, backspace and Wyślij. Shift is L2 (shown by the
+     * letters' case); ? ! and the rest of the punctuation are held on "." and "," or on 123.
+     */
     private static List<Key> keysFor(Page page, Shift shift, boolean microphone) {
         ArrayList<Key> keys = new ArrayList<>();
         if (page == Page.ALPHA) {
-            row(keys, "qwertyuiop", 0, 0f, .9f);
-            keys.add(key("text..", ".", ".", Type.TEXT, 9f, 0, 1f));
-            row(keys, "asdfghjkl", 1, 0f, .9f);
-            keys.add(key("text.,", ",", ",", Type.TEXT, 8.1f, 1, .95f));
-            keys.add(key("text.?", "?", "?", Type.TEXT, 9.05f, 1, .95f));
-            keys.add(key("shift", "⇧", "", Type.SHIFT, 0, 2, 1.25f));
-            row(keys, "zxcvbnm", 2, 1.25f, .9f);
-            keys.add(key("text.!", "!", "!", Type.TEXT, 7.55f, 2, .95f));
-            keys.add(key("backspace", "⌫", "", Type.BACKSPACE, 8.5f, 2, 1.5f));
+            row(keys, "qwertyuiop", 0, 0f);
+            row(keys, "asdfghjkl", 1, .5f);
+            row(keys, "zxcvbnm,.", 2, .5f);
         } else {
             row(keys, "1234567890", 0, 0f);
             row(keys, "@#$%&-+()/", 1, 0f);
-            keys.add(key("text._", "_", "_", Type.TEXT, 0, 2, 1f));
-            row(keys, "=*\"':;!?", 2, 1f);
-            keys.add(key("backspace", "⌫", "", Type.BACKSPACE, 9f, 2, 1f));
+            row(keys, "_=*\"':;!?", 2, .5f);
         }
         keys.add(key(page == Page.SYMBOLS ? "alpha" : "symbols", page == Page.SYMBOLS ? "ABC" : "123",
-                "", page == Page.SYMBOLS ? Type.ALPHA : Type.SYMBOLS, 0, 3, 2f));
-        if (microphone) keys.add(key("microphone", "MIC", "", Type.MICROPHONE, 2, 3, 2f));
-        keys.add(key("space", "SPACE", " ", Type.SPACE, microphone ? 4 : 2, 3, microphone ? 3f : 5f));
-        keys.add(key("send", "SEND", "", Type.SEND, 7, 3, 3f));
+                "", page == Page.SYMBOLS ? Type.ALPHA : Type.SYMBOLS, 0, 3, 1f));
+        float x = 1f;
+        if (microphone) {
+            keys.add(key("microphone", "MIC", "", Type.MICROPHONE, x, 3, WIDE_KEY));
+            x += WIDE_KEY;
+        }
+        float space = GRID_COLUMNS - x - BACKSPACE_KEY - WIDE_KEY;
+        keys.add(key("space", "SPACE", " ", Type.SPACE, x, 3, space));
+        keys.add(key("backspace", "⌫", "", Type.BACKSPACE, x + space, 3, BACKSPACE_KEY));
+        keys.add(key("send", "SEND", "", Type.SEND, GRID_COLUMNS - WIDE_KEY, 3, WIDE_KEY));
         return Collections.unmodifiableList(keys);
     }
 
     private static void row(List<Key> keys, String characters, int row, float x) {
-        row(keys, characters, row, x, 1f);
-    }
-
-    private static void row(List<Key> keys, String characters, int row, float x, float width) {
         for (int index = 0; index < characters.length();) {
             int codePoint = characters.codePointAt(index);
             String value = new String(Character.toChars(codePoint));
-            keys.add(key("text." + value, value, value, Type.TEXT, x, row, width));
-            x += width;
+            keys.add(key("text." + value, value, value, Type.TEXT, x, row, 1f));
+            x += 1f;
             index += Character.charCount(codePoint);
         }
     }

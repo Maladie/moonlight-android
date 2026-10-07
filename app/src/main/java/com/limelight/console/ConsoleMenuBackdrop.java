@@ -30,8 +30,9 @@ final class ConsoleMenuBackdrop extends View {
     /** 240x135 at 1080p: the blur is wide enough that bilinear upscaling shows no blocks. */
     static final int SNAPSHOT_DIVISOR = 8;
     static final long FADE_MS = 150L;
-    private static final float[] GLASS_MATRIX = ConsoleGlass.colorMatrix(ConsoleGlass.SATURATION,
-            ConsoleGlass.TINT, ConsoleGlass.TINT_ALPHA, ConsoleGlass.VEIL);
+    private static final float[] GLASS_MATRIX = ConsoleGlass.under(ConsoleGlass.colorMatrix(
+            ConsoleGlass.SATURATION, ConsoleGlass.TINT, ConsoleGlass.TINT_ALPHA, ConsoleGlass.VEIL),
+            ConsoleMenuBackdrop.TINT);
     /** One worker for every backdrop: a menu opening never copies or blurs on the main thread. */
     private static Handler worker;
     /** Backdrop blur, 32 px at 1080p. */

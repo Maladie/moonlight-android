@@ -23,6 +23,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.limelight.R;
 import com.limelight.ui.ControllerGlyphs;
 
 import java.util.LinkedHashMap;
@@ -41,11 +42,15 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
         void onOpenVisibleAdditionalContent();
     }
 
-    private static final int TEXT = 0xFFF4F7FF;
-    private static final int MUTED = 0xFFA2A9BB;
-    private static final int KEY = 0xFF243041;
-    private static final int SELECTED = 0xFF18749E;
-    private static final int KEYBOARD_HEIGHT_DP = 168;
+    private static final int TEXT = ConsolePanel.TEXT;
+    private static final int MUTED = 0xFFC8CCD6;
+    /** Mockup "keyboard": keys white at 26/255 on glass, focus the light fill with dark ink. */
+    private static final int KEY = 0x1AFFFFFF;
+    private static final int SELECTED = ConsolePanel.FOCUS_FILL;
+    private static final int SEND = 0xFF73D7FF;
+    /** Four rows of 30 dp keys with 6 dp gaps (60 and 12 px at 1080p). */
+    private static final int KEYBOARD_HEIGHT_DP = 144;
+    private static final int KEY_INSET_DP = 3;
     private static final int LEGEND_HEIGHT_DP = 22;
     private static final int ACCENT_POPUP_HEIGHT_DP = 42;
     private static final int ACCENT_MIN_VARIANT_WIDTH_DP = 42;
@@ -321,15 +326,15 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
         accentPopup.setGravity(Gravity.CENTER);
         accentPopup.setOrientation(LinearLayout.HORIZONTAL);
         GradientDrawable background = new GradientDrawable();
-        background.setColor(0xFF101A29);
-        background.setCornerRadius(dp(7));
-        background.setStroke(dp(1), 0xFF77E5FF);
+        background.setColor(0xF2101219);
+        background.setCornerRadius(dp(8));
+        background.setStroke(Math.max(1, dp(.75f)), 0x2EFFFFFF);
         accentPopup.setBackground(background);
         for (String accent : visibleAccentVariants) {
             TextView option = new TextView(getContext());
             option.setGravity(Gravity.CENTER);
             option.setTextColor(TEXT);
-            option.setTextSize(16);
+            option.setTextSize(15);
             option.setSingleLine(true);
             option.setText(accent);
             option.setFocusable(false);
@@ -364,13 +369,13 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
     private void refreshAccentPopup() {
         if (accentPopup == null) return;
         for (int index = 0; index < accentPopup.getChildCount(); index++) {
-            View child = accentPopup.getChildAt(index);
+            TextView child = (TextView) accentPopup.getChildAt(index);
             GradientDrawable background = new GradientDrawable();
-            background.setCornerRadius(dp(5));
+            background.setCornerRadius(dp(6));
             boolean selected = index == accentSelection;
             background.setColor(selected ? SELECTED : Color.TRANSPARENT);
-            background.setStroke(selected ? dp(2) : 0, selected ? Color.WHITE : Color.TRANSPARENT);
             child.setBackground(background);
+            child.setTextColor(selected ? ConsolePanel.INK : TEXT);
         }
     }
 
@@ -438,9 +443,10 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
             int nextX = getPaddingLeft() + bounds.right;
             int y = getPaddingTop() + bounds.top;
             int nextY = getPaddingTop() + bounds.bottom;
-            int childWidth = Math.max(0, nextX - x - dp(4));
-            int childHeight = Math.max(0, nextY - y - dp(4));
-            view.layout(x + dp(2), y + dp(2), x + dp(2) + childWidth, y + dp(2) + childHeight);
+            int childWidth = Math.max(0, nextX - x - dp(2 * KEY_INSET_DP));
+            int childHeight = Math.max(0, nextY - y - dp(2 * KEY_INSET_DP));
+            view.layout(x + dp(KEY_INSET_DP), y + dp(KEY_INSET_DP), x + dp(KEY_INSET_DP) + childWidth,
+                    y + dp(KEY_INSET_DP) + childHeight);
         }
         if (controlLegend != null) {
             int legendTop = getHeight() - getPaddingBottom() - legendHeight;
@@ -479,8 +485,22 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
             TextView view = new TextView(getContext());
             view.setGravity(Gravity.CENTER);
             view.setTextColor(TEXT);
-            view.setTextSize(13);
+            view.setIncludeFontPadding(false);
+            // Letters 30 px, the wide labelled keys 26 px (mockup "keyboard").
+            view.setTextSize(key.type == EmbeddedTvKeyboardModel.Type.TEXT ? 15 : 13);
             view.setSingleLine(true);
+            if (key.type == EmbeddedTvKeyboardModel.Type.SEND) {
+                view.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                        android.graphics.Typeface.NORMAL));
+            }
+            if (key.type == EmbeddedTvKeyboardModel.Type.MICROPHONE) {
+                android.graphics.drawable.Drawable mic =
+                        getContext().getDrawable(R.drawable.ic_console_microphone).mutate();
+                mic.setBounds(0, 0, dp(15), dp(15));
+                view.setCompoundDrawablesRelative(mic, null, null, null);
+                view.setCompoundDrawablePadding(dp(6));
+                view.setPadding(dp(10), 0, dp(10), 0);
+            }
             view.setText(displayLabel(key));
             view.setContentDescription(displayLabel(key));
             view.setFocusable(false);
@@ -520,7 +540,7 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
             TextView icon = new TextView(getContext());
             icon.setText(glyph);
             icon.setTextColor(MUTED);
-            icon.setTextSize(11);
+            icon.setTextSize(12);
             icon.setTypeface(ControllerGlyphs.typeface(getContext()));
             item.addView(icon, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -528,7 +548,7 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
         TextView label = new TextView(getContext());
         label.setText(value);
         label.setTextColor(MUTED);
-        label.setTextSize(9);
+        label.setTextSize(12);
         label.setSingleLine(true);
         if (glyphFirst && glyph != null) label.setPadding(dp(3), 0, 0, 0);
         item.addView(label, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -544,11 +564,16 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
             view.setText(displayLabel(key));
             view.setContentDescription(displayLabel(key));
             GradientDrawable background = new GradientDrawable();
-            background.setCornerRadius(dp(6));
+            background.setCornerRadius(dp(8));
             boolean selected = key.id.equals(model.selectedId());
-            background.setColor(selected ? SELECTED : KEY);
-            background.setStroke(selected ? dp(2) : 0, selected ? Color.WHITE : Color.TRANSPARENT);
+            boolean send = key.type == EmbeddedTvKeyboardModel.Type.SEND;
+            background.setColor(selected ? SELECTED : send ? SEND : KEY);
             view.setBackground(background);
+            int ink = selected || send ? ConsolePanel.INK : TEXT;
+            view.setTextColor(ink);
+            for (android.graphics.drawable.Drawable icon : view.getCompoundDrawablesRelative()) {
+                if (icon != null) icon.setTint(ink);
+            }
         }
         requestLayout();
     }
@@ -574,10 +599,10 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
             if (view == null) continue;
             EmbeddedTvKeyboardModel.Bounds bounds = EmbeddedTvKeyboardModel.bounds(key,
                     availableWidth, availableHeight);
-            view.measure(MeasureSpec.makeMeasureSpec(Math.max(0, bounds.right - bounds.left - dp(4)),
-                            MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(Math.max(0, bounds.bottom - bounds.top - dp(4)),
-                            MeasureSpec.EXACTLY));
+            view.measure(MeasureSpec.makeMeasureSpec(Math.max(0,
+                            bounds.right - bounds.left - dp(2 * KEY_INSET_DP)), MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(Math.max(0,
+                            bounds.bottom - bounds.top - dp(2 * KEY_INSET_DP)), MeasureSpec.EXACTLY));
         }
     }
 

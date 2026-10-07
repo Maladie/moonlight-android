@@ -1154,6 +1154,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         showCommunityPanel(shell);
                     }
 
+                    @Override public ConsoleMenuBackdrop menuBackdrop() { return menuBackdrop; }
+                    @Override public String dmShortcutTrigger() { return discordDmShortcut.trigger(); }
+
                     @Override public void toast(String message) {
                         ConsoleUiFeedback.makeText(ConsoleActivity.this, message,
                                 Toast.LENGTH_LONG).show();
@@ -1258,6 +1261,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         String address = host.activeAddress == null ? null : host.activeAddress.address;
                         discordPanelController.performCommunityHostAction(host.uuid, address, host.name,
                                 action, callback);
+                    }
+
+                    @Override public String hostName() {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        return host == null || host.name == null ? "" : host.name;
                     }
 
                     @Override public void requestAudio(
@@ -14520,11 +14528,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         currentPanelKey = "discord.community";
         sidePanelScroll.animate().cancel();
         sidePanelScroll.setVisibility(View.GONE);
-        sidePanelScroll.setScrollLocked(false);
         communityPanelHost.setVisibility(View.VISIBLE);
-        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13});
-        communityPanelHost.setBackground(background);
         if (!alreadyShowing) {
             captureMenuBackdrop();
             sideDialog.show();
@@ -14682,7 +14686,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(sidePanelBusyBanner);
             sidePanelBusyBanner = null;
         }
-        applySidePanelFrame(false);
+        applySidePanelFrame();
         String nextKey = eyebrow + "\n" + title;
         boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
         boolean samePanel = alreadyShowing && nextKey.equals(currentPanelKey);
@@ -14708,7 +14712,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             contentPanelOpen = true;
             updateContentLayerAccess();
         } else if (!sidePanelTransient && currentPanelKey != null
-                && !currentPanelKey.equals(nextKey)) {
+                && !currentPanelKey.equals(nextKey) && !"discord.community".equals(currentPanelKey)) {
+            // Community lives in communityPanelHost; sidePanel holds no rows of it to restore.
             PanelSnapshot snapshot = capturePanelSnapshot();
             if (snapshot != null) panelHistory.push(snapshot);
         }
@@ -14755,25 +14760,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private void applySidePanelFrame(boolean communityShell) {
+    private void applySidePanelFrame() {
         if (sidePanelScroll == null || sidePanel == null) return;
-        sidePanelScroll.setScrollLocked(communityShell);
         FrameLayout.LayoutParams frame = (FrameLayout.LayoutParams) sidePanelScroll.getLayoutParams();
-        int margin = communityShell ? 0 : dp(ConsolePanel.MARGIN_DP);
-        frame.width = communityShell ? ViewGroup.LayoutParams.MATCH_PARENT : dp(ConsolePanel.WIDTH_DP);
+        int margin = dp(ConsolePanel.MARGIN_DP);
+        frame.width = dp(ConsolePanel.WIDTH_DP);
         frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
-        frame.gravity = communityShell ? Gravity.CENTER : Gravity.END;
+        frame.gravity = Gravity.END;
         frame.setMargins(margin, margin, margin, margin);
-        if (communityShell) {
-            sidePanelScroll.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13}));
-            consolePanel.leaveGlass(sidePanel);
-        } else {
-            consolePanel.floatOnGlass(sidePanel);
-        }
+        consolePanel.floatOnGlass(sidePanel);
         ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
-        content.height = communityShell ? ViewGroup.LayoutParams.MATCH_PARENT
-                : ViewGroup.LayoutParams.WRAP_CONTENT;
+        content.height = ViewGroup.LayoutParams.WRAP_CONTENT;
         sidePanel.setLayoutParams(content);
     }
 
@@ -14830,7 +14827,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sidePanelScroll.setAlpha(1f);
         sidePanelScroll.setScaleX(1f);
         sidePanelScroll.setScaleY(1f);
-        applySidePanelFrame(false);
+        applySidePanelFrame();
         panelHistory.clear();
         currentPanelKey = null;
         sidePanelBusyBanner = null;
@@ -14877,7 +14874,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!panelHistory.isEmpty()) {
             prepareChildSharingForDeparture();
             PanelSnapshot snapshot = panelHistory.pop();
-            applySidePanelFrame("discord.community".equals(snapshot.key));
             sidePanel.removeAllViews();
             for (View child : snapshot.children) {
                 sidePanel.addView(child);

@@ -13,7 +13,7 @@ import java.nio.file.Paths;
 public class DiscordDmSettingsContractTest {
     @Test public void preferenceIsGlobalDefaultOnAndAvailableInCommunitySocial() throws Exception {
         String preferences = source("DiscordDmNotificationPreferences.java");
-        String view = source("DiscordCommunityView.java");
+        String view = source("DiscordCommunityDetailPanel.java");
 
         assertTrue(preferences.contains("\"discord_dm_notifications\""));
         assertTrue(preferences.contains("getBoolean(KEY, true)"));

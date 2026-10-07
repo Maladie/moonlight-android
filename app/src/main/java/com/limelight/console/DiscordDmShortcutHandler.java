@@ -36,6 +36,8 @@ final class DiscordDmShortcutHandler {
         this.action = action;
     }
 
+    String trigger() { return trigger; }
+
     boolean handle(KeyEvent event) {
         return event != null && handle(event.getAction(), event.getKeyCode(), event.getRepeatCount());
     }

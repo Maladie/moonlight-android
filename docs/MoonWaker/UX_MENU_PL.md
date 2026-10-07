@@ -294,7 +294,7 @@ Koniec z grubymi cyjanowymi obrysami.
   zrzucie w ćwierć rozdzielczości w chwili otwarcia menu; tint rgb(6,8,12) 30 %
   (szybkie menu: rośnie do 50 % ku dołowi pod rząd ikon).
 - **Same panele są szkłem:** własne rozmycie 40 px, tint rgb(16,18,26) 50 %, nasycenie
-  ×1,3, biały woal 7 %, kontur 1,5 px jaśniejszy u góry, promień narożników 36 px,
+  ×1,3, biały woal 7/255 (2,7 %), kontur 1,5 px jaśniejszy u góry, promień narożników 36 px,
   panel pływa z marginesami (np. x 1196–1896, y 24–1056 przy 1080p).
 - **Małe pływające menu** (Opcje) mają lżejszą drugą warstwę (rozmycie 10 px, tint 15 %),
   żeby karty za nimi pozostały rozpoznawalne.
