@@ -6990,6 +6990,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         showSidePanelBusy(getString(R.string.console_status_active_session), getString(
                 R.string.console_terminate_session_title),
                 getString(R.string.console_status_closing_session));
+        String busyPanelKey = currentPanelKey;
         SessionModel.Snapshot retained = sessionModel.snapshot();
         if (retained.hostId.equalsIgnoreCase(host.uuid)
                 && retained.executionProfileId.equals(
@@ -6997,32 +6998,35 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && !retained.streamSessionId.isEmpty()) {
             sessionModel.dispatch(new SessionEvent.TerminateRequested(retained.streamSessionId,
                     success -> { finishTerminateSession(host, profileKey, expectedSuspendId,
-                            HostSessionTermination.Outcome.of(success));
+                            HostSessionTermination.Outcome.of(success), busyPanelKey);
                         onRequestedStreamClosed(); }), result -> {
                 if (result == SessionModel.TerminationResult.NO_CONTROLLER) {
                     terminateSessionByControlPlane(host, profileKey, expectedSuspendId,
-                            providerGameId);
+                            providerGameId, busyPanelKey);
                 }
             });
             return;
         }
-        terminateSessionByControlPlane(host, profileKey, expectedSuspendId, providerGameId);
+        terminateSessionByControlPlane(host, profileKey, expectedSuspendId, providerGameId,
+                busyPanelKey);
     }
 
     private void terminateSessionByControlPlane(ComputerDetails host, HostProfileKey profileKey,
-                                                String expectedSuspendId, String providerGameId) {
+                                                String expectedSuspendId, String providerGameId,
+                                                String busyPanelKey) {
         executor.execute(() -> {
             HostSessionTermination.Outcome outcome =
                     terminateKnownControlPlane(host, profileKey.profileId, providerGameId);
             mainHandler.post(() -> finishTerminateSession(
-                    host, profileKey, expectedSuspendId, outcome));
+                    host, profileKey, expectedSuspendId, outcome, busyPanelKey));
         });
     }
 
     private void finishTerminateSession(ComputerDetails host, HostProfileKey profileKey,
                                         String expectedSuspendId,
-                                        HostSessionTermination.Outcome outcome) {
-        if (sidePanelTransient) hideSidePanel();
+                                        HostSessionTermination.Outcome outcome,
+                                        String busyPanelKey) {
+        if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();
         if (outcome.closed()) {
             if (!expectedSuspendId.isEmpty()) {
                 sessionModel.post(SessionEvent.SuspendedEnded.forExecution(host.uuid,

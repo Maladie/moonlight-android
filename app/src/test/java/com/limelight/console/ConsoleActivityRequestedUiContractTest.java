@@ -56,6 +56,21 @@ public class ConsoleActivityRequestedUiContractTest {
                 < completion.indexOf("return;"));
     }
 
+    @Test public void closeSessionHidesOnlyItsOwnProgressPanel() throws IOException {
+        String source = consoleActivitySource();
+        String request = source.substring(source.indexOf("private void requestTerminateSession("),
+                source.indexOf("private void terminateSessionByControlPlane("));
+        String finish = source.substring(source.indexOf("private void finishTerminateSession("));
+
+        assertTrue(request.indexOf("showSidePanelBusy(")
+                < request.indexOf("String busyPanelKey = currentPanelKey;"));
+        String guard =
+                "if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();";
+        assertTrue(finish.contains(guard));
+        assertTrue(finish.indexOf(guard) < finish.indexOf("if (outcome.closed())"));
+        assertFalse(source.contains("if (sidePanelTransient) hideSidePanel();"));
+    }
+
     @Test public void profileSwitchDropsThePreviousProfilesPresentation() throws IOException {
         String source = consoleActivitySource();
         String change = source.substring(source.indexOf("private boolean changeSelectedProfile("),
