@@ -485,14 +485,16 @@ public abstract class SessionEvent<R> {
     static final class TerminationFinished extends SessionEvent<Void> {
         private final Object operation;
         private final boolean success;
+        private final boolean gameLeft;
 
-        TerminationFinished(Object operation, boolean success) {
+        TerminationFinished(Object operation, boolean success, boolean gameLeft) {
             this.operation = operation;
             this.success = success;
+            this.gameLeft = gameLeft;
         }
 
         @Override void apply(SessionModel m, Reply<Void> reply) {
-            m.terminationFinished(operation, success);
+            m.terminationFinished(operation, success, gameLeft);
             reply.accept(null);
         }
     }
@@ -562,27 +564,30 @@ public abstract class SessionEvent<R> {
 
     public static final class DirectTerminationCompleted extends BooleanEvent {
         private final DirectTermination token;
-        private final boolean success, transportUnsafe;
+        private final boolean success, gameLeft, transportUnsafe;
 
         private DirectTerminationCompleted(DirectTermination token, boolean success,
-                                           boolean transportUnsafe) {
+                                           boolean gameLeft, boolean transportUnsafe) {
             this.token = token;
             this.success = success;
+            this.gameLeft = gameLeft;
             this.transportUnsafe = transportUnsafe;
         }
 
+        /** {@code gameLeft}: the stream closed, but an unverified game may still run. */
         public static DirectTerminationCompleted completed(DirectTermination token,
-                                                           boolean success) {
-            return new DirectTerminationCompleted(token, success, false);
+                                                           boolean success, boolean gameLeft) {
+            return new DirectTerminationCompleted(token, success, gameLeft, false);
         }
 
         /** The local stop is uncertain: never restore a reusable live state. */
         public static DirectTerminationCompleted abandoned(DirectTermination token) {
-            return new DirectTerminationCompleted(token, false, true);
+            return new DirectTerminationCompleted(token, false, false, true);
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            reply.accept(m.completeDirectTermination(token, success, transportUnsafe));
+            reply.accept(m.completeDirectTermination(token, success, gameLeft,
+                    transportUnsafe));
         }
     }
 
@@ -612,8 +617,11 @@ public abstract class SessionEvent<R> {
     }
 
     /**
-     * After cancelling {@code preparing}, gives up the reconnect its owner marked for it (a
-     * host change). Posted after the owner's marker, so it clears exactly that record.
+     * Clears the RECONNECT_REQUIRED marker of exactly the given record (stream session, host,
+     * app, game); any other state or record is refused. Posted in two cases: after cancelling
+     * {@code preparing}, to give up the reconnect its owner marked for it (a host change); and
+     * when a live reconnect of that record without warm-up connected, so the live transport
+     * replaces the marker whose control generation the host has since advanced.
      */
     public static final class ReconnectRelinquished extends BooleanEvent {
         private final Snapshot preparing;

@@ -1,10 +1,18 @@
 import ctypes
+import json
 import os
+import tempfile
 import time
 import unittest
+from http import HTTPStatus
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
-from GameProviderBridge import RUNNING_SCAN_DEADLINE, BridgeState, WindowProbe
+from GameProviderBridge import (
+    FILETIME_UNIX_EPOCH, GAME_START_TIMEOUT, RUNNING_SCAN_DEADLINE, UNFINISHED_LAUNCH_TTL,
+    BridgeState, GameProviderHandler, ProviderDiagnostics, WindowProbe,
+    WindowReadinessWorker)
 from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
 
@@ -59,6 +67,33 @@ class ProcessIdentityStatusTest(unittest.TestCase):
             self.probe.kernel32.GetExitCodeProcess.side_effect = \
                 lambda _handle, value, code=exit_code: setattr(value._obj, "value", code) is None
             self.assertEqual(expected, self.probe.process_identity_status(44)[0])
+
+
+class SteamPromptWindowTest(unittest.TestCase):
+    def test_foreground_steam_window_on_the_display_wins_else_the_largest(self):
+        def window(hwnd, image, width, foreground=False, display=r"\\.\DISPLAY9",
+                   path=r"C:\Steam\bin\cef\steamwebhelper.exe"):
+            return {"hwnd": hwnd, "process_id": hwnd * 10, "image": image,
+                    "process_path": path, "display": display, "foreground": foreground,
+                    "bounds": [0, 0, width, 100], "monitor_bounds": [0, 0, 1920, 1080],
+                    "title": "secret"}
+        windows = [
+            window(1, "steamwebhelper.exe", 1920),
+            window(2, "steamwebhelper.exe", 400, foreground=True),
+            window(3, "steamwebhelper.exe", 3000, display=r"\\.\DISPLAY1"),
+            window(4, "game.exe", 4000, foreground=True, path=r"C:\Games\game.exe"),
+        ]
+        probe = object.__new__(WindowProbe)
+        probe.interactive_windows = mock.Mock(side_effect=lambda _all: list(windows))
+        steam = mock.Mock()
+        steam.executable.return_value = Path(r"C:\Steam\steam.exe")
+        selected = probe.steam_prompt_window(steam, r"\\.\DISPLAY9")
+        self.assertEqual(2, selected["hwnd"])
+        self.assertNotIn("title", selected)
+        windows[1]["foreground"] = False
+        self.assertEqual(1, probe.steam_prompt_window(steam, r"\\.\DISPLAY9")["hwnd"])
+        steam.executable.return_value = None
+        self.assertEqual({}, probe.steam_prompt_window(steam, r"\\.\DISPLAY9"))
 
 
 class RunningScanFreshnessTest(unittest.TestCase):
@@ -159,6 +194,18 @@ class RunningGamesTest(unittest.TestCase):
         result = self.state._stop_verified_running_game("epic:Cowbird", token)
         self.assertFalse(result["stopped_current"])
         self.assertEqual(newer, self.state.current)
+
+    def test_verified_stop_leaves_a_fresh_inventory_without_the_game(self):
+        # TV: reauthorize 93 ms after stop-verified saw a scan older than 10 s (409).
+        token = self.token("epic:Cowbird")
+        self.state._running_scan_at -= 11
+        self.probe.stop_verified_process.side_effect = lambda *_: setattr(
+            self.probe.scan_running_processes, "return_value", ([], "complete")) or True
+        self.assertTrue(self.state._stop_verified_running_game(
+            "epic:Cowbird", token)["stopped_current"])
+        process = self.state.observation_snapshot()["process"]
+        self.assertEqual(("ABSENT", "complete", []), (
+            process["evidence"], process["running_scan_status"], process["running_games"]))
 
     def test_old_token_reuse_profile_library_and_ambiguity_have_zero_effect(self):
         token = self.token()
@@ -695,7 +742,7 @@ class NativeRunningGamesTest(unittest.TestCase):
         self.probe = object.__new__(WindowProbe)
         self.probe.kernel32 = mock.Mock()
         self.probe.user32 = mock.Mock()
-        self.probe.is_session_locked = mock.Mock(return_value=False)
+        self.probe.input_desktop_blocked = mock.Mock(return_value=False)
         self.probe.uac_consent_pending = mock.Mock(return_value=False)
         self.expected = identity()
         self.probe.process_identity = mock.Mock(return_value=dict(self.expected))
@@ -747,6 +794,453 @@ class NativeRunningGamesTest(unittest.TestCase):
             self.probe.process_identity.side_effect = [self.expected, {**self.expected, **change}]
             with mock.patch.object(ctypes, "get_last_error", return_value=18, create=True):
                 self.assertEqual(([], "complete"), self.probe.scan_running_processes(set(), lambda _path: True, RUNNING_SCAN_DEADLINE))
+
+
+def filetime(unix_seconds):
+    return int(unix_seconds * 10_000_000) + FILETIME_UNIX_EPOCH
+
+
+class StartReadinessTest(unittest.TestCase):
+    """Two-phase start: process within GAME_START_TIMEOUT, then the window without a limit."""
+
+    def setUp(self):
+        self.now = 1_800_000_000.0
+        service = GameOperationsService(OperationJournal(None),
+                                       steam=SteamProvider(root_resolver=lambda: None))
+        self.state = BridgeState(game_operations=service, profile_id="profile",
+                                 clock=lambda: self.now)
+        self.state.library_revision = "1"
+        self.state.library = {
+            "steam:1": {"id": "steam:1", "provider": "steam", "installDir": r"C:\Games\HK"},
+            "steam:2": {"id": "steam:2", "provider": "steam", "installDir": r"C:\Games\Other"},
+        }
+        self.probe = mock.Mock()
+        self.probe.scan_running_processes.return_value = ([], "complete")
+        self.probe.process_identity_status.return_value = ("unknown", None)
+        self.state.running_process_probe = self.probe
+        self.requested_at = self.now
+        self.state.current = {"state": "starting", "id": "steam:1",
+                              "installDir": r"C:\Games\HK",
+                              "launchRequestedAt": self.requested_at}
+        self.state.readiness = {"ready": False, "reason": "game_starting",
+                                "target_kind": "game", "stable_samples": 0}
+        self.game = identity(11, started=filetime(self.requested_at + 5))
+
+    def scan(self, *games, status="complete"):
+        self.probe.scan_running_processes.return_value = (list(games), status)
+        self.state.refresh_running_games()
+
+    def no_window(self):
+        self.state.apply_window_sample({"qualified": False, "reason": "waiting_for_game_window"})
+
+    def test_phase_one_fails_after_the_limit_without_a_process(self):
+        self.now += GAME_START_TIMEOUT - 1
+        self.no_window()
+        self.assertEqual("starting", self.state.current["state"])
+        self.assertEqual("game_starting", self.state.readiness["reason"])
+        self.now += 1
+        self.no_window()
+        self.assertEqual("failed", self.state.current["state"])
+        self.assertEqual("game_start_timeout", self.state.current["reason"])
+        self.assertEqual(self.requested_at, self.state.current["launchRequestedAt"])
+        self.assertEqual("game-launch-failed", self.state.events[-1]["event"])
+
+    def test_verified_process_has_no_window_limit_and_carries_its_token(self):
+        self.scan(self.game)
+        self.assertEqual(11, self.state.current["processId"])
+        self.assertEqual("waiting_for_game_window", self.state.readiness["reason"])
+        for elapsed in (GAME_START_TIMEOUT + 1, 3600):
+            self.now = self.requested_at + elapsed
+            self.no_window()
+            self.scan(self.game)
+            self.assertEqual("starting", self.state.current["state"])
+        self.assertEqual("waiting_for_game_window", self.state.readiness["reason"])
+        observation = self.state.observation_snapshot()
+        self.assertEqual("starting", observation["game"]["state"])
+        self.assertEqual("VERIFIED", observation["process"]["evidence"])
+        self.assertEqual(11, observation["process"]["process_id"])
+        self.assertRegex(observation["process"]["process_token"], "^[0-9a-f]{64}$")
+        self.assertFalse(observation["window"]["ready"])
+        self.assertEqual("PENDING", observation["window"]["evidence"])
+
+    def test_exit_in_phase_two_fails_only_on_proven_absence(self):
+        self.scan(self.game)
+        self.state.apply_window_sample({"qualified": False, "reason": "game_process_exited",
+                                        "process_id": 11})
+        self.assertEqual("starting", self.state.current["state"])
+        self.scan(status="partial")
+        self.scan()  # liveness unknown
+        self.probe.process_identity_status.return_value = (
+            "alive", {**self.game, "visible_window": False})
+        self.scan()  # alive without a visible window: still the same process
+        self.assertEqual("starting", self.state.current["state"])
+        self.probe.process_identity_status.return_value = ("gone", None)
+        self.scan()
+        self.assertEqual("failed", self.state.current["state"])
+        self.assertEqual("game_exited_during_start", self.state.current["reason"])
+        self.assertEqual("game_exited_during_start", self.state.readiness["reason"])
+        self.assertEqual({"id": "steam:1", "reason": "game_exited_during_start"},
+                         self.state.events[-1]["payload"])
+
+    def test_verified_successor_replaces_an_exited_launcher_process(self):
+        self.scan(self.game)
+        successor = identity(12, r"C:\Games\HK\bin\hk.exe", filetime(self.requested_at + 9))
+        self.probe.process_identity_status.return_value = ("gone", None)
+        self.scan(successor)
+        self.assertEqual("starting", self.state.current["state"])
+        self.assertEqual(12, self.state.current["processId"])
+
+    def test_late_window_after_200_seconds_makes_the_game_running(self):
+        self.scan(self.game)
+        self.now += 200
+        self.state.apply_window_sample({"qualified": False, "reason": "waiting_for_game_window",
+                                        "process_id": 12, "replacement_process": True})
+        self.assertEqual("starting", self.state.current["state"])
+        self.state.apply_window_sample({"qualified": False, "reason": "target_not_fullscreen",
+                                        "process_id": 11})
+        self.assertEqual("running", self.state.current["state"])
+        self.assertEqual(11, self.state.current["processId"])
+        self.assertFalse(self.state.readiness["ready"])
+
+    def test_failed_start_adopts_a_late_process_of_the_same_request(self):
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("failed", self.state.current["state"])
+        self.scan(identity(11, started=filetime(self.requested_at + 95)))
+        self.assertEqual("starting", self.state.current["state"])
+        self.assertNotIn("reason", self.state.current)
+        self.assertEqual("waiting_for_game_window", self.state.readiness["reason"])
+        self.assertEqual("VERIFIED", self.state.observation_snapshot()["process"]["evidence"])
+        self.state.apply_window_sample({"qualified": False, "reason": "target_not_foreground",
+                                        "process_id": 11})
+        self.assertEqual("running", self.state.current["state"])
+
+    def test_no_adoption_of_another_game_or_an_earlier_request(self):
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        other_game = identity(21, r"C:\Games\Other\other.exe", filetime(self.requested_at + 95))
+        earlier = identity(11, started=filetime(self.requested_at - 30))
+        self.scan(other_game, earlier)
+        self.assertEqual("failed", self.state.current["state"])
+        self.assertNotIn("processId", self.state.current)
+        # A new request for the same game never adopts the previous request's process.
+        self.state.current = {"state": "starting", "id": "steam:1",
+                              "installDir": r"C:\Games\HK",
+                              "launchRequestedAt": self.now}
+        self.scan(identity(11, started=filetime(self.requested_at + 5)))
+        self.assertNotIn("processId", self.state.current)
+        self.assertEqual("PENDING", self.state.observation_snapshot()["process"]["evidence"])
+
+    def run_worker_once(self, probe):
+        resolver = mock.Mock()
+        resolver.resolve.return_value = None
+        self.state.installation_probes = mock.Mock(return_value=[])
+        self.state.refresh_running_games = mock.Mock()
+        with mock.patch("GameProviderBridge.time.sleep", side_effect=StopIteration):
+            with self.assertRaises(StopIteration):
+                WindowReadinessWorker(self.state, probe, resolver).run()
+
+    def test_steam_interstitial_is_launcher_interaction_without_start_timeout(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "logs"))
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 10))
+            with open(os.path.join(root, "logs", "console_log.txt"), "w") as log:
+                log.write(
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp changed task '
+                    f'to ShowInterstitials with ""\n'
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp waiting for '
+                    f'user response to ShowInterstitials ""\n')
+            self.state.game_operations.steam.root_resolver = lambda: Path(root)
+            self.state.library["steam:1"]["providerGameId"] = "1"
+            probe = mock.Mock()
+            probe.steam_prompt_window.return_value = {
+                "hwnd": 5, "process_id": 77, "image": "steamwebhelper.exe",
+                "display": r"\\.\DISPLAY9", "foreground": True}
+            self.run_worker_once(probe)
+        probe.sample.assert_not_called()
+        self.assertEqual("launcher_interaction_required", self.state.readiness["reason"])
+        self.assertEqual("launcher-interaction-required", self.state.events[-1]["event"])
+        # The user has not answered Steam yet: the start limit does not end the start.
+        self.now += GAME_START_TIMEOUT + 60
+        self.no_window()
+        self.assertEqual("starting", self.state.current["state"])
+        observation = self.state.observation_snapshot()
+        self.assertEqual("launcher_interaction_required", observation["provider"]["reason"])
+        self.assertEqual({"detail": "steam_ShowInterstitials", "image": "steamwebhelper.exe",
+                          "process_id": 77, "display": r"\\.\DISPLAY9", "foreground": True},
+                         observation["window"]["launcher"])
+
+    def test_steam_answered_prompt_is_not_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "logs"))
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 10))
+            with open(os.path.join(root, "logs", "console_log.txt"), "w") as log:
+                log.write(
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp waiting for '
+                    f'user response to ShowInterstitials ""\n'
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp continues with '
+                    f'user response "ShowInterstitials"\n'
+                    f'[{stamp}] GameAction [AppID 2, ActionID 7] : LaunchApp waiting for '
+                    f'user response to ShowInterstitials ""\n')
+            steam = SteamProvider(root_resolver=lambda: Path(root))
+            self.assertEqual("", steam.pending_launch_prompt({"providerGameId": "1"}))
+            self.assertEqual("ShowInterstitials",
+                             steam.pending_launch_prompt({"providerGameId": "2"}))
+            # Steam's own sub-second waits are not a prompt.
+            self.assertEqual("", steam.pending_launch_prompt(
+                {"providerGameId": "2"}, now=time.time() - 9))
+
+    def test_closed_session_abandons_a_start_without_a_game_process(self):
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("failed", self.state.current["state"])
+        result = self.state.abandon_start("steam:1")
+        self.assertTrue(result["accepted"], result)
+        self.assertEqual({"state": "idle"}, self.state.current)
+        self.assertEqual("idle", self.state.observation_snapshot()["game"]["state"])
+        self.assertFalse(self.state.abandon_start("steam:1")["accepted"])
+        # A start still in phase 1 is abandoned too; one with a game process is not.
+        self.state.current = {"state": "starting", "id": "steam:1",
+                              "installDir": r"C:\Games\HK", "launchRequestedAt": self.now}
+        self.assertTrue(self.state.abandon_start("steam:1")["accepted"])
+        self.state.current = {"state": "starting", "id": "steam:1", "processId": 11,
+                              "installDir": r"C:\Games\HK", "launchRequestedAt": self.now}
+        self.assertFalse(self.state.abandon_start("steam:1")["accepted"])
+        self.assertEqual("starting", self.state.current["state"])
+
+    def test_late_previous_launch_is_reported_not_adopted(self):
+        self.state.library["steam:1"]["name"] = "Hollow Knight"
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.state.current = {"state": "starting", "id": "steam:2",
+                              "installDir": r"C:\Games\Other", "launchRequestedAt": self.now}
+        b_requested_at = self.now
+        late = identity(11, started=filetime(b_requested_at + 30))
+        self.now += 30
+        self.scan(late)
+        self.no_window()
+        self.assertNotIn("processId", self.state.current)
+        self.assertEqual("previous_launch_game_running", self.state.readiness["reason"])
+        observation = self.state.observation_snapshot()
+        self.assertEqual("previous_launch_game_running", observation["provider"]["reason"])
+        previous = observation["window"]["previous_launch"]
+        self.assertEqual(("steam:1", 11, "Hollow Knight"),
+                         (previous["game_id"], previous["process_id"], previous["name"]))
+        running = observation["process"]["running_games"]
+        self.assertEqual([{key: previous[key] for key in (
+            "game_id", "process_id", "process_token")}], running)
+        # The user decides: no start timeout while that game holds the screen.
+        self.now = b_requested_at + GAME_START_TIMEOUT + 60
+        self.scan(late)
+        self.no_window()
+        self.assertEqual("starting", self.state.current["state"])
+        # Gone: the start limit runs again from then. The reason leaves with its block,
+        # before any window sample (the client rejects the reason without the block).
+        self.scan()
+        observation = self.state.observation_snapshot()
+        self.assertNotIn("previous_launch", observation["window"])
+        self.assertEqual("game_starting", observation["window"]["reason"])
+        self.assertEqual("game_starting", observation["provider"]["reason"])
+        self.no_window()
+        self.assertNotIn("previous_launch", self.state.observation_snapshot()["window"])
+        self.assertEqual("starting", self.state.current["state"])
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("game_start_timeout", self.state.current["reason"])
+
+    def post(self, path, body):
+        handler = object.__new__(GameProviderHandler)
+        handler.server = SimpleNamespace(state=self.state)
+        handler.path = path
+        handler.read_json = mock.Mock(return_value=body)
+        handler.send_json = mock.Mock()
+        handler._begin_diagnostics = mock.Mock()
+        handler._finish_diagnostics = mock.Mock()
+        handler.do_POST()
+        return handler.send_json.call_args.args
+
+    def test_abandon_start_route_runs_under_the_effect_fence(self):
+        binding = {"operation_id": "close-9", "generation": 9, "actor_lease_epoch": 3,
+                   "effect_sequence": 1, "actor_profile_id": "parent",
+                   "execution_profile_id": "parent", "stream_session_id": "stream-1"}
+        self.state.authorize_control_effect({**binding, "operation_id": "newer-10",
+                                             "generation": 10, "actor_lease_epoch": 4})
+        # A close older than the fence's high-water mark has zero effect.
+        status, response = self.post("/game/abandon-start",
+                                     {"game_id": "steam:1", "control_operation": binding})
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status)
+        self.assertIn("Stale", response["error"])
+        self.assertEqual("starting", self.state.current["state"])
+        status, response = self.post("/game/abandon-start", {
+            "game_id": "steam:1", "control_operation": {
+                **binding, "operation_id": "close-11", "generation": 11,
+                "actor_lease_epoch": 5}})
+        self.assertEqual(HTTPStatus.ACCEPTED, status, response)
+        self.assertEqual(("steam:1", True), (response["abandoned_game_id"],
+                                             response["accepted"]))
+        self.assertEqual({"state": "idle"}, self.state.current)
+
+    def fail_a_then_start_b(self):
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("steam:1", self.state._unfinished_launch["id"])
+        self.state.current = {"state": "starting", "id": "steam:2",
+                              "installDir": r"C:\Games\Other", "launchRequestedAt": self.now}
+
+    def test_unfinished_launch_expires_after_its_window(self):
+        self.fail_a_then_start_b()
+        self.now = self.requested_at + UNFINISHED_LAUNCH_TTL + 1
+        # Started by the user on the PC long after A's request: not the previous launch.
+        self.scan(identity(11, started=filetime(self.now)))
+        self.assertIsNone(self.state._unfinished_launch)
+        self.assertNotIn("previous_launch", self.state.observation_snapshot()["window"])
+
+    def test_unfinished_launch_ends_when_a_later_start_runs_or_a_is_adopted(self):
+        self.fail_a_then_start_b()
+        self.state.apply_window_sample({"qualified": False, "reason": "target_not_foreground",
+                                        "process_id": 21})
+        self.assertEqual("running", self.state.current["state"])
+        self.scan(identity(21, r"C:\Games\Other\other.exe", filetime(self.now)))
+        self.assertIsNone(self.state._unfinished_launch)
+        # A failed again, then its own request adopts its late process.
+        self.state.current = {"state": "starting", "id": "steam:1",
+                              "installDir": r"C:\Games\HK", "launchRequestedAt": self.now}
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("steam:1", self.state._unfinished_launch["id"])
+        self.scan(identity(11, started=filetime(self.now)))
+        self.assertEqual(11, self.state.current["processId"])
+        self.assertIsNone(self.state._unfinished_launch)
+
+    def test_new_start_of_the_unfinished_game_owns_it_again(self):
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.state.game_operations.launch = mock.Mock(return_value={"accepted": True})
+        self.state.start_game("steam:1")
+        self.assertIsNone(self.state._unfinished_launch)
+
+    def test_probe_reason_changes_are_recorded_once_without_titles(self):
+        samples = iter([
+            {"qualified": False, "reason": "waiting_for_game_window",
+             "probe_window_count": 0, "probe_windows": []},
+            {"qualified": False, "reason": "waiting_for_game_window",
+             "probe_window_count": 0, "probe_windows": []},
+            {"qualified": False, "reason": "waiting_for_game_window", "probe_window_count": 5,
+             "probe_windows": ["pid-11:160x28:visible:minimized:uncloaked:DISPLAY1",
+                               "Secret Title", "a", "b", "c"]},
+        ])
+        probe = mock.Mock()
+        probe.sample.side_effect = lambda *_args: dict(next(samples))
+        resolver = mock.Mock()
+        resolver.resolve.return_value = None
+        self.state.installation_probes = mock.Mock(return_value=[])
+        self.state.refresh_running_games = mock.Mock()
+        sleeps = iter([None, None, StopIteration()])
+
+        def sleep(_seconds):
+            value = next(sleeps)
+            if value is not None:
+                raise value
+
+        recorder = mock.Mock()
+        with mock.patch("GameProviderBridge.DIAGNOSTICS", recorder), \
+                mock.patch("GameProviderBridge.time.sleep", side_effect=sleep):
+            with self.assertRaises(StopIteration):
+                WindowReadinessWorker(self.state, probe, resolver).run()
+        calls = [call for call in recorder.record.call_args_list
+                 if call.args[0] == "window-probe.reason-changed"]
+        self.assertEqual(1, len(calls))
+        self.assertEqual({"game_id": "steam:1", "state": "starting",
+                          "reason": "waiting_for_game_window", "previous_reason": "none",
+                          "window_count": 0, "windows": []}, calls[0].kwargs)
+
+        diagnostics = ProviderDiagnostics()
+        diagnostics.logger = mock.Mock()
+        diagnostics.record("window-probe.reason-changed", reason="target_not_fullscreen",
+                           window_count=5, windows=[
+                               "pid-11:160x28:visible:minimized:uncloaked:DISPLAY1",
+                               "Secret Title", "a", "b", "c"])
+        entry = json.loads(diagnostics.logger.info.call_args.args[0])
+        self.assertEqual(5, entry["window_count"])
+        self.assertEqual(["pid-11:160x28:visible:minimized:uncloaked:DISPLAY1", "a", "b"],
+                         entry["windows"])
+
+    def test_failed_start_with_kept_install_dir_skips_window_enumeration(self):
+        self.state.current = {"state": "failed", "id": "steam:1",
+                              "installDir": r"C:\Games\HK",
+                              "launchRequestedAt": self.requested_at}
+        window_probe = mock.Mock()
+        resolver = mock.Mock()
+        resolver.resolve.return_value = None
+        self.state.installation_probes = mock.Mock(return_value=[])
+        self.state.refresh_running_games = mock.Mock()
+        sleeps = iter([None, StopIteration()])
+
+        def sleep(_seconds):
+            value = next(sleeps)
+            if value is not None:
+                raise value
+
+        with mock.patch("GameProviderBridge.time.sleep", side_effect=sleep):
+            with self.assertRaises(StopIteration):
+                WindowReadinessWorker(self.state, window_probe, resolver).run()
+        window_probe.sample.assert_not_called()
+        # Adoption stays with the running scan.
+        self.state.refresh_running_games.assert_called()
+
+    def test_probe_describes_hidden_minimized_and_small_game_windows(self):
+        class User32:
+            windows = {1: (False, (0, 0, 1920, 1080)), 2: (True, (-32000, -32000, -31840, -31972)),
+                       3: (True, (0, 0, 320, 200)), 4: (True, (0, 0, 1920, 1080))}
+
+            @staticmethod
+            def GetForegroundWindow():
+                return 0
+
+            @classmethod
+            def IsWindowVisible(cls, hwnd):
+                return cls.windows[hwnd][0]
+
+            @staticmethod
+            def GetWindowThreadProcessId(hwnd, process_id):
+                process_id._obj.value = 11 if hwnd != 4 else 99
+                return 1
+
+            @classmethod
+            def GetWindowRect(cls, hwnd, rect):
+                (rect._obj.left, rect._obj.top,
+                 rect._obj.right, rect._obj.bottom) = cls.windows[hwnd][1]
+                return True
+
+            @classmethod
+            def EnumWindows(cls, callback, _value):
+                for hwnd in cls.windows:
+                    callback(hwnd, 0)
+                return True
+
+        probe = object.__new__(WindowProbe)
+        probe.user32 = User32()
+        probe.dwmapi = None
+        probe.kernel32 = object()
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
+        probe._process_tree = mock.Mock(return_value={11})
+        probe._process_path = mock.Mock(side_effect=lambda pid: (
+            r"C:\Games\HK\game.exe" if pid == 11 else r"C:\Apps\other.exe"))
+        probe._process_image = mock.Mock(return_value="")
+        probe._window_title = mock.Mock(return_value="Hollow Knight")
+        probe._window_class = mock.Mock(return_value="UnityWndClass")
+        probe._monitor_details = mock.Mock(return_value=(r"\\.\DISPLAY1", [0, 0, 1920, 1080]))
+
+        sample = probe.sample("game", 11, r"\\.\DISPLAY1", r"C:\Games\HK")
+
+        self.assertEqual("waiting_for_game_window", sample["reason"])
+        self.assertEqual(3, sample["probe_window_count"])
+        self.assertEqual([
+            "pid-11:160x28:visible:minimized:uncloaked:DISPLAY1",
+            "pid-11:320x200:visible:normal:uncloaked:DISPLAY1",
+            "pid-11:1920x1080:hidden:normal:uncloaked:DISPLAY1",
+        ], sample["probe_windows"])
+        self.assertNotIn("Hollow", str(sample["probe_windows"]))
 
 
 if __name__ == "__main__":

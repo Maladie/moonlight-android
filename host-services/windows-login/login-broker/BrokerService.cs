@@ -192,7 +192,6 @@ namespace MoonWaker.WindowsLogin
         internal const string ProviderPipe = "MoonWakerLoginBroker.Provider.v1";
         internal const string AttemptEvent = "Global\\MoonWaker.LoginAttempt.v1";
 
-        private readonly WindowsSessionStateBackend sessions;
         private readonly EventWaitHandle attemptEvent;
         private readonly PipeEndpoint[] endpoints;
 
@@ -204,9 +203,8 @@ namespace MoonWaker.WindowsLogin
                 throw new InvalidOperationException(
                     "MoonWaker Login Broker must run as LocalSystem.");
             attemptEvent = CreateAttemptEvent();
-            sessions = new WindowsSessionStateBackend();
             BrokerCore core = new BrokerCore(new WindowsAccountValidator(),
-                new LsaSecretStore(), sessions,
+                new LsaSecretStore(), new WindowsSessionStateBackend(),
                 new AttemptLedger(delegate { return DateTime.UtcNow; },
                     TimeSpan.FromMinutes(2), 128, delegate { attemptEvent.Set(); }),
                 ProviderReady, RunChildProfileApi);
@@ -225,11 +223,6 @@ namespace MoonWaker.WindowsLogin
         internal void Stop()
         {
             foreach (PipeEndpoint endpoint in endpoints) endpoint.Stop();
-        }
-
-        internal void SessionChanged(SessionChangeDescription change)
-        {
-            sessions.Update(change);
         }
 
         public void Dispose()
@@ -333,8 +326,14 @@ namespace MoonWaker.WindowsLogin
     internal sealed class WindowsSessionStateBackend : ISessionStateBackend
     {
         private static readonly IntPtr CurrentServer = IntPtr.Zero;
-        private readonly object gate = new object();
-        private readonly HashSet<int> lockedSessions = new HashSet<int>();
+        // WTSINFOEXW: DWORD Level, then the union (8-byte aligned by its
+        // LARGE_INTEGER members) holding WTSINFOEX_LEVEL1_W:
+        // ULONG SessionId, WTS_CONNECTSTATE_CLASS SessionState, LONG SessionFlags.
+        private const int InfoExLevelOffset = 0;
+        private const int InfoExSessionIdOffset = 8;
+        private const int InfoExSessionFlagsOffset = 16;
+        internal const int SessionStateLock = 0;
+        internal const int SessionStateUnlock = 1;
 
         private enum WtsConnectState
         {
@@ -345,7 +344,8 @@ namespace MoonWaker.WindowsLogin
         private enum WtsInfoClass
         {
             InitialProgram, ApplicationName, WorkingDirectory, OemId,
-            SessionId, UserName, WinStationName, DomainName
+            SessionId, UserName, WinStationName, DomainName,
+            SessionInfoEx = 25
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -371,15 +371,25 @@ namespace MoonWaker.WindowsLogin
         private static extern bool WTSDisconnectSession(IntPtr server, int sessionId,
             bool wait);
 
-        public string GetState(ProfileIdentity identity)
+        public string GetState(ProfileIdentity identity, out string reason)
         {
-            try { return Classify(identity, Snapshots()); }
-            catch (BrokerFault) { return "unknown"; }
+            reason = "none";
+            try
+            {
+                string state = Classify(identity, Snapshots(identity));
+                if (state == "unknown") reason = "session_state_unknown";
+                return state;
+            }
+            catch (BrokerFault fault)
+            {
+                reason = fault.Reason;
+                return "unknown";
+            }
         }
 
         public string Switch(ProfileIdentity identity)
         {
-            int sessionId = SelectDisconnectSession(identity, Snapshots(),
+            int sessionId = SelectDisconnectSession(identity, Snapshots(identity),
                 FastUserSwitchingEnabled());
             if (sessionId == -2) return "ready";
             if (sessionId >= 0 && !WTSDisconnectSession(CurrentServer, sessionId, true))
@@ -387,7 +397,7 @@ namespace MoonWaker.WindowsLogin
             return "logon_ui";
         }
 
-        private List<LoginSessionSnapshot> Snapshots()
+        private List<LoginSessionSnapshot> Snapshots(ProfileIdentity identity)
         {
             IntPtr sessions;
             int count;
@@ -419,7 +429,9 @@ namespace MoonWaker.WindowsLogin
                     snapshots.Add(new LoginSessionSnapshot { SessionId = session.SessionId,
                         Sid = sid, AccountName = account,
                         WinStationName = Marshal.PtrToStringUni(session.WinStationName) ?? "",
-                        State = state, Locked = IsLocked(session.SessionId) });
+                        State = state,
+                        Locked = TargetLocked(identity, sid, state, session.SessionId,
+                            QueryLocked) });
                 }
             }
             finally { WTSFreeMemory(sessions); }
@@ -492,22 +504,48 @@ namespace MoonWaker.WindowsLogin
             return best;
         }
 
-        internal void Update(SessionChangeDescription change)
+        // Windows is the only owner of the lock fact: every classification reads
+        // it, so a lock that predates the service or a missed notification
+        // cannot make a locked console look ready. Only the profile's own active
+        // session is read; another user's session never needs (or breaks on) it.
+        internal static bool TargetLocked(ProfileIdentity identity, string sid, string state,
+            int sessionId, Func<int, bool> readLocked)
         {
-            lock (gate)
-            {
-                if (change.Reason == SessionChangeReason.SessionLock)
-                    lockedSessions.Add(change.SessionId);
-                else if (change.Reason == SessionChangeReason.SessionUnlock ||
-                    change.Reason == SessionChangeReason.SessionLogoff ||
-                    change.Reason == SessionChangeReason.SessionLogon)
-                    lockedSessions.Remove(change.SessionId);
-            }
+            if (state != "active" || String.IsNullOrWhiteSpace(sid) ||
+                    !String.Equals(sid, identity.Sid, StringComparison.OrdinalIgnoreCase))
+                return false;
+            return readLocked(sessionId);
         }
 
-        private bool IsLocked(int sessionId)
+        private static bool QueryLocked(int sessionId)
         {
-            lock (gate) return lockedSessions.Contains(sessionId);
+            IntPtr buffer;
+            int bytes;
+            if (!WTSQuerySessionInformation(CurrentServer, sessionId,
+                    WtsInfoClass.SessionInfoEx, out buffer, out bytes) || buffer == IntPtr.Zero)
+                throw new BrokerFault("action_required", "session_lock_state_unknown");
+            try
+            {
+                if (bytes < InfoExSessionFlagsOffset + 4 ||
+                    Marshal.ReadInt32(buffer, InfoExLevelOffset) != 1 ||
+                    Marshal.ReadInt32(buffer, InfoExSessionIdOffset) != sessionId)
+                    throw new BrokerFault("action_required", "session_lock_state_unknown");
+                return LockedFromSessionFlags(
+                    Marshal.ReadInt32(buffer, InfoExSessionFlagsOffset), Environment.OSVersion.Version);
+            }
+            finally { WTSFreeMemory(buffer); }
+        }
+
+        // Windows 7 / Server 2008 R2 report SessionFlags with LOCK and UNLOCK
+        // swapped. The broker manifest targets Windows 10/11 only, so those
+        // versions are refused instead of carrying a second interpretation.
+        internal static bool LockedFromSessionFlags(int flags, Version windows)
+        {
+            if (windows < new Version(6, 2))
+                throw new BrokerFault("unsupported", "windows_version_unsupported");
+            if (flags == SessionStateLock) return true;
+            if (flags == SessionStateUnlock) return false;
+            throw new BrokerFault("action_required", "session_lock_state_unknown");
         }
 
         private static string Query(int sessionId, WtsInfoClass informationClass)
@@ -530,7 +568,6 @@ namespace MoonWaker.WindowsLogin
             ServiceName = "MoonWakerLoginBroker";
             CanStop = true;
             CanShutdown = true;
-            CanHandleSessionChangeEvent = true;
             AutoLog = false;
         }
 
@@ -551,12 +588,6 @@ namespace MoonWaker.WindowsLogin
         {
             OnStop();
             base.OnShutdown();
-        }
-
-        protected override void OnSessionChange(SessionChangeDescription changeDescription)
-        {
-            if (host != null) host.SessionChanged(changeDescription);
-            base.OnSessionChange(changeDescription);
         }
     }
 

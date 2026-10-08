@@ -214,6 +214,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean providerEndGameInFlight;
     private boolean timedOutRevealedReturnInFlight;
     private boolean retainedDashboardReturnInFlight;
+    /** The observation kept on the retained transport after this game's start failed. */
+    private String failedStartObservationId = "";
+    private String lastTransitionNotice = "";
     private String providerStartRejectedTransitionId = "";
     private String retryTransitionId = "";
     private final WholeSessionTermination.Owner wholeSessionTermination =
@@ -394,6 +397,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static final String EXTRA_AUTO_WARM_UP_CONVERTED = "AutoWarmUpConvertedToGame";
     private static final String STATE_TRANSITION_REVEALED = "ConsoleTransitionRevealed";
     private static final String STATE_RETRY_TRANSITION_ID = "ConsoleRetryTransitionId";
+    private static final String STATE_FAILED_START_OBSERVATION_ID =
+            "ConsoleFailedStartObservationId";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
     // A retained switch selected while no presentation was attached; submitted after attach.
     public static final String EXTRA_PENDING_SWITCH_HOST_ID = "PendingSwitchHostId";
@@ -424,6 +429,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 : savedInstanceState.getString(STATE_RETRY_TRANSITION_ID,
                 getIntent().getStringExtra(STATE_RETRY_TRANSITION_ID));
         if (retryTransitionId == null) retryTransitionId = "";
+        if (savedInstanceState != null) {
+            failedStartObservationId = savedInstanceState.getString(
+                    STATE_FAILED_START_OBSERVATION_ID, "");
+        }
         readChildSessionExtras();
         sourceSuspendId = normalizeOpaqueId(
                 getIntent().getStringExtra(EXTRA_SOURCE_SUSPEND_ID));
@@ -541,13 +550,24 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionController = new LaunchTransitionController(
                         this::onTransitionChanged);
                 transitionController.begin(transitionSpec);
-                transitionCoordinator = createTransitionCoordinator();
+                // The launch the console started: its request began at the user's Play.
+                transitionCoordinator = createTransitionCoordinator(
+                        transitionSpec, launchStartedAtMillis);
                 consoleLoadingView.setActions(new ConsoleStreamLoadingView.Actions() {
                     @Override public void onCancel() {
                         cancelTransition();
                     }
 
                     @Override public void onRetry() {
+                        // The stale earlier launch's game: this slot reads "End that game".
+                        if (transitionController.snapshot().state
+                                == LaunchTransitionState.PREVIOUS_GAME_RUNNING) {
+                            if (transitionCoordinator != null
+                                    && offersPreviousGameStop(isChildSession())) {
+                                transitionCoordinator.stopPreviousGame();
+                            }
+                            return;
+                        }
                         retryTransition();
                     }
 
@@ -1749,6 +1769,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     protected void onSaveInstanceState(Bundle outState) {
         outState.putBoolean(STATE_TRANSITION_REVEALED, streamEverRevealed);
         outState.putString(STATE_RETRY_TRANSITION_ID, retryTransitionId);
+        outState.putString(STATE_FAILED_START_OBSERVATION_ID, failedStartObservationId);
         super.onSaveInstanceState(outState);
     }
 
@@ -3336,9 +3357,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageComplete(String stage) {
+        bindControlGeneration();
+    }
+
+    /** The live transport's control generation, recorded for host effects; 0 before one. */
+    private long bindControlGeneration() {
         long generation = runtime == null ? 0L : runtime.controlGeneration();
-        if (generation <= 0L) return;
-        getIntent().putExtra(EXTRA_CONTROL_GENERATION, generation);
+        if (generation > 0L) getIntent().putExtra(EXTRA_CONTROL_GENERATION, generation);
+        return getIntent().getLongExtra(EXTRA_CONTROL_GENERATION, 0L);
     }
 
     private void stopConnection() {
@@ -3424,15 +3450,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void terminateRetainedSession(
             SessionModel.TerminationCallback completion) {
-        terminateWholeSessionVerified(completion == null ? null : new ProviderStopCallback() {
-            @Override public void complete(boolean success) {
-                completion.complete(success);
-            }
-
-            @Override public void transportUnsafe() {
-                completion.transportUnsafe();
-            }
-        });
+        // The model runs this for the console that asked; that console owns what is shown next.
+        terminateWholeSessionVerified(completion, true);
     }
 
     @Override
@@ -3769,11 +3788,34 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 String authorizationId = ControlOperationClient.operationId("reauthorize",
                         streamSessionId, operation.request.appId,
                         expectedAuthorizationGeneration, nextChildId);
-                ControlOperationClient.Permit authorization = new ControlOperationClient(
-                        new GatewayTransport()).acquire(targetGateway.gatewayConnection(), authorizationId,
-                        "reauthorize", streamSessionId, operation.request.appId,
-                        expectedAuthorizationGeneration, operation.request.appId, nextChildId);
-                if (!authorization.succeeded()) throw new IOException("retained_authorization_unconfirmed");
+                ControlOperationClient authorizer = new ControlOperationClient(new GatewayTransport());
+                ControlOperationClient.Permit granted = null;
+                for (int attempt = 0; granted == null; attempt++) {
+                    try {
+                        ControlOperationClient.Permit permit = authorizer.acquire(
+                                targetGateway.gatewayConnection(), authorizationId,
+                                "reauthorize", streamSessionId, operation.request.appId,
+                                expectedAuthorizationGeneration, operation.request.appId,
+                                nextChildId);
+                        if (permit.succeeded()) granted = permit;
+                    } catch (GatewayTransport.GatewayException refused) {
+                        if (refused.statusCode() != java.net.HttpURLConnection.HTTP_CONFLICT) {
+                            throw refused;
+                        }
+                    }
+                    if (granted != null) break;
+                    if (!retriesRetainedAuthorization(reuseRunningGame, attempt)) {
+                        throw new IOException(RETAINED_AUTHORIZATION_UNCONFIRMED);
+                    }
+                    // The previous game is already stopped, but the host's process scan may
+                    // still lag that stop: one quiet retry of the same operation.
+                    SystemClock.sleep(RETAINED_AUTHORIZATION_RETRY_DELAY_MS);
+                    if (!isCurrentRetainedSwitch(operation)
+                            || operation.request.cancelled.getAsBoolean()) {
+                        throw new IOException("retained_switch_context_changed");
+                    }
+                }
+                final ControlOperationClient.Permit authorization = granted;
                 if (reuseRunningGame && (!operation.request.streamSessionId.equals(
                         authorization.streamSessionId)
                         || authorization.sunshineAppId != operation.request.appId
@@ -3869,9 +3911,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             pendingChildSessionId, allowance);
                 }
                 boolean failClosed = timeAttachmentMayHaveChanged;
+                boolean offerRetry = offersRetainedAuthorizationRetry(
+                        failClosed, reuseRunningGame, error.getMessage());
                 runOnUiThread(() -> {
                     if (!isCurrentRetainedSwitch(operation)) return;
-                    if (!failClosed && reuseRunningGame) {
+                    if (offerRetry) {
+                        offerRetainedAuthorizationRetry(operation);
+                    } else if (!failClosed && reuseRunningGame) {
                         recoverRetainedSwitch(operation,
                                 SessionModel.SwitchOutcome.FAILED,
                                 error.getMessage());
@@ -3884,6 +3930,48 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 });
             }
         }, "MoonWaker-SwitchActor").start();
+    }
+
+    static final String RETAINED_AUTHORIZATION_UNCONFIRMED = "retained_authorization_unconfirmed";
+    static final long RETAINED_AUTHORIZATION_RETRY_DELAY_MS = 1_500L;
+
+    /** Only a new game after a stopped one retries, and only once. */
+    static boolean retriesRetainedAuthorization(boolean reuseRunningGame, int attempt) {
+        return !reuseRunningGame && attempt == 0;
+    }
+
+    /**
+     * The previous game is stopped and the host still refused the new game's authorization:
+     * the stream stays open and the user decides (Retry starts the chosen game again).
+     */
+    static boolean offersRetainedAuthorizationRetry(boolean failClosed,
+                                                    boolean reuseRunningGame, String error) {
+        return !failClosed && !reuseRunningGame
+                && RETAINED_AUTHORIZATION_UNCONFIRMED.equals(error);
+    }
+
+    private void offerRetainedAuthorizationRetry(RetainedSwitch operation) {
+        settleNeutralRetainedStream(operation);
+        operation.authorizationRetryOffered = true;
+        transitionController.error(transitionSpec.id,
+                getString(R.string.transition_switch_authorization_pending));
+        // The console stops waiting; this stream carries the choice.
+        signalRetainedSwitchReuse(operation);
+    }
+
+    /**
+     * Retry or Cancel on an offered authorization retry settles through the start-failed path:
+     * Retry begins a new attempt for the chosen game, Cancel keeps the neutral stream.
+     */
+    private boolean settleOfferedAuthorizationRetry(boolean retry) {
+        RetainedSwitch operation = retainedSwitch;
+        if (operation == null || !operation.authorizationRetryOffered
+                || !isCurrentRetainedSwitch(operation)) return false;
+        operation.authorizationRetryOffered = false;
+        operation.retryRequested = retry;
+        operation.cancelRequested = !retry;
+        settleStartFailedSwitch(operation);
+        return true;
     }
 
     private ConsoleStreamTransitionCoordinator.ProviderProcessIdentity
@@ -3979,7 +4067,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             transferIntent.getByteArrayExtra(EXTRA_SERVER_CERT),
                             authorization.streamSessionId, authorization.sunshineAppId, "",
                             authorization.generation,
-                            PlayniteTransitionGateway.ActorContext.parent(next.profileId), false);
+                            PlayniteTransitionGateway.ActorContext.parent(next.profileId))
+                            .closed();
                 }
             } catch (IOException | RuntimeException error) {
                 LimeLog.warning("Retained authorization compensation failed operation="
@@ -4264,6 +4353,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 LaunchTransitionType.GAME_CONNECTION,
                 operation.request.appId, gameId, System.currentTimeMillis());
         transitionSpec = observation;
+        failedStartObservationId = observation.id;
         updateRetainedTransitionIntent(observation, gameId,
                 operation.request.newGameName, operation.request.artworkPath);
         streamEverRevealed = false;
@@ -4409,6 +4499,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean startFailedCleanupPending;
         boolean providerStartRejected;
         boolean retryRequested;
+        /** The host refused the new game's authorization twice; Retry/Cancel decide. */
+        boolean authorizationRetryOffered;
         boolean identityConflict;
 
         RetainedSwitch(SessionModel.SwitchRequest request,
@@ -4426,7 +4518,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private interface ProviderStopCallback {
         void complete(boolean success);
-        default void transportUnsafe() { }
     }
 
     private boolean hasProviderGameTransition() {
@@ -4471,12 +4562,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }, "MoonWaker-StopProviderGame").start();
     }
 
-    private void terminateWholeSessionVerified(ProviderStopCallback completion) {
+    private void terminateWholeSessionVerified(SessionModel.TerminationCallback completion) {
         terminateWholeSessionVerified(completion, false);
     }
 
-    private void terminateWholeSessionVerified(
-            ProviderStopCallback completion, boolean providerAlreadyStopped) {
+    /** {@code requesterPresentsHome}: the console that asked shows what follows, not Game. */
+    private void terminateWholeSessionVerified(SessionModel.TerminationCallback completion,
+            boolean requesterPresentsHome) {
         runOnUiThread(() -> {
             if (!wholeSessionTermination.begin()) {
                 if (completion != null) completion.complete(false);
@@ -4511,7 +4603,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
             java.util.function.BiConsumer<SessionModel.DirectTermination, Boolean> terminate =
                     (directTermination, marked) -> runWholeSessionTermination(completion,
-                            providerAlreadyStopped, privacy, directTermination, marked,
+                            requesterPresentsHome, privacy,
+                            directTermination, marked,
                             expectedSessionId, expectedHostId, expectedAppId, expectedGameId,
                             actorContext, expectedControlGeneration);
             if (!hostCorrelated) {
@@ -4546,7 +4639,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void runWholeSessionTermination(
-            ProviderStopCallback completion, boolean providerAlreadyStopped, Runnable privacy,
+            SessionModel.TerminationCallback completion,
+            boolean requesterPresentsHome, Runnable privacy,
             SessionModel.DirectTermination directTermination, boolean marked,
             String expectedSessionId, String expectedHostId, int expectedAppId,
             String expectedGameId, PlayniteTransitionGateway.ActorContext actorContext,
@@ -4562,9 +4656,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             String uniqueId = getIntent().getStringExtra(EXTRA_UNIQUEID);
             byte[] certificate = getIntent().getByteArrayExtra(EXTRA_SERVER_CERT);
             WeakReference<Game> activity = new WeakReference<>(this);
+            AtomicBoolean gameLeft = new AtomicBoolean();
             wholeSessionTermination.run(
                     privacy,
-                    this::openTerminalConsoleHome,
+                    // Opening Home would clear the requesting console and cancel its request.
+                    requesterPresentsHome ? () -> { } : this::openTerminalConsoleHome,
                     local -> stopConnectionResult(result -> {
                         boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
                         local.complete(stopped);
@@ -4573,14 +4669,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }),
                     host -> {
                         if (!marked) {
+                            // Uncorrelated or refused: the host stream may still hold its display.
+                            reportGameLeftOnHost(application,
+                                    HostSessionTermination.Outcome.FAILED, completion == null);
                             host.complete(false);
                             return;
                         }
-                        new Thread(() -> host.complete(HostSessionTermination.run(
-                            application, expectedHostId, activeHost, port, httpsPort,
-                            uniqueId, certificate, expectedSessionId, expectedAppId,
-                            expectedGameId, expectedControlGeneration, actorContext,
-                            providerAlreadyStopped)), "MoonWaker-TerminateHost").start();
+                        new Thread(() -> {
+                            HostSessionTermination.Outcome outcome = HostSessionTermination.run(
+                                    application, expectedHostId, activeHost, port, httpsPort,
+                                    uniqueId, certificate, expectedSessionId, expectedAppId,
+                                    expectedGameId, expectedControlGeneration, actorContext);
+                            reportGameLeftOnHost(application, outcome, completion == null);
+                            // A closed stream ends the session. A requesting console learns of a
+                            // game left behind it from gameLeftOnHost, never as success, so a
+                            // left unverified game cannot let a new launch proceed.
+                            gameLeft.set(outcome == HostSessionTermination.Outcome
+                                    .CLOSED_GAME_UNVERIFIED);
+                            host.complete(outcome.streamClosed());
+                        }, "MoonWaker-TerminateHost").start();
                     },
                     success -> {
                         if (completion == null) {
@@ -4588,15 +4695,33 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                     ? new SessionEvent.TransportUnsafe(runtime,
                                     expectedSessionId, expectedHostId, expectedAppId)
                                     : success ? SessionEvent.DirectTerminationCompleted.completed(
-                                    directTermination, true)
+                                    directTermination, true, gameLeft.get())
                                     : SessionEvent.DirectTerminationCompleted.abandoned(
                                     directTermination));
+                        } else if (success && gameLeft.get()) {
+                            completion.gameLeftOnHost();
                         } else {
                             if (!success) completion.transportUnsafe();
                             completion.complete(success);
                         }
                     });
         }
+    }
+
+    /**
+     * The Activity is finishing: tell the user, app-wide, when this Game's own close may have
+     * left the game or stream on the host. A requesting console reports its own result.
+     */
+    public static void reportGameLeftOnHost(Context application,
+                                             HostSessionTermination.Outcome outcome,
+                                             boolean ownClose) {
+        if (!ownClose) return;
+        int message = outcome == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED
+                ? R.string.console_terminate_session_game_left
+                : !outcome.closed() ? R.string.transition_host_session_left_open : 0;
+        if (message == 0) return;
+        new Handler(Looper.getMainLooper()).post(() ->
+                Toast.makeText(application, message, Toast.LENGTH_LONG).show());
     }
 
     private void applyImmediateTerminalPrivacy() {
@@ -5091,6 +5216,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 boolean convertedWarmUp = autoWarmUpConvertedToGame;
                 if (!warmUpConnection) {
+                    relinquishReconnectedMarker();
                     onStreamConnected(convertedWarmUp);
                     return;
                 }
@@ -5115,6 +5241,28 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // This may be null if launched from the "Resume Session" PC context menu item
             shortcutHelper.reportGameLaunched(computer, app);
         }
+    }
+
+    /**
+     * A live reconnect of exactly the marked record supersedes its RECONNECT_REQUIRED marker,
+     * whose stale control generation could never correlate with the host again. An actor
+     * handoff ("reauthorize") counts too: the host authorized the new actor before the
+     * connection started and advanced the generation the same way. The model re-checks the
+     * marker and the record when it applies the event.
+     */
+    private void relinquishReconnectedMarker() {
+        String control = getIntent().getStringExtra(EXTRA_CONTROL_INTENT);
+        if (!getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)
+                || !"reconnect".equals(control) && !"reauthorize".equals(control)) return;
+        SessionModel.Snapshot marked = sessionModel.snapshot();
+        if (marked.state != SessionModel.State.RECONNECT_REQUIRED
+                || !marked.streamSessionId.equals(streamSessionId)
+                || !marked.hostId.equalsIgnoreCase(
+                        normalizeOpaqueId(getIntent().getStringExtra(EXTRA_PC_UUID)))
+                || marked.appId != getIntent().getIntExtra(
+                        EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID)
+                || !marked.playniteGameId.equalsIgnoreCase(currentSessionGameId())) return;
+        sessionModel.post(new SessionEvent.ReconnectRelinquished(marked));
     }
 
     private void onStreamConnected(boolean convertedWarmUp) {
@@ -5182,8 +5330,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return createTransitionCoordinator(transitionSpec);
     }
 
+    /** A later attempt (switch, retry, observation) is its own request, started now. */
     private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
             LaunchTransitionSpec spec) {
+        return createTransitionCoordinator(spec, SystemClock.uptimeMillis());
+    }
+
+    private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
+            LaunchTransitionSpec spec, long requestStartedAtMillis) {
         PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                 this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST),
                 currentGatewayActorContext());
@@ -5236,7 +5390,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
 
                     @Override public String gameWindowPendingMessage() {
-                        return getString(R.string.transition_waiting_game_window);
+                        return getString(R.string.transition_game_running_waiting_window);
+                    }
+
+                    @Override public String gameExitedDuringStartMessage() {
+                        return getString(R.string.transition_game_exited_during_start);
                     }
 
                     @Override public String gameWindowNotFullscreenMessage() {
@@ -5247,12 +5405,30 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         return getString(R.string.transition_game_window_not_foreground);
                     }
 
+                    @Override public String hostScreensaverActiveMessage() {
+                        return getString(R.string.transition_host_screensaver_active);
+                    }
+
                     @Override public String launcherInteractionRequiredMessage() {
                         return getString(R.string.transition_launcher_interaction_required);
                     }
 
                     @Override public String windowStabilizingMessage() {
                         return getString(R.string.transition_window_stabilizing);
+                    }
+
+                    @Override public String gameStartTimeoutMessage() {
+                        return getString(R.string.transition_game_start_timeout);
+                    }
+
+                    @Override public String previousGameRunningMessage() {
+                        return getString(isChildSession()
+                                ? R.string.transition_previous_game_running_child
+                                : R.string.transition_previous_game_running);
+                    }
+
+                    @Override public String previousGameStopFailedMessage() {
+                        return getString(R.string.transition_previous_game_stop_failed);
                     }
 
                     @Override public boolean isPendingInstallation(String hostId, String gameId) {
@@ -5420,12 +5596,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             if (isFreshOwnedFailureCleanup(transitionId, gameId)) {
                                 LimeLog.info("Fresh neutral cleanup transition=" + transitionId
                                         + " providerStopped=" + success);
-                                if (success) {
-                                    terminateWholeSessionVerified(null, true);
-                                } else if (transitionController != null) {
-                                    transitionController.error(transitionId,
-                                            getString(R.string.transition_readiness_unconfirmed));
-                                }
+                                // The host stream always closes. Any game is stopped only when
+                                // the close's own permit verifies it, whatever this cleanup saw.
+                                terminateWholeSessionVerified(null);
                                 return;
                             }
                             RetainedSwitch operation = retainedSwitch;
@@ -5496,7 +5669,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                     R.string.playnite_install_verify_failed));
                         });
                     }
-                }, launchStartedAtMillis);
+                }, requestStartedAtMillis);
     }
 
     private void completeInstallationFailure(
@@ -5589,7 +5762,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 : snapshot.detail,
                         !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             } else {
-                consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
+                String status = transitionStatus(snapshot);
+                // Notice only; Cancel and an available manual reveal stay as they are.
+                if (snapshot.startTakingLonger) {
+                    status += "\n" + getString(R.string.transition_start_taking_longer);
+                }
+                consoleLoadingView.setStep(snapshot.step, status);
                 consoleLoadingView.setManualRevealAvailable(
                         !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             }
@@ -5603,13 +5781,34 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 armNextVideoFrameForTransition(snapshot.spec.id, "transition-gate");
             }
         }
+        // After a manual reveal the user decided: a failure is a notice, never the cover again.
+        String notice = snapshot.notice.isEmpty() ? "" : snapshot.spec.id + '|' + snapshot.notice;
+        if (!notice.isEmpty() && !notice.equals(lastTransitionNotice)) {
+            lastTransitionNotice = notice;
+            displayMessage(snapshot.notice);
+        }
+        // The cover is cosmetic: every failure keeps "Reveal now" while the stream has frames.
+        boolean revealOffered = !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable;
+        consoleLoadingView.setRetryLabel(
+                snapshot.state == LaunchTransitionState.PREVIOUS_GAME_RUNNING
+                        ? R.string.transition_end_previous_game : R.string.transition_retry);
         if (snapshot.state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) {
             consoleLoadingView.showLauncherInteraction(
-                    getString(R.string.transition_game_failed),
+                    getString(R.string.transition_launcher_waiting_title),
                     snapshot.detail.isEmpty()
                             ? getString(R.string.transition_launcher_interaction_required)
                             : snapshot.detail,
-                    snapshot.manualRevealAvailable);
+                    revealOffered);
+        } else if (snapshot.state == LaunchTransitionState.PREVIOUS_GAME_RUNNING) {
+            String previousName = transitionCoordinator == null
+                    ? "" : transitionCoordinator.previousGameName();
+            // A child cannot end a game outside its own session (the Gateway refuses it).
+            consoleLoadingView.showError(previousName.isEmpty()
+                            ? getString(R.string.transition_previous_game_running_title)
+                            : getString(R.string.transition_previous_game_running_title_named,
+                            previousName),
+                    snapshot.detail, revealOffered, false,
+                    offersPreviousGameStop(isChildSession()));
         } else if (snapshot.state == LaunchTransitionState.ERROR
                 || snapshot.state == LaunchTransitionState.TIMED_OUT) {
             int title = transitionSpec.type == LaunchTransitionType.PLAYNITE
@@ -5621,7 +5820,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     snapshot.detail.isEmpty()
                             ? getString(R.string.transition_readiness_unconfirmed)
                             : snapshot.detail,
-                    snapshot.uncertain);
+                    revealOffered, snapshot.revealPreferred, true);
         } else if (snapshot.state == LaunchTransitionState.CANCELLED) {
             consoleLoadingView.showCancelling();
         }
@@ -5797,6 +5996,40 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && transitionSpec.playniteGameId.equalsIgnoreCase(gameId);
     }
 
+    /**
+     * Cancel of a provider launch whose game the host never confirmed ready (unrevealed, or only
+     * manually revealed; also leaving its start error) and whose stream holds a Gateway control
+     * generation: this attempt's cleanup runs first, then the whole host session closes (stream
+     * and virtual display), stopping a game only when the close's permit verifies it, never
+     * only the local transport, which Sunshine would merely pause. Without a generation only
+     * the transport closes here; the launch it abandons is closed by its StreamRuntime
+     * (StreamRuntime#abandonLaunch) whenever the host grants it.
+     */
+    private boolean cancelUnrevealedProviderLaunchWithHostSession(long controlGeneration) {
+        if (transitionCoordinator == null
+                || !shouldCloseSessionOnStartCancel(transitionCoordinator.startsProviderGame(),
+                streamEverRevealed, transitionController.gameReadyConfirmed())
+                || controlGeneration <= 0L) return false;
+        cancelPendingAutomaticReveal();
+        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+        // Claimed before reading the result: a cleanup completing meanwhile reaches the callback,
+        // and a host-reported failure whose cleanup already ran closes the session now.
+        freshOwnedFailureCleanupInFlight.set(true);
+        if (transitionCoordinator.providerCleanupResult() != null) {
+            terminateWholeSessionVerified(null);
+        } else {
+            transitionCoordinator.cancel();
+        }
+        return true;
+    }
+
+    /** Cancel before the host confirmed the game ready closes the session, even after a manual reveal. */
+    static boolean shouldCloseSessionOnStartCancel(boolean startsProviderGame,
+                                                   boolean streamEverRevealed,
+                                                   boolean gameReadyConfirmed) {
+        return startsProviderGame && (!streamEverRevealed || !gameReadyConfirmed);
+    }
+
     private void cancelPendingAutomaticReveal() {
         if (pendingAutomaticReveal == null) return;
         transitionUiHandler.removeCallbacks(pendingAutomaticReveal);
@@ -5878,6 +6111,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (transitionController == null || transitionCancelInFlight) return;
         retryTransitionId = "";
         getIntent().removeExtra(STATE_RETRY_TRANSITION_ID);
+        if (settleOfferedAuthorizationRetry(false)) return;
+        if (closeFailedStartObservationSession()) return;
         if (returnRetainedObservationToDashboard()) return;
         if (retainedSwitch != null) {
             // A user Cancel overrides a retry-triggered retained cleanup.
@@ -5887,6 +6122,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         transitionCancelInFlight = true;
         transitionController.cancel(transitionSpec.id);
+        // One read decides: a generation granted after it is the abandoned launch's to close.
+        long controlGeneration = bindControlGeneration();
+        if (cancelUnrevealedProviderLaunchWithHostSession(controlGeneration)) return;
         if (transitionCoordinator != null) transitionCoordinator.cancel();
         cancelPendingAutomaticReveal();
         userInitiatedDisconnect = true;
@@ -5907,7 +6145,35 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             if (finished.compareAndSet(false, true)) finish();
         };
         transitionUiHandler.postDelayed(finishOnce, 5_000L);
+        StreamRuntime cancelled = runtime;
         stopConnection(finishOnce);
+        if (controlGeneration <= 0L && cancelled != null) cancelled.abandonLaunch();
+    }
+
+    /**
+     * Cancel on the observation kept after a failed start abandons that start like any other
+     * start cancel: the whole host session closes instead of returning to the console.
+     */
+    private boolean closeFailedStartObservationSession() {
+        if (!isFailedStartObservation(failedStartObservationId,
+                transitionSpec == null ? "" : transitionSpec.id)) return false;
+        transitionCancelInFlight = true;
+        transitionController.cancel(transitionSpec.id);
+        cancelPendingAutomaticReveal();
+        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+        terminateWholeSessionVerified(null);
+        return true;
+    }
+
+    /** Only a parent may end the stale earlier launch's game; a child reveals or cancels. */
+    static boolean offersPreviousGameStop(boolean childSession) {
+        return !childSession;
+    }
+
+    static boolean isFailedStartObservation(String failedStartObservationId,
+                                            String currentTransitionId) {
+        return failedStartObservationId != null && !failedStartObservationId.isEmpty()
+                && failedStartObservationId.equals(currentTransitionId);
     }
 
     private boolean returnRetainedObservationToDashboard() {
@@ -6057,6 +6323,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         String retryId = transitionSpec.id;
         retryTransitionId = retryId;
         getIntent().putExtra(STATE_RETRY_TRANSITION_ID, retryId);
+        if (settleOfferedAuthorizationRetry(true)) return;
         if (retainedSwitch != null && retainedSwitch.newSpec != null) {
             retainedSwitch.retryRequested = true;
             requestRetainedSwitchCancellation(retainedSwitch);
@@ -6986,7 +7253,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void confirmQuitSession() {
         overlayMenuView.closeMenu();
-        ConsoleConfirmDialog.show(this, getString(R.string.overlay_menu_quit_session),
+        ConsoleConfirmDialog.show(this, getString(R.string.console_close_session),
                 getString(R.string.applist_quit_confirmation),
                 getString(android.R.string.cancel),
                 getString(android.R.string.ok),

@@ -71,10 +71,14 @@ visible foreground window on the configured streamed display and three
 consecutive samples with identical geometry. Set `streamed_display` to the
 profile's Win32 display name (for example `\\.\DISPLAY15`). An empty or
 mismatched value deliberately keeps the privacy gate closed. During an active
-session the Bridge also reads its profile's loopback Vibepollo diagnostics and
-accepts a display only when exactly one valid Win32 output name is reported;
-this safely replaces a stale configured value when Vibepollo selects a virtual
-display dynamically.
+session the Bridge also reads its profile's loopback Vibepollo active-display
+diagnostics and picks the display that exactly one active display marked
+`stream_virtual_display` (a Vibepollo virtual display adapter), however many
+physical displays remain active. When no active display is marked virtual and
+exactly one display is active, that display is the streamed display. Any other
+topology (two or more virtual displays, or several active displays with none
+virtual) yields no display. The detected display replaces a stale configured
+value, for example when Vibepollo creates its virtual display dynamically.
 
 The current Sunshine connector already supports the launcher handshake,
 `launch` commands and game start/stop status. The next integration step extends

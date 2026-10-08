@@ -449,9 +449,9 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
         probe.process_identity.side_effect = lambda pid, include_owner=False: (
             dict(child_identity) if pid == process_id else
             dict(own_identity) if pid == os.getpid() else None)
-        probe.scan_running_processes.return_value = (
-            [dict(child_identity)], "complete")
         stopped = []
+        probe.scan_running_processes.side_effect = lambda *_args: (
+            [] if process_id in stopped else [dict(child_identity)], "complete")
         probe.stop_verified_process.side_effect = lambda value, _timeout: (
             stopped.append(value["process_id"]) is None)
         probe.process_identity_status.side_effect = lambda pid, include_owner=False: (

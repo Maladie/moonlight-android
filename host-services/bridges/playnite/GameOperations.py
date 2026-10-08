@@ -732,6 +732,63 @@ class SteamProvider(GenericPlayniteProvider):
         return {"provider": "steam", "dispatched": True,
                 "reason": "steam_launch_dispatched", "exit_code": 0}
 
+    # Steam's own launch state machine, e.g. `[2026-10-08 22:51:17] GameAction [AppID 410110,
+    # ActionID 6] : LaunchApp waiting for user response to ShowInterstitials ""`.
+    LAUNCH_ACTION = re.compile(
+        r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] GameAction \[AppID (\d+), ActionID \d+\] : '
+        r'LaunchApp (waiting for user response to|continues with user response|changed task to)'
+        r' "?([A-Za-z]*)')
+    LAUNCH_PROMPT_GRACE = 3.0
+    LAUNCH_LOG_TAIL_BYTES = 256 * 1024
+
+    def _launch_log_lines(self) -> list[str]:
+        """Tail of Steam's console log, re-read only when the file changed."""
+        root = self._root()
+        if root is None:
+            return []
+        path = root / "logs" / "console_log.txt"
+        try:
+            details = path.stat()
+            key = (str(path), details.st_size, details.st_mtime_ns)
+            cached = getattr(self, "_launch_log_cache", None)
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            with path.open("rb") as log:
+                log.seek(max(0, details.st_size - self.LAUNCH_LOG_TAIL_BYTES))
+                lines = log.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        self._launch_log_cache = (key, lines)
+        return lines
+
+    def pending_launch_prompt(self, game: dict[str, Any],
+                              now: float | None = None) -> str:
+        """The Steam launch task of this game waiting for a user answer, or "".
+
+        Read from Steam's console log (local time). The last launch action of the app
+        decides, even one older than this request: while an earlier action still waits
+        (an unanswered interstitial), Steam ignores new launches of the app and logs nothing
+        for them. Steam answers its own short prompts (launch option, process creation)
+        within a second, so a wait counts only after a short grace."""
+        app_id = str(game.get("providerGameId") or "").strip()
+        if not app_id:
+            return ""
+        pending, waiting_since = "", 0.0
+        for line in self._launch_log_lines():
+            match = self.LAUNCH_ACTION.match(line)
+            if match is None or match.group(2) != app_id:
+                continue
+            try:
+                logged = time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
+            except (ValueError, OverflowError):
+                continue
+            waiting = match.group(3).startswith("waiting")
+            pending = match.group(4) if waiting else ""
+            waiting_since = logged if waiting else 0.0
+        current = time.time() if now is None else now
+        return pending if pending and current - waiting_since >= self.LAUNCH_PROMPT_GRACE \
+            else ""
+
     @staticmethod
     def _number(values: dict[str, str], key: str) -> int:
         try:

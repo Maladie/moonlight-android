@@ -161,7 +161,7 @@ class SteamClosePreparationTest(unittest.TestCase):
     def setUp(self):
         self.probe = WindowProbe(None)
         self.probe.kernel32 = mock.Mock()
-        self.probe.is_session_locked = mock.Mock(return_value=False)
+        self.probe.input_desktop_blocked = mock.Mock(return_value=False)
         self.probe.uac_consent_pending = mock.Mock(return_value=False)
         self.provider = mock.Mock()
         self.provider.executable.return_value = Path("C:/Steam/steam.exe")
@@ -215,12 +215,43 @@ class SteamClosePreparationTest(unittest.TestCase):
         self.probe.process_identity.return_value = None
         self.assertFalse(self.run_preparation()["ready"])
         self.probe.process_identity.return_value = self.identity
-        self.probe.is_session_locked.return_value = True
+        self.probe.input_desktop_blocked.return_value = True
         self.assertEqual("host_session_locked", self.run_preparation()["reason"])
         self.provider.command_runner.assert_not_called()
-        self.probe.is_session_locked.return_value = False
+        self.probe.input_desktop_blocked.return_value = False
         self.provider.command_runner.side_effect = OSError("dispatch failed")
         self.assertEqual("steam_close_request_failed", self.run_preparation()["reason"])
+
+
+class StopVerifiedProcessTest(unittest.TestCase):
+    def probe_for(self, desktop):
+        probe = WindowProbe(None)
+        probe.kernel32 = mock.Mock()
+        probe.user32 = mock.Mock()
+        probe.input_desktop_blocked = mock.Mock(return_value=desktop)
+        probe.uac_consent_pending = mock.Mock(return_value=False)
+        self.expected = {"process_id": 42, "process_path": "C:/Games/game.exe",
+                         "process_started_filetime": 100, "user_sid": "own", "session_id": 1}
+        probe.process_identity = mock.Mock(return_value=self.expected)
+        probe.kernel32.OpenProcess.return_value = 5
+        # Alive while polled, exits once the bounded wait runs.
+        probe.kernel32.WaitForSingleObject.side_effect = lambda _h, ms: 0 if ms else 258
+        probe._matching_windows = mock.Mock(return_value=[11])
+        probe.user32.GetWindowThreadProcessId.side_effect = \
+            lambda _hwnd, ref: setattr(ref._obj, "value", 42)
+        probe.user32.PostMessageW.return_value = True
+        return probe
+
+    def test_screensaver_does_not_block_the_verified_stop(self):
+        probe = self.probe_for("host_screensaver_active")
+        self.assertTrue(probe.stop_verified_process(self.expected, 1.0))
+        probe.user32.PostMessageW.assert_called_once_with(11, WindowProbe.WM_CLOSE, 0, 0)
+
+    def test_locked_session_still_refuses_the_stop(self):
+        probe = self.probe_for("host_session_locked")
+        self.assertFalse(probe.stop_verified_process(self.expected, 1.0))
+        probe.kernel32.OpenProcess.assert_not_called()
+        probe.user32.PostMessageW.assert_not_called()
 
 
 class WindowProbeTest(unittest.TestCase):
@@ -241,7 +272,7 @@ class WindowProbeTest(unittest.TestCase):
             provider = SteamProvider(
                 root_resolver=lambda: root, command_runner=runner)
             probe = WindowProbe(mock.Mock())
-            probe.is_session_locked = mock.Mock(return_value=False)
+            probe.input_desktop_blocked = mock.Mock(return_value=False)
             window = self._steam_big_picture_window(root)
             probe.interactive_windows = mock.Mock(return_value=[window])
 
@@ -264,7 +295,7 @@ class WindowProbeTest(unittest.TestCase):
             provider = SteamProvider(
                 root_resolver=lambda: root, command_runner=runner)
             probe = WindowProbe(mock.Mock())
-            probe.is_session_locked = mock.Mock(return_value=False)
+            probe.input_desktop_blocked = mock.Mock(return_value=False)
             probe.interactive_windows = mock.Mock(return_value=[
                 self._steam_big_picture_window(root)])
 
@@ -291,7 +322,7 @@ class WindowProbeTest(unittest.TestCase):
             provider = SteamProvider(
                 roots=[root], root_resolver=lambda: root, command_runner=runner)
             probe = WindowProbe(mock.Mock())
-            probe.is_session_locked = mock.Mock(return_value=False)
+            probe.input_desktop_blocked = mock.Mock(return_value=False)
             probe.uac_consent_pending = mock.Mock(return_value=False)
             provider.launch_preflight = probe.prepare_steam_launch
             window = self._steam_big_picture_window(root)
@@ -328,7 +359,7 @@ class WindowProbeTest(unittest.TestCase):
     def test_steam_preflight_rechecks_session_after_big_picture_wait(self):
         probe = WindowProbe(mock.Mock())
         provider = mock.Mock()
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe.uac_consent_pending = mock.Mock(side_effect=[False, True])
         probe.ensure_steam_big_picture = mock.Mock(return_value={"ready": True})
 
@@ -341,15 +372,15 @@ class WindowProbeTest(unittest.TestCase):
         provider = mock.Mock()
         provider.executable.return_value = Path("steam.exe")
         probe = WindowProbe(mock.Mock())
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe.uac_consent_pending = mock.Mock(return_value=True)
         self.assertFalse(probe.prepare_steam_launch(provider)["ready"])
         probe.uac_consent_pending.assert_called_once_with(fail_closed=True)
         probe.uac_consent_pending.return_value = False
-        probe.is_session_locked.side_effect = [False, True]
+        probe.input_desktop_blocked.side_effect = [False, True]
         self.assertFalse(probe.prepare_steam_launch(provider)["ready"])
-        probe.is_session_locked.side_effect = None
-        probe.is_session_locked.return_value = True
+        probe.input_desktop_blocked.side_effect = None
+        probe.input_desktop_blocked.return_value = True
         self.assertFalse(probe.prepare_steam_launch(provider)["ready"])
         probe = WindowProbe(mock.Mock())
         probe.user32 = None
@@ -373,7 +404,7 @@ class WindowProbeTest(unittest.TestCase):
             provider = SteamProvider(
                 root_resolver=lambda: root, command_runner=runner)
             probe = WindowProbe(mock.Mock())
-            probe.is_session_locked = mock.Mock(return_value=False)
+            probe.input_desktop_blocked = mock.Mock(return_value=False)
             window = self._steam_big_picture_window(root)
             probe.interactive_windows = mock.Mock(side_effect=[
                 [], [], [window], [window], [window],
@@ -404,7 +435,7 @@ class WindowProbeTest(unittest.TestCase):
             provider = SteamProvider(
                 root_resolver=lambda: root, command_runner=runner)
             probe = WindowProbe(mock.Mock())
-            probe.is_session_locked = mock.Mock(return_value=False)
+            probe.input_desktop_blocked = mock.Mock(return_value=False)
             window = self._steam_big_picture_window(root)
             probe.interactive_windows = mock.Mock(side_effect=[
                 [], [], [window], [window], [window],
@@ -429,7 +460,7 @@ class WindowProbeTest(unittest.TestCase):
             provider = SteamProvider(
                 root_resolver=lambda: root, command_runner=runner)
             probe = WindowProbe(mock.Mock())
-            probe.is_session_locked = mock.Mock(return_value=False)
+            probe.input_desktop_blocked = mock.Mock(return_value=False)
             probe._exact_process_running = mock.Mock(return_value=True)
             window = self._steam_big_picture_window(root)
             probe.interactive_windows = mock.Mock(side_effect=[
@@ -451,7 +482,7 @@ class WindowProbeTest(unittest.TestCase):
             provider = SteamProvider(
                 root_resolver=lambda: root, command_runner=mock.Mock())
             probe = WindowProbe(mock.Mock())
-            probe.is_session_locked = mock.Mock(return_value=False)
+            probe.input_desktop_blocked = mock.Mock(return_value=False)
             probe.interactive_windows = mock.Mock(return_value=[])
 
             with mock.patch("GameProviderBridge.time.sleep"), \
@@ -466,7 +497,7 @@ class WindowProbeTest(unittest.TestCase):
         provider = mock.Mock()
         probe = WindowProbe(mock.Mock())
         probe.user32 = mock.Mock()
-        probe.is_session_locked = mock.Mock(return_value=True)
+        probe.input_desktop_blocked = mock.Mock(return_value=True)
 
         result = probe.ensure_steam_big_picture(
             provider, r"\\.\DISPLAY1", timeout=15)
@@ -596,7 +627,7 @@ class WindowProbeTest(unittest.TestCase):
         probe = object.__new__(WindowProbe)
         probe.user32 = User32()
         probe.dwmapi = None
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe._process_tree = mock.Mock(return_value={1234})
         probe._process_path = mock.Mock(
             return_value=r"E:\Games\Example\launcher.exe")
@@ -663,7 +694,7 @@ class WindowProbeTest(unittest.TestCase):
         probe.user32 = User32()
         probe.dwmapi = None
         probe.kernel32 = object()
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe._process_tree = mock.Mock(return_value=set())
         probe._process_path = mock.Mock(return_value=r"E:\Games\RE3\re3.exe")
         probe._process_image = mock.Mock(return_value="re3.exe")
@@ -809,7 +840,7 @@ class WindowProbeTest(unittest.TestCase):
         probe = object.__new__(WindowProbe)
         probe.user32 = User32()
         probe.dwmapi = None
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe._process_tree = mock.Mock(return_value=set())
         probe._process_path = mock.Mock(return_value=(
             r"E:\Steam\bin\cef\cef.win64\steamwebhelper.exe"))
@@ -874,7 +905,7 @@ class WindowProbeTest(unittest.TestCase):
         probe = object.__new__(WindowProbe)
         probe.user32 = User32()
         probe.dwmapi = None
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe._process_tree = mock.Mock(return_value=set())
         probe._process_path = mock.Mock(return_value=(
             r"E:\Steam\bin\cef\cef.win64\steamwebhelper.exe"))
@@ -933,7 +964,7 @@ class WindowProbeTest(unittest.TestCase):
         probe = object.__new__(WindowProbe)
         probe.user32 = User32()
         probe.dwmapi = None
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe._process_tree = mock.Mock(return_value=set())
         probe._process_path = mock.Mock(return_value=(
             r"E:\Steam\bin\cef\cef.win64\steamwebhelper.exe"))
@@ -996,7 +1027,7 @@ class WindowProbeTest(unittest.TestCase):
         service = mock.Mock()
         probe = WindowProbe(service)
         probe.user32 = object()
-        probe.is_session_locked = lambda: False
+        probe.input_desktop_blocked = lambda: False
         probe.uac_consent_pending = lambda: False
         service.manual_attention.return_value = None
         service.sample.return_value = None
@@ -1025,7 +1056,7 @@ class WindowProbeTest(unittest.TestCase):
         service = mock.Mock()
         probe = WindowProbe(service)
         probe.user32 = object()
-        probe.is_session_locked = lambda: False
+        probe.input_desktop_blocked = lambda: False
         probe.uac_consent_pending = lambda: False
         service.manual_attention.return_value = None
         service.sample.return_value = {
@@ -1061,12 +1092,129 @@ class WindowProbeTest(unittest.TestCase):
         monitor = [0, 0, 1920, 1080]
         self.assertTrue(WindowProbe.can_reveal_without_global_foreground(
             bounds, monitor, r"\\.\DISPLAY2", r"\\.\DISPLAY15"))
-        self.assertTrue(WindowProbe.can_reveal_without_global_foreground(
+        # No foreground (another input desktop, activation gap) is not "another monitor".
+        self.assertFalse(WindowProbe.can_reveal_without_global_foreground(
             bounds, monitor, "", r"\\.\DISPLAY15"))
         self.assertFalse(WindowProbe.can_reveal_without_global_foreground(
             bounds, monitor, r"\\.\DISPLAY15", r"\\.\DISPLAY15"))
         self.assertFalse(WindowProbe.can_reveal_without_global_foreground(
             [100, 100, 1380, 820], monitor, r"\\.\DISPLAY2", r"\\.\DISPLAY15"))
+
+    def fullscreen_game_probe(self, foreground: int) -> WindowProbe:
+        class User32:
+            @staticmethod
+            def GetForegroundWindow():
+                return foreground
+
+            @staticmethod
+            def IsWindowVisible(_hwnd):
+                return True
+
+            @staticmethod
+            def GetWindowThreadProcessId(hwnd, process_id):
+                process_id._obj.value = 1234 if hwnd == 77 else 4321
+                return 1
+
+            @staticmethod
+            def GetWindowRect(_hwnd, rect):
+                rect._obj.left, rect._obj.top = 0, 0
+                rect._obj.right, rect._obj.bottom = 1920, 1080
+                return True
+
+            @staticmethod
+            def EnumWindows(callback, _value):
+                callback(77, 0)
+                return True
+
+        probe = object.__new__(WindowProbe)
+        probe.user32 = User32()
+        probe.dwmapi = None
+        probe.input_desktop_blocked = mock.Mock(return_value="")
+        probe._process_tree = mock.Mock(return_value={1234})
+        probe._process_path = mock.Mock(return_value=r"E:\Games\Example\game.exe")
+        probe._process_image = mock.Mock(return_value="other.exe")
+        probe._window_title = mock.Mock(return_value="Example")
+        probe._window_class = mock.Mock(return_value="ExampleWindow")
+        probe._monitor_details = mock.Mock(side_effect=lambda hwnd: (
+            r"\\.\DISPLAY1" if hwnd == 77 else r"\\.\DISPLAY2", [0, 0, 1920, 1080]))
+        return probe
+
+    def test_fullscreen_game_without_any_foreground_is_not_ready(self):
+        sample = self.fullscreen_game_probe(0).sample(
+            "game", 1234, r"\\.\DISPLAY1", r"E:\Games\Example")
+        self.assertFalse(sample["qualified"])
+        self.assertEqual("target_not_foreground", sample["reason"])
+
+    def test_fullscreen_game_with_foreground_on_another_monitor_stays_revealable(self):
+        sample = self.fullscreen_game_probe(55).sample(
+            "game", 1234, r"\\.\DISPLAY1", r"E:\Games\Example")
+        self.assertTrue(sample["qualified"])
+
+    def test_non_default_input_desktop_blocks_window_readiness(self):
+        probe = self.fullscreen_game_probe(77)
+        for reason in ("host_screensaver_active", "host_session_locked"):
+            probe.input_desktop_blocked.return_value = reason
+            self.assertEqual({"qualified": False, "reason": reason}, probe._sample(
+                [], "game", 1234, r"\\.\DISPLAY1", r"E:\Games\Example"))
+
+    def input_desktop_probe(self, name: str | None, opened: bool = True) -> WindowProbe:
+        probe = object.__new__(WindowProbe)
+        probe.user32 = mock.Mock()
+        probe.user32.OpenInputDesktop.return_value = 9 if opened else None
+
+        def read_name(_desktop, _index, buffer, _size, _needed):
+            if name is None:
+                return False
+            buffer.value = name
+            return True
+
+        probe.user32.GetUserObjectInformationW.side_effect = read_name
+        return probe
+
+    def test_input_desktop_name_decides_lock_screen_saver_and_failure(self):
+        cases = {"Default": "", "Screen-saver": "host_screensaver_active",
+                 "Winlogon": "host_session_locked", "Disconnect": "host_session_locked",
+                 None: "host_session_locked"}
+        for name, reason in cases.items():
+            with self.subTest(name=name):
+                probe = self.input_desktop_probe(name)
+                self.assertEqual(reason, probe.input_desktop_blocked())
+                probe.user32.CloseDesktop.assert_called_once_with(9)
+        probe = self.input_desktop_probe("Default", opened=False)
+        self.assertEqual("host_session_locked", probe.input_desktop_blocked())
+        probe.user32 = None
+        self.assertEqual("host_session_locked", probe.input_desktop_blocked())
+
+    def test_close_screensaver_posts_close_only_to_own_scr_windows(self):
+        probe = object.__new__(WindowProbe)
+        probe.user32 = mock.Mock()
+        probe.user32.OpenDesktopW.return_value = 5
+        probe.user32.PostMessageW.return_value = True
+        owners = {os.getpid(): ("own", 1, r"C:\Python\python.exe"),
+                  10: ("own", 1, r"C:\Windows\System32\scrnsave.scr"),
+                  11: ("foreign", 1, r"C:\Windows\System32\scrnsave.scr"),
+                  12: ("own", 1, r"C:\Windows\explorer.exe")}
+        probe.process_identity = lambda pid, include_owner=False: None \
+            if pid not in owners else {"user_sid": owners[pid][0],
+                                       "session_id": owners[pid][1],
+                                       "process_path": owners[pid][2]}
+
+        def thread_process(hwnd, process_id):
+            process_id._obj.value = hwnd - 100
+            return 1
+
+        probe.user32.GetWindowThreadProcessId.side_effect = thread_process
+        probe.user32.EnumDesktopWindows.side_effect = lambda _desktop, callback, _value: [
+            callback(hwnd, 0) for hwnd in (110, 111, 112, 113)]
+
+        self.assertTrue(probe.close_screensaver())
+        probe.user32.OpenDesktopW.assert_called_once_with(
+            "Screen-saver", 0, False,
+            WindowProbe.DESKTOP_READOBJECTS | WindowProbe.DESKTOP_WRITEOBJECTS)
+        probe.user32.PostMessageW.assert_called_once_with(110, WindowProbe.WM_CLOSE, 0, 0)
+        probe.user32.CloseDesktop.assert_called_once_with(5)
+        probe.user32.OpenDesktopW.return_value = None
+        self.assertFalse(probe.close_screensaver())
 
     def test_game_process_may_be_resolved_within_exact_install_directory(self):
         install = r"E:\Games\Hollow Knight"
@@ -1134,7 +1282,7 @@ class WindowProbeTest(unittest.TestCase):
         probe = object.__new__(WindowProbe)
         probe.user32 = True
         probe.game_operations = service
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe.uac_consent_pending = mock.Mock(return_value=False)
         probe.interactive_windows = mock.Mock(return_value=windows)
         return probe, service
@@ -1175,7 +1323,7 @@ class WindowProbeTest(unittest.TestCase):
     def test_visible_uac_consent_is_reported_as_attention_required(self):
         probe = object.__new__(WindowProbe)
         probe.user32 = True
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe.uac_consent_pending = mock.Mock(return_value=True)
         probe.game_operations = mock.Mock()
         probe.game_operations.manual_attention.return_value = {
@@ -1494,26 +1642,6 @@ class BridgeStateTest(unittest.TestCase):
                 })
             self.assertFalse(self.state.readiness["ready"])
             self.assertEqual(0, self.state.readiness["stable_samples"])
-
-    def test_exited_starting_game_terminalizes_launch(self):
-        with self.state.lock:
-            self.state.current = {
-                "state": "starting", "id": GAME_ID, "processId": 4242,
-            }
-            self.state.readiness = {
-                "ready": False, "reason": "waiting_for_game_window",
-                "target_kind": "game", "stable_samples": 0,
-            }
-
-        self.state.apply_window_sample({
-            "qualified": False, "reason": "game_process_exited",
-            "process_id": 4242,
-        })
-
-        self.assertEqual("failed", self.state.current["state"])
-        self.assertEqual(
-            "game_process_exited_before_window", self.state.readiness["reason"])
-        self.assertEqual("game-launch-failed", self.state.events[-1]["event"])
 
     def test_disappeared_launcher_confirms_action_without_shortening_game_timeout(self):
         self.state.apply_window_sample({
@@ -3533,6 +3661,108 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("starting", self.state.current["state"])
         self.assertNotIn("processId", self.state.current)
 
+    def _run_screensaver_worker(self, ticks, advance=1.0, blocked=None):
+        probe = mock.Mock()
+        probe.input_desktop_blocked.return_value = "host_screensaver_active"
+        if blocked is not None:
+            probe.input_desktop_blocked.side_effect = blocked
+        probe.close_screensaver.return_value = True
+        probe.sample.return_value = {"qualified": False,
+                                     "reason": "host_screensaver_active"}
+        display_resolver = mock.Mock()
+        display_resolver.resolve.return_value = None
+        self.state.installation_probes = mock.Mock(return_value=[])
+        self.state.refresh_running_games = mock.Mock()
+        self.state.game_operations = mock.Mock()
+        self.state.game_operations.expected_launcher_images.return_value = set()
+        worker = GameProviderBridge.WindowReadinessWorker(
+            self.state, probe, display_resolver)
+        remaining = [ticks]
+
+        def tick(_seconds):
+            self.now += advance
+            remaining[0] -= 1
+            if remaining[0] <= 0:
+                raise StopIteration
+
+        with mock.patch.object(GameProviderBridge.time, "sleep", side_effect=tick):
+            with self.assertRaises(StopIteration):
+                worker.run()
+        return probe
+
+    def _running_game_behind_screensaver(self):
+        with self.state.lock:
+            self.state.current = {"state": "running", "id": "steam:1",
+                                  "processId": 42, "installDir": r"E:\Games\One"}
+            self.state.readiness = {"ready": False, "reason": "host_screensaver_active",
+                                    "target_kind": "game", "stable_samples": 0}
+
+    def test_screen_saver_during_launch_is_closed_again_when_it_returns(self):
+        with self.state.lock:
+            self.state.current = {"state": "starting", "id": "steam:1",
+                                  "launchRequestedAt": self.now,
+                                  "installDir": r"E:\Games\One"}
+            self.state.readiness = {"ready": False, "reason": "game_starting",
+                                    "target_kind": "game", "stable_samples": 0}
+
+        probe = self._run_screensaver_worker(ticks=12)
+
+        # Rate-limited: at the first tick and again after each interval while it is back.
+        self.assertEqual(3, probe.close_screensaver.call_count)
+        self.assertFalse(self.state.readiness["ready"])
+        self.assertEqual(12, probe.sample.call_count)
+
+    def test_screen_saver_wake_during_launch_stops_after_the_window(self):
+        # A start the user walked away from must not close the screen saver forever.
+        with self.state.lock:
+            self.state.current = {"state": "starting", "id": "steam:1",
+                                  "launchRequestedAt": self.now, "processId": 42,
+                                  "installDir": r"E:\Games\One"}
+            self.state.readiness = {"ready": False, "reason": "game_starting",
+                                    "target_kind": "game", "stable_samples": 0}
+        # 0 s and 30 s close it; from 60 s on the launch wake has expired.
+        probe = self._run_screensaver_worker(ticks=6, advance=30.0)
+        self.assertEqual("starting", self.state.current["state"])
+        self.assertEqual(2, probe.close_screensaver.call_count)
+
+    def test_screen_saver_is_left_alone_without_an_active_transition(self):
+        # A game played (or idling) locally: nobody waits for its desktop.
+        self._running_game_behind_screensaver()
+        probe = self._run_screensaver_worker(ticks=12)
+        probe.close_screensaver.assert_not_called()
+
+        with self.state.lock:
+            self.state.current = {"state": "idle"}
+            self.state.readiness = {"ready": False, "reason": "host_screensaver_active",
+                                    "target_kind": "playnite", "stable_samples": 0}
+        probe = self._run_screensaver_worker(ticks=12)
+        probe.close_screensaver.assert_not_called()
+
+    def test_screen_saver_is_closed_for_reconnect_and_playnite_within_the_window(self):
+        self._running_game_behind_screensaver()
+        self.state.focus_game()
+        # 0 s and 30 s close it; at 60 s the reconnect request has expired.
+        probe = self._run_screensaver_worker(ticks=4, advance=30.0)
+        self.assertEqual(2, probe.close_screensaver.call_count)
+
+        with self.state.lock:
+            self.state.current = {"state": "idle"}
+        self.state.show_fullscreen()
+        probe = self._run_screensaver_worker(ticks=2)
+        probe.close_screensaver.assert_called_once_with()
+
+    def test_screen_saver_close_failure_does_not_stop_the_worker(self):
+        self._running_game_behind_screensaver()
+        self.state.focus_game()
+        with mock.patch.object(GameProviderBridge.DIAGNOSTICS, "record") as record:
+            probe = self._run_screensaver_worker(
+                ticks=8, blocked=[OSError("desktop"), "host_screensaver_active"])
+        self.assertEqual(8, probe.sample.call_count)
+        # The failed attempt counts toward the interval; the next one succeeds.
+        probe.close_screensaver.assert_called_once_with()
+        self.assertIn("window-probe.screensaver-close-failed",
+                      [call.args[0] for call in record.call_args_list])
+
     def test_stop_during_start_closes_late_process_before_accepting(self):
         with self.state.lock:
             self.state.library["steam:289070"] = {
@@ -3967,32 +4197,38 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.readiness["ready"])
         self.assertEqual("game_focus_requested", self.state.readiness["reason"])
 
-    def test_stream_display_is_resolved_only_from_named_fields(self):
-        payload = {
-            "sources": {
-                "session": {"value": {"display_name": "DISPLAY15"}},
-                "clients": {"value": {"name": "DISPLAY99", "output_name_override": ""}},
-            }
-        }
-        self.assertEqual(
-            [r"\\.\DISPLAY15"], StreamDisplayResolver.displays_from_payload(payload))
-
     def test_stream_display_resolver_uses_active_displays_endpoint(self):
         resolver = StreamDisplayResolver("http://127.0.0.1:47990/")
         self.assertEqual(
             "http://127.0.0.1:47990/diagnostics/active-displays", resolver.endpoint)
 
-    def test_stream_display_resolver_accepts_one_display_and_rejects_ambiguous_payload(self):
+    def test_stream_display_resolver_prefers_single_virtual_then_single_active_display(self):
+        def display(name, virtual, primary=False):
+            # Shape emitted by VibepolloBridge.ps1 Get-ActiveDisplayDiagnostics.
+            return {"display_name": "\\\\.\\" + name, "primary": primary,
+                    "stream_virtual_display": virtual,
+                    "bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080}}
+
+        def active(*displays):
+            return {"ok": True, "source": "Win32.EnumDisplayMonitors",
+                    "value": {"displays": list(displays)}}
+
         resolver = StreamDisplayResolver("http://127.0.0.1:47990")
         response = mock.MagicMock()
         response.__enter__.return_value = response
         payloads = [
-            ({"ok": True, "value": {"displays": [
-                {"display_name": "DISPLAY15", "bounds": {"width": 1920}}
-            ]}}, r"\\.\DISPLAY15"),
-            ({"ok": True, "value": {"displays": [
-                {"display_name": "DISPLAY15"}, {"display_name": "DISPLAY16"}
-            ]}}, ""),
+            # Failed topology APPLY: two physical outputs stay active beside the stream.
+            (active(display("DISPLAY1", False), display("DISPLAY2", False, True),
+                    display("DISPLAY15", True)), r"\\.\DISPLAY15"),
+            (active(display("DISPLAY15", True)), r"\\.\DISPLAY15"),
+            # No virtual display: a lone active physical display is the streamed one.
+            (active(display("DISPLAY2", False, True)), r"\\.\DISPLAY2"),
+            (active(display("DISPLAY1", False), display("DISPLAY2", False, True)), ""),
+            (active(display("DISPLAY15", True), display("DISPLAY16", True)), ""),
+            # Only the explicit boolean marks a virtual display; "true" counts as
+            # physical, so it wins only as the single active display.
+            (active(display("DISPLAY15", "true")), r"\\.\DISPLAY15"),
+            (active(display("DISPLAY15", "true"), display("DISPLAY2", False)), ""),
         ]
         with mock.patch.object(GameProviderBridge.urllib.request, "urlopen",
                                return_value=response) as urlopen:
@@ -4000,7 +4236,7 @@ class BridgeStateTest(unittest.TestCase):
                 resolver.last_check = 0.0
                 response.read.return_value = json.dumps(payload).encode("utf-8")
                 self.assertEqual(expected, resolver.resolve())
-            self.assertEqual(2, urlopen.call_count)
+            self.assertEqual(len(payloads), urlopen.call_count)
             self.assertTrue(all(call.args[0] == resolver.endpoint for call in urlopen.call_args_list))
 
     def test_connector_patch_is_guarded_and_idempotent(self):
@@ -4271,7 +4507,8 @@ class BridgeStateTest(unittest.TestCase):
         })
 
         self.assertEqual("starting", self.state.current["state"])
-        self.assertEqual("waiting_for_game_window", self.state.readiness["reason"])
+        # No verified game process yet: phase 1 keeps its own reason.
+        self.assertEqual("game_starting", self.state.readiness["reason"])
         self.assertNotIn("launcher-interaction-required", [
             event["event"] for event in self.state.events])
 

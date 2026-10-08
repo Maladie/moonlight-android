@@ -40,7 +40,7 @@ The auto-reset event `Global\MoonWaker.LoginAttempt.v1` wakes the LocalSystem pr
 
 Attempts live in memory for two minutes, are idempotent by client/profile/request, and bind every state/acquire/report call to the same values. A password is issued once. A provider failure makes the attempt `action_required` and deletes the LSA credential, so another submit requires explicit reconfiguration.
 
-The service tracks Windows lock/unlock notifications. Session state distinguishes `active`, `locked`, `connected`, `disconnected`, `signed_out`, `other_user_active`, and `unknown`.
+Every state read asks Windows whether an active session is locked (`WTSSessionInfoEx` `SessionFlags`, Windows 10/11 meaning: `0` locked, `1` unlocked; anything else is `unknown`). No lock notification is remembered, so a lock that predates the service or a missed event cannot report a locked console as ready. Session state distinguishes `active`, `locked`, `connected`, `disconnected`, `signed_out`, `other_user_active`, and `unknown`.
 The explicit switch operation uses `WTSDisconnectSession`; it never logs off a
 session or invokes `tsdiscon.exe`. It rejects RDP, multiple or unresolved active
 sessions, disabled Fast User Switching, and disconnect failures before creating

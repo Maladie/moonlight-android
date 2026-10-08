@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -56,6 +57,12 @@ public final class StreamRuntime implements NvConnectionListener,
         /** Host-side whole-session termination for a runtime without a presentation. */
         void terminateHost(StreamRuntime runtime, SessionModel.Snapshot session,
                            SessionModel.TerminationCallback completion);
+        /**
+         * Closes the whole host stream a launch opened after this runtime was abandoned (the
+         * start was cancelled while the launch was in flight); any failure is told to the user.
+         */
+        void closeAbandonedLaunch(String streamSessionId, String executionProfileId,
+                                  long controlGeneration);
         /** The transport generation ended; release presentation-less host-side owners. */
         void runtimeEnded();
         Executor stopExecutor();
@@ -122,6 +129,9 @@ public final class StreamRuntime implements NvConnectionListener,
     private long attachmentSerial;
     private long nextAttachmentSerial;
     private volatile long openInputSerial;
+    // The presentation gave up its launch before the host granted it a control generation.
+    private volatile boolean launchAbandoned;
+    private final AtomicBoolean abandonedLaunchClosed = new AtomicBoolean();
 
     // Held input recorded by the gate; mutated only under the input lock.
     private final Map<Short, Short> heldControllers = new HashMap<>();
@@ -637,9 +647,35 @@ public final class StreamRuntime implements NvConnectionListener,
             platform.sessionModel().post(new SessionEvent.ControlGenerationBound(
                     this, streamSessionId, controlGeneration));
             platform.controlGenerationBound(streamSessionId, controlGeneration);
+        } else if (controlGeneration > 0L && (launchAbandoned || !retainedByCoordinator())) {
+            closeAbandonedLaunch(controlGeneration);
         }
         Presentation p = attached();
         if (p != null) p.stageComplete(stage);
+    }
+
+    /**
+     * The presentation cancelled its launch, after stopping this runtime, while it saw no control
+     * generation. A grant that already arrived (even through the live path, before the stop)
+     * closes now; a later one closes in {@link #stageComplete}, whatever the session model has
+     * processed of the cancel by then.
+     */
+    public void abandonLaunch() {
+        if (!isStopping()) return;
+        launchAbandoned = true;
+        long controlGeneration = transport.controlGeneration();
+        if (controlGeneration > 0L) closeAbandonedLaunch(controlGeneration);
+    }
+
+    /**
+     * Cancelled while the launch was in flight: the host stream it opened (and its virtual
+     * display) has no other owner, and Sunshine only pauses it. Closed once.
+     */
+    private void closeAbandonedLaunch(long controlGeneration) {
+        if (!abandonedLaunchClosed.compareAndSet(false, true)) return;
+        platform.record("WARN", "runtime.abandoned_launch_close",
+                "stream_session_id", streamSessionId, "control_generation", controlGeneration);
+        platform.closeAbandonedLaunch(streamSessionId, executionProfileId, controlGeneration);
     }
 
     @Override public void stageFailed(String stage, int portFlags, int errorCode) {

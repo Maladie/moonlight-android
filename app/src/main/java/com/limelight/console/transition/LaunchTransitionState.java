@@ -15,6 +15,8 @@ public enum LaunchTransitionState {
     GAME_WINDOW_STABILIZING,
     HOST_SESSION_LOCKED,
     LAUNCHER_INTERACTION_REQUIRED,
+    /** A stale earlier launch's game is running instead of the requested one. */
+    PREVIOUS_GAME_RUNNING,
     GAME_READY,
     GAME_RUNNING,
     GAME_STOPPING,

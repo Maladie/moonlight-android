@@ -15,7 +15,7 @@ Makiety wizualne v4 (poza repozytorium, niewersjonowane):
 | Miejsce | Jak się otwiera | Zawartość |
 | --- | --- | --- |
 | Pasek narzędzi (ekran główny) | D-pad w górę | Odśwież stan i bibliotekę · Ustawienia · Profil Windows (przełącz) · Discord lub Mikrofon USB · Opuść host |
-| Panel hosta (`ConsoleHostPanel`) | OK na tytule hosta; MENU na kaflu hosta na ekranie wyboru | Pulpit · Obudź lub Uśpij · Zamknij stream; sekcja „Więcej": Test połączenia; na końcu czerwone: Twarde zamknięcie · Odparuj hosta |
+| Panel hosta (`ConsoleHostPanel`) | OK na tytule hosta; MENU na kaflu hosta na ekranie wyboru | Pulpit · Obudź lub Uśpij · Zamknij sesję; sekcja „Więcej": Test połączenia; na końcu czerwone: Twarde zamknięcie · Odparuj hosta |
 | Ustawienia (`ConsoleSettingsScreen`) | ikona zębatki | pełny ekran: kategorie po lewej (m.in. Wygląd i dźwięk, Biblioteka, Hosty i profile, Informacje), treść po prawej |
 | Karta gry (`ConsoleGameCard` + `ConsoleActionMenu`) | MENU / długie OK na kaflu | akcja główna, potem grupy pokazywane tylko gdy mają sens (sekcja 3.4) |
 | Pasek filtrów (siatka) | D-pad w górę z siatki | Filtr (Wszystkie, Zainstalowane, Niezainstalowane, Ostatnio grane, Najczęściej uruchamiane, Nigdy nie uruchamiane) · Platformy (wielokrotny wybór) · Sortowanie (Ostatnio grane, Nazwa, Biblioteka, Gatunek, Czas gry, Najczęściej uruchamiane) · Wyszukaj (okno tekstowe) |
@@ -81,12 +81,12 @@ Wszystkie pozycje z dawnego „Opcje" mają tu swoje miejsce; żadna nie znika.
 ### 3.3 Panel hosta (z tytułu hosta i z ekranu wyboru)
 
 Nagłówek: nazwa, stan, aktywny profil Windows, wersja hosta. Trzy akcje główne:
-**Pulpit**, **Obudź/Uśpij**, **Zamknij stream**. Poniżej sekcja „WIĘCEJ" z pozycjami
+**Pulpit**, **Obudź/Uśpij**, **Zamknij sesję** (gra, jeśli działa, i stream). Poniżej sekcja „WIĘCEJ" z pozycjami
 „Test połączenia" i „Zmień hosta", a na końcu, oddzielone i na czerwono, „Twarde
 zamknięcie" i „Odparuj hosta". „Automatyczne przygotowanie streamu" przechodzi do
 Ustawienia → Hosty i profile.
 
-**Z aktywną sesją** pierwsze wiersze to „Wróć do streamu" i „Zamknij stream", dalej
+**Z aktywną sesją** pierwsze wiersze to „Wróć do streamu" i „Zamknij sesję", dalej
 „Uśpij hosta", potem sekcja WIĘCEJ; pozycje niszczące zawsze na końcu.
 
 ### 3.4 Karta gry (MENU lub długie OK na kaflu)
@@ -95,7 +95,7 @@ Nagłówek z okładką, nazwą, czasem gry, ostatnim uruchomieniem i źródłem.
 główna na górze (Uruchom, Wznów, Zainstaluj lub Dokończ instalację), potem grupy
 pokazywane tylko wtedy, gdy mają sens:
 
-- **Sesja:** Zakończ grę, Zamknij grę i stream (tylko gdy gra działa).
+- **Sesja:** Zakończ grę, Zamknij sesję (tylko gdy gra działa).
 - **Streaming:** Ustawienia streamingu gry, Zoptymalizuj streaming.
 - **Rodzina:** Udostępnij grę dziecku (tylko profil rodzica).
 - **Biblioteka:** Ukryj lub Pokaż, Odinstaluj (czerwone, na końcu), Szczegóły.
@@ -130,7 +130,7 @@ Steam/Xbox), więc szybkie menu dotyczy tylko konsoli.
   kart (Stream — tylko gdy jest sesja, Host, Discord z nieprzeczytanymi) z podpowiedzią
   „☰ Opcje" pod kartą z fokusem.
 - **Karta Stream:** OK = „Wróć do streamu"; Opcje na niej = pływające menu: „Wróć do
-  streamu", „Zamknij stream", czerwone „Zamknij grę i stream". Karta pulpitu nie ma
+  streamu", czerwone „Zamknij sesję". Karta pulpitu nie ma
   okładki: wygenerowana grafika z gradientem (fiolet → morski), glif monitora w szklanym
   kółku, znacznik „NA ŻYWO" z czerwoną kropką. Bez przechwytu ani rozmycia prawdziwego
   pulpitu (bramka prywatności).
@@ -138,7 +138,7 @@ Steam/Xbox), więc szybkie menu dotyczy tylko konsoli.
   Discord, Mikrofon, Kontrolery, Ustawienia, przerwa, Zasilanie/Zamknij MoonWaker.
   Ikona z fokusem dostaje matowe kółko i swoją etykietę.
 - **Zawartość dawnych kafli:** Host — Obudź/Uśpij, Pulpit, Zmień hosta; Stream — Wróć do
-  streamu, Zamknij stream, Zamknij grę i stream (tylko gdy coś działa); Profil — Zmień
+  streamu, Zamknij sesję (tylko gdy coś działa); Profil — Zmień
   profil MoonWaker, Przełącz użytkownika Windows (z wyraźnym ostrzeżeniem).
 - **Konflikt:** opcja wyzwalacza nakładki DM Discorda „guide" (`DiscordDmShortcutHandler`)
   koliduje z tym skrótem; trzeba ją usunąć albo ograniczyć do streamu.

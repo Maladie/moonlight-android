@@ -18,6 +18,16 @@ class VibepolloBridgeContractTest(unittest.TestCase):
         self.assertNotIn("Invoke-VibepolloApi", route)
         self.assertNotIn("Build-StreamSourceDiagnostics", route)
 
+    def test_active_displays_mark_vibepollo_virtual_adapters(self):
+        source = self.source()
+        start = source.index("function Get-ActiveDisplayDiagnostics")
+        end = source.index("function Build-StreamSourceDiagnostics", start)
+        probe = source[start:end]
+
+        self.assertIn(r'@"Root\SunshineVirtualDisplay", @"root\sudomaker\sudovda"', probe)
+        self.assertIn("StreamVirtual = IsStreamVirtual(info.DeviceName)", probe)
+        self.assertIn("stream_virtual_display = [bool]$_.StreamVirtual", probe)
+
     def test_richer_stream_sources_endpoint_remains_diagnostic_only(self):
         source = self.source()
         start = source.index("function Build-StreamSourceDiagnostics")

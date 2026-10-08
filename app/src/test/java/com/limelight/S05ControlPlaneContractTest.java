@@ -57,32 +57,31 @@ public class S05ControlPlaneContractTest {
         String terminate = between(console,
                 "private void requestTerminateSession(ComputerDetails host, String",
                 "private boolean isPairingContextCurrent(");
-        String close = between(console, "private void requestCloseHostStream(",
-                "private void finishCloseHostStream(");
         String hard = between(console, "private void requestHardTerminateSession(",
                 "private void finishHardTerminate(");
         assertTrue(terminate.contains("new SessionEvent.TerminateRequested("));
-        assertTrue(close.contains("new SessionEvent.TerminateRequested("));
         assertFalse(hard.contains("new SessionEvent.TerminateRequested("));
         assertTrue(hard.contains("clearHardResetSessionState(host, profileKey)"));
         assertTrue(hard.contains("hardResetHost(gateway, childSessionId)"));
-        assertFalse(close.contains("new SessionEvent.Disconnect("));
+        assertFalse(terminate.contains("new SessionEvent.Disconnect("));
     }
 
     @Test public void ordinaryQuitAcceptsAlreadyIdleProviderAndDoesNotPoisonBarrier()
             throws Exception {
         String host = source("com/limelight/stream/HostSessionTermination.java");
 
-        assertTrue(host.contains("String exact = providerIdle ? \"\""));
+        assertTrue(host.contains(
+                "String exact = stopTarget(expectedGame, gameState, currentGame);"));
         // An idle permit (no provider game) is the Gateway's proof: no racy provider re-read
         // may reject the quit before /cancel (lab MW-05 D1: effect_rejected, Desktop kept running).
-        assertTrue(host.contains(
-                "if (!providerAlreadyStopped && !permit.providerGameId.isEmpty()) {"));
+        // Every permit naming a game is verified: no caller may skip it.
+        assertTrue(host.contains("if (!permit.providerGameId.isEmpty()) {"));
+        assertFalse(host.contains("providerAlreadyStopped"));
         assertTrue(host.contains(
                 "control.complete(gateway, permit, false, !effectResultUncertain)"));
         assertTrue(host.contains("\"control-full-quit-\" + UUID.randomUUID()"));
         assertTrue(host.contains(
-                "return control.complete(gateway, permit, true).succeeded()"));
+                "return closed(control.complete(gateway, permit, true).succeeded(),"));
     }
 
     @Test public void terminalLocalEffectsDoNotDependOnViewsOrHostRpc() throws Exception {
@@ -133,8 +132,9 @@ public class S05ControlPlaneContractTest {
         String close = between(game, "private void closeStreamWithPrivacy(",
                 "private ");
         assertTrue(close.contains("terminateWholeSessionVerified(null)"));
-        String common = between(game, "private void terminateWholeSessionVerified(\n"
-                        + "            ProviderStopCallback completion, boolean providerAlreadyStopped)",
+        String common = between(game, "private void terminateWholeSessionVerified("
+                        + "SessionModel.TerminationCallback completion,\n"
+                        + "            boolean requesterPresentsHome)",
                 "private void applyImmediateTerminalPrivacy(");
         assertTrue(common.contains("if (!wholeSessionTermination.begin())"));
         assertTrue(common.contains("stopChildMonitoring()"));
@@ -144,7 +144,7 @@ public class S05ControlPlaneContractTest {
         String overlay = source("com/limelight/ui/overlay/OverlayMenuView.java");
         assertFalse(overlay.contains("hostActionsAvailable"));
         int suspend = overlay.indexOf("if (suspendSessionAvailable)");
-        int quit = overlay.indexOf("R.string.overlay_menu_quit_session", suspend);
+        int quit = overlay.indexOf("R.string.console_close_session", suspend);
         assertTrue(quit > suspend);
         assertTrue(overlay.substring(suspend, quit).contains("}"));
     }
@@ -194,7 +194,7 @@ public class S05ControlPlaneContractTest {
         assertTrue(reconnect.contains("startChildSession(intent, cancelled)"));
         assertTrue(reconnect.contains("failClosedActorHandoff(intent, pending, accepted)"));
         assertTrue(reconnect.contains("failClosedActorHandoff(intent, pending, binding)"));
-        String resume = between(console, "private boolean startResumeActivity(",
+        String resume = between(console, "private String startResumeActivity(",
                 "private void failClosedActorHandoff(");
         assertTrue(resume.contains("Game.EXTRA_CONTROL_INTENT, \"reauthorize\""));
         assertTrue(resume.contains("Game.EXTRA_PROFILE_ID, intent.profileId"));

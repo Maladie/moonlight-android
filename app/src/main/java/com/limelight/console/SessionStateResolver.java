@@ -18,6 +18,11 @@ import java.util.Set;
 /** Single owner of the versioned host observation and its local session projection. */
 final class SessionStateResolver {
     static final long OBSERVATION_LIVENESS_MS = 15_000L;
+    /**
+     * After a local close, an unresolved host observation still reads as closing for at most
+     * this long; then the ordinary uncertain path (refresh/confirm) applies again.
+     */
+    static final long CLOSING_CONFIRMATION_MS = 3 * OBSERVATION_LIVENESS_MS;
     private static final Map<String, ProjectionOwner> OWNERS = new LinkedHashMap<>();
 
     static synchronized ProjectionOwner owner(SessionModel model, String hostId,
@@ -184,6 +189,9 @@ final class SessionStateResolver {
         private long nextRequestOrdinal;
         private long lastAcceptedOrdinal;
         private long observedTerminationEpoch;
+        /** A local close finished: arm the bounded closing window at the next projection. */
+        private boolean closingConfirmationArmed;
+        private long closingConfirmationUntilMs;
         private String producerBootId = "";
         private long producerRevision;
         private HostGatewayClient.SessionObservation observation;
@@ -208,7 +216,7 @@ final class SessionStateResolver {
 
         synchronized long nextRequestOrdinal() {
             // A boundary that passed before this dispatch must not reject this very request.
-            retireObservationAtTerminationBoundary(model.snapshot().terminationEpoch);
+            retireObservationAtTerminationBoundary(model.snapshot());
             if (nextRequestOrdinal == Long.MAX_VALUE) nextRequestOrdinal = 0L;
             return ++nextRequestOrdinal;
         }
@@ -339,7 +347,10 @@ final class SessionStateResolver {
 
         private void retireObservationAtTerminationBoundary(
                 SessionModel.Snapshot retained) {
-            if (retained != null) retireObservationAtTerminationBoundary(retained.terminationEpoch);
+            if (retained == null || retained.terminationEpoch == observedTerminationEpoch) return;
+            retireObservationAtTerminationBoundary(retained.terminationEpoch);
+            closingConfirmationArmed = retained.state != SessionModel.State.TERMINATING;
+            closingConfirmationUntilMs = 0L;
         }
 
         /**
@@ -367,6 +378,14 @@ final class SessionStateResolver {
          * retried on the next publication. Decisions are unaffected.
          */
         private SessionSnapshot publish(SessionSnapshot snapshot, long nowMs) {
+            if (closingConfirmationArmed) {
+                closingConfirmationArmed = false;
+                closingConfirmationUntilMs = nowMs + CLOSING_CONFIRMATION_MS;
+            }
+            if (snapshot.observationState == SessionSnapshot.ObservationState.READY
+                    || snapshot.observationState == SessionSnapshot.ObservationState.IDLE) {
+                closingConfirmationUntilMs = 0L;
+            }
             publishedGameEvidence = snapshot.observationCorrelated
                     ? observation.gameEvidence : null;
             publishedAtMs = nowMs;
@@ -487,6 +506,15 @@ final class SessionStateResolver {
                 state = SessionSnapshot.State.NONE;
             } else {
                 state = SessionSnapshot.State.UNCERTAIN;
+            }
+            // Until the host confirms the closed session free (or the bound passes), a closed
+            // session still reads as closing instead of uncertain. Only publish() starts the
+            // bound; a render-only projection reads it as if published now.
+            long closingUntilMs = closingConfirmationArmed
+                    ? nowMs + CLOSING_CONFIRMATION_MS : closingConfirmationUntilMs;
+            if (!idle && !ready && state == SessionSnapshot.State.UNCERTAIN
+                    && (retired || nowMs < closingUntilMs)) {
+                state = SessionSnapshot.State.TERMINATING;
             }
 
             String gameId = evidence != null

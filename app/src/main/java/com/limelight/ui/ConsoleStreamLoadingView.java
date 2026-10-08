@@ -357,11 +357,23 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     public void showError(String title, String details, boolean allowShowAnyway) {
+        showError(title, details, allowShowAnyway, false, true);
+    }
+
+    /**
+     * {@code preferReveal}: a launcher prompt or off-screen window is the likely cause, so an
+     * available "Reveal now" takes the focus; otherwise the focus stays put or lands on Retry.
+     * {@code allowRetry} false leaves only Cancel and the optional "Reveal now".
+     */
+    public void showError(String title, String details, boolean allowShowAnyway,
+                          boolean preferReveal, boolean allowRetry) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post(() -> showError(title, details, allowShowAnyway));
+            handler.post(() -> showError(title, details, allowShowAnyway, preferReveal,
+                    allowRetry));
             return;
         }
         if (stopped || closingPresentation) return;
+        boolean revealNewlyShown = allowShowAnyway && showAnywayView.getVisibility() != VISIBLE;
         error = true;
         handler.removeCallbacks(rotateMessage);
         messageView.animate().cancel();
@@ -374,10 +386,14 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         cancelView.setEnabled(true);
         cancelView.setText(R.string.transition_cancel);
         retryView.setEnabled(true);
-        retryView.setVisibility(VISIBLE);
+        retryView.setVisibility(allowRetry ? VISIBLE : GONE);
         showAnywayView.setVisibility(allowShowAnyway ? VISIBLE : GONE);
         renderSteps();
-        if (!isVisibleAction(findFocus())) retryView.requestFocus();
+        if (preferReveal && revealNewlyShown) showAnywayView.requestFocus();
+        else if (!isVisibleAction(findFocus())) {
+            (allowRetry ? retryView : allowShowAnyway ? showAnywayView : cancelView)
+                    .requestFocus();
+        }
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 
@@ -403,6 +419,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             return;
         }
         if (stopped || closingPresentation) return;
+        boolean revealNewlyShown = allowReveal && showAnywayView.getVisibility() != VISIBLE;
         error = true;
         handler.removeCallbacks(rotateMessage);
         messageView.animate().cancel();
@@ -419,7 +436,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         cancelView.setNextFocusRightId(showAnywayView.getId());
         showAnywayView.setNextFocusLeftId(cancelView.getId());
         renderSteps();
-        requestDefaultActionFocus();
+        if (revealNewlyShown) showAnywayView.requestFocus();
+        else requestDefaultActionFocus();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 

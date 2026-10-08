@@ -1014,7 +1014,8 @@ class ControlOperationTest(unittest.TestCase):
                                      self.state.control_state["generation"])
 
     def observe_partial_scan(self, connected_count=0, app_running=True, provider_ok=True,
-                             scan="partial", game=None, running=(), process="PENDING"):
+                             scan="partial", game=None, running=(), process="PENDING",
+                             target_status=None):
         """The Bridge while idle: game ABSENT, by default process PENDING and scan partial."""
         def proxy(name, path, **_kwargs):
             if name == "vibepollo" and path == "/snapshot?force=1":
@@ -1029,7 +1030,7 @@ class ControlOperationTest(unittest.TestCase):
                                           "running_games": [dict(item) for item in running],
                                           "running_scan_status": scan}}
             return False, {"error": "fixture_offline"}
-        self.state.proxy = target_aware(proxy)
+        self.state.proxy = target_aware(proxy, lambda: target_status)
 
     def assert_unconfirmed(self, generation):
         for body in (self.request("a1-resume", "resume"),
@@ -1139,6 +1140,144 @@ class ControlOperationTest(unittest.TestCase):
         self.assertIsNone(self.state.control_state["stream"])
         self.assertEqual(a1["generation"],
                          self.state.control_state["idle_stream"]["generation"])
+
+    def observe_launch(self, state, scan="complete", running=(), target_status=None):
+        """The Bridge mid-launch or after a failed launch: game id kept, no game process."""
+        self.observe_partial_scan(app_running=False, scan=scan, running=running,
+                                  target_status=target_status, game={
+                                      "state": state, "id": "steam:7",
+                                      "evidence": "VERIFIED"})
+
+    def close_permit(self, a1, intent="full_quit"):
+        status, close = self.acquire(self.request(
+            "a1-" + intent, intent, expected_generation=a1["generation"]), 0)
+        self.assertEqual(200, status, close)
+        self.assertEqual(("permitted", "", "", 0), (
+            close["state"], close["provider_game_id"], close["process_token"],
+            close["process_id"]))
+        self.assertEqual(200, self.complete(close)[0])
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_close_without_game_process_while_launch_starting(self):
+        a1 = self.launched_stream()
+        self.observe_launch("starting")
+        self.close_permit(a1)
+
+    def test_hard_reset_without_game_process_while_launch_starting(self):
+        a1 = self.launched_stream()
+        self.observe_launch("starting")
+        self.close_permit(a1, "hard_reset")
+
+    def test_close_without_game_process_after_failed_launch(self):
+        a1 = self.launched_stream()
+        self.observe_launch("failed")
+        self.close_permit(a1)
+
+    def test_close_after_failed_launch_abandons_that_start_in_the_bridge(self):
+        a1 = self.launched_stream()
+        self.observe_launch("failed")
+        calls = []
+
+        def control_lock_free():
+            # Another thread can take the control lock: the slow Bridge call blocks nobody.
+            free = []
+            probe = threading.Thread(target=lambda: free.append(
+                self.state.control_condition.acquire(timeout=1.0)
+                and self.state.control_condition.release() is None))
+            probe.start()
+            probe.join()
+            return free == [True]
+
+        self.state.proxy_json = lambda name, path, body, **kwargs: (
+            calls.append((name, path, body, kwargs, control_lock_free()))
+            or (True, {"accepted": True}))
+        status, close = self.acquire(self.request(
+            "a1-full_quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(200, status, close)
+        self.assertEqual([], calls)  # Nothing is abandoned before the close succeeds.
+        self.assertEqual(200, self.complete(close)[0])
+        self.assertEqual(1, len(calls))
+        name, path, body, kwargs, lock_free = calls[0]
+        self.assertTrue(lock_free)
+        self.assertEqual(("game_provider", "/game/abandon-start", "steam:7", "parent"),
+                         (name, path, body["game_id"], kwargs["profile_id"]))
+        self.assertEqual((close["operation_id"], close["generation"]), (
+            body["control_operation"]["operation_id"],
+            body["control_operation"]["generation"]))
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_close_succeeds_when_the_bridge_refuses_to_abandon(self):
+        a1 = self.launched_stream()
+        self.observe_launch("starting")
+        self.state.proxy_json = lambda *_args, **_kwargs: (
+            True, {"accepted": False, "reason": "start_not_abandonable"})
+        self.close_permit(a1)
+
+    def test_close_with_a_verified_process_abandons_nothing(self):
+        a1 = self.launched_stream()
+        self.observe_launch("starting", running=[
+            {"game_id": "steam:7", "process_id": 77, "process_token": "b" * 64}])
+        self.state.proxy_json = lambda *_args, **_kwargs: self.fail("no abandon")
+        status, close = self.acquire(self.request(
+            "a1-quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(200, status, close)
+        self.assertEqual(200, self.complete(close)[0])
+
+    def test_close_after_failed_launch_when_retained_process_gone(self):
+        a1 = self.launched_stream(token="a" * 64)
+        self.observe_launch("failed")
+        self.close_permit(a1)
+
+    def test_launch_close_unconfirmed_when_retained_process_not_gone(self):
+        a1 = self.launched_stream(token="a" * 64)
+        self.observe_launch("failed", target_status="unknown")
+        self.assert_unconfirmed(a1["generation"])
+
+    def test_launch_close_unconfirmed_when_game_listed_without_token(self):
+        a1 = self.launched_stream()
+        self.observe_launch("failed", running=[{"game_id": "steam:7", "process_id": 77}])
+        self.assert_unconfirmed(a1["generation"])
+
+    def test_launch_close_unconfirmed_when_scan_partial(self):
+        a1 = self.launched_stream()
+        self.observe_launch("starting", scan="partial")
+        self.assert_unconfirmed(a1["generation"])
+
+    def test_launch_close_unconfirmed_when_scan_unavailable(self):
+        a1 = self.launched_stream()
+        self.observe_launch("failed", scan="unavailable")
+        self.assert_unconfirmed(a1["generation"])
+
+    def test_close_in_launch_phase_two_keeps_process_token(self):
+        a1 = self.launched_stream()
+        token = "b" * 64
+        self.observe_launch("starting", running=[
+            {"game_id": "steam:7", "process_id": 77, "process_token": token}])
+        status, close = self.acquire(self.request(
+            "a1-quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(200, status, close)
+        self.assertEqual(("steam:7", token, 77), (
+            close["provider_game_id"], close["process_token"], close["process_id"]))
+
+    def test_child_launch_close_gains_no_other_intent(self):
+        a1 = self.launched_stream()
+        self.observe_launch("starting")
+        self.state.config["profiles"]["kid"] = {
+            "id": "kid", "kind": "child", "name": "Kid", "enabled": True,
+            "parent_profile_id": "parent"}
+        self.client["profile_grants"]["kid"] = ["use_profile"]
+        self.state.authorize_child_profile(self.client, "kid")
+        resume = self.request("kid-resume", "resume")
+        status, result = self.state.control_operation_acquire(
+            self.client, resume, resume["operation_id"], 0)
+        self.assertEqual(409, status, result)
+        close = self.request("kid-quit", "full_quit", expected_generation=a1["generation"])
+        status, permit = self.state.control_operation_acquire(
+            self.client, close, close["operation_id"], 0)
+        self.assertEqual(200, status, permit)
+        self.assertEqual(("kid", "", ""), (permit["actor_profile_id"],
+                                           permit["provider_game_id"],
+                                           permit["process_token"]))
 
     def test_rejected_close_leaves_no_active_operation(self):
         a1 = self.launched_stream(token="a" * 64)

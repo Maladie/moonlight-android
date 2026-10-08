@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.KeyEvent;
@@ -76,6 +77,17 @@ public final class StreamHomeActivity extends ConsoleActivity {
     @Override
     protected boolean isStreamHome() {
         return true;
+    }
+
+    /** No stream remains under this Home: the plain console home takes its place. */
+    @Override
+    protected void onRequestedStreamClosed() {
+        if (isFinishing()) return;
+        startActivity(new Intent(this, ConsoleActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(EXTRA_SUPPRESS_AUTO_WARM_UP, true));
+        finish();
+        overridePendingTransition(android.R.anim.fade_in, 0);
     }
 
     @Override

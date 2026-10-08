@@ -4,6 +4,7 @@ import com.limelight.session.SessionModel;
 import com.limelight.session.SessionModelDriver;
 
 import com.limelight.console.transition.LaunchTransitionController;
+import com.limelight.console.transition.LaunchTransitionSnapshot;
 import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionState;
 import com.limelight.console.transition.LaunchTransitionType;
@@ -104,6 +105,284 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         assertEquals(LaunchTransitionState.ERROR, harness.controller.snapshot().state);
         assertEquals("unconfirmed", harness.controller.snapshot().detail);
+    }
+
+    @Test
+    public void startPhasesMapToStartingThenWaitingForWindow() {
+        FakeGateway gateway = gatewayWith(
+                snapshot(true, true, "starting", GAME, 0, false, "game", 0, "game_starting"),
+                snapshot(true, true, "starting", GAME, 0, false, "game", 0,
+                        "waiting_for_game_identity"));
+        Harness phaseOne = new Harness(LaunchTransitionType.GAME, gateway);
+        phaseOne.controller.streamConnected("transition-1");
+
+        phaseOne.runObservation();
+
+        // Phase 1: no verified process yet, whatever the window reason says.
+        assertEquals(LaunchTransitionState.GAME_START_REQUESTED,
+                phaseOne.controller.snapshot().state);
+        assertFalse(phaseOne.states.contains(LaunchTransitionState.GAME_PROCESS_RUNNING));
+
+        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        Harness phaseTwo = new Harness(LaunchTransitionType.GAME, gatewayWith(
+                snapshot(true, true, "starting", GAME, 42, false, "game", 0,
+                        "waiting_for_game_window")));
+        phaseTwo.controller.streamConnected("transition-1");
+
+        phaseTwo.runObservation();
+
+        // Phase 2: the host verified the game's process and waits for its window.
+        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
+                phaseTwo.controller.snapshot().state);
+        assertEquals("waiting for game window", phaseTwo.controller.snapshot().detail);
+        assertFalse(phaseTwo.controller.snapshot().revealAuthorized);
+    }
+
+    @Test
+    public void runningStateFromBeforeThisRequestStaysPhaseOne() {
+        // The host's "running" episode began a minute before this request's Play: an earlier
+        // game or attempt, not this request's process.
+        Harness stale = new Harness(LaunchTransitionType.GAME, gatewayWith(
+                aged("running", GAME, 42, "waiting_for_game_window", 60_000L)));
+        stale.controller.streamConnected("transition-1");
+
+        stale.runObservation();
+
+        assertEquals(LaunchTransitionState.GAME_START_REQUESTED,
+                stale.controller.snapshot().state);
+        assertFalse(stale.states.contains(LaunchTransitionState.GAME_PROCESS_RUNNING));
+
+        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        Harness current = new Harness(LaunchTransitionType.GAME, gatewayWith(
+                aged("running", GAME, 42, "waiting_for_game_window", 0L)));
+        current.controller.streamConnected("transition-1");
+
+        current.runObservation();
+
+        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
+                current.controller.snapshot().state);
+    }
+
+    @Test
+    public void runningGameBeforeItsProcessTokenIsPhaseTwo() {
+        // The provider runs the game (window-correlated process) while the tokenizing process
+        // scan still lags: the observation carries no verified process yet.
+        Harness harness = new Harness(LaunchTransitionType.GAME, gatewayWith(
+                snapshot(true, true, "starting", GAME, 0, false, "game", 0, "game_starting"),
+                snapshot(true, true, "running", GAME, 0, false, "game", 0,
+                        "waiting_for_game_window")));
+        harness.controller.streamConnected("transition-1");
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
+                harness.controller.snapshot().state);
+        assertEquals("waiting for game window", harness.controller.snapshot().detail);
+        assertFalse(harness.controller.snapshot().revealAuthorized);
+        assertTrue(harness.controller.snapshot().inputBlocked);
+    }
+
+    @Test
+    public void slowStartShowsNoticeAfterThreeMinutesButNeverFails() {
+        PlayniteTransitionGateway.Snapshot phaseOne = snapshot(true, true, "starting", GAME, 0,
+                false, "game", 0, "game_starting");
+        PlayniteTransitionGateway.Snapshot phaseTwo = snapshot(true, true, "starting", GAME, 42,
+                false, "game", 0, "waiting_for_game_window");
+        FakeGateway gateway = gatewayWith(phaseOne, phaseOne, phaseTwo, phaseTwo, phaseTwo);
+        FakeClock clock = new FakeClock();
+        List<Boolean> notices = new ArrayList<>();
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+        harness.controller.streamConnected("transition-1");
+        gateway.snapshotActions.add(() -> clock.value = 60_000L);
+        gateway.snapshotActions.add(() -> {
+            clock.value = 179_999L;
+            notices.add(harness.controller.snapshot().startTakingLonger);
+        });
+        gateway.snapshotActions.add(() -> {
+            notices.add(harness.controller.snapshot().startTakingLonger);
+            clock.value = 180_000L;
+        });
+        gateway.snapshotActions.add(() -> {
+            notices.add(harness.controller.snapshot().startTakingLonger);
+            clock.value = 3_600_000L;
+        });
+
+        harness.runObservation();
+
+        assertEquals(Arrays.asList(false, false, true), notices);
+        // Phase 2 has no client bound: an hour later the start is still pending, not failed.
+        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
+                harness.controller.snapshot().state);
+        assertTrue(harness.controller.snapshot().startTakingLonger);
+        assertFalse(harness.states.contains(LaunchTransitionState.TIMED_OUT));
+        assertFalse(harness.states.contains(LaunchTransitionState.ERROR));
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void staleObservationCannotFlagANewRequestAsSlow() {
+        PlayniteTransitionGateway.Snapshot pending = snapshot(true, true, "starting", GAME, 0,
+                false, "game", 0, "game_starting");
+        FakeGateway gateway = gatewayWith(pending, pending);
+        FakeClock clock = new FakeClock();
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+        LaunchTransitionSpec next = new LaunchTransitionSpec("transition-2", HOST,
+                LaunchTransitionType.GAME, 42, GAME, 2_000L);
+        harness.controller.streamConnected("transition-1");
+        gateway.snapshotActions.add(() -> { });
+        gateway.snapshotActions.add(() -> {
+            // The user started a new request; the old observation still polls once more.
+            harness.controller.begin(next);
+            harness.controller.overlayRendered(next.id);
+            harness.controller.streamConnected(next.id);
+            clock.value = 600_000L;
+        });
+
+        harness.runObservation();
+
+        assertEquals(next.id, harness.controller.snapshot().spec.id);
+        assertFalse(harness.controller.snapshot().startTakingLonger);
+    }
+
+    @Test
+    public void gameExitedDuringStartShowsItsOwnError() {
+        Harness harness = new Harness(LaunchTransitionType.GAME, gatewayWith(
+                snapshot(true, true, "failed", GAME, 0, false, "game", 0,
+                        "game_exited_during_start")));
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.ERROR, harness.controller.snapshot().state);
+        assertEquals("game exited", harness.controller.snapshot().detail);
+    }
+
+    @Test
+    public void cancelInPhaseTwoStopsTheExactVerifiedProcess() {
+        FakeGateway gateway = gatewayWith(snapshot(true, true, "starting", GAME, 42,
+                false, "game", 0, "waiting_for_game_window"));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        harness.runObservation();
+        assertEquals(null, harness.coordinator.providerCleanupResult());
+        gateway.snapshots.add(snapshot(true, true, "starting", GAME, 42,
+                false, "game", 0, "waiting_for_game_window"));
+
+        harness.coordinator.cancel();
+
+        assertEquals(1, gateway.stopGameCalls);
+        assertEquals(GAME, gateway.stoppedGameId);
+        assertEquals(PROCESS_TOKEN, gateway.stoppedProcessToken);
+        assertEquals(1, harness.callbacks.cleanupCalls);
+        assertTrue(harness.callbacks.lastCleanupSuccess);
+        assertEquals(Boolean.TRUE, harness.coordinator.providerCleanupResult());
+    }
+
+    @Test
+    public void hostFailureWithoutProcessSettlesCleanupWithoutAnyStop() {
+        PlayniteTransitionGateway.Snapshot failed = snapshot(true, true, "failed", GAME, 0,
+                false, "game", 0, "game_start_timeout");
+        FakeGateway gateway = gatewayWith(failed, failed);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        makeTransportReady(harness.controller);
+
+        harness.runObservation();
+
+        LaunchTransitionSnapshot current = harness.controller.snapshot();
+        assertEquals(LaunchTransitionState.ERROR, current.state);
+        assertEquals("start timeout", current.detail);
+        assertTrue("a launcher may be waiting: Reveal now is offered",
+                current.manualRevealAvailable);
+        assertTrue(current.revealPreferred);
+        assertEquals(0, gateway.stopGameCalls);
+        assertEquals(1, harness.callbacks.cleanupCalls);
+        // The host proved no process remains: the cleanup succeeded, it is not unconfirmed.
+        assertTrue(harness.callbacks.lastCleanupSuccess);
+        assertEquals(Boolean.TRUE, harness.coordinator.providerCleanupResult());
+        harness.coordinator.cancel();
+        assertEquals(0, gateway.stopGameCalls);
+        assertEquals(1, harness.callbacks.cleanupCalls);
+    }
+
+    @Test
+    public void failureWithoutThisRequestsCorrelationIsNoEvidenceOfNothingToStop() {
+        PlayniteTransitionGateway.Snapshot[] unrelated = {
+                aged("failed", "", 0, "game_start_timeout", 0L),
+                aged("failed", "22222222-3333-4444-5555-666666666666", 0,
+                        "game_start_timeout", 0L),
+                aged("failed", GAME, 0, "game_start_timeout", 60_000L)};
+        for (PlayniteTransitionGateway.Snapshot cleanupRead : unrelated) {
+            ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+            FakeGateway gateway = gatewayWith(
+                    aged("failed", GAME, 0, "game_start_timeout", 0L), cleanupRead);
+            Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+
+            harness.runObservation();
+
+            assertEquals(LaunchTransitionState.ERROR, harness.controller.snapshot().state);
+            assertEquals(0, gateway.stopGameCalls);
+            assertEquals(1, harness.callbacks.cleanupCalls);
+            assertEquals("game=" + cleanupRead.gameId + " age=" + cleanupRead.stateAgeMs,
+                    Boolean.FALSE, harness.coordinator.providerCleanupResult());
+        }
+    }
+
+    @Test
+    public void streamDisplayFailureKeepsRevealNowAvailable() {
+        FakeGateway gateway = gatewayWith(snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "stream_display_not_configured"));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        makeTransportReady(harness.controller);
+
+        harness.runObservation();
+
+        assertEquals("display missing", harness.controller.snapshot().detail);
+        assertTrue(harness.controller.snapshot().manualRevealAvailable);
+        assertFalse(harness.controller.snapshot().revealAuthorized);
+    }
+
+    @Test
+    public void launcherPromptBeforeAnyGameIdentityOffersRevealAtOnce() {
+        FakeGateway gateway = gatewayWith(snapshot(true, true, "starting", "", 0,
+                false, "game", 0, "launcher_interaction_required"));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        makeTransportReady(harness.controller);
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
+                harness.controller.snapshot().state);
+        assertTrue(harness.controller.snapshot().manualRevealAvailable);
+    }
+
+    @Test
+    public void previousLaunchGameIsOfferedAndEndedByItsOwnVerifiedToken() {
+        String previousGame = "22222222-3333-4444-5555-666666666666";
+        String previousToken =
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        FakeGateway gateway = gatewayWith(new PlayniteTransitionGateway.Snapshot(
+                true, true, "starting", GAME, 0, false, "game", 0,
+                "previous_launch_game_running", false, "", previousGame, previousToken,
+                "Resident Evil 3", 0L));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        makeTransportReady(harness.controller);
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.PREVIOUS_GAME_RUNNING,
+                harness.controller.snapshot().state);
+        assertEquals("previous game", harness.controller.snapshot().detail);
+        assertEquals("Resident Evil 3", harness.coordinator.previousGameName());
+        assertTrue(harness.controller.snapshot().manualRevealAvailable);
+        assertEquals(0, gateway.stopGameCalls);
+
+        harness.coordinator.stopPreviousGame();
+
+        assertEquals(1, gateway.stopGameCalls);
+        assertEquals(previousGame, gateway.stoppedGameId);
+        assertEquals(previousToken, gateway.stoppedProcessToken);
+        assertEquals("the requested game's start continues",
+                LaunchTransitionState.GAME_STARTING, harness.controller.snapshot().state);
     }
 
     @Test
@@ -215,8 +494,72 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
                 controller.snapshot().state);
         assertTrue(controller.snapshot().manualRevealAvailable);
+        assertEquals(1, gateway.startGameCalls);
         coordinator.cancel();
         assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void lockedSessionRequestsOneHostUnlockBeforeTheManualGate() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, locked, locked);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        gateway.onUnlock = () -> assertFalse(
+                harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+
+        harness.runObservation();
+
+        assertEquals(1, gateway.unlockCalls);
+        assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
+                harness.controller.snapshot().state);
+        assertTrue(harness.controller.snapshot().overlayVisible);
+        assertTrue(harness.controller.snapshot().inputBlocked);
+    }
+
+    @Test
+    public void confirmedHostUnlockReReadsTheHostAndALaterLockUsesTheManualGate() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, snapshotReadyGame(), locked);
+        gateway.unlockResult = true;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        gateway.snapshotActions.add(() -> { });
+        gateway.snapshotActions.add(() -> {
+            assertFalse(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+            // The privacy gate still waits for its own fresh frame.
+            assertTrue(harness.controller.snapshot().overlayVisible);
+        });
+        gateway.snapshotActions.add(() ->
+                assertEquals(LaunchTransitionState.GAME_READY,
+                        harness.controller.snapshot().state));
+
+        harness.runObservation();
+
+        assertEquals(1, gateway.unlockCalls);
+        assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
+                harness.controller.snapshot().state);
+    }
+
+    @Test
+    public void hostUnlockStoppedTransitionCancelsPollingAndIgnoresTheResult() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, snapshotReadyGame());
+        gateway.unlockResult = true;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        gateway.onUnlock = () -> {
+            assertFalse(gateway.unlockCancelled.getAsBoolean());
+            harness.coordinator.stop();
+            assertTrue(gateway.unlockCancelled.getAsBoolean());
+        };
+
+        harness.runObservation();
+
+        assertEquals(1, gateway.unlockCalls);
+        assertEquals(1, gateway.snapshotIndex);
+        assertFalse(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+        assertFalse(harness.states.contains(LaunchTransitionState.GAME_READY));
     }
 
     @Test
@@ -246,8 +589,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 gatewayWith(snapshot(true, true, "running", GAME, 0,
                         false, "game", 0, "waiting_for_game_identity")));
         identity.runObservation();
-        assertEquals(LaunchTransitionState.CONNECTING_STREAM,
+        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
                 identity.controller.snapshot().state);
+        assertEquals("waiting for process details", identity.controller.snapshot().detail);
         assertTrue(identity.controller.snapshot().inputBlocked);
 
         Harness fullscreen = new Harness(LaunchTransitionType.GAME,
@@ -255,6 +599,43 @@ public class ConsoleStreamTransitionCoordinatorTest {
                         false, "game", 0, "target_not_fullscreen")));
         fullscreen.runObservation();
         assertEquals("window not fullscreen", fullscreen.controller.snapshot().detail);
+    }
+
+    @Test
+    public void screensaverReportsWakingWithoutSpendingTheHostUnlock() {
+        FakeGateway gateway = gatewayWith(snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_screensaver_active"));
+        FakeClock clock = new FakeClock();
+        gateway.snapshotAction = () -> clock.value += 3_000L;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals("waking computer", harness.controller.snapshot().detail);
+        assertEquals(0, gateway.unlockCalls);
+        // The reconnect's focus request is what lets the Bridge close the saver.
+        assertEquals(1, gateway.focusGameCalls);
+        assertTrue(harness.controller.snapshot().inputBlocked);
+        assertFalse(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+    }
+
+    @Test
+    public void screensaverThatNeverClosesTimesOutUnlikeALock() {
+        PlayniteTransitionGateway.Snapshot saver = snapshot(true, false, "idle", "", 0,
+                false, "playnite", 0, "host_screensaver_active");
+        FakeGateway gateway = gatewayWith(saver, saver);
+        FakeClock clock = new FakeClock();
+        gateway.snapshotActions.add(() -> clock.value = 0L);
+        gateway.snapshotActions.add(() -> clock.value = 61_000L);
+        Harness harness = new Harness(LaunchTransitionType.PLAYNITE, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.TIMED_OUT, harness.controller.snapshot().state);
+        assertEquals("waking computer", harness.controller.snapshot().detail);
+        assertEquals(0, gateway.unlockCalls);
     }
 
     @Test
@@ -285,6 +666,41 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         assertEquals(3, gateway.focusGameCalls);
         assertEquals(Arrays.asList(3_000L, 6_000L, 9_000L), gateway.focusTimes);
+    }
+
+    @Test
+    public void screensaverWakeDoesNotSpendTheGameFocusAttempts() {
+        PlayniteTransitionGateway.Snapshot saver = snapshot(true, true, "running", GAME,
+                42, false, "game", 0, "host_screensaver_active");
+        PlayniteTransitionGateway.Snapshot background = snapshot(true, true, "running", GAME,
+                42, false, "game", 0, "target_not_foreground");
+        FakeGateway gateway = gatewayWith(saver, saver, saver, saver,
+                background, background, background, background);
+        FakeClock clock = new FakeClock();
+        gateway.snapshotAction = () -> clock.value += 3_000L;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals(Arrays.asList(3_000L, 6_000L, 9_000L, 15_000L, 18_000L, 21_000L),
+                gateway.focusTimes);
+    }
+
+    @Test
+    public void startingGameBehindScreensaverLeavesTheWakeToTheBridge() {
+        PlayniteTransitionGateway.Snapshot saver = snapshot(true, true, "starting", GAME,
+                0, false, "game", 0, "host_screensaver_active");
+        FakeGateway gateway = gatewayWith(saver, saver, saver);
+        FakeClock clock = new FakeClock();
+        gateway.snapshotAction = () -> clock.value += 3_000L;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals(3, gateway.snapshotIndex);
+        assertEquals(0, gateway.focusGameCalls);
     }
 
     @Test
@@ -421,10 +837,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(45_000L, timeout(LaunchTransitionState.PLAYNITE_STARTING));
         assertEquals(45_000L, timeout(LaunchTransitionState.PLAYNITE_PROCESS_RUNNING));
         assertEquals(30_000L, timeout(LaunchTransitionState.PLAYNITE_FULLSCREEN_STARTING));
-        assertEquals(120_000L, timeout(LaunchTransitionState.GAME_START_REQUESTED));
-        assertEquals(120_000L, timeout(LaunchTransitionState.GAME_STARTING));
-        assertEquals(120_000L, timeout(LaunchTransitionState.GAME_PROCESS_RUNNING));
-        assertEquals(30_000L, timeout(LaunchTransitionState.GAME_WINDOW_STABILIZING));
+        // Game start readiness has no client bound: the host fails phase 1 itself.
+        assertEquals(0L, timeout(LaunchTransitionState.GAME_START_REQUESTED));
+        assertEquals(0L, timeout(LaunchTransitionState.GAME_STARTING));
+        assertEquals(0L, timeout(LaunchTransitionState.GAME_PROCESS_RUNNING));
+        assertEquals(0L, timeout(LaunchTransitionState.GAME_WINDOW_STABILIZING));
         assertEquals(0L, timeout(LaunchTransitionState.HOST_SESSION_LOCKED));
         assertEquals(45_000L, timeout(LaunchTransitionState.PLAYNITE_RETURNING));
         assertEquals(15_000L, timeout(LaunchTransitionState.PLAYNITE_STOPPING));
@@ -1421,7 +1838,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(LaunchTransitionState.ERROR, controller.snapshot().state);
         assertFalse(controller.snapshot().revealAuthorized);
         assertEquals(0, gateway.stopGameCalls);
-        assertEquals(0, gateway.snapshotIndex);
+        // Only the cleanup's own read for proof that no process was left.
+        assertEquals(1, gateway.snapshotIndex);
     }
 
     @Test
@@ -2114,6 +2532,15 @@ public class ConsoleStreamTransitionCoordinatorTest {
         return new PlayniteTransitionGateway.Events(Arrays.asList(values), latest);
     }
 
+    /** A game observation whose host state episode had lasted {@code ageMs} when observed. */
+    private static PlayniteTransitionGateway.Snapshot aged(String gameState, String gameId,
+                                                          int processId, String reason,
+                                                          long ageMs) {
+        return new PlayniteTransitionGateway.Snapshot(true, true, gameState, gameId, processId,
+                false, "game", 0, reason, false, processId > 0 ? PROCESS_TOKEN : "", "", "",
+                "", ageMs);
+    }
+
     private static FakeGateway gatewayWith(PlayniteTransitionGateway.Snapshot... snapshots) {
         FakeGateway gateway = new FakeGateway();
         gateway.snapshots.addAll(Arrays.asList(snapshots));
@@ -2207,6 +2634,17 @@ public class ConsoleStreamTransitionCoordinatorTest {
         IOException startError;
         boolean focusGameError;
         boolean observeStartedProcessThenStop;
+        int unlockCalls;
+        boolean unlockResult;
+        Runnable onUnlock;
+        java.util.function.BooleanSupplier unlockCancelled;
+
+        @Override public boolean unlockHostSession(java.util.function.BooleanSupplier cancelled) {
+            unlockCalls++;
+            unlockCancelled = cancelled;
+            if (onUnlock != null) onUnlock.run();
+            return unlockResult;
+        }
 
         @Override public PlayniteTransitionGateway.Snapshot snapshot() throws IOException {
             if (observeStartedProcessThenStop) {
@@ -2306,12 +2744,17 @@ public class ConsoleStreamTransitionCoordinatorTest {
             return "waiting for process details";
         }
         @Override public String gameWindowPendingMessage() { return "waiting for game window"; }
+        @Override public String gameExitedDuringStartMessage() { return "game exited"; }
         @Override public String gameWindowNotFullscreenMessage() {
             return "window not fullscreen";
         }
         @Override public String gameWindowNotForegroundMessage() { return "window not active"; }
+        @Override public String hostScreensaverActiveMessage() { return "waking computer"; }
         @Override public String launcherInteractionRequiredMessage() { return "reveal launcher"; }
         @Override public String windowStabilizingMessage() { return "stabilizing"; }
+        @Override public String gameStartTimeoutMessage() { return "start timeout"; }
+        @Override public String previousGameRunningMessage() { return "previous game"; }
+        @Override public String previousGameStopFailedMessage() { return "previous stop failed"; }
         @Override public boolean isPendingInstallation(String hostId, String gameId) {
             return pending.contains(gameId);
         }

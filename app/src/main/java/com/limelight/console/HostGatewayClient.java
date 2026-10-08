@@ -559,6 +559,11 @@ class HostGatewayClient {
         final boolean hostGuideAllowed;
         final boolean requiresConnector;
         final boolean startBeforeStream;
+        /** {@code window.previous_launch}: a stale earlier launch's verified game process. */
+        String previousLaunchGameId = "";
+        String previousLaunchProcessToken = "";
+        /** Optional {@code window.previous_launch.name}: display text only, never an identity. */
+        String previousLaunchGameName = "";
 
         SessionObservation(String producerBootId, long producerRevision,
                            long observedAtUnixMs, long freshForMs,
@@ -1934,7 +1939,23 @@ class HostGatewayClient {
                 || processEvidence != Evidence.VERIFIED))) {
             throw new IOException("inconsistent_observation_evidence");
         }
-        return new SessionObservation(boot, revision, observedAt, freshFor,
+        String windowReason = requiredState(window, "reason");
+        String previousGameId = "";
+        String previousToken = "";
+        String previousName = "";
+        if ("previous_launch_game_running".equals(windowReason)) {
+            JSONObject previous = requiredObject(window, "previous_launch");
+            previousGameId = requiredString(previous, "game_id").trim();
+            previousToken = requiredString(previous, "process_token");
+            Object name = previous.opt("name");
+            previousName = name instanceof String ? ((String) name).trim() : "";
+            if (previousName.length() > 120) previousName = previousName.substring(0, 120);
+            if (!isPlayniteId(previousGameId) || requiredInt(previous, "process_id") <= 0
+                    || !previousToken.matches("[0-9a-f]{64}")) {
+                throw new IOException("inconsistent_observation_evidence");
+            }
+        }
+        SessionObservation parsed = new SessionObservation(boot, revision, observedAt, freshFor,
                 episode, stateSince, actor, execution, ordinal, transition,
                 operation, streamSession, controlGeneration, actorLeaseEpoch,
                 requiredState(provider, "state"),
@@ -1944,10 +1965,14 @@ class HostGatewayClient {
                 windowEvidence, ready,
                 requiredString(window, "target_kind"),
                 requiredInt(window, "stable_samples"),
-                requiredState(window, "reason"),
+                windowReason,
                 requiredBoolean(capabilities, "host_guide_allowed"),
                 requiredBoolean(capabilities, "requires_connector"),
                 requiredBoolean(capabilities, "start_before_stream"));
+        parsed.previousLaunchGameId = previousGameId;
+        parsed.previousLaunchProcessToken = previousToken;
+        parsed.previousLaunchGameName = previousName;
+        return parsed;
     }
 
     private static JSONObject requiredObject(JSONObject parent, String name)

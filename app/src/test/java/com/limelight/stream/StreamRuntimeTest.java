@@ -453,6 +453,87 @@ public class StreamRuntimeTest {
         assertTrue(m.snapshot().records.pending == null);
     }
 
+    @Test public void launchCompletingAfterCancelClosesTheWholeHostStream() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        runtime.start();
+        runtime.stop(r -> { });
+        // The host granted the launch only after the cancel stopped this transport.
+        transport.controlGeneration = 9L;
+        runtime.stageComplete("app");
+
+        assertEquals(Collections.singletonList("s1:p:9"), platform.abandonedCloses);
+    }
+
+    @Test public void grantRacingTheCancelStopThroughTheLivePathIsClosedOnce() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        runtime.start();
+        // The cancel read no generation; the grant then completed before its stop.
+        transport.controlGeneration = 9L;
+        runtime.stageComplete("app");
+        runtime.stop(r -> { });
+        runtime.abandonLaunch();
+        runtime.abandonLaunch();
+
+        assertEquals(Collections.singletonList("s1:p:9"), platform.abandonedCloses);
+    }
+
+    @Test public void abandonedLaunchClosesOnceWhicheverPathSeesTheGrantFirst() {
+        FakeTransport after = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", after, platform);
+        runtime.start();
+        runtime.stop(r -> { });
+        after.controlGeneration = 9L;
+        runtime.stageComplete("app");
+        runtime.abandonLaunch();
+        assertEquals(Collections.singletonList("s1:p:9"), platform.abandonedCloses);
+
+        // Abandoned before the grant, while the model still holds the cancelled session.
+        platform.abandonedCloses.clear();
+        FakeTransport before = new FakeTransport();
+        StreamRuntime next = StreamRuntime.create("s2", "p", before, platform);
+        assertTrue(m.beginPreparing(next, "s2", "host", "p", 7, "", "t2", 1L));
+        next.start();
+        next.stop(r -> { });
+        next.abandonLaunch();
+        assertTrue(platform.abandonedCloses.isEmpty());
+        before.controlGeneration = 4L;
+        next.stageComplete("app");
+        next.stageComplete("app");
+        assertEquals(Collections.singletonList("s2:p:4"), platform.abandonedCloses);
+    }
+
+    @Test public void liveRuntimeIsNeverAbandoned() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        runtime.start();
+        transport.controlGeneration = 9L;
+        runtime.abandonLaunch();
+        runtime.stageComplete("app");
+
+        assertTrue(platform.abandonedCloses.isEmpty());
+    }
+
+    @Test public void liveOrRetainedLaunchIsNeverClosedAsAbandoned() {
+        FakeTransport live = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", live, platform);
+        runtime.start();
+        live.controlGeneration = 9L;
+        runtime.stageComplete("app");
+        runtime.stop(r -> { });
+
+        FakeTransport retained = new FakeTransport();
+        StreamRuntime next = StreamRuntime.create("s2", "p", retained, platform);
+        assertTrue(m.beginPreparing(next, "s2", "host", "p", 7, "", "t2", 1L));
+        next.start();
+        next.stop(r -> { });
+        retained.controlGeneration = 4L;
+        next.stageComplete("app");
+
+        assertTrue(platform.abandonedCloses.isEmpty());
+    }
+
     @Test public void surfaceLossDetachesAndMutesOnlyAConnectedCurrentAttachment() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
@@ -650,6 +731,10 @@ public class StreamRuntimeTest {
         @Override public void terminateHost(StreamRuntime runtime,
                                             SessionModel.Snapshot session,
                                             SessionModel.TerminationCallback c) { }
+        final List<String> abandonedCloses = Collections.synchronizedList(new ArrayList<>());
+        @Override public void closeAbandonedLaunch(String id, String profile, long generation) {
+            abandonedCloses.add(id + ":" + profile + ":" + generation);
+        }
         @Override public void runtimeEnded() { }
         @Override public Executor stopExecutor() { return stopExecutor; }
         @Override public Executor mainExecutor() { return Runnable::run; }
@@ -718,7 +803,8 @@ public class StreamRuntimeTest {
             }
             if (failStop) throw new IllegalStateException("stop failed");
         }
-        @Override public long controlGeneration() { return 0L; }
+        volatile long controlGeneration;
+        @Override public long controlGeneration() { return controlGeneration; }
         @Override public boolean reauthorizeControlGeneration(long expected, long generation) { return true; }
         final AtomicInteger idrRequests = new AtomicInteger();
         volatile CountDownLatch idrEntered;

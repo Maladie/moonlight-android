@@ -17,6 +17,10 @@ public enum SessionFailure {
     // path=retained-live: the live retained transport reported an unsuccessful termination.
     CLOSE_RETAINED_NOT_CLOSED("close.retained_not_closed",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
+    // path=retained-live or reconnect/direct: the stream closed, but an unverified game may
+    // still run on the host; the replacement must not launch.
+    CLOSE_GAME_LEFT("close.game_left",
+            R.string.applist_quit_fail, R.string.console_terminate_session_game_left),
     // path=retained-live: the coordinator refused to start the termination.
     CLOSE_RETAINED_TERMINATION_UNAVAILABLE("close.retained_termination_unavailable",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
@@ -70,6 +74,9 @@ public enum SessionFailure {
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
     UNCERTAIN_AFTER_REFRESH("uncertain.still_uncertain_after_refresh",
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
+    // The session began closing after the loading layer was raised for this request.
+    UNCERTAIN_TERMINATING("uncertain.terminating",
+            R.string.console_status_closing_session, R.string.console_session_uncertain_details),
     // ConsoleActivity activatePlayniteItem: no launch target could be chosen for the game.
     LAUNCH_TARGET_UNRESOLVED("launch.target_unresolved",
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
@@ -86,6 +93,16 @@ public enum SessionFailure {
     ATTACH_START_ACTIVITY_FAILED("attach.start_activity_failed",
             R.string.console_presentation_launch_failed_title,
             R.string.console_presentation_launch_failed_details),
+
+    // ConsoleActivity reconnectSavedSessionForActor, same actor: the saved session could not be
+    // resumed; detail names the refusal (no record, record or retained mismatch, no intent).
+    RECONNECT_SAVED_SESSION_UNAVAILABLE("reconnect.saved_session_unavailable",
+            R.string.console_presentation_launch_failed_title,
+            R.string.console_reconnect_saved_session_unavailable),
+    // ConsoleActivity reconnectSavedSessionForActor, actor handoff: failed after compensation.
+    RECONNECT_ACTOR_HANDOFF_FAILED("reconnect.actor_handoff_failed",
+            R.string.console_presentation_launch_failed_title,
+            R.string.console_reconnect_actor_handoff_failed),
 
     // ConsoleActivity beginInstallationSupportStream (does not use the orchestrator).
     SUPPORT_PREVIOUS_NOT_CLOSED("support.previous_not_closed",

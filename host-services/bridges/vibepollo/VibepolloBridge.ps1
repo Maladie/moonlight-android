@@ -897,10 +897,33 @@ public static class MoonWakerDisplayProbe
         public string DeviceName;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct DISPLAY_DEVICE
+    {
+        public int Size;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string DeviceString;
+        public uint StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string DeviceID;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string DeviceKey;
+    }
+
+    // Hardware IDs of the two virtual display drivers Vibepollo ships
+    // (drivers\sunshine and drivers\sudovda); dd_use_sunshine_virtual_display_driver
+    // selects which one creates the per-stream display.
+    private static readonly string[] StreamVirtualAdapterIds = {
+        @"Root\SunshineVirtualDisplay", @"root\sudomaker\sudovda"
+    };
+
     public sealed class Display
     {
         public string Name { get; set; }
         public bool Primary { get; set; }
+        public bool StreamVirtual { get; set; }
         public int X { get; set; }
         public int Y { get; set; }
         public int Width { get; set; }
@@ -917,6 +940,26 @@ public static class MoonWakerDisplayProbe
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFOEX info);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool EnumDisplayDevices(
+        string device, uint index, ref DISPLAY_DEVICE info, uint flags);
+
+    private static bool IsStreamVirtual(string displayName)
+    {
+        var adapter = new DISPLAY_DEVICE();
+        adapter.Size = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+        for (uint index = 0; EnumDisplayDevices(null, index, ref adapter, 0); index++)
+        {
+            if (String.Equals(adapter.DeviceName, displayName, StringComparison.OrdinalIgnoreCase))
+            {
+                string adapterId = adapter.DeviceID;
+                return Array.Exists(StreamVirtualAdapterIds, id =>
+                    String.Equals(adapterId, id, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        return false;
+    }
+
     public static Display[] Enumerate()
     {
         var result = new List<Display>();
@@ -930,6 +973,7 @@ public static class MoonWakerDisplayProbe
                 result.Add(new Display {
                     Name = info.DeviceName,
                     Primary = (info.Flags & 1U) != 0,
+                    StreamVirtual = IsStreamVirtual(info.DeviceName),
                     X = info.Monitor.Left,
                     Y = info.Monitor.Top,
                     Width = info.Monitor.Right - info.Monitor.Left,
@@ -948,6 +992,7 @@ public static class MoonWakerDisplayProbe
             [pscustomobject]@{
                 display_name = [string]$_.Name
                 primary = [bool]$_.Primary
+                stream_virtual_display = [bool]$_.StreamVirtual
                 bounds = [pscustomobject]@{
                     x = [int]$_.X
                     y = [int]$_.Y

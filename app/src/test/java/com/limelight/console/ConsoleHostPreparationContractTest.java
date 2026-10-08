@@ -78,13 +78,13 @@ public class ConsoleHostPreparationContractTest {
                 "@Override public void reconnectSavedSession(PlayIntent intent)",
                 "@Override public void reject(");
         assertTrue(reconnect.contains("reconnectSavedSessionForActor(intent)"));
-        String resume = section(console, "private boolean startResumeActivity(",
+        String resume = section(console, "private String startResumeActivity(",
                 "private void failClosedActorHandoff(");
         assertTrue(resume.contains("pending.neutralStreamTarget"));
         assertTrue(resume.contains("SessionModel.State.RECONNECT_REQUIRED"));
         assertTrue(resume.contains("retained.streamSessionId.equals(pending.streamSessionId)"));
         assertTrue(resume.contains(
-                "applyWarmUpIntent(resume, transition, intent, warmUpClientAttempt)"));
+                "if (warmUpCarriesPendingGame(pending, retained.state)) applyWarmUpIntent(resume,"));
 
         String game = source("src/main/java/com/limelight/Game.java");
         String home = section(game, "private void launchConsoleHome(",
@@ -92,6 +92,37 @@ public class ConsoleHostPreparationContractTest {
         assertTrue(home.contains("EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR"));
         assertTrue(home.contains("EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM"));
         assertTrue(home.contains("EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM"));
+    }
+
+    @Test public void neutralReconnectWithoutWarmUpStartsTheStreamOrFailsVisibly()
+            throws Exception {
+        String console = source("src/main/java/com/limelight/console/ConsoleActivity.java");
+        String reconnect = section(console, "private void reconnectSavedSessionForActor(",
+                "private ChildSessionClient.State releasePersistedChildTimeAttachment(");
+        String sameActor = section(reconnect, "if (!actorHandoff)", "BooleanSupplier cancelled");
+        assertTrue(sameActor.contains("String refusal = savedRefusal != null ? savedRefusal"));
+        assertTrue(sameActor.contains("if (refusal != null) sessionFailed("
+                + "SessionFailure.RECONNECT_SAVED_SESSION_UNAVAILABLE"));
+        assertFalse(reconnect.contains("pending.executionProfileId)) return;"));
+        String handoff = section(reconnect, "mainHandler.post(", "} catch (");
+        assertTrue(handoff.contains("SessionFailure.RECONNECT_ACTOR_HANDOFF_FAILED"));
+        String failure = reconnect.substring(reconnect.indexOf("} catch ("));
+        assertTrue(failure.contains("sessionFailed("));
+        assertTrue(failure.contains("!cancelled.getAsBoolean()"));
+        String resume = section(console, "private String startResumeActivity(",
+                "private void failClosedActorHandoff(");
+        assertFalse(resume.contains("warmUpClientAttempt <= 0L"));
+        assertTrue(resume.indexOf("return \"retained_mismatch\"")
+                < resume.indexOf("applyWarmUpIntent("));
+        assertTrue(resume.indexOf("applyWarmUpIntent(") < resume.indexOf("startActivity(resume)"));
+        assertTrue(console.contains(
+                "return warmUpCarriesPendingGame(s.records.pending, s.state); }"));
+        String carries = section(console, "private boolean warmUpCarriesPendingGame(",
+                "private void failClosedActorHandoff(");
+        assertTrue(carries.contains("warmUpClientAttempt > 0L"));
+        assertTrue(carries.contains("pending.neutralStreamTarget"));
+        assertTrue(carries.contains("warmUpClientHostId.equalsIgnoreCase(pending.hostUuid)"));
+        assertTrue(carries.contains("SessionModel.State.RECONNECT_REQUIRED"));
     }
 
     private static String source(String relative) throws Exception {

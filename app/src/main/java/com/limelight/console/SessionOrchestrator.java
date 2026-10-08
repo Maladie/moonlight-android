@@ -63,10 +63,11 @@ final class SessionOrchestrator implements AutoCloseable {
         boolean isAvailable(); boolean isPaired(String hostId); SessionSnapshot resolve(String hostId);
         default SessionSnapshot resolve(HostProfileKey key) { return resolve(key.hostId); }
         default boolean canPrepareHost(String hostId) { return isPaired(hostId); }
-        void returnToRetainedStream(); void reconnectSavedSession();
+        void returnToRetainedStream(); void reconnectSavedSession(PlayIntent intent);
+        /** A live warm-up attempt carries the intent's game into the resumed neutral stream. */
+        boolean warmUpCarriesGame();
         /** Starts the attaching stream presentation carrying the target; ends the request. */
         void attachPresentationForSwitch(long orchestrationId, PlayIntent intent, NvApp target);
-        default void reconnectSavedSession(PlayIntent intent) { reconnectSavedSession(); }
         void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
         boolean canAttemptRetainedSwitch(PlayIntent intent);
@@ -83,7 +84,7 @@ final class SessionOrchestrator implements AutoCloseable {
                     String sourceSuspendId, boolean ownsFreshSunshineSession);
         void preflightFailed(HostLaunchPreflight.Failure failure);
         /** Shows the failure screen for this exact path; the orchestrator recorded it. */
-        void sessionFailed(SessionFailure reason);
+        void sessionFailed(PlayIntent intent, SessionFailure reason);
         PreparedWarmUp prepareHost(PlayIntent intent, long request,
                                    BooleanSupplier cancelled);
         void launchPreparedHost(PreparedWarmUp prepared,
@@ -96,6 +97,9 @@ final class SessionOrchestrator implements AutoCloseable {
     private final Dispatcher dispatcher;
     private final AtomicLong generation = new AtomicLong();
     private PlayIntent lastIntent;
+    /** The request and pass evaluating the refresh of an unresolved observation. */
+    private long refreshedRequest;
+    private int refreshedPass;
     private volatile Preparation preparation;
     private volatile boolean closed;
 
@@ -268,16 +272,34 @@ final class SessionOrchestrator implements AutoCloseable {
 
         SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
-        if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
-                && !intent.matches(snapshot)) {
-            fail(request, intent, SessionFailure.UNCERTAIN_RECOVERY_REQUIRED, "");
-            return;
-        }
         if (snapshot.state == SessionSnapshot.State.TERMINATING) {
             diagnostic("WARN", "orchestration.rejected", request, intent,
                     "reason", Rejection.TERMINATING.name());
-            effects.reject(Rejection.TERMINATING);
+            // Under the loading layer a toast would leave the loader up with no error.
+            if (opaqueReady) fail(request, intent, SessionFailure.UNCERTAIN_TERMINATING, "");
+            else effects.reject(Rejection.TERMINATING);
             return;
+        }
+        if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
+                && !intent.matches(snapshot)) {
+            // Only correlated evidence naming another game refuses, and only under the loading
+            // layer. An uncorrelated observation (the hole between two host polls) decides
+            // nothing: it is refreshed and the request is evaluated on the fresh one, which
+            // refuses when it is the very pass that refresh produced.
+            boolean namesOtherGame = snapshot.observationCorrelated
+                    && !snapshot.playniteGameId.isEmpty();
+            if (namesOtherGame || !snapshot.observationCorrelated) {
+                if (!opaqueReady) {
+                    awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
+                            reuseOnly, preparedTarget, pass);
+                } else if (namesOtherGame || evaluatesRefresh(request, pass)) {
+                    fail(request, intent, SessionFailure.UNCERTAIN_RECOVERY_REQUIRED, "");
+                } else {
+                    refreshThenEvaluate(request, intent, replacementAuthorized,
+                            reuseOnly, preparedTarget, pass);
+                }
+                return;
+            }
         }
         if (snapshot.state == SessionSnapshot.State.PREPARING
                 && intent.kind == PlayIntent.Kind.PLAYNITE_GAME) {
@@ -351,7 +373,25 @@ final class SessionOrchestrator implements AutoCloseable {
                 && snapshot.neutralStreamTarget
                 && snapshot.playniteGameId.isEmpty()
                 && intent.kind == PlayIntent.Kind.PLAYNITE_GAME;
-        if (snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
+        boolean carriesNoGame = reconnectingWarmUp && !matches && !effects.warmUpCarriesGame();
+        // Orphaned neutral stream: none to carry and the host proves no game runs (IDLE).
+        // Decided on every pass from this snapshot and never carried forward; it is replaced
+        // without asking. An empty game id from a stale or unresolved observation proves
+        // nothing: it is refreshed once, then the replacement is confirmed.
+        boolean orphaned = carriesNoGame
+                && snapshot.observationState == SessionSnapshot.ObservationState.IDLE;
+        if (carriesNoGame && !orphaned && !replacementAuthorized) {
+            if (!opaqueReady) {
+                awaitOpaque(request, intent, freshType(intent), false,
+                        reuseOnly, preparedTarget, pass);
+                return;
+            }
+            if (!evaluatesRefresh(request, pass)) {
+                refreshThenEvaluate(request, intent, false, reuseOnly, preparedTarget, pass);
+                return;
+            }
+        }
+        if (!carriesNoGame && snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
                 && (matches || reconnectingWarmUp)) {
             if (!opaqueReady) {
                 awaitOpaque(request, intent, LaunchTransitionType.GENERIC,
@@ -388,8 +428,9 @@ final class SessionOrchestrator implements AutoCloseable {
             }
             return;
         }
-        reuseOnly |= !replacementAuthorized && effects.canAttemptRetainedSwitch(intent);
-        if (!replacementAuthorized && !reuseOnly) {
+        boolean authorized = replacementAuthorized || orphaned;
+        reuseOnly |= !authorized && effects.canAttemptRetainedSwitch(intent);
+        if (!authorized && !reuseOnly) {
             effects.confirmReplacement(() -> {
                 if (current(request)) evaluate(request, intent, true, false,
                         opaqueReady, preparedTarget, pass + 1);
@@ -404,7 +445,7 @@ final class SessionOrchestrator implements AutoCloseable {
                             : HostLaunchPreflight.Action.LAUNCH);
         } else {
             closeCompetingSession(request, intent, preparedTarget,
-                    replacementAuthorized, reuseOnly, pass);
+                    authorized, reuseOnly, pass);
         }
     }
 
@@ -451,6 +492,19 @@ final class SessionOrchestrator implements AutoCloseable {
                             true, result.target, pass + 1);
             });
         });
+    }
+
+    /** Whether this pass evaluates the snapshot a refresh of an unresolved observation produced. */
+    private boolean evaluatesRefresh(long request, int pass) {
+        return refreshedRequest == request && refreshedPass == pass;
+    }
+
+    private void refreshThenEvaluate(long request, PlayIntent intent,
+                                     boolean replacementAuthorized, boolean reuseOnly,
+                                     NvApp preparedTarget, int pass) {
+        refreshedRequest = request;
+        refreshedPass = pass + 1;
+        awaitFreshSession(request, intent, replacementAuthorized, reuseOnly, preparedTarget, pass);
     }
 
     private void awaitFreshSession(long request, PlayIntent intent,
@@ -556,7 +610,7 @@ final class SessionOrchestrator implements AutoCloseable {
     private void fail(long request, PlayIntent intent, SessionFailure reason, String detail) {
         reason.record(request, intent.hostId, intent.profileId,
                 effects.resolve(intent.profileKey), detail);
-        effects.sessionFailed(reason);
+        effects.sessionFailed(intent, reason);
     }
 
     private void returnToRetained(long request, PlayIntent intent) {

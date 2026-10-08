@@ -20,7 +20,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(topBarSource().contains("global.quick_launch"));
     }
 
-    @Test public void hostStatusClosesOnlyTheStreamAndKeepsHardTermination() throws IOException {
+    @Test public void hostCloseSessionUsesTheSingleTerminationPathAndKeepsHardTermination() throws IOException {
         String source = consoleActivitySource();
         String selector = source.substring(source.indexOf("topBar = new ConsoleTopBar("),
                 source.indexOf("homeContent.addView(topBar"));
@@ -29,9 +29,9 @@ public class ConsoleActivityRequestedUiContractTest {
 
         assertTrue(selector.contains("showHostSelectionOptions(host)"));
         String panel = hostPanelSource();
-        assertTrue(panel.contains("R.string.console_close_stream"));
-        assertTrue(menu.contains("confirmCloseHostStream(host)"));
-        assertFalse(menu.contains("confirmTerminateSession(host)"));
+        assertTrue(panel.contains("R.string.console_close_session"));
+        assertTrue(menu.contains("case CLOSE_SESSION: confirmTerminateSession(host)"));
+        assertFalse(source.contains("CloseHostStream("));
         assertTrue(panel.contains("R.string.console_hard_terminate_session"));
         assertTrue(menu.contains("confirmHardTerminateSession(host)"));
         assertTrue(panel.contains("facts.online && facts.paired && facts.gatewayAvailable"));
@@ -54,6 +54,21 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(completion.indexOf(
                 "if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();")
                 < completion.indexOf("return;"));
+    }
+
+    @Test public void closeSessionHidesOnlyItsOwnProgressPanel() throws IOException {
+        String source = consoleActivitySource();
+        String request = source.substring(source.indexOf("private void requestTerminateSession("),
+                source.indexOf("private void terminateSessionByControlPlane("));
+        String finish = source.substring(source.indexOf("private void finishTerminateSession("));
+
+        assertTrue(request.indexOf("showSidePanelBusy(")
+                < request.indexOf("String busyPanelKey = currentPanelKey;"));
+        String guard =
+                "if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();";
+        assertTrue(finish.contains(guard));
+        assertTrue(finish.indexOf(guard) < finish.indexOf("if (outcome.streamClosed())"));
+        assertFalse(source.contains("if (sidePanelTransient) hideSidePanel();"));
     }
 
     @Test public void profileSwitchDropsThePreviousProfilesPresentation() throws IOException {
@@ -409,7 +424,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("isFreshExactRunningManagedGame(host, item)"));
         String gameCard = gameCardSource();
         assertTrue(gameCard.indexOf("R.string.overlay_menu_end_game")
-                < gameCard.indexOf("R.string.overlay_menu_quit_session"));
+                < gameCard.indexOf("R.string.console_close_session"));
         assertTrue(menu.contains("confirmTerminateSession(host, item.stableId())"));
         assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true, confirmedKey.profileId)"));
         assertTrue(stop.contains("refreshSessionState(host.uuid)"));

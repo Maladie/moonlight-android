@@ -48,6 +48,43 @@ public class HostGatewayClientTest {
         assertObservationRejected(value, "unsupported_observation_schema", now);
     }
 
+    @Test public void previousLaunchGameIsParsedFromTheWindowBlock() throws Exception {
+        long now = 1_700_000_000_000L;
+        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        value.getJSONObject("game").put("state", "starting").put("id", "steam:456");
+        value.put("process", new JSONObject().put("evidence", "ABSENT")
+                .put("process_id", 0).put("process_token", ""));
+        value.put("window", new JSONObject().put("evidence", "ABSENT")
+                .put("ready", false).put("target_kind", "game").put("stable_samples", 0)
+                .put("reason", "previous_launch_game_running")
+                .put("previous_launch", new JSONObject().put("game_id", "steam:123")
+                        .put("process_id", 77).put("process_token", repeat('b', 64))));
+
+        HostGatewayClient.SessionObservation parsed =
+                HostGatewayClient.parseSessionObservation(value, "kid", "parent",
+                        7, "transition-a", now + 100);
+
+        assertEquals("previous_launch_game_running", parsed.reason);
+        assertEquals("steam:123", parsed.previousLaunchGameId);
+        assertEquals(repeat('b', 64), parsed.previousLaunchProcessToken);
+        assertEquals("the name is optional", "", parsed.previousLaunchGameName);
+
+        value.getJSONObject("window").getJSONObject("previous_launch")
+                .put("name", " Resident Evil 3 ");
+        assertEquals("Resident Evil 3", HostGatewayClient.parseSessionObservation(value, "kid",
+                "parent", 7, "transition-a", now + 100).previousLaunchGameName);
+        value.getJSONObject("window").getJSONObject("previous_launch").put("name", 5);
+        assertEquals("a non-text name is ignored, not a rejection", "",
+                HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7,
+                        "transition-a", now + 100).previousLaunchGameName);
+
+        value.getJSONObject("window").getJSONObject("previous_launch")
+                .put("process_token", "short");
+        assertObservationRejected(value, "inconsistent_observation_evidence", now);
+        value.getJSONObject("window").remove("previous_launch");
+        assertObservationRejected(value, "missing_observation_previous_launch", now);
+    }
+
     @Test public void missingOrWronglyTypedCorrelationIsRejected() throws Exception {
         long now = 1_700_000_000_000L;
         JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");

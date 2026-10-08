@@ -135,6 +135,7 @@ gotowości.” + „Żaden port streamingu nie odpowiedział w ciągu 90 sekund�
 | `uncertain.preparing_not_switchable_after_refresh` | Po odświeżeniu stanu z hosta przełączenie przygotowywanego streamu nadal nie jest możliwe. | `SessionOrchestrator.evaluate`, gałąź `PREPARING` | C |
 | `uncertain.refresh_failed` | Stan sesji był niepewny, a odświeżenie z hosta się nie udało. | `SessionOrchestrator.awaitFreshSession` | C |
 | `uncertain.still_uncertain_after_refresh` | Odświeżenie się udało, ale stan nadal był niepewny. | `SessionOrchestrator.awaitFreshSession` | C |
+| `uncertain.terminating` | Poprzednia sesja zaczęła się zamykać już po podniesieniu ekranu ładowania dla tego Play. | `SessionOrchestrator.evaluate`, gałąź `TERMINATING` pod warstwą ładowania | C |
 | `launch.target_unresolved` | Dla wybranej gry nie dało się ustalić celu uruchomienia (aplikacji w Sunshine). | `ConsoleActivity.activatePlayniteItem`, panel boczny | C (panel) |
 | `orchestration.pass_limit` | Decyzja o uruchomieniu kręciła się w kółko i przerwano ją po dziewięciu przebiegach. | `SessionOrchestrator.evaluate` | D |
 | `orchestration.executor_rejected` | Nie dało się uruchomić zadania w tle. | `SessionOrchestrator.execute` | D |

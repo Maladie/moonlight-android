@@ -457,6 +457,33 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual({"revision": "catalog-1"}, events[1]["payload"])
         self.assertEqual({}, events[2]["payload"])
 
+    def test_start_phase_reasons_reach_the_client_unchanged(self):
+        # Start reasons are not mapped by the Gateway: the observation and the
+        # shared game's lifecycle event carry the provider reason verbatim.
+        self.state.proxy = mock.Mock(return_value=(True, {
+            "provider": {"state": "failed", "connector_evidence": "VERIFIED",
+                         "reason": "game_exited_during_start"},
+            "game": {"evidence": "VERIFIED", "state": "failed", "id": "steam:123"},
+            "process": {"evidence": "PENDING", "process_id": 0,
+                        "process_token": "", "running_games": []},
+            "window": {"evidence": "PENDING", "ready": False,
+                       "reason": "game_exited_during_start"},
+        }))
+        self.state.request_context.actor_profile_id = "kid"
+        self.state.request_context.execution_profile_id = "parent"
+        status, observation = self.state.playnite_observation(1, "")
+        self.assertEqual(200, status)
+        self.assertEqual("game_exited_during_start", observation["provider"]["reason"])
+        self.assertEqual("game_exited_during_start", observation["window"]["reason"])
+
+        self.state.proxy.return_value = (True, {"events": [
+            {"sequence": 1, "event": "game-launch-failed",
+             "payload": {"id": "steam:123", "reason": "game_exited_during_start"}}]})
+        status, result = self.state.child_playnite_events(self.client, "kid", 0, "t-1")
+        self.assertEqual(200, status)
+        self.assertEqual("game_exited_during_start",
+                         result["events"]["events"][0]["payload"]["reason"])
+
     def test_child_start_keeps_provider_rejection(self):
         self.state.child_time_session = {
             "session_id": "01234567-89ab-cdef-0123-456789abcdef",

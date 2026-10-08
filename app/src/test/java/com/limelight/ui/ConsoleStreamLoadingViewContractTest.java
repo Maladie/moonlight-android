@@ -135,8 +135,9 @@ public class ConsoleStreamLoadingViewContractTest {
                         + " String details, boolean allowShowAnyway)"),
                 text.indexOf("public void showLauncherInteraction"));
 
-        assertTrue(method.contains(
-                "if (!isVisibleAction(findFocus())) retryView.requestFocus()"));
+        assertTrue(method.contains("else if (!isVisibleAction(findFocus())) {\n"
+                + "            (allowRetry ? retryView : allowShowAnyway ? showAnywayView : cancelView)\n"
+                + "                    .requestFocus();"));
         assertFalse(method.contains("renderSteps();\n        retryView.requestFocus();"));
     }
 

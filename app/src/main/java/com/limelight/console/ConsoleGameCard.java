@@ -67,7 +67,7 @@ final class ConsoleGameCard {
             menu.add(Action.END_GAME, R.string.overlay_menu_end_game, true);
         }
         if (facts.installed && facts.sessionActive) {
-            menu.add(Action.CLOSE_GAME_AND_STREAM, R.string.overlay_menu_quit_session, true);
+            menu.add(Action.CLOSE_GAME_AND_STREAM, R.string.console_close_session, true);
         }
         menu.group(R.string.console_options_section_streaming)
                 .add(Action.STREAM_SETTINGS, R.string.playnite_stream_settings, true)

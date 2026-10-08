@@ -24,22 +24,54 @@ public final class HostSessionTermination {
     // The provider rescans running games at once after a catalog update (5 s interval otherwise).
     private static final long STOP_EVIDENCE_TIMEOUT_MILLIS = 8_000L;
 
+    /** Why a whole-session close ended; the caller tells the user. */
+    public enum Outcome {
+        CLOSED,
+        /**
+         * The stream closed, but the host named a provider game this close could not verify
+         * (a failed or replaced start), so it was not stopped and may still run on the host.
+         */
+        CLOSED_GAME_UNVERIFIED,
+        /** The Gateway refused the close: it could not prove the provider game or its absence. */
+        GAME_UNVERIFIED,
+        /** Sunshine runs a stream this session does not own. */
+        OTHER_STREAM,
+        FAILED;
+
+        /** The whole session ended: the stream closed and no unverified game was left. */
+        public boolean closed() {
+            return this == CLOSED;
+        }
+
+        /**
+         * The host stream closed, possibly leaving an unverified game. Only a user's explicit
+         * close of this session (cancel start, close session) may treat that as done.
+         */
+        public boolean streamClosed() {
+            return this == CLOSED || this == CLOSED_GAME_UNVERIFIED;
+        }
+
+        public static Outcome of(boolean closed) {
+            return closed ? CLOSED : FAILED;
+        }
+    }
+
     private HostSessionTermination() { }
 
-    public static boolean run(Context context, String hostId, String activeHost,
+    public static Outcome run(Context context, String hostId, String activeHost,
                               int port, int httpsPort, String uniqueId, byte[] certificate,
                               String streamSessionId, int appId, String gameId,
                               long expectedGeneration,
-                              PlayniteTransitionGateway.ActorContext actor,
-                              boolean providerAlreadyStopped) {
+                              PlayniteTransitionGateway.ActorContext actor) {
         GatewayConnection gateway = new HostGatewayStore(context).loadForHost(
                 hostId, activeHost, actor.actorProfileId);
-        if (gateway == null || expectedGeneration <= 0L) return false;
+        if (gateway == null || expectedGeneration <= 0L) return Outcome.FAILED;
         ControlOperationClient control = new ControlOperationClient(new GatewayTransport());
         String operationId = "control-full-quit-" + UUID.randomUUID();
         ControlOperationClient.Permit permit = null;
         boolean effectSucceeded = false;
         boolean effectResultUncertain = false;
+        boolean gameLeftUnverified = false;
         try {
             X509Certificate serverCertificate = certificate == null ? null
                     : (X509Certificate) CertificateFactory.getInstance("X.509")
@@ -52,36 +84,36 @@ public final class HostSessionTermination {
                 permit = control.acquire(gateway, operationId, "full_quit", streamSessionId,
                         appId, expectedGeneration, running, "");
             } catch (Exception unavailable) {
+                // A definitive rejection grants no permit, so there is nothing to reconcile.
+                Outcome rejected = rejection(unavailable);
+                if (rejected != Outcome.FAILED) return rejected;
                 ControlOperationClient.Result reconciled = control.reconcile(
                         gateway, operationId, streamSessionId, appId, running);
-                return reconciled.succeeded();
+                return Outcome.of(reconciled.succeeded());
             }
-            if (permit.succeeded()) return true;
-            // The Gateway grants a full_quit only with the provider idle or its exact game
-            // verified, under the lock that fences provider transitions. A permit without a
-            // provider game is that idle proof; a re-read can only lose its dispatch ordering
-            // to the dashboard poll and fail closed, rejecting the quit before /cancel.
-            if (!providerAlreadyStopped && !permit.providerGameId.isEmpty()) {
+            if (permit.succeeded()) return Outcome.CLOSED;
+            // A foreign Sunshine stream fails the close before any provider game is stopped.
+            if (running != 0 && running != appId) {
+                throw new IllegalStateException("unmanaged_stream");
+            }
+            // The permit names the provider game (and its process token) the Gateway saw under
+            // the lock that fences provider transitions. An empty name means the Gateway saw no
+            // running game process (idle, or a start without a process yet), so there is nothing
+            // this close may stop and no racy re-read may reject the quit before /cancel.
+            if (!permit.providerGameId.isEmpty()) {
                 PlayniteTransitionGateway provider = PlayniteTransitionGateway.connect(
                         context, hostId, activeHost, actor);
                 if (provider == null) throw new IllegalStateException("gateway_unavailable");
                 String expectedGame = gameId == null ? "" : gameId.trim();
                 PlayniteTransitionGateway.Snapshot current = provider.stopEvidenceWithinControl(
                         permit, expectedGame, STOP_EVIDENCE_TIMEOUT_MILLIS);
-                boolean providerIdle = "idle".equalsIgnoreCase(current.gameState)
-                        && (current.gameId == null || current.gameId.trim().isEmpty());
-                String exact = providerIdle ? ""
-                        : expectedGame.isEmpty() ? null
-                        : PlayniteIdentityResolutionPolicy.verifiedStopTarget(
-                                expectedGame, current.gameState, current.gameId);
-                if (exact == null) throw new IllegalStateException("provider_game_mismatch");
-                if (!exact.isEmpty()) {
-                    if (!current.hasVerifiedProcessFor(exact)
-                            || permit.processToken.isEmpty()
-                            || !permit.processToken.equals(current.processToken)
-                            || !exact.equalsIgnoreCase(permit.providerGameId)) {
-                        throw new IllegalStateException("provider_process_mismatch");
-                    }
+                String exact = verifiedStopGame(expectedGame, current.gameState, current.gameId,
+                        current.hasVerifiedProcessFor(current.gameId), current.processToken,
+                        permit.providerGameId, permit.processToken);
+                // An unverified game (a failed start, another game) is never stopped, but the
+                // user's close still ends the stream, its virtual display and the permit.
+                gameLeftUnverified = exact == null;
+                if (exact != null && !exact.isEmpty()) {
                     effectResultUncertain = true;
                     try {
                         provider.stopGameWithinControl(exact, permit);
@@ -98,9 +130,6 @@ public final class HostSessionTermination {
                     effectResultUncertain = false;
                 }
             }
-            if (running != 0 && running != appId) {
-                throw new IllegalStateException("unmanaged_stream");
-            }
             if (running == appId) {
                 effectResultUncertain = true;
                 boolean accepted = http.quitApp();
@@ -116,11 +145,13 @@ public final class HostSessionTermination {
                 if (running != 0) Thread.sleep(100L);
             }
             effectSucceeded = running == 0;
-            return effectSucceeded && control.complete(gateway, permit, true).succeeded();
+            return closed(effectSucceeded
+                    && control.complete(gateway, permit, true).succeeded(), gameLeftUnverified);
         } catch (Exception error) {
             if (permit != null && effectSucceeded) {
                 try {
-                    return control.complete(gateway, permit, true).succeeded();
+                    return closed(control.complete(gateway, permit, true).succeeded(),
+                            gameLeftUnverified);
                 } catch (Exception ignored) {
                     // A retry with the same permit is idempotent and preserves recovery state.
                 }
@@ -132,7 +163,48 @@ public final class HostSessionTermination {
                 }
             }
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
-            return false;
+            return failure(error.getMessage());
         }
+    }
+
+    private static Outcome closed(boolean closed, boolean gameLeftUnverified) {
+        return !closed ? Outcome.FAILED
+                : gameLeftUnverified ? Outcome.CLOSED_GAME_UNVERIFIED : Outcome.CLOSED;
+    }
+
+    /**
+     * The game a full_quit stops: "" with the provider idle, else the caller's expected game
+     * when the provider runs exactly it; null when no expected game verifies the running one.
+     */
+    static String stopTarget(String expectedGame, String gameState, String currentGame) {
+        if ("idle".equalsIgnoreCase(gameState)
+                && (currentGame == null || currentGame.trim().isEmpty())) return "";
+        return expectedGame.isEmpty() ? null : PlayniteIdentityResolutionPolicy
+                .verifiedStopTarget(expectedGame, gameState, currentGame);
+    }
+
+    /**
+     * The game this close stops: "" with the provider idle; the expected game only when the
+     * permit-fenced observation verifies its process with the permit's exact token; null when
+     * the host names a game this close cannot verify (it is then left running).
+     */
+    static String verifiedStopGame(String expectedGame, String gameState, String currentGame,
+                                   boolean processVerified, String processToken,
+                                   String permitGame, String permitToken) {
+        String exact = stopTarget(expectedGame, gameState, currentGame);
+        if (exact == null || exact.isEmpty()) return exact;
+        return processVerified && !permitToken.isEmpty() && permitToken.equals(processToken)
+                && exact.equalsIgnoreCase(permitGame) ? exact : null;
+    }
+
+    /** The outcome of a Gateway rejection of the acquire; FAILED for anything else. */
+    static Outcome rejection(Exception error) {
+        return error instanceof GatewayTransport.GatewayException
+                ? failure(error.getMessage()) : Outcome.FAILED;
+    }
+
+    static Outcome failure(String reason) {
+        return "retained_process_unconfirmed".equals(reason) ? Outcome.GAME_UNVERIFIED
+                : "unmanaged_stream".equals(reason) ? Outcome.OTHER_STREAM : Outcome.FAILED;
     }
 }

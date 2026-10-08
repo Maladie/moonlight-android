@@ -15,10 +15,13 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.BooleanSupplier;
 
 public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     public enum ProviderStartFailure { INTERACTION_REQUIRED, CLEANUP_PENDING }
     private static final long STREAM_SETUP_TIMEOUT_MS = 60_000L;
+    /** Soft notice only: the host owns game start failure (phase 1) and has no phase-2 bound. */
+    static final long START_TAKING_LONGER_MS = 180_000L;
     private static final ExecutorService PROVIDER_ACTIONS =
             Executors.newSingleThreadExecutor(action -> {
                 Thread thread = new Thread(action, "MoonWaker-ProviderLaunch");
@@ -39,6 +42,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         void ensureInstalledGameTarget(String gameId, String gameName) throws IOException;
         default void startGame(String gameId) throws IOException { }
         default void stopGame(String gameId, String processToken) throws IOException { }
+        /** One Gateway session ensure; true only when the host reports the session ready. */
+        default boolean unlockHostSession(BooleanSupplier cancelled)
+                throws IOException, InterruptedException {
+            return false;
+        }
     }
 
     interface MonotonicClock {
@@ -61,10 +69,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String readinessUnconfirmedMessage();
         String gameIdentityPendingMessage();
         String gameWindowPendingMessage();
+        String gameExitedDuringStartMessage();
         String gameWindowNotFullscreenMessage();
         String gameWindowNotForegroundMessage();
+        String hostScreensaverActiveMessage();
         String launcherInteractionRequiredMessage();
         String windowStabilizingMessage();
+        String gameStartTimeoutMessage();
+        String previousGameRunningMessage();
+        String previousGameStopFailedMessage();
 
         boolean isPendingInstallation(String hostId, String gameId);
         String pendingInstallationName(String hostId, String gameId);
@@ -94,6 +107,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private final Executor providerExecutor;
     private final MonotonicClock clock;
     private final long launchStartedAtMillis;
+    /** The local Play of this exact request; the soft start threshold counts from it. */
+    private final long requestStartedAtMillis;
     private final Sleeper sleeper;
     private final Scheduler scheduler;
     private final Callbacks callbacks;
@@ -106,8 +121,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private boolean providerCleanupRequested;
     private boolean providerCleanupScheduled;
     private boolean providerCleanupCompleted;
+    private boolean providerCleanupSucceeded;
     private boolean providerCleanupArmed;
     private boolean streamConnected;
+    private boolean hostUnlockAttempted;
+    /** The stale earlier launch's game the host reported running instead of this one. */
+    private String previousGameId = "";
+    private String previousProcessToken = "";
+    private String previousGameName = "";
+    private boolean previousGameStopFailed;
     private long epoch;
 
     public ConsoleStreamTransitionCoordinator(
@@ -164,6 +186,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         this.providerExecutor = providerExecutor;
         this.clock = clock;
         this.launchStartedAtMillis = launchStartedAtMillis;
+        this.requestStartedAtMillis = launchStartedAtMillis > 0L
+                ? launchStartedAtMillis : clock.now();
         this.sleeper = sleeper;
         this.scheduler = scheduler;
         this.callbacks = callbacks;
@@ -644,18 +668,29 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         // An attached attempt stops only an identity bound by its own observation. A holderless
         // owner (runtime ended, no presentation) may bind it from one authenticated snapshot.
         // Without an exact identity the cleanup is reported unconfirmed, never as success.
+        // A host reporting this request's own start failed without a process leaves nothing
+        // to stop: the cleanup completes without a stop.
         String ownedProcessToken = claimCurrentAttemptProcessToken();
-        if (ownedProcessToken.isEmpty() && bindFromSnapshot && gateway != null) {
+        PlayniteTransitionGateway.Snapshot observed = null;
+        long observedAt = 0L;
+        if (ownedProcessToken.isEmpty() && gateway != null) {
             try {
-                captureCurrentAttemptProcess(gateway.snapshot());
+                observed = gateway.snapshot();
+                observedAt = clock.now();
             } catch (IOException | RuntimeException unavailable) {
                 // Stays unconfirmed below.
             }
-            ownedProcessToken = claimCurrentAttemptProcessToken();
+            if (bindFromSnapshot) {
+                captureCurrentAttemptProcess(observed);
+                ownedProcessToken = claimCurrentAttemptProcessToken();
+            }
         }
         if (ownedProcessToken.isEmpty()) {
-            logTimeline("provider-stop-unconfirmed");
-            completeProviderCleanup(false);
+            boolean nothingToStop = nothingToStop(observed, observedAt);
+            if (nothingToStop) clearCurrentAttemptOwner();
+            logTimeline(nothingToStop ? "provider-cleanup-nothing-to-stop"
+                    : "provider-stop-unconfirmed");
+            completeProviderCleanup(nothingToStop);
             return;
         }
         logTimeline("provider-stop-requested");
@@ -679,10 +714,100 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
     }
 
+    /**
+     * The host reports this request's game failed with no process: its "failed" state names this
+     * exact game and began after this request started. An unnamed game or a failure carried
+     * over from an earlier attempt is no evidence.
+     */
+    private boolean nothingToStop(PlayniteTransitionGateway.Snapshot snapshot, long observedAt) {
+        return snapshot != null && snapshot.gatewayReady
+                && "failed".equalsIgnoreCase(snapshot.gameState)
+                && snapshot.processId == 0
+                && snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId)
+                && stateBeganForThisRequest(snapshot, observedAt);
+    }
+
+    /**
+     * The host's current state episode began after this request's local Play. The episode age
+     * is measured on the host clock alone, so wall-clock skew between the devices does not
+     * matter; transport latency can only make an older episode look up to that much newer.
+     */
+    private boolean stateBeganForThisRequest(PlayniteTransitionGateway.Snapshot snapshot,
+                                             long observedAt) {
+        return snapshot.stateAgeMs >= 0L
+                && observedAt - snapshot.stateAgeMs >= requestStartedAtMillis;
+    }
+
+    /** The stale earlier launch's game name, when the host reported one. */
+    public synchronized String previousGameName() {
+        return previousGameName;
+    }
+
+    /**
+     * Stops the stale earlier launch's game by its verified process token; this attempt's own
+     * start then continues under the same observation.
+     */
+    public void stopPreviousGame() {
+        String gameId;
+        String processToken;
+        synchronized (this) {
+            gameId = previousGameId;
+            processToken = previousProcessToken;
+        }
+        long actionEpoch = currentEpoch();
+        if (gameId.isEmpty() || processToken.isEmpty() || gateway == null || actionEpoch < 0L) {
+            return;
+        }
+        try {
+            providerExecutor.execute(() -> {
+                boolean stopped;
+                try {
+                    gateway.stopGame(gameId, processToken);
+                    stopped = true;
+                } catch (IOException | RuntimeException error) {
+                    LimeLog.warning("Launch timeline transition=" + transitionSpec.id
+                            + " previous-game-stop-failed: " + error.getMessage());
+                    stopped = false;
+                }
+                logTimeline(stopped ? "previous-game-stopped" : "previous-game-stop-failed");
+                if (!isCurrent(actionEpoch)) return;
+                synchronized (this) {
+                    if (!processToken.equals(previousProcessToken)) return;
+                    previousGameStopFailed = !stopped;
+                    if (stopped) {
+                        previousGameId = "";
+                        previousProcessToken = "";
+                        previousGameName = "";
+                    }
+                }
+                if (stopped) {
+                    transitionController.targetStarting(transitionSpec.id, transitionSpec.hostId,
+                            LaunchTransitionType.GAME, transitionSpec.playniteGameId);
+                } else {
+                    transitionController.previousGameRunning(transitionSpec.id,
+                            transitionSpec.hostId, callbacks.previousGameStopFailedMessage());
+                }
+            });
+        } catch (RuntimeException error) {
+            LimeLog.warning("Launch timeline transition=" + transitionSpec.id
+                    + " previous-game-stop-dispatch-failed: " + error.getMessage());
+        }
+    }
+
+    /**
+     * The result of this attempt's provider cleanup once it completed (true: no started process
+     * remains or its exact process was stopped), null while none has completed. A cancel after a
+     * host-reported failure reads it, because that cleanup already ran.
+     */
+    public synchronized Boolean providerCleanupResult() {
+        return providerCleanupCompleted ? providerCleanupSucceeded : null;
+    }
+
     private void completeProviderCleanup(boolean success) {
         synchronized (this) {
             if (providerCleanupCompleted) return;
             providerCleanupCompleted = true;
+            providerCleanupSucceeded = success;
         }
         callbacks.onProviderGameCleanupComplete(
                 transitionSpec.id, transitionSpec.playniteGameId, success);
@@ -741,6 +866,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 }
                 context.lastReadinessReason = readinessReason;
                 if ("host_session_locked".equals(readinessReason)) {
+                    // Re-read the host after a confirmed unlock; otherwise the manual gate.
+                    if (tryHostUnlock(runEpoch)) continue;
+                    if (!isCurrent(runEpoch)) return;
                     if (!context.lockScreenPresented) {
                         context.lockScreenPresented = true;
                         applySnapshot(runEpoch, snapshot);
@@ -761,13 +889,23 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 }
 
                 long now = clock.now();
+                // Behind a screen saver the focus request of a reconnect is what makes the
+                // Bridge close the saver; a start is covered by the Bridge's own launch.
+                // Waking the saver has its own budget so it cannot use up the real focus attempts.
+                boolean focusRequired = "target_not_foreground".equals(readinessReason);
+                boolean wakeRequired = "host_screensaver_active".equals(readinessReason)
+                        && "running".equalsIgnoreCase(snapshot.gameState);
                 if (snapshot.gatewayReady && "game".equalsIgnoreCase(snapshot.targetKind)
                         && !snapshot.windowReady
-                        && "target_not_foreground".equals(readinessReason)
-                        && context.gameFocusAttempts < 3
+                        && ((focusRequired && context.gameFocusAttempts < 3)
+                            || (wakeRequired && context.screensaverWakeAttempts < 3))
                         && now - context.lastGameFocusAttempt >= 3_000L) {
                     context.lastGameFocusAttempt = now;
-                    context.gameFocusAttempts++;
+                    if (focusRequired) {
+                        context.gameFocusAttempts++;
+                    } else {
+                        context.screensaverWakeAttempts++;
+                    }
                     try {
                         gateway.focusGame();
                     } catch (IOException ignored) {
@@ -808,6 +946,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 context.failures = 0;
 
                 LaunchTransitionSnapshot current = transitionController.snapshot();
+                if (transitionSpec.type == LaunchTransitionType.GAME
+                        && LaunchTransitionController.isGameStartPending(current.state)
+                        && clock.now() - requestStartedAtMillis >= START_TAKING_LONGER_MS
+                        && isCurrent(runEpoch)) {
+                    transitionController.startTakingLonger(transitionSpec.id);
+                }
                 if (current.state != context.observedState) {
                     context.observedState = current.state;
                     context.stateSince = clock.now();
@@ -817,7 +961,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                         && !"host_session_locked".equals(context.lastReadinessReason)
                         && isCurrent(runEpoch)) {
                     transitionController.timedOut(transitionSpec.id,
-                            readinessFailureMessage(context.lastReadinessReason));
+                            readinessFailureMessage(context.lastReadinessReason),
+                            prefersReveal(context.lastReadinessReason));
                     return;
                 }
             } catch (IOException | RuntimeException error) {
@@ -852,29 +997,60 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             return;
         }
         if (!snapshot.connectorReady) return;
-        boolean exactVerifiedGame = kind != LaunchTransitionType.GAME
-                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId);
-        if (!exactVerifiedGame) return;
+        String previousLaunch = SessionSnapshot.normalize(snapshot.previousLaunchGameId);
         if (kind == LaunchTransitionType.GAME
-                && "launcher_interaction_required".equals(snapshot.reason)) {
+                && "previous_launch_game_running".equals(snapshot.reason)
+                && !previousLaunch.isEmpty()
+                && !previousLaunch.equals(SessionSnapshot.normalize(transitionSpec.playniteGameId))
+                && !snapshot.previousLaunchProcessToken.isEmpty()) {
+            boolean stopFailed;
+            synchronized (this) {
+                if (!snapshot.previousLaunchProcessToken.equals(previousProcessToken)) {
+                    previousGameStopFailed = false;
+                }
+                previousGameId = snapshot.previousLaunchGameId.trim();
+                previousProcessToken = snapshot.previousLaunchProcessToken;
+                previousGameName = snapshot.previousLaunchName;
+                stopFailed = previousGameStopFailed;
+            }
+            transitionController.previousGameRunning(transitionSpec.id, transitionSpec.hostId,
+                    stopFailed ? callbacks.previousGameStopFailedMessage()
+                            : callbacks.previousGameRunningMessage());
+            return;
+        }
+        // A launcher prompt may precede any game identity: the reason alone is the evidence.
+        if (kind == LaunchTransitionType.GAME
+                && "launcher_interaction_required".equals(snapshot.reason)
+                && (gameId.isEmpty()
+                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId))) {
             transitionController.launcherInteractionRequired(
-                    transitionSpec.id, transitionSpec.hostId, gameId,
+                    transitionSpec.id, transitionSpec.hostId, transitionSpec.playniteGameId,
                     callbacks.launcherInteractionRequiredMessage());
             return;
         }
-        if (kind == LaunchTransitionType.GAME
+        boolean exactVerifiedGame = kind != LaunchTransitionType.GAME
+                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId);
+        if (!exactVerifiedGame) return;
+        boolean currentRequestState = !startsProviderGame()
+                || stateBeganForThisRequest(snapshot, clock.now());
+        if (kind == LaunchTransitionType.GAME && currentRequestState
                 && "failed".equalsIgnoreCase(snapshot.gameState)) {
             requestProviderCleanup();
             transitionController.error(transitionSpec.id,
-                    readinessFailureMessage(snapshot.reason));
+                    readinessFailureMessage(snapshot.reason), prefersReveal(snapshot.reason));
             return;
         }
         boolean targetWasRunning = transitionController.snapshot().state
                 == LaunchTransitionState.GAME_RUNNING;
         boolean gameReportedRunning = kind == LaunchTransitionType.GAME
                 && "running".equalsIgnoreCase(snapshot.gameState);
-        if (snapshot.hasVerifiedProcessFor(gameId) || gameReportedRunning
-                && snapshot.processId > 0) {
+        // Phase 2 starts once the host has the game's process: a verified token, or the provider
+        // already running this exact game (its window probe correlated the process, while the
+        // tokenizing process scan may lag it by seconds). Readiness still needs both verified.
+        // A provider start counts only a host state that began after this request: an older
+        // "running" (an earlier game or attempt) keeps phase 1 ("Starting the game").
+        if (currentRequestState
+                && (snapshot.hasVerifiedProcessFor(gameId) || gameReportedRunning)) {
             transitionController.targetProcessRunning(
                     transitionSpec.id, transitionSpec.hostId, kind, gameId,
                     snapshot.windowReady ? "" : readinessPendingMessage(snapshot.reason));
@@ -890,8 +1066,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         } else if (kind == LaunchTransitionType.GAME && targetWasRunning) {
             transitionController.targetWindowLost(transitionSpec.id, transitionSpec.hostId,
                     kind, gameId, windowLostMessage(snapshot.reason));
-        } else if (snapshot.stableSamples > 0
-                || "stabilizing_target_window".equals(snapshot.reason)) {
+        } else if (currentRequestState && (snapshot.stableSamples > 0
+                || "stabilizing_target_window".equals(snapshot.reason))) {
             transitionController.targetWindowStabilizing(transitionSpec.id,
                     transitionSpec.hostId, kind, gameId,
                     callbacks.windowStabilizingMessage());
@@ -954,6 +1130,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if ("target_on_wrong_display".equals(reason)) {
             return callbacks.targetWrongDisplayMessage();
         }
+        if ("game_exited_during_start".equals(reason)) {
+            return callbacks.gameExitedDuringStartMessage();
+        }
+        if ("game_start_timeout".equals(reason)) {
+            return callbacks.gameStartTimeoutMessage();
+        }
         String pending = readinessPendingMessage(reason);
         if (!pending.isEmpty()) return pending;
         return callbacks.readinessUnconfirmedMessage();
@@ -983,7 +1165,19 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if ("target_not_foreground".equals(reason)) {
             return callbacks.gameWindowNotForegroundMessage();
         }
+        // Not a lock: the Bridge is waking the screensaver itself, and the broker would
+        // answer "ready", so the one tryHostUnlock attempt is kept for a real lock.
+        if ("host_screensaver_active".equals(reason)) {
+            return callbacks.hostScreensaverActiveMessage();
+        }
         return "";
+    }
+
+    /** A launcher waiting for input or a window off the streamed display: reveal is the remedy. */
+    static boolean prefersReveal(String reason) {
+        return "game_start_timeout".equals(reason)
+                || "target_on_wrong_display".equals(reason)
+                || "launcher_interaction_required".equals(reason);
     }
 
     private static boolean isPrivacyGateFailure(String reason) {
@@ -1004,12 +1198,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 return 45_000L;
             case PLAYNITE_FULLSCREEN_STARTING:
                 return 30_000L;
-            case GAME_START_REQUESTED:
-            case GAME_STARTING:
-            case GAME_PROCESS_RUNNING:
-                return 120_000L;
-            case GAME_WINDOW_STABILIZING:
-                return 30_000L;
+            // GAME_START_REQUESTED, GAME_STARTING, GAME_PROCESS_RUNNING and
+            // GAME_WINDOW_STABILIZING have no client bound: the host fails phase 1 and does not
+            // bound phase 2, so the client shows a soft notice instead (START_TAKING_LONGER_MS).
             case PLAYNITE_RETURNING:
                 return 45_000L;
             case PLAYNITE_STOPPING:
@@ -1272,6 +1463,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     throws IOException {
                 gateway.stopGame(gameId, processToken);
             }
+
+            @Override public boolean unlockHostSession(BooleanSupplier cancelled)
+                    throws IOException, InterruptedException {
+                return gateway.unlockHostSession(cancelled);
+            }
         };
     }
 
@@ -1292,6 +1488,32 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             transitionController.error(
                     transitionSpec.id, callbacks.readinessUnconfirmedMessage());
         }
+    }
+
+    /**
+     * The one host unlock of this transition: a locked Windows session is first handed to the
+     * Gateway's session ensure (which unlocks through the login broker). Only when that is
+     * refused, fails or times out does the caller fall back to the manual privacy gate. A result
+     * that arrives after this transition was stopped or replaced is ignored.
+     */
+    private boolean tryHostUnlock(long runEpoch) {
+        synchronized (this) {
+            if (hostUnlockAttempted || !isCurrent(runEpoch)) return false;
+            hostUnlockAttempted = true;
+        }
+        logTimeline("host-unlock-requested");
+        boolean ready = false;
+        try {
+            // A stopped or replaced transition ends the poll and cancels the attempt, so the
+            // broker does not unlock Windows for a launch the user already left.
+            ready = gateway.unlockHostSession(() -> !isCurrent(runEpoch));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (IOException | RuntimeException error) {
+            logTimeline("host-unlock-error reason=" + timelineReason(error));
+        }
+        logTimeline(ready ? "host-unlock-ready" : "host-unlock-not-ready");
+        return ready && isCurrent(runEpoch);
     }
 
     private static boolean isLauncherInteractionRequired(Exception error) {
@@ -1330,6 +1552,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         boolean lockScreenPresented;
         boolean targetWindowReadyLogged;
         int gameFocusAttempts;
+        int screensaverWakeAttempts;
         long lastGameFocusAttempt;
         String lastReadinessReason = "";
         String loggedReadinessReason = "";
