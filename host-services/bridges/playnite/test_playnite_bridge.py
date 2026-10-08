@@ -4202,7 +4202,7 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual(
             "http://127.0.0.1:47990/diagnostics/active-displays", resolver.endpoint)
 
-    def test_stream_display_resolver_selects_only_the_single_stream_virtual_display(self):
+    def test_stream_display_resolver_prefers_single_virtual_then_single_active_display(self):
         def display(name, virtual, primary=False):
             # Shape emitted by VibepolloBridge.ps1 Get-ActiveDisplayDiagnostics.
             return {"display_name": "\\\\.\\" + name, "primary": primary,
@@ -4220,12 +4220,15 @@ class BridgeStateTest(unittest.TestCase):
             # Failed topology APPLY: two physical outputs stay active beside the stream.
             (active(display("DISPLAY1", False), display("DISPLAY2", False, True),
                     display("DISPLAY15", True)), r"\\.\DISPLAY15"),
+            (active(display("DISPLAY15", True)), r"\\.\DISPLAY15"),
+            # No virtual display: a lone active physical display is the streamed one.
+            (active(display("DISPLAY2", False, True)), r"\\.\DISPLAY2"),
             (active(display("DISPLAY1", False), display("DISPLAY2", False, True)), ""),
             (active(display("DISPLAY15", True), display("DISPLAY16", True)), ""),
-            # No stream: a lone physical display is not the streamed display.
-            (active(display("DISPLAY2", False, True)), ""),
-            # Only the explicit boolean marks a stream display.
-            (active(display("DISPLAY15", "true")), ""),
+            # Only the explicit boolean marks a virtual display; "true" counts as
+            # physical, so it wins only as the single active display.
+            (active(display("DISPLAY15", "true")), r"\\.\DISPLAY15"),
+            (active(display("DISPLAY15", "true"), display("DISPLAY2", False)), ""),
         ]
         with mock.patch.object(GameProviderBridge.urllib.request, "urlopen",
                                return_value=response) as urlopen:

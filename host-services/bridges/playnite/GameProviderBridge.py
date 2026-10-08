@@ -278,13 +278,15 @@ class StreamDisplayResolver:
 
     @classmethod
     def stream_display_from_payload(cls, payload: Any) -> str:
-        """The single active display the Vibepollo Bridge marks as its stream's
-        virtual display; "" when there is none or more than one."""
+        """The single active display marked `stream_virtual_display`; when none
+        is marked, the single active display; otherwise ""."""
         displays = ((payload or {}).get("value") or {}).get("displays") or []
-        found = {cls._normalize(item.get("display_name")) for item in displays
-                 if isinstance(item, dict) and item.get("stream_virtual_display") is True}
-        found.discard("")
-        return found.pop() if len(found) == 1 else ""
+        active = {cls._normalize(item.get("display_name")): item.get("stream_virtual_display") is True
+                  for item in displays if isinstance(item, dict)}
+        active.pop("", None)
+        virtual = [name for name, is_virtual in active.items() if is_virtual]
+        candidates = virtual or list(active)
+        return candidates[0] if len(candidates) == 1 else ""
 
     def resolve(self) -> str:
         now = time.monotonic()
