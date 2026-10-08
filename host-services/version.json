@@ -1,6 +1,6 @@
 {
   "product": "MoonWaker Host",
-  "version": "0.7.130",
-  "build": "2026.10.08-screensaver-child",
+  "version": "0.7.131",
+  "build": "2026.10.08-single-display",
   "protocol_version": 6
 }
