@@ -97,9 +97,9 @@ final class SessionOrchestrator implements AutoCloseable {
     private final Dispatcher dispatcher;
     private final AtomicLong generation = new AtomicLong();
     private PlayIntent lastIntent;
-    /** The request and pass evaluating the refresh of an uncorrelated recovery observation. */
-    private long recoveryRefreshedRequest;
-    private int recoveryRefreshedPass;
+    /** The request and pass evaluating the refresh of an unresolved observation. */
+    private long refreshedRequest;
+    private int refreshedPass;
     private volatile Preparation preparation;
     private volatile boolean closed;
 
@@ -292,13 +292,10 @@ final class SessionOrchestrator implements AutoCloseable {
                 if (!opaqueReady) {
                     awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
                             reuseOnly, preparedTarget, pass);
-                } else if (namesOtherGame || recoveryRefreshedRequest == request
-                        && recoveryRefreshedPass == pass) {
+                } else if (namesOtherGame || evaluatesRefresh(request, pass)) {
                     fail(request, intent, SessionFailure.UNCERTAIN_RECOVERY_REQUIRED, "");
                 } else {
-                    recoveryRefreshedRequest = request;
-                    recoveryRefreshedPass = pass + 1;
-                    awaitFreshSession(request, intent, replacementAuthorized,
+                    refreshThenEvaluate(request, intent, replacementAuthorized,
                             reuseOnly, preparedTarget, pass);
                 }
                 return;
@@ -376,11 +373,25 @@ final class SessionOrchestrator implements AutoCloseable {
                 && snapshot.neutralStreamTarget
                 && snapshot.playniteGameId.isEmpty()
                 && intent.kind == PlayIntent.Kind.PLAYNITE_GAME;
-        // Orphaned neutral stream: no game confirmed and none to carry. Decided on every pass
-        // from this snapshot and never carried forward; its full quit fails closed while any
-        // provider game runs, so it is replaced without asking.
-        boolean orphaned = reconnectingWarmUp && !matches && !effects.warmUpCarriesGame();
-        if (!orphaned && snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
+        boolean carriesNoGame = reconnectingWarmUp && !matches && !effects.warmUpCarriesGame();
+        // Orphaned neutral stream: none to carry and the host proves no game runs (IDLE).
+        // Decided on every pass from this snapshot and never carried forward; it is replaced
+        // without asking. An empty game id from a stale or unresolved observation proves
+        // nothing: it is refreshed once, then the replacement is confirmed.
+        boolean orphaned = carriesNoGame
+                && snapshot.observationState == SessionSnapshot.ObservationState.IDLE;
+        if (carriesNoGame && !orphaned && !replacementAuthorized) {
+            if (!opaqueReady) {
+                awaitOpaque(request, intent, freshType(intent), false,
+                        reuseOnly, preparedTarget, pass);
+                return;
+            }
+            if (!evaluatesRefresh(request, pass)) {
+                refreshThenEvaluate(request, intent, false, reuseOnly, preparedTarget, pass);
+                return;
+            }
+        }
+        if (!carriesNoGame && snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
                 && (matches || reconnectingWarmUp)) {
             if (!opaqueReady) {
                 awaitOpaque(request, intent, LaunchTransitionType.GENERIC,
@@ -481,6 +492,19 @@ final class SessionOrchestrator implements AutoCloseable {
                             true, result.target, pass + 1);
             });
         });
+    }
+
+    /** Whether this pass evaluates the snapshot a refresh of an unresolved observation produced. */
+    private boolean evaluatesRefresh(long request, int pass) {
+        return refreshedRequest == request && refreshedPass == pass;
+    }
+
+    private void refreshThenEvaluate(long request, PlayIntent intent,
+                                     boolean replacementAuthorized, boolean reuseOnly,
+                                     NvApp preparedTarget, int pass) {
+        refreshedRequest = request;
+        refreshedPass = pass + 1;
+        awaitFreshSession(request, intent, replacementAuthorized, reuseOnly, preparedTarget, pass);
     }
 
     private void awaitFreshSession(long request, PlayIntent intent,

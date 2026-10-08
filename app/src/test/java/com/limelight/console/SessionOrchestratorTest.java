@@ -351,7 +351,7 @@ public class SessionOrchestratorTest {
     @Test public void gameVerifiedDuringOrphanPreflightAsksBeforeReplacement() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
-                77, "", false, "", true);
+                77, "", false, "", true, SessionSnapshot.ObservationState.IDLE);
         effects.onReadiness = () -> effects.snapshot = snapshot(
                 SessionSnapshot.State.RECONNECT_REQUIRED, 77, "other", false, "", true);
 
@@ -379,18 +379,64 @@ public class SessionOrchestratorTest {
     @Test public void orphanedNeutralStreamWithoutWarmUpIsClosedThenGameLaunches() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
-                77, "", false, "", true);
+                77, "", false, "", true, SessionSnapshot.ObservationState.IDLE);
         PlayIntent game = game();
 
         orchestrator(effects).play(game);
 
         assertNull(effects.confirmation);
+        assertEquals(0, effects.refreshes);
         assertEquals(0, effects.reconnects);
         assertEquals(1, effects.closes);
         assertEquals(Boolean.TRUE, effects.allowDestructiveCloseSeen);
         assertEquals(1, effects.launches);
         assertEquals(42, effects.launchedTarget.getAppId());
         assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
+    }
+
+    /** Lab check 23: the projection went stale between the RECONNECT preflight and its pass. */
+    @Test public void staleProjectionAfterReconnectPreflightRefreshesAndReconnects() {
+        Fake effects = new Fake();
+        SessionSnapshot ready = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                77, "game", false, "", true, SessionSnapshot.ObservationState.READY, true);
+        effects.snapshot = ready;
+        effects.onReadiness = () -> effects.snapshot = snapshot(
+                SessionSnapshot.State.RECONNECT_REQUIRED, 77, "", false, "", true);
+        effects.onRefresh = () -> effects.snapshot = ready;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(HostLaunchPreflight.Action.RECONNECT, effects.preflightAction);
+        assertEquals(1, effects.refreshes);
+        assertEquals(1, effects.reconnects);
+        assertNull(effects.confirmation);
+        assertEquals(0, effects.closes);
+        assertNull(effects.allowDestructiveCloseSeen);
+        assertEquals(0, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void neutralStreamWithUnresolvedGameIsConfirmedNotClosed() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                77, "", false, "", true);
+        SessionOrchestrator orchestrator = orchestrator(effects);
+
+        orchestrator.play(game());
+
+        assertEquals(1, effects.refreshes);
+        assertNotNull(effects.confirmation);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.launches);
+
+        effects.confirmation.run();
+
+        assertEquals(1, effects.refreshes);
+        assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
+        assertEquals(1, effects.closes);
+        assertEquals(Boolean.TRUE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.launches);
     }
 
     @Test public void cancelledNeutralWarmUpReconnectIgnoresStaleOpaqueFrame() {
@@ -901,20 +947,19 @@ public class SessionOrchestratorTest {
         assertTrue(effects.failures.isEmpty());
     }
 
-    @Test public void correlatedRecoveryNamingNoGameOnOrphanedNeutralStreamClosesAndLaunches() {
+    @Test public void correlatedRecoveryNamingNoGameOnNeutralStreamRefreshesThenAsks() {
         Fake effects = new Fake();
         effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", true, true);
 
         orchestrator(effects).play(game());
 
-        // Current behavior: the orphaned neutral stream is closed without confirmation.
-        assertNull(effects.confirmation);
-        assertEquals(0, effects.refreshes);
+        // Recovery evidence naming no game does not prove the host idle.
+        assertEquals(1, effects.refreshes);
+        assertNotNull(effects.confirmation);
         assertEquals(0, effects.reconnects);
-        assertEquals(1, effects.closes);
-        assertEquals(Boolean.TRUE, effects.allowDestructiveCloseSeen);
-        assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
-        assertEquals(1, effects.launches);
+        assertEquals(0, effects.closes);
+        assertNull(effects.allowDestructiveCloseSeen);
+        assertEquals(0, effects.launches);
         assertTrue(effects.failures.isEmpty());
     }
 
