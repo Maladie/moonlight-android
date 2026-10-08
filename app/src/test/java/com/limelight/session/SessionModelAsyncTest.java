@@ -195,7 +195,13 @@ public class SessionModelAsyncTest {
         driver.enterHome(owner, "s", "host", "parent", 7, "game");
         SessionModel.State[] atCompletion = new SessionModel.State[1];
         assertEquals(SessionModel.TerminationResult.STARTED, driver.terminate("s",
-                success -> atCompletion[0] = model.snapshot().state));
+                new SessionModel.TerminationCallback() {
+                    @Override public void complete(boolean success) {
+                        atCompletion[0] = model.snapshot().state;
+                    }
+
+                    @Override public void gameLeftOnHost() { throw new AssertionError(); }
+                }));
 
         owned[0].complete(true);
         assertNull(atCompletion[0]);

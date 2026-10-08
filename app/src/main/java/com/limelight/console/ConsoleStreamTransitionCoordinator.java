@@ -20,6 +20,8 @@ import java.util.function.BooleanSupplier;
 public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     public enum ProviderStartFailure { INTERACTION_REQUIRED, CLEANUP_PENDING }
     private static final long STREAM_SETUP_TIMEOUT_MS = 60_000L;
+    /** Soft notice only: the host owns game start failure (phase 1) and has no phase-2 bound. */
+    static final long START_TAKING_LONGER_MS = 180_000L;
     private static final ExecutorService PROVIDER_ACTIONS =
             Executors.newSingleThreadExecutor(action -> {
                 Thread thread = new Thread(action, "MoonWaker-ProviderLaunch");
@@ -67,6 +69,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String readinessUnconfirmedMessage();
         String gameIdentityPendingMessage();
         String gameWindowPendingMessage();
+        String gameExitedDuringStartMessage();
         String gameWindowNotFullscreenMessage();
         String gameWindowNotForegroundMessage();
         String launcherInteractionRequiredMessage();
@@ -100,6 +103,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private final Executor providerExecutor;
     private final MonotonicClock clock;
     private final long launchStartedAtMillis;
+    /** The local Play of this exact request; the soft start threshold counts from it. */
+    private final long requestStartedAtMillis;
     private final Sleeper sleeper;
     private final Scheduler scheduler;
     private final Callbacks callbacks;
@@ -112,6 +117,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private boolean providerCleanupRequested;
     private boolean providerCleanupScheduled;
     private boolean providerCleanupCompleted;
+    private boolean providerCleanupSucceeded;
     private boolean providerCleanupArmed;
     private boolean streamConnected;
     private boolean hostUnlockAttempted;
@@ -171,6 +177,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         this.providerExecutor = providerExecutor;
         this.clock = clock;
         this.launchStartedAtMillis = launchStartedAtMillis;
+        this.requestStartedAtMillis = launchStartedAtMillis > 0L
+                ? launchStartedAtMillis : clock.now();
         this.sleeper = sleeper;
         this.scheduler = scheduler;
         this.callbacks = callbacks;
@@ -686,10 +694,20 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
     }
 
+    /**
+     * The result of this attempt's provider cleanup once it completed (true: no started process
+     * remains or its exact process was stopped), null while none has completed. A cancel after a
+     * host-reported failure reads it, because that cleanup already ran.
+     */
+    public synchronized Boolean providerCleanupResult() {
+        return providerCleanupCompleted ? providerCleanupSucceeded : null;
+    }
+
     private void completeProviderCleanup(boolean success) {
         synchronized (this) {
             if (providerCleanupCompleted) return;
             providerCleanupCompleted = true;
+            providerCleanupSucceeded = success;
         }
         callbacks.onProviderGameCleanupComplete(
                 transitionSpec.id, transitionSpec.playniteGameId, success);
@@ -818,6 +836,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 context.failures = 0;
 
                 LaunchTransitionSnapshot current = transitionController.snapshot();
+                if (transitionSpec.type == LaunchTransitionType.GAME
+                        && LaunchTransitionController.isGameStartPending(current.state)
+                        && clock.now() - requestStartedAtMillis >= START_TAKING_LONGER_MS
+                        && isCurrent(runEpoch)) {
+                    transitionController.startTakingLonger(transitionSpec.id);
+                }
                 if (current.state != context.observedState) {
                     context.observedState = current.state;
                     context.stateSince = clock.now();
@@ -964,6 +988,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if ("target_on_wrong_display".equals(reason)) {
             return callbacks.targetWrongDisplayMessage();
         }
+        if ("game_exited_during_start".equals(reason)) {
+            return callbacks.gameExitedDuringStartMessage();
+        }
         String pending = readinessPendingMessage(reason);
         if (!pending.isEmpty()) return pending;
         return callbacks.readinessUnconfirmedMessage();
@@ -1014,12 +1041,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 return 45_000L;
             case PLAYNITE_FULLSCREEN_STARTING:
                 return 30_000L;
-            case GAME_START_REQUESTED:
-            case GAME_STARTING:
-            case GAME_PROCESS_RUNNING:
-                return 120_000L;
-            case GAME_WINDOW_STABILIZING:
-                return 30_000L;
+            // GAME_START_REQUESTED, GAME_STARTING, GAME_PROCESS_RUNNING and
+            // GAME_WINDOW_STABILIZING have no client bound: the host fails phase 1 and does not
+            // bound phase 2, so the client shows a soft notice instead (START_TAKING_LONGER_MS).
             case PLAYNITE_RETURNING:
                 return 45_000L;
             case PLAYNITE_STOPPING:

@@ -66,6 +66,8 @@ public final class SessionModel {
 
     public interface TerminationCallback {
         void complete(boolean success);
+        /** The stream closed, but a game this close could not verify may still run on the host. */
+        void gameLeftOnHost();
         default void transportUnsafe() { }
     }
 
@@ -457,6 +459,16 @@ public final class SessionModel {
         effect(() -> {
             try {
                 callback.complete(success);
+            } catch (RuntimeException ignored) {
+                // Every caller waiting on this operation receives its terminal result.
+            }
+        });
+    }
+
+    private void gameLeftOnHost(TerminationCallback callback) {
+        effect(() -> {
+            try {
+                callback.gameLeftOnHost();
             } catch (RuntimeException ignored) {
                 // Every caller waiting on this operation receives its terminal result.
             }
@@ -1355,7 +1367,11 @@ public final class SessionModel {
             }
 
             @Override public void complete(boolean success) {
-                post(new SessionEvent.TerminationFinished(operation, success));
+                post(new SessionEvent.TerminationFinished(operation, success, false));
+            }
+
+            @Override public void gameLeftOnHost() {
+                post(new SessionEvent.TerminationFinished(operation, true, true));
             }
         };
         effect(() -> {
@@ -1371,8 +1387,11 @@ public final class SessionModel {
         if (terminationOperation == operation) terminationOperation.transportUnsafe = true;
     }
 
-    /** A stale finish completes its own waiters with false and changes no state. */
-    void terminationFinished(Object finished, boolean success) {
+    /**
+     * A stale finish completes its own waiters with false and changes no state. A closed stream
+     * ({@code success}) retains nothing, even when {@code gameLeft} reports an unverified game.
+     */
+    void terminationFinished(Object finished, boolean success, boolean gameLeft) {
         TerminationOperation operation = (TerminationOperation) finished;
         if (operation.completions.isEmpty() && terminationOperation != operation) return;
         boolean current = terminationOperation == operation
@@ -1391,13 +1410,14 @@ public final class SessionModel {
         }
         if (terminationOperation == operation) terminationOperation = null;
         for (TerminationCallback waiting : operation.completions) {
-            complete(waiting, current && success);
+            if (current && success && gameLeft) gameLeftOnHost(waiting);
+            else complete(waiting, current && success);
         }
         operation.completions.clear();
     }
 
     boolean completeDirectTermination(DirectTermination token, boolean success,
-                                      boolean transportUnsafe) {
+                                      boolean gameLeft, boolean transportUnsafe) {
         TerminationOperation operation = terminationOperation;
         if (token == null || operation == null || operation.id != token.operationId
                 || !operation.direct || state != State.TERMINATING
@@ -1415,7 +1435,8 @@ public final class SessionModel {
             controller = operation.previousOwner;
         }
         for (TerminationCallback completion : operation.completions) {
-            complete(completion, success);
+            if (success && gameLeft) gameLeftOnHost(completion);
+            else complete(completion, success);
         }
         return true;
     }
@@ -1456,7 +1477,7 @@ public final class SessionModel {
             effect(() -> {
                 try {
                     if (preparing != null) owner.cancelPreparingTransport(preparing);
-                    else owner.disconnectRetainedStream(success -> { });
+                    else owner.disconnectRetainedStream(null);
                 } catch (RuntimeException ignored) {
                     // The authoritative local reset is already complete.
                 }

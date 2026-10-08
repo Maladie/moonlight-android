@@ -15,6 +15,15 @@ public class SessionModelTest {
     private final SessionModelDriver m = new SessionModelDriver();
     private static final String SESSION_A = "session-a";
 
+    /** A waiter for a plain closed/failed result; a game left on the host fails the test. */
+    private static SessionModel.TerminationCallback finished(
+            java.util.function.Consumer<Boolean> completion) {
+        return new SessionModel.TerminationCallback() {
+            @Override public void complete(boolean success) { completion.accept(success); }
+            @Override public void gameLeftOnHost() { throw new AssertionError("game left"); }
+        };
+    }
+
     private static class FakeController
             implements SessionModel.Controller {
         String origin;
@@ -940,10 +949,10 @@ public class SessionModelTest {
 
         assertEquals(SessionModel.TerminationResult.STARTED,
                 m.terminate(SESSION_A,
-                        success -> first.set(success ? 1 : -1)));
+                        finished(success -> first.set(success ? 1 : -1))));
         assertEquals(SessionModel.TerminationResult.IN_PROGRESS,
                 m.terminate(SESSION_A,
-                        success -> second.set(success ? 1 : -1)));
+                        finished(success -> second.set(success ? 1 : -1))));
         assertEquals(SessionModel.State.TERMINATING,
                 m.state());
         assertEquals(1, controller.terminations);
@@ -967,7 +976,7 @@ public class SessionModelTest {
         m.enterHome(controller, SESSION_A, "host", 7, "game");
 
         m.terminate(SESSION_A,
-                success -> observed.set(m.state()));
+                finished(success -> observed.set(m.state())));
         assertEquals(SessionModel.State.TERMINATING,
                 m.state());
         controller.terminationCompletion.complete(true);
@@ -984,11 +993,11 @@ public class SessionModelTest {
         AtomicInteger observed = new AtomicInteger();
         m.enterHome(controller, SESSION_A, "host", 7, "game");
 
-        m.terminate(SESSION_A, success -> {
+        m.terminate(SESSION_A, finished(success -> {
             throw new IllegalStateException("observer failed");
-        });
+        }));
         m.terminate(SESSION_A,
-                success -> observed.set(success ? 1 : -1));
+                finished(success -> observed.set(success ? 1 : -1)));
         controller.terminationCompletion.complete(true);
         m.drain();
 
@@ -1026,13 +1035,31 @@ public class SessionModelTest {
         assertTrue(direct != null);
 
         assertEquals(SessionModel.TerminationResult.IN_PROGRESS,
-                m.terminate(SESSION_A, joined::set));
+                m.terminate(SESSION_A, finished(joined::set)));
         assertNull(joined.get());
         m.completeDirectTermination(direct, true);
 
         assertEquals(Boolean.TRUE, joined.get());
         assertEquals(SessionModel.State.NONE,
                 m.state());
+    }
+
+    @Test public void directWholeQuitLeavingAGameReachesJoinersAsGameLeft() {
+        AtomicInteger gameLeft = new AtomicInteger();
+        SessionModel.TerminationCallback joiner = new SessionModel.TerminationCallback() {
+            @Override public void complete(boolean success) { fail("plain result"); }
+            @Override public void gameLeftOnHost() { gameLeft.incrementAndGet(); }
+        };
+        SessionModel.DirectTermination direct =
+                m.beginDirectTermination(SESSION_A, "host", 7, "game");
+        assertTrue(direct != null);
+        assertEquals(SessionModel.TerminationResult.IN_PROGRESS,
+                m.terminate(SESSION_A, joiner));
+
+        assertTrue(m.completeDirectTermination(direct, true, true));
+
+        assertEquals(1, gameLeft.get());
+        assertEquals(SessionModel.State.NONE, m.state());
     }
 
     @Test public void failedDirectWholeQuitRestoresStateBeforeJoinersReturn() {
@@ -1044,7 +1071,7 @@ public class SessionModelTest {
                 m.beginDirectTermination(
                         SESSION_A, "host", 7, "game");
         assertTrue(direct != null);
-        m.terminate(SESSION_A, joined::set);
+        m.terminate(SESSION_A, finished(joined::set));
 
         m.completeDirectTermination(direct, false);
 
@@ -1095,7 +1122,7 @@ public class SessionModelTest {
                 m.beginDirectTermination(
                         SESSION_A, "host", 7, "game");
         assertTrue(current != null);
-        m.terminate(SESSION_A, joined::set);
+        m.terminate(SESSION_A, finished(joined::set));
 
         m.completeDirectTermination(old, false);
 
@@ -1126,7 +1153,7 @@ public class SessionModelTest {
             SessionModel.DirectTermination direct =
                     m.beginDirectTermination(
                             SESSION_A, "host", 7, "game");
-            m.terminate(SESSION_A, joined::set);
+            m.terminate(SESSION_A, finished(joined::set));
 
             m.abandonDirectTermination(direct);
 
@@ -1146,7 +1173,7 @@ public class SessionModelTest {
         AtomicReference<Boolean> joined = new AtomicReference<>();
         m.enterHome(
                 controller, SESSION_A, "host", 7, "game");
-        m.terminate(SESSION_A, joined::set);
+        m.terminate(SESSION_A, finished(joined::set));
 
         controller.terminationCompletion.transportUnsafe();
 
@@ -1160,6 +1187,28 @@ public class SessionModelTest {
         assertFalse(m.canResumeInstantly());
     }
 
+    @Test public void gameLeftOnHostClearsTheClosedStreamAndReachesEveryWaiter() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicInteger gameLeft = new AtomicInteger();
+        SessionModel.TerminationCallback waiter = new SessionModel.TerminationCallback() {
+            @Override public void complete(boolean success) { fail("plain result"); }
+            @Override public void gameLeftOnHost() { gameLeft.incrementAndGet(); }
+        };
+        m.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        assertEquals(SessionModel.TerminationResult.STARTED, m.terminate(SESSION_A, waiter));
+        assertEquals(SessionModel.TerminationResult.IN_PROGRESS,
+                m.terminate(SESSION_A, waiter));
+        controller.terminationCompletion.gameLeftOnHost();
+        m.drain();
+
+        assertEquals(2, gameLeft.get());
+        // The stream closed: nothing is retained, so no tile offers a resume.
+        assertEquals(SessionModel.State.NONE, m.state());
+        assertFalse(m.hasRetainedSession());
+    }
+
     @Test public void unsafeCoordinatorDisconnectNeverRestoresLiveOwner() {
         FakeController controller = new FakeController();
         controller.completeTermination = false;
@@ -1169,9 +1218,9 @@ public class SessionModelTest {
                 controller, SESSION_A, "host", 7, "game");
 
         assertEquals(SessionModel.TerminationResult.STARTED,
-                m.terminate(SESSION_A, first::set));
+                m.terminate(SESSION_A, finished(first::set)));
         assertEquals(SessionModel.TerminationResult.IN_PROGRESS,
-                m.terminate(SESSION_A, joined::set));
+                m.terminate(SESSION_A, finished(joined::set)));
         controller.terminationCompletion.transportUnsafe();
         m.drain();
         controller.terminationCompletion.complete(false);
@@ -1219,7 +1268,7 @@ public class SessionModelTest {
         AtomicReference<Boolean> completed = new AtomicReference<>();
         m.enterHome(old, SESSION_A, "host", 7, "game");
         assertEquals(SessionModel.TerminationResult.STARTED,
-                m.terminate(SESSION_A, completed::set));
+                m.terminate(SESSION_A, finished(completed::set)));
         m.enterHome(
                 new FakeController(), "session-b", "host", 8, "other");
 
@@ -1231,6 +1280,25 @@ public class SessionModelTest {
         assertEquals("session-b", m.snapshot().streamSessionId);
         assertEquals(SessionModel.State.HOME_LIVE,
                 m.state());
+    }
+
+    @Test public void staleGameLeftOnHostCannotClearNewSession() {
+        FakeController old = new FakeController();
+        old.completeTermination = false;
+        AtomicReference<Boolean> completed = new AtomicReference<>();
+        m.enterHome(old, SESSION_A, "host", 7, "game");
+        assertEquals(SessionModel.TerminationResult.STARTED,
+                m.terminate(SESSION_A, finished(completed::set)));
+        assertTrue(m.clearIfMatches(SESSION_A));
+        m.enterHome(new FakeController(), SESSION_A, "host", 8, "other");
+
+        old.terminationCompletion.gameLeftOnHost();
+        m.drain();
+
+        // The stale waiter gets a plain failure, never the game-left signal.
+        assertEquals(Boolean.FALSE, completed.get());
+        assertEquals(SessionModel.State.HOME_LIVE, m.state());
+        assertEquals(8, m.snapshot().appId);
     }
 
     @Test public void terminationWithoutControllerDoesNotRemainWedged() {

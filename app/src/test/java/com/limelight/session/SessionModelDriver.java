@@ -227,7 +227,11 @@ public final class SessionModelDriver {
                 gameId));
     }
     public boolean completeDirectTermination(DirectTermination token, boolean success) {
-        return call(SessionEvent.DirectTerminationCompleted.completed(token, success));
+        return completeDirectTermination(token, success, false);
+    }
+    public boolean completeDirectTermination(DirectTermination token, boolean success,
+                                             boolean gameLeft) {
+        return call(SessionEvent.DirectTerminationCompleted.completed(token, success, gameLeft));
     }
     public void abandonDirectTermination(DirectTermination token) {
         call(SessionEvent.DirectTerminationCompleted.abandoned(token));

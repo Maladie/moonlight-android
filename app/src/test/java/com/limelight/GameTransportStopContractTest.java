@@ -35,7 +35,6 @@ public class GameTransportStopContractTest {
         assertFalse(game.contains("new TransportStopCoordinator("));
         assertFalse(game.contains("SessionModel.Controller"));
         assertTrue(game.contains("runtime.start();"));
-        assertTrue(game.contains("@Override public void transportUnsafe()"));
         assertTrue(game.contains("completion.transportUnsafe()"));
         assertTrue(stop.contains("StreamRuntime captured = runtime"));
         assertTrue(stop.contains("captured.stop("));

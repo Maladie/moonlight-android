@@ -5345,8 +5345,37 @@ class GatewayState:
             return {"provider_game_id": expected_game, "process_token": expected_token,
                     "process_id": int(stream.get("process_id") or 0),
                     "provider_idle_confirmed": idle}
+        if intent in {"full_quit", "hard_reset"} and self._control_launch_without_process(
+                current, expected_token, expected_game):
+            return {"provider_game_id": "", "process_token": "", "process_id": 0,
+                    "provider_idle_confirmed": False}
         return {"provider_game_id": "", "process_token": "", "process_id": 0,
                 "provider_idle_confirmed": True} if idle else None
+
+    def _control_launch_without_process(self, current: dict[str, Any], expected_token: str,
+                                        expected_game: str) -> bool:
+        """A starting or failed launch for which the current provider observation reports no
+        game process, so a close has nothing it could stop (a process may still appear later).
+
+        Checks all of: the observed game is starting/failed with process evidence PENDING/ABSENT;
+        the running scan is complete and lists neither that game nor the stream's retained
+        game; and a retained process token, if any, is exactly reported gone or reused.
+        """
+        snapshot = current.get("snapshot")
+        game = snapshot.get("game") if isinstance(snapshot, dict) else None
+        process = snapshot.get("process") if isinstance(snapshot, dict) else None
+        game_id = self._child_time_normalize_game_id(current.get("game_id"))
+        if current.get("kind") != "active" or not game_id \
+                or not isinstance(game, dict) or not isinstance(process, dict) \
+                or str(game.get("state") or "").casefold() not in {"starting", "failed"} \
+                or str(process.get("evidence") or "").upper() not in {"PENDING", "ABSENT"} \
+                or current.get("running_scan_status") != "complete":
+            return False
+        if expected_token and not self._child_time_process_absent(current, expected_token):
+            return False
+        launched = {game_id, expected_game} - {""}
+        return not any(self._child_time_normalize_game_id(item.get("game_id")) in launched
+                       for item in current.get("running_games") or [])
 
     def _control_stream_transport_gone(self, stream: dict[str, Any]) -> bool:
         """The streamer authoritatively reports no live transport (network read)."""

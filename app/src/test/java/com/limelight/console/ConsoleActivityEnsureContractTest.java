@@ -85,6 +85,39 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(method.contains("stopActiveProviderGame("));
     }
 
+    @Test public void retainedCloseMapsAGameLeftOnHostToItsOwnOutcome() throws IOException {
+        String source = consoleActivitySource();
+        String adapter = source.substring(source.indexOf(
+                        "private static SessionModel.TerminationCallback terminationOutcome("),
+                source.indexOf("private void terminateSessionByControlPlane("));
+        assertTrue(adapter.contains("@Override public void gameLeftOnHost() {\n"
+                + "                finished.accept(HostSessionTermination.Outcome"
+                + ".CLOSED_GAME_UNVERIFIED);"));
+        String request = source.substring(source.indexOf(
+                        "private void requestTerminateSession(ComputerDetails host, String"),
+                source.indexOf("private static SessionModel.TerminationCallback terminationOutcome("));
+        assertTrue(request.contains("terminationOutcome(outcome -> {"));
+        assertFalse(request.contains("Outcome.of(success)"));
+        String exit = source.substring(source.indexOf(
+                        "private void terminateRetainedSessionAndExit()"),
+                source.indexOf("private void closeRecordedSessionAndExit("));
+        assertTrue(exit.indexOf("failureMessage.set(R.string.console_terminate_session_game_left)")
+                < exit.indexOf("if (!outcome.closed()) {"));
+        String replacement = source.substring(source.indexOf(
+                        "private Boolean terminateLiveRetainedForReplacement("),
+                source.indexOf("private void beginInstallationSupportStream("));
+        assertTrue(replacement.indexOf("throw SessionFailure.CLOSE_GAME_LEFT.raise();")
+                < replacement.indexOf("return result.get().closed();"));
+        String close = source.substring(source.indexOf(
+                        "Destructive close path=direct-nonretained"),
+                source.indexOf("@Override public void launch(PlayIntent intent, NvApp app,"));
+        assertTrue(close.contains("reconnectTermination, outcome.streamClosed(),"));
+        assertTrue(close.indexOf("SessionEvent.SuspendedEnded.forExecution(")
+                < close.indexOf("if (!outcome.closed()) throw SessionFailure.CLOSE_GAME_LEFT"));
+        assertEquals(com.limelight.R.string.console_terminate_session_game_left,
+                SessionFailure.CLOSE_GAME_LEFT.details);
+    }
+
     @Test public void hardResetBypassesOrdinaryTerminationAndClearsLocalOwnerFirst()
             throws IOException {
         String source = consoleActivitySource();
@@ -172,8 +205,8 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(source.contains("new ThreadPoolExecutor.DiscardPolicy()"));
         assertFalse(refresh.contains("RejectedExecutionException"));
         assertTrue(close.contains("refreshSessionState(host.uuid)"));
-        assertTrue(close.indexOf("if (outcome.closed())")
-                < close.indexOf("refreshSessionState(host.uuid)"));
+        int closed = close.indexOf("if (outcome.streamClosed())");
+        assertTrue(closed >= 0 && closed < close.indexOf("refreshSessionState(host.uuid)"));
     }
 
     @Test public void playniteStopKeepsCapturedProfileStateAcrossConfirmationAndCompletion()

@@ -7003,9 +7003,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 executionProfileId(host.uuid, profileKey.profileId))
                 && !retained.streamSessionId.isEmpty()) {
             sessionModel.dispatch(new SessionEvent.TerminateRequested(retained.streamSessionId,
-                    success -> { finishTerminateSession(host, profileKey, expectedSuspendId,
-                            HostSessionTermination.Outcome.of(success), busyPanelKey);
-                        onRequestedStreamClosed(); }), result -> {
+                    terminationOutcome(outcome -> {
+                        finishTerminateSession(host, profileKey, expectedSuspendId, outcome,
+                                busyPanelKey);
+                        onRequestedStreamClosed();
+                    })), result -> {
                 if (result == SessionModel.TerminationResult.NO_CONTROLLER) {
                     terminateSessionByControlPlane(host, profileKey, expectedSuspendId,
                             providerGameId, busyPanelKey);
@@ -7015,6 +7017,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         terminateSessionByControlPlane(host, profileKey, expectedSuspendId, providerGameId,
                 busyPanelKey);
+    }
+
+    /** A retained close's result; a game left behind a closed stream is its own outcome. */
+    private static SessionModel.TerminationCallback terminationOutcome(
+            Consumer<HostSessionTermination.Outcome> finished) {
+        return new SessionModel.TerminationCallback() {
+            @Override public void complete(boolean success) {
+                finished.accept(HostSessionTermination.Outcome.of(success));
+            }
+
+            @Override public void gameLeftOnHost() {
+                finished.accept(HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED);
+            }
+        };
     }
 
     private void terminateSessionByControlPlane(ComputerDetails host, HostProfileKey profileKey,
@@ -7033,7 +7049,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                         HostSessionTermination.Outcome outcome,
                                         String busyPanelKey) {
         if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();
-        if (outcome.closed()) {
+        // The user's close: a closed stream ends the session even when a game was left.
+        if (outcome.streamClosed()) {
             if (!expectedSuspendId.isEmpty()) {
                 sessionModel.post(SessionEvent.SuspendedEnded.forExecution(host.uuid,
                         executionProfileId(host.uuid, profileKey.profileId),
@@ -7046,7 +7063,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         }
         refreshSessionState(host.uuid);
-        ConsoleUiFeedback.makeText(this, outcome.closed()
+        ConsoleUiFeedback.makeText(this,
+                outcome == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED
+                        ? R.string.console_terminate_session_game_left
+                        : outcome.closed()
                         ? R.string.console_terminate_session_success
                         : outcome == HostSessionTermination.Outcome.GAME_UNVERIFIED
                         ? R.string.console_terminate_session_game_unverified
@@ -7232,8 +7252,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 getApplicationContext(), host.uuid,
                 address.address, address.port, host.httpsPort, managerBinder.getUniqueId(),
                 certificate, sessionId, appId, normalizeId(providerGameId), generation,
-                actorContext, false);
-        if (stopped.closed()) {
+                actorContext);
+        // The stream records end with the stream; callers decide on any game left behind.
+        if (stopped.streamClosed()) {
             sessionModel.post(new SessionEvent.Cleared(sessionId));
             sessionModel.post(new SessionEvent.ReconnectCleared(sessionId));
             BackgroundStreamService.dismiss(this, sessionId);
@@ -12374,7 +12395,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     LimeLog.info("Destructive close path=direct-nonretained host="
                             + intent.hostId + " app=" + runningAppId);
                 }
-                boolean closed = false;
+                HostSessionTermination.Outcome outcome = HostSessionTermination.Outcome.FAILED;
                 try {
                     if (!cancelled.getAsBoolean()) {
                         mainHandler.post(() -> {
@@ -12383,16 +12404,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                         getString(R.string.transition_closing_session));
                             }
                         });
-                        closed = terminateKnownControlPlane(host, intent.profileId,
-                                knownProviderGameId(host)).closed();
+                        outcome = terminateKnownControlPlane(host, intent.profileId,
+                                knownProviderGameId(host));
                     }
                 } finally {
                     if (reconnectTermination != null) {
                         sessionModel.post(SessionEvent.DirectTerminationCompleted.completed(
-                                reconnectTermination, closed));
+                                reconnectTermination, outcome.streamClosed(),
+                                outcome == HostSessionTermination.Outcome
+                                        .CLOSED_GAME_UNVERIFIED));
                     }
                 }
-                if (closed) {
+                if (outcome.streamClosed()) {
                     // The host session is gone, and with it whatever was suspended in it.
                     SuspendedSessionStore.Session suspended =
                             suspendedSession(host.uuid, intent.profileId);
@@ -12400,6 +12423,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         sessionModel.post(SessionEvent.SuspendedEnded.forExecution(host.uuid,
                                 suspended.executionProfileId, suspended.suspendId));
                     }
+                    // A game left on the host must not let the replacement launch.
+                    if (!outcome.closed()) throw SessionFailure.CLOSE_GAME_LEFT.raise();
                     return SessionOrchestrator.CloseResult.CLOSED;
                 }
                 if (cancelled.getAsBoolean()) {
@@ -12629,14 +12654,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private Boolean terminateLiveRetainedForReplacement(
             SessionModel.Snapshot retained,
             BooleanSupplier cancelled) throws SessionFailure.Raised {
-        AtomicReference<Boolean> result = new AtomicReference<>();
+        AtomicReference<HostSessionTermination.Outcome> result = new AtomicReference<>();
         CountDownLatch completed = new CountDownLatch(1);
         // Runs on the orchestration worker: waiting for the model never blocks the main thread.
         SessionModel.TerminationResult started = sessionModel.await(
-                new SessionEvent.TerminateRequested(retained.streamSessionId, success -> {
-                    result.set(success);
-                    completed.countDown();
-                }));
+                new SessionEvent.TerminateRequested(retained.streamSessionId,
+                        terminationOutcome(outcome -> {
+                            result.set(outcome);
+                            completed.countDown();
+                        })));
         if (started == SessionModel.TerminationResult.NO_CONTROLLER) {
             return null;
         }
@@ -12656,7 +12682,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (cancelled.getAsBoolean()) return false;
         if (result.get() == null) throw SessionFailure.CLOSE_RETAINED_TIMEOUT.raise();
-        return result.get();
+        // A game left on the host must not let the replacement launch.
+        if (result.get() == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED) {
+            throw SessionFailure.CLOSE_GAME_LEFT.raise();
+        }
+        return result.get().closed();
     }
 
     private void beginInstallationSupportStream(ComputerDetails host, NvApp app,
@@ -14539,18 +14569,24 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         AtomicInteger failureMessage = new AtomicInteger(
                 R.string.console_terminate_session_failed);
-        SessionModel.TerminationCallback complete = success -> mainHandler.post(() -> {
-            if (!mayCompleteTermination(expectedStreamSessionId)) return;
-            if (!success) {
-                hideSidePanel();
-                ConsoleUiFeedback.makeText(this, failureMessage.get(),
-                        Toast.LENGTH_LONG).show();
-                return;
+        SessionModel.TerminationCallback complete = terminationOutcome(outcome -> {
+            // The stream closed, but the game may still run: say so and stay, do not exit.
+            if (outcome == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED) {
+                failureMessage.set(R.string.console_terminate_session_game_left);
             }
-            sessionModel.post(new SessionEvent.Cleared(expectedStreamSessionId));
-            sessionModel.post(new SessionEvent.ReconnectCleared(expectedStreamSessionId));
-            BackgroundStreamService.dismiss(this, expectedStreamSessionId);
-            exitMoonWaker();
+            mainHandler.post(() -> {
+                if (!mayCompleteTermination(expectedStreamSessionId)) return;
+                if (!outcome.closed()) {
+                    hideSidePanel();
+                    ConsoleUiFeedback.makeText(this, failureMessage.get(),
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                sessionModel.post(new SessionEvent.Cleared(expectedStreamSessionId));
+                sessionModel.post(new SessionEvent.ReconnectCleared(expectedStreamSessionId));
+                BackgroundStreamService.dismiss(this, expectedStreamSessionId);
+                exitMoonWaker();
+            });
         });
         sessionModel.dispatch(new SessionEvent.TerminateRequested(expectedStreamSessionId,
                 complete), result -> {

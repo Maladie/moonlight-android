@@ -12,11 +12,14 @@ public final class LaunchTransitionSnapshot {
     public final boolean manualRevealAvailable;
     public final boolean uncertain;
     public final String detail;
+    /** The game start passed the local soft threshold while still not ready; never a failure. */
+    public final boolean startTakingLonger;
 
     LaunchTransitionSnapshot(LaunchTransitionSpec spec, LaunchTransitionState state,
                              int step, boolean overlayVisible, boolean inputBlocked,
                              boolean operationAuthorized, boolean revealAuthorized,
-                             boolean manualRevealAvailable, boolean uncertain, String detail) {
+                             boolean manualRevealAvailable, boolean uncertain, String detail,
+                             boolean startTakingLonger) {
         this.spec = spec;
         this.state = state;
         this.step = step;
@@ -27,5 +30,6 @@ public final class LaunchTransitionSnapshot {
         this.manualRevealAvailable = manualRevealAvailable;
         this.uncertain = uncertain;
         this.detail = detail == null ? "" : detail;
+        this.startTakingLonger = startTakingLonger;
     }
 }

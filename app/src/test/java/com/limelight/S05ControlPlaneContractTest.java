@@ -71,16 +71,17 @@ public class S05ControlPlaneContractTest {
         String host = source("com/limelight/stream/HostSessionTermination.java");
 
         assertTrue(host.contains(
-                "String exact = stopTarget(expectedGame, current.gameState, current.gameId);"));
+                "String exact = stopTarget(expectedGame, gameState, currentGame);"));
         // An idle permit (no provider game) is the Gateway's proof: no racy provider re-read
         // may reject the quit before /cancel (lab MW-05 D1: effect_rejected, Desktop kept running).
-        assertTrue(host.contains(
-                "if (!providerAlreadyStopped && !permit.providerGameId.isEmpty()) {"));
+        // Every permit naming a game is verified: no caller may skip it.
+        assertTrue(host.contains("if (!permit.providerGameId.isEmpty()) {"));
+        assertFalse(host.contains("providerAlreadyStopped"));
         assertTrue(host.contains(
                 "control.complete(gateway, permit, false, !effectResultUncertain)"));
         assertTrue(host.contains("\"control-full-quit-\" + UUID.randomUUID()"));
         assertTrue(host.contains(
-                "return Outcome.of(control.complete(gateway, permit, true).succeeded())"));
+                "return closed(control.complete(gateway, permit, true).succeeded(),"));
     }
 
     @Test public void terminalLocalEffectsDoNotDependOnViewsOrHostRpc() throws Exception {
@@ -132,8 +133,8 @@ public class S05ControlPlaneContractTest {
                 "private ");
         assertTrue(close.contains("terminateWholeSessionVerified(null)"));
         String common = between(game, "private void terminateWholeSessionVerified("
-                        + "ProviderStopCallback completion,\n"
-                        + "            boolean providerAlreadyStopped, boolean requesterPresentsHome)",
+                        + "SessionModel.TerminationCallback completion,\n"
+                        + "            boolean requesterPresentsHome)",
                 "private void applyImmediateTerminalPrivacy(");
         assertTrue(common.contains("if (!wholeSessionTermination.begin())"));
         assertTrue(common.contains("stopChildMonitoring()"));

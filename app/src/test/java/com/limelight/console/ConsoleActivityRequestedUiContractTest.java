@@ -67,7 +67,7 @@ public class ConsoleActivityRequestedUiContractTest {
         String guard =
                 "if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();";
         assertTrue(finish.contains(guard));
-        assertTrue(finish.indexOf(guard) < finish.indexOf("if (outcome.closed())"));
+        assertTrue(finish.indexOf(guard) < finish.indexOf("if (outcome.streamClosed())"));
         assertFalse(source.contains("if (sidePanelTransient) hideSidePanel();"));
     }
 

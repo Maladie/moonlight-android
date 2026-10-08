@@ -1166,11 +1166,12 @@
     <string name="transition_starting_playnite">Stream ready — starting Playnite</string>
     <string name="transition_checking_game_launch_service">Checking the game launch service</string>
     <string name="transition_waiting_fullscreen">Playnite is running — waiting for its window</string>
-    <string name="transition_starting_game">Stream ready — starting the game</string>
+    <string name="transition_starting_game">Starting the game…</string>
     <string name="transition_verifying_readiness">Game is running — waiting for its window</string>
-    <string name="transition_game_running_waiting_window">Game is running — waiting for its window</string>
+    <string name="transition_game_running_waiting_window">Game started — waiting for the game window</string>
+    <string name="transition_start_taking_longer">Starting is taking longer than usual</string>
+    <string name="transition_game_exited_during_start">The game closed while starting</string>
     <string name="transition_waiting_game_identity">Playnite reported the game as running — waiting for process details</string>
-    <string name="transition_waiting_game_window">Game is running — its window has not been found yet</string>
     <string name="transition_game_window_not_fullscreen">The game window is not fullscreen</string>
     <string name="transition_game_window_not_foreground">The game window is not active</string>
     <string name="transition_window_ready_waiting_frame">Window ready — waiting for a fresh picture</string>
@@ -1208,6 +1209,8 @@
     <string name="console_terminate_session_success">The session was closed.</string>
     <string name="console_terminate_session_failed">The host did not close the session. Try again.</string>
     <string name="console_terminate_session_game_unverified">The game on the host could not be verified. Try again.</string>
+    <string name="console_terminate_session_game_left">Stream closed. The game could not be verified and may still be running on the host.</string>
+    <string name="transition_host_session_left_open">The host session could not be closed — the game and stream may still be running on the host.</string>
     <string name="console_terminate_session_other_stream">The host is running a stream MoonWaker does not own. Close it on the host.</string>
     <string name="console_close_session">Close session</string>
     <string name="console_replace_session_title">Replace the current session?</string>

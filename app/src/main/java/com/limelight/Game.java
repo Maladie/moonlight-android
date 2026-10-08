@@ -541,7 +541,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionController = new LaunchTransitionController(
                         this::onTransitionChanged);
                 transitionController.begin(transitionSpec);
-                transitionCoordinator = createTransitionCoordinator();
+                // The launch the console started: its request began at the user's Play.
+                transitionCoordinator = createTransitionCoordinator(
+                        transitionSpec, launchStartedAtMillis);
                 consoleLoadingView.setActions(new ConsoleStreamLoadingView.Actions() {
                     @Override public void onCancel() {
                         cancelTransition();
@@ -3336,9 +3338,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageComplete(String stage) {
+        bindControlGeneration();
+    }
+
+    /** The live transport's control generation, recorded for host effects; 0 before one. */
+    private long bindControlGeneration() {
         long generation = runtime == null ? 0L : runtime.controlGeneration();
-        if (generation <= 0L) return;
-        getIntent().putExtra(EXTRA_CONTROL_GENERATION, generation);
+        if (generation > 0L) getIntent().putExtra(EXTRA_CONTROL_GENERATION, generation);
+        return getIntent().getLongExtra(EXTRA_CONTROL_GENERATION, 0L);
     }
 
     private void stopConnection() {
@@ -3425,15 +3432,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void terminateRetainedSession(
             SessionModel.TerminationCallback completion) {
         // The model runs this for the console that asked; that console owns what is shown next.
-        terminateWholeSessionVerified(completion == null ? null : new ProviderStopCallback() {
-            @Override public void complete(boolean success) {
-                completion.complete(success);
-            }
-
-            @Override public void transportUnsafe() {
-                completion.transportUnsafe();
-            }
-        }, false, true);
+        terminateWholeSessionVerified(completion, true);
     }
 
     @Override
@@ -3980,7 +3979,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             transferIntent.getByteArrayExtra(EXTRA_SERVER_CERT),
                             authorization.streamSessionId, authorization.sunshineAppId, "",
                             authorization.generation,
-                            PlayniteTransitionGateway.ActorContext.parent(next.profileId), false)
+                            PlayniteTransitionGateway.ActorContext.parent(next.profileId))
                             .closed();
                 }
             } catch (IOException | RuntimeException error) {
@@ -4428,7 +4427,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private interface ProviderStopCallback {
         void complete(boolean success);
-        default void transportUnsafe() { }
     }
 
     private boolean hasProviderGameTransition() {
@@ -4473,13 +4471,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }, "MoonWaker-StopProviderGame").start();
     }
 
-    private void terminateWholeSessionVerified(ProviderStopCallback completion) {
-        terminateWholeSessionVerified(completion, false, false);
+    private void terminateWholeSessionVerified(SessionModel.TerminationCallback completion) {
+        terminateWholeSessionVerified(completion, false);
     }
 
     /** {@code requesterPresentsHome}: the console that asked shows what follows, not Game. */
-    private void terminateWholeSessionVerified(ProviderStopCallback completion,
-            boolean providerAlreadyStopped, boolean requesterPresentsHome) {
+    private void terminateWholeSessionVerified(SessionModel.TerminationCallback completion,
+            boolean requesterPresentsHome) {
         runOnUiThread(() -> {
             if (!wholeSessionTermination.begin()) {
                 if (completion != null) completion.complete(false);
@@ -4514,7 +4512,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
             java.util.function.BiConsumer<SessionModel.DirectTermination, Boolean> terminate =
                     (directTermination, marked) -> runWholeSessionTermination(completion,
-                            providerAlreadyStopped, requesterPresentsHome, privacy,
+                            requesterPresentsHome, privacy,
                             directTermination, marked,
                             expectedSessionId, expectedHostId, expectedAppId, expectedGameId,
                             actorContext, expectedControlGeneration);
@@ -4550,7 +4548,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void runWholeSessionTermination(
-            ProviderStopCallback completion, boolean providerAlreadyStopped,
+            SessionModel.TerminationCallback completion,
             boolean requesterPresentsHome, Runnable privacy,
             SessionModel.DirectTermination directTermination, boolean marked,
             String expectedSessionId, String expectedHostId, int expectedAppId,
@@ -4567,6 +4565,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             String uniqueId = getIntent().getStringExtra(EXTRA_UNIQUEID);
             byte[] certificate = getIntent().getByteArrayExtra(EXTRA_SERVER_CERT);
             WeakReference<Game> activity = new WeakReference<>(this);
+            AtomicBoolean gameLeft = new AtomicBoolean();
             wholeSessionTermination.run(
                     privacy,
                     // Opening Home would clear the requesting console and cancel its request.
@@ -4579,14 +4578,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }),
                     host -> {
                         if (!marked) {
+                            // Uncorrelated or refused: the host stream may still hold its display.
+                            reportGameLeftOnHost(application,
+                                    HostSessionTermination.Outcome.FAILED, completion == null);
                             host.complete(false);
                             return;
                         }
-                        new Thread(() -> host.complete(HostSessionTermination.run(
-                            application, expectedHostId, activeHost, port, httpsPort,
-                            uniqueId, certificate, expectedSessionId, expectedAppId,
-                            expectedGameId, expectedControlGeneration, actorContext,
-                            providerAlreadyStopped).closed()), "MoonWaker-TerminateHost").start();
+                        new Thread(() -> {
+                            HostSessionTermination.Outcome outcome = HostSessionTermination.run(
+                                    application, expectedHostId, activeHost, port, httpsPort,
+                                    uniqueId, certificate, expectedSessionId, expectedAppId,
+                                    expectedGameId, expectedControlGeneration, actorContext);
+                            reportGameLeftOnHost(application, outcome, completion == null);
+                            // A closed stream ends the session. A requesting console learns of a
+                            // game left behind it from gameLeftOnHost, never as success, so a
+                            // left unverified game cannot let a new launch proceed.
+                            gameLeft.set(outcome == HostSessionTermination.Outcome
+                                    .CLOSED_GAME_UNVERIFIED);
+                            host.complete(outcome.streamClosed());
+                        }, "MoonWaker-TerminateHost").start();
                     },
                     success -> {
                         if (completion == null) {
@@ -4594,15 +4604,33 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                     ? new SessionEvent.TransportUnsafe(runtime,
                                     expectedSessionId, expectedHostId, expectedAppId)
                                     : success ? SessionEvent.DirectTerminationCompleted.completed(
-                                    directTermination, true)
+                                    directTermination, true, gameLeft.get())
                                     : SessionEvent.DirectTerminationCompleted.abandoned(
                                     directTermination));
+                        } else if (success && gameLeft.get()) {
+                            completion.gameLeftOnHost();
                         } else {
                             if (!success) completion.transportUnsafe();
                             completion.complete(success);
                         }
                     });
         }
+    }
+
+    /**
+     * The Activity is finishing: tell the user, app-wide, when this Game's own close may have
+     * left the game or stream on the host. A requesting console reports its own result.
+     */
+    private static void reportGameLeftOnHost(Context application,
+                                             HostSessionTermination.Outcome outcome,
+                                             boolean ownClose) {
+        if (!ownClose) return;
+        int message = outcome == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED
+                ? R.string.console_terminate_session_game_left
+                : !outcome.closed() ? R.string.transition_host_session_left_open : 0;
+        if (message == 0) return;
+        new Handler(Looper.getMainLooper()).post(() ->
+                Toast.makeText(application, message, Toast.LENGTH_LONG).show());
     }
 
     private void applyImmediateTerminalPrivacy() {
@@ -5211,8 +5239,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return createTransitionCoordinator(transitionSpec);
     }
 
+    /** A later attempt (switch, retry, observation) is its own request, started now. */
     private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
             LaunchTransitionSpec spec) {
+        return createTransitionCoordinator(spec, SystemClock.uptimeMillis());
+    }
+
+    private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
+            LaunchTransitionSpec spec, long requestStartedAtMillis) {
         PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                 this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST),
                 currentGatewayActorContext());
@@ -5265,7 +5299,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
 
                     @Override public String gameWindowPendingMessage() {
-                        return getString(R.string.transition_waiting_game_window);
+                        return getString(R.string.transition_game_running_waiting_window);
+                    }
+
+                    @Override public String gameExitedDuringStartMessage() {
+                        return getString(R.string.transition_game_exited_during_start);
                     }
 
                     @Override public String gameWindowNotFullscreenMessage() {
@@ -5449,12 +5487,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             if (isFreshOwnedFailureCleanup(transitionId, gameId)) {
                                 LimeLog.info("Fresh neutral cleanup transition=" + transitionId
                                         + " providerStopped=" + success);
-                                if (success) {
-                                    terminateWholeSessionVerified(null, true, false);
-                                } else if (transitionController != null) {
-                                    transitionController.error(transitionId,
-                                            getString(R.string.transition_readiness_unconfirmed));
-                                }
+                                // The host stream always closes. Any game is stopped only when
+                                // the close's own permit verifies it, whatever this cleanup saw.
+                                terminateWholeSessionVerified(null);
                                 return;
                             }
                             RetainedSwitch operation = retainedSwitch;
@@ -5525,7 +5560,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                     R.string.playnite_install_verify_failed));
                         });
                     }
-                }, launchStartedAtMillis);
+                }, requestStartedAtMillis);
     }
 
     private void completeInstallationFailure(
@@ -5618,7 +5653,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 : snapshot.detail,
                         !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             } else {
-                consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
+                String status = transitionStatus(snapshot);
+                // Notice only; Cancel and an available manual reveal stay as they are.
+                if (snapshot.startTakingLonger) {
+                    status += "\n" + getString(R.string.transition_start_taking_longer);
+                }
+                consoleLoadingView.setStep(snapshot.step, status);
                 consoleLoadingView.setManualRevealAvailable(
                         !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             }
@@ -5826,6 +5866,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && transitionSpec.playniteGameId.equalsIgnoreCase(gameId);
     }
 
+    /**
+     * Cancel of a provider launch whose game the host never confirmed ready (unrevealed, or only
+     * manually revealed; also leaving its start error) and whose stream holds a Gateway control
+     * generation: this attempt's cleanup runs first, then the whole host session closes (stream
+     * and virtual display), stopping a game only when the close's permit verifies it, never
+     * only the local transport, which Sunshine would merely pause. Without a generation the
+     * host granted nothing yet, so only the transport closes.
+     */
+    private boolean cancelUnrevealedProviderLaunchWithHostSession() {
+        if (transitionCoordinator == null
+                || !shouldCloseSessionOnStartCancel(transitionCoordinator.startsProviderGame(),
+                streamEverRevealed, transitionController.gameReadyConfirmed())
+                || bindControlGeneration() <= 0L) return false;
+        cancelPendingAutomaticReveal();
+        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+        // Claimed before reading the result: a cleanup completing meanwhile reaches the callback,
+        // and a host-reported failure whose cleanup already ran closes the session now.
+        freshOwnedFailureCleanupInFlight.set(true);
+        if (transitionCoordinator.providerCleanupResult() != null) {
+            terminateWholeSessionVerified(null);
+        } else {
+            transitionCoordinator.cancel();
+        }
+        return true;
+    }
+
+    /** Cancel before the host confirmed the game ready closes the session, even after a manual reveal. */
+    static boolean shouldCloseSessionOnStartCancel(boolean startsProviderGame,
+                                                   boolean streamEverRevealed,
+                                                   boolean gameReadyConfirmed) {
+        return startsProviderGame && (!streamEverRevealed || !gameReadyConfirmed);
+    }
+
     private void cancelPendingAutomaticReveal() {
         if (pendingAutomaticReveal == null) return;
         transitionUiHandler.removeCallbacks(pendingAutomaticReveal);
@@ -5916,6 +5989,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         transitionCancelInFlight = true;
         transitionController.cancel(transitionSpec.id);
+        if (cancelUnrevealedProviderLaunchWithHostSession()) return;
         if (transitionCoordinator != null) transitionCoordinator.cancel();
         cancelPendingAutomaticReveal();
         userInitiatedDisconnect = true;

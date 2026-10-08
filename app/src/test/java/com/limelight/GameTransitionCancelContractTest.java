@@ -89,6 +89,121 @@ public class GameTransitionCancelContractTest {
         assertTrue(method.contains("stopConnection(finishOnce)"));
     }
 
+    @Test public void cancelOfUnrevealedProviderLaunchClosesTheWholeHostSession()
+            throws IOException {
+        String text = source();
+        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
+                text.indexOf("private boolean returnRetainedObservationToDashboard()"));
+        String helper = text.substring(text.indexOf(
+                        "private boolean cancelUnrevealedProviderLaunchWithHostSession()"),
+                text.indexOf("private void cancelPendingAutomaticReveal()"));
+        String host = text.substring(text.indexOf("private void runWholeSessionTermination("),
+                text.indexOf("private void applyImmediateTerminalPrivacy("));
+
+        // Cancel (and Back on the start error) never only drops the transport, which Sunshine
+        // would merely pause with its virtual display left on the host.
+        int whole = cancel.indexOf("if (cancelUnrevealedProviderLaunchWithHostSession()) return;");
+        assertTrue(whole > cancel.indexOf("transitionController.cancel(transitionSpec.id)"));
+        assertTrue(whole < cancel.indexOf("transitionCoordinator.cancel()"));
+        assertTrue(whole < cancel.indexOf("stopConnection(finishOnce)"));
+        assertTrue(helper.contains("shouldCloseSessionOnStartCancel("));
+        assertTrue(helper.contains("transitionController.gameReadyConfirmed()"));
+        // The live transport's generation, not only the one recorded at stage completion.
+        assertTrue(helper.contains("bindControlGeneration() <= 0L"));
+        String bind = text.substring(text.indexOf("private long bindControlGeneration()"),
+                text.indexOf("private void stopConnection()"));
+        assertTrue(bind.contains("runtime.controlGeneration()"));
+        // Claim first, then read: a host failure whose cleanup already ran still closes.
+        assertTrue(helper.indexOf("freshOwnedFailureCleanupInFlight.set(true)")
+                < helper.indexOf("transitionCoordinator.providerCleanupResult()"));
+        // The close always verifies the permit's game itself, whatever the cleanup saw.
+        assertTrue(helper.contains("terminateWholeSessionVerified(null);"));
+        assertTrue(helper.contains("transitionCoordinator.cancel()"));
+        assertFalse(helper.contains("stopGame("));
+        assertTrue(host.indexOf("HostSessionTermination.run(")
+                < host.indexOf("reportGameLeftOnHost(application, outcome, completion == null)"));
+    }
+
+    /**
+     * Cancel during the reveal fade: the controller's revocation renders synchronously on the UI
+     * thread and showOpaque invalidates the fade before provider cleanup starts, so the fade's
+     * completion can never commit the launch and disarm the cleanup that closes the session.
+     */
+    @Test public void cancelDuringRevealFadeInterruptsItBeforeProviderCleanup() throws IOException {
+        String text = source();
+        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
+                text.indexOf("AtomicBoolean finished = new AtomicBoolean();",
+                        text.indexOf("private void cancelTransition()")));
+        String apply = text.substring(text.indexOf("private void applyTransitionSnapshot("),
+                text.indexOf("private static boolean usesClosingPresentation("));
+
+        assertTrue(text.contains("runOnUiThread(() -> applyTransitionSnapshot(snapshot))"));
+        assertTrue(cancel.indexOf("transitionController.cancel(transitionSpec.id)")
+                < cancel.indexOf("cancelUnrevealedProviderLaunchWithHostSession()"));
+        assertTrue(Game.shouldShowTransitionOverlay(true, true, true, false));
+        assertTrue(apply.indexOf("consoleLoadingView.showOpaque()")
+                < apply.indexOf("consoleLoadingView.showCancelling()"));
+
+        Path viewPath = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
+        if (!Files.exists(viewPath)) viewPath = Paths.get("app/" + viewPath);
+        String view = new String(Files.readAllBytes(viewPath), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
+        String opaque = view.substring(view.indexOf("public void showOpaque()"),
+                view.indexOf("public void stopAndHide()"));
+        String reveal = view.substring(view.indexOf("public void revealStream(Runnable"),
+                view.indexOf("public void showOpaque()"));
+        assertTrue(opaque.indexOf("revealGeneration++") < opaque.indexOf("animate().cancel()"));
+        assertTrue(reveal.indexOf("generation != revealGeneration")
+                < reveal.indexOf("afterReveal.run()"));
+    }
+
+    @Test public void startCancelClosesTheSessionUntilTheHostConfirmedTheGameReady() {
+        // Unrevealed, or only manually revealed: the whole session closes.
+        assertTrue(Game.shouldCloseSessionOnStartCancel(true, false, false));
+        assertTrue(Game.shouldCloseSessionOnStartCancel(true, true, false));
+        assertTrue(Game.shouldCloseSessionOnStartCancel(true, false, true));
+        // A revealed, host-confirmed game keeps the ordinary cancel; observations never close.
+        assertFalse(Game.shouldCloseSessionOnStartCancel(true, true, true));
+        assertFalse(Game.shouldCloseSessionOnStartCancel(false, false, false));
+    }
+
+    @Test public void ownCloseReportsEveryHostFailureAndConsoleRequestsKeepTheirOwn()
+            throws IOException {
+        String text = source();
+        String report = text.substring(text.indexOf("private static void reportGameLeftOnHost("),
+                text.indexOf("private void applyImmediateTerminalPrivacy("));
+        assertTrue(report.contains("R.string.console_terminate_session_game_left"));
+        // A requesting console shows the one message for its result; Game adds none.
+        assertTrue(report.indexOf("if (!ownClose) return;")
+                < report.indexOf("R.string.console_terminate_session_game_left"));
+        assertTrue(report.contains("!outcome.closed() ? R.string.transition_host_session_left_open"));
+    }
+
+    @Test public void uncorrelatedOwnCloseStillTellsTheUserTheHostMayBeLeftOpen()
+            throws IOException {
+        String text = source();
+        String host = text.substring(text.indexOf("private void runWholeSessionTermination("),
+                text.indexOf("private static void reportGameLeftOnHost("));
+        String refused = host.substring(host.indexOf("if (!marked) {"),
+                host.indexOf("new Thread(() -> {"));
+        assertTrue(refused.indexOf("reportGameLeftOnHost(application,\n"
+                + "                                    HostSessionTermination.Outcome.FAILED, "
+                + "completion == null);") < refused.indexOf("host.complete(false);"));
+    }
+
+    @Test public void consoleRequestLearnsOfAGameLeftBehindAClosedStream() throws IOException {
+        String text = source();
+        String host = text.substring(text.indexOf("private void runWholeSessionTermination("),
+                text.indexOf("private static void reportGameLeftOnHost("));
+        assertTrue(host.indexOf("gameLeft.set(outcome == HostSessionTermination.Outcome")
+                < host.indexOf("host.complete(outcome.streamClosed());"));
+        assertFalse(host.contains("outcome.closed()"));
+        assertTrue(host.indexOf("} else if (success && gameLeft.get()) {")
+                < host.indexOf("completion.gameLeftOnHost();"));
+        assertTrue(host.indexOf("completion.gameLeftOnHost();")
+                < host.indexOf("if (!success) completion.transportUnsafe();"));
+    }
+
     @Test public void cancelStopsOnlyTheExactObservedProviderProcess() throws IOException {
         String text = source();
         String stop = text.substring(text.indexOf("private void stopProviderGame("),
@@ -140,7 +255,7 @@ public class GameTransitionCancelContractTest {
         assertTrue(host.indexOf("control.acquire(") < host.indexOf("provider.stopEvidenceWithinControl("));
         assertTrue(host.indexOf("provider.stopEvidenceWithinControl(") < host.indexOf("provider.stopGameWithinControl("));
         assertTrue(host.indexOf("provider.stopGameWithinControl(") < host.indexOf("http.quitApp()"));
-        assertTrue(host.contains("provider_game_mismatch"));
+        assertTrue(host.contains("gameLeftUnverified = exact == null;"));
     }
 
     @Test public void liveReconnectWithoutWarmUpRelinquishesOnlyItsOwnMarker()
@@ -176,14 +291,14 @@ public class GameTransitionCancelContractTest {
         assertTrue(helper.contains("Runnable privacy = terminalPrivacyOnce()"));
         assertTrue(helper.contains(
                 "requesterPresentsHome ? () -> { } : this::openTerminalConsoleHome"));
-        assertTrue(helper.contains("terminateWholeSessionVerified(completion, false, false)"));
+        assertTrue(helper.contains("terminateWholeSessionVerified(completion, false)"));
         assertTrue(helper.contains("HostSessionTermination.run("));
         assertFalse(helper.contains("quitApp("));
         // The model runs this for a requesting console; Game must not clear it by opening Home.
         String requested = text.substring(text.indexOf(
                         "public void terminateRetainedSession("),
                 text.indexOf("public void switchGame("));
-        assertTrue(requested.contains("}, false, true);"));
+        assertTrue(requested.contains("terminateWholeSessionVerified(completion, true);"));
         assertFalse(requested.contains("openTerminalConsoleHome"));
         String home = text.substring(text.indexOf("private void openTerminalConsoleHome("),
                 text.indexOf("private void restoreParkedStream("));
@@ -499,11 +614,14 @@ public class GameTransitionCancelContractTest {
         assertTrue(cleanup.contains("freshOwnedFailureCleanupInFlight.compareAndSet(false, true)"));
         assertTrue(callback.indexOf("isFreshOwnedFailureCleanup(")
                 < callback.indexOf("RetainedSwitch operation"));
-        assertTrue(callback.contains("terminateWholeSessionVerified(null, true, false)"));
-        assertTrue(terminate.contains("providerAlreadyStopped"));
+        // A failed or unconfirmed provider cleanup still closes the host stream.
+        String fresh = callback.substring(0, callback.indexOf("RetainedSwitch operation"));
+        assertTrue(fresh.contains("terminateWholeSessionVerified(null);"));
+        assertFalse(fresh.contains("transitionController.error("));
+        assertFalse(text.contains("providerAlreadyStopped"));
         assertTrue(terminate.contains("HostSessionTermination.run("));
         assertTrue(terminate.contains(
-                "terminateWholeSessionVerified(completion, false, false)"));
+                "terminateWholeSessionVerified(completion, false)"));
         assertTrue(terminate.contains(
                 "DirectTerminationCompleted.abandoned"));
         assertTrue(terminate.contains("stopConnectionResult("));

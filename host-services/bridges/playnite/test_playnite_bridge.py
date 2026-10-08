@@ -1495,26 +1495,6 @@ class BridgeStateTest(unittest.TestCase):
             self.assertFalse(self.state.readiness["ready"])
             self.assertEqual(0, self.state.readiness["stable_samples"])
 
-    def test_exited_starting_game_terminalizes_launch(self):
-        with self.state.lock:
-            self.state.current = {
-                "state": "starting", "id": GAME_ID, "processId": 4242,
-            }
-            self.state.readiness = {
-                "ready": False, "reason": "waiting_for_game_window",
-                "target_kind": "game", "stable_samples": 0,
-            }
-
-        self.state.apply_window_sample({
-            "qualified": False, "reason": "game_process_exited",
-            "process_id": 4242,
-        })
-
-        self.assertEqual("failed", self.state.current["state"])
-        self.assertEqual(
-            "game_process_exited_before_window", self.state.readiness["reason"])
-        self.assertEqual("game-launch-failed", self.state.events[-1]["event"])
-
     def test_disappeared_launcher_confirms_action_without_shortening_game_timeout(self):
         self.state.apply_window_sample({
             "qualified": False, "reason": "launcher_action_invoked",
@@ -4271,7 +4251,8 @@ class BridgeStateTest(unittest.TestCase):
         })
 
         self.assertEqual("starting", self.state.current["state"])
-        self.assertEqual("waiting_for_game_window", self.state.readiness["reason"])
+        # No verified game process yet: phase 1 keeps its own reason.
+        self.assertEqual("game_starting", self.state.readiness["reason"])
         self.assertNotIn("launcher-interaction-required", [
             event["event"] for event in self.state.events])
 

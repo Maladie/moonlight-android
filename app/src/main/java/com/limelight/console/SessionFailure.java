@@ -17,6 +17,10 @@ public enum SessionFailure {
     // path=retained-live: the live retained transport reported an unsuccessful termination.
     CLOSE_RETAINED_NOT_CLOSED("close.retained_not_closed",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
+    // path=retained-live or reconnect/direct: the stream closed, but an unverified game may
+    // still run on the host; the replacement must not launch.
+    CLOSE_GAME_LEFT("close.game_left",
+            R.string.applist_quit_fail, R.string.console_terminate_session_game_left),
     // path=retained-live: the coordinator refused to start the termination.
     CLOSE_RETAINED_TERMINATION_UNAVAILABLE("close.retained_termination_unavailable",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),

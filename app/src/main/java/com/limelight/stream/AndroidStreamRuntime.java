@@ -237,20 +237,31 @@ public final class AndroidStreamRuntime {
                     ? PlayniteTransitionGateway.ActorContext.child(
                     session.profileId, session.executionProfileId)
                     : PlayniteTransitionGateway.ActorContext.parent(session.profileId);
+            java.util.concurrent.atomic.AtomicBoolean gameLeft =
+                    new java.util.concurrent.atomic.AtomicBoolean();
             WholeSessionTermination.start(() -> { }, () -> { },
                     local -> runtime.stop(result -> local.complete(
                             result == TransportStopCoordinator.Result.STOPPED)),
-                    host -> new Thread(() -> host.complete(HostSessionTermination.run(
-                            app, session.hostId, record.getStringExtra(Game.EXTRA_HOST),
-                            record.getIntExtra(Game.EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
-                            record.getIntExtra(Game.EXTRA_HTTPS_PORT, 0),
-                            record.getStringExtra(Game.EXTRA_UNIQUEID),
-                            record.getByteArrayExtra(Game.EXTRA_SERVER_CERT),
-                            session.streamSessionId, session.appId, session.playniteGameId,
-                            session.controlGeneration, actor, false).closed()),
-                            "MoonWaker-TerminateHeadless").start(),
+                    host -> new Thread(() -> {
+                        HostSessionTermination.Outcome outcome = HostSessionTermination.run(
+                                app, session.hostId, record.getStringExtra(Game.EXTRA_HOST),
+                                record.getIntExtra(Game.EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
+                                record.getIntExtra(Game.EXTRA_HTTPS_PORT, 0),
+                                record.getStringExtra(Game.EXTRA_UNIQUEID),
+                                record.getByteArrayExtra(Game.EXTRA_SERVER_CERT),
+                                session.streamSessionId, session.appId, session.playniteGameId,
+                                session.controlGeneration, actor);
+                        // A closed stream ends the session; a game left behind it is reported.
+                        gameLeft.set(outcome
+                                == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED);
+                        host.complete(outcome.streamClosed());
+                    }, "MoonWaker-TerminateHeadless").start(),
                     success -> {
                         if (completion == null) return;
+                        if (success && gameLeft.get()) {
+                            completion.gameLeftOnHost();
+                            return;
+                        }
                         if (!success) completion.transportUnsafe();
                         completion.complete(success);
                     });

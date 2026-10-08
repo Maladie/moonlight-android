@@ -194,6 +194,24 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void cancelDuringRevealRevokesItAndALateRevealCompletionCannotHideTheOverlay() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST, LaunchTransitionType.GAME, GAME);
+        controller.videoFrameRendered("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
+
+        controller.cancel("transition-1");
+        controller.revealCompleted("transition-1");
+
+        assertEquals(LaunchTransitionState.CANCELLED, controller.snapshot().state);
+        assertFalse(controller.snapshot().revealAuthorized);
+        assertTrue(controller.snapshot().overlayVisible);
+        assertTrue(controller.snapshot().inputBlocked);
+    }
+
+    @Test
     public void staleTransitionAndWrongHostAreIgnored() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         transportReady(controller);
@@ -550,5 +568,63 @@ public class LaunchTransitionControllerTest {
         assertTrue(failed.overlayVisible);
         assertTrue(failed.inputBlocked);
         assertEquals("stop failed", failed.detail);
+    }
+
+    @Test
+    public void startTakingLongerIsANoticeForTheExactPendingStartOnly() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        assertEquals(LaunchTransitionState.GAME_START_REQUESTED, controller.snapshot().state);
+
+        controller.startTakingLonger("stale-transition");
+        assertFalse(controller.snapshot().startTakingLonger);
+
+        controller.startTakingLonger("transition-1");
+        LaunchTransitionSnapshot slow = controller.snapshot();
+        assertTrue(slow.startTakingLonger);
+        assertEquals(LaunchTransitionState.GAME_START_REQUESTED, slow.state);
+        assertTrue(slow.overlayVisible);
+        assertFalse(slow.uncertain);
+        // The manual reveal of a confirmed stream is unchanged by the notice.
+        assertTrue(slow.manualRevealAvailable);
+
+        controller.targetProcessRunning("transition-1", HOST, LaunchTransitionType.GAME, GAME);
+        assertTrue(controller.snapshot().startTakingLonger);
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST, LaunchTransitionType.GAME, GAME);
+        assertFalse(controller.snapshot().startTakingLonger);
+
+        controller.begin(spec(LaunchTransitionType.GAME));
+        assertFalse(controller.snapshot().startTakingLonger);
+    }
+
+    @Test
+    public void windowLossOfARunningGameIsNotASlowStart() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        assertFalse(controller.gameReadyConfirmed());
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST, LaunchTransitionType.GAME, GAME);
+        assertTrue(controller.gameReadyConfirmed());
+
+        controller.targetWindowLost("transition-1", HOST, LaunchTransitionType.GAME, GAME,
+                "target_not_foreground");
+        assertEquals(LaunchTransitionState.GAME_WINDOW_STABILIZING, controller.snapshot().state);
+        controller.startTakingLonger("transition-1");
+        assertFalse(controller.snapshot().startTakingLonger);
+        assertTrue(controller.gameReadyConfirmed());
+
+        controller.begin(spec(LaunchTransitionType.GAME));
+        assertFalse(controller.gameReadyConfirmed());
+    }
+
+    @Test
+    public void manualRevealDoesNotConfirmTheGameReady() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+        controller.showStreamAnyway("transition-1");
+        controller.revealCompleted("transition-1");
+        assertFalse(controller.gameReadyConfirmed());
     }
 }

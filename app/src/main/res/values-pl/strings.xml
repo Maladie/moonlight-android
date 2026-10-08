@@ -1078,11 +1078,12 @@
     <string name="transition_starting_playnite">Stream gotowy — uruchamianie Playnite</string>
     <string name="transition_checking_game_launch_service">Sprawdzanie usługi uruchamiania gier</string>
     <string name="transition_waiting_fullscreen">Playnite działa — oczekiwanie na jego okno</string>
-    <string name="transition_starting_game">Stream gotowy — uruchamianie gry</string>
+    <string name="transition_starting_game">Uruchamianie gry…</string>
     <string name="transition_verifying_readiness">Gra działa — oczekiwanie na jej okno</string>
-    <string name="transition_game_running_waiting_window">Gra działa — oczekiwanie na jej okno</string>
+    <string name="transition_game_running_waiting_window">Gra uruchomiona — czekam na okno gry</string>
+    <string name="transition_start_taking_longer">Uruchamianie trwa dłużej niż zwykle</string>
+    <string name="transition_game_exited_during_start">Gra zamknęła się podczas uruchamiania</string>
     <string name="transition_waiting_game_identity">Playnite zgłosił uruchomienie gry — oczekiwanie na dane procesu</string>
-    <string name="transition_waiting_game_window">Gra działa — jej okno nie zostało jeszcze znalezione</string>
     <string name="transition_game_window_not_fullscreen">Okno gry nie jest pełnoekranowe</string>
     <string name="transition_game_window_not_foreground">Okno gry nie jest aktywne</string>
     <string name="transition_window_ready_waiting_frame">Okno gotowe — oczekiwanie na świeży obraz</string>
@@ -1120,6 +1121,8 @@
     <string name="console_terminate_session_success">Sesja została zamknięta.</string>
     <string name="console_terminate_session_failed">Host nie zamknął sesji. Spróbuj ponownie.</string>
     <string name="console_terminate_session_game_unverified">Nie udało się potwierdzić gry na hoście. Spróbuj ponownie.</string>
+    <string name="console_terminate_session_game_left">Stream zamknięty. Nie udało się potwierdzić gry — mogła zostać uruchomiona na hoście.</string>
+    <string name="transition_host_session_left_open">Nie udało się zamknąć sesji na hoście — gra i stream mogły na nim zostać.</string>
     <string name="console_terminate_session_other_stream">Na hoście działa stream spoza MoonWakera. Zamknij go na hoście.</string>
     <string name="console_close_session">Zamknij sesję</string>
     <string name="console_replace_session_title">Zastąpić bieżącą sesję?</string>

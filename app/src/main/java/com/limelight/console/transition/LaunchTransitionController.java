@@ -35,6 +35,9 @@ public final class LaunchTransitionController {
     private boolean targetWindowReady;
     private boolean streamWasRevealedBeforeClosing;
     private boolean uncertain;
+    private boolean startTakingLonger;
+    /** The host reported this attempt's game window ready at least once: its start finished. */
+    private boolean gameReadyConfirmed;
     private LaunchTransitionState terminalFailureState;
     private String detail = "";
     private String diagnosticSignature = "";
@@ -70,9 +73,35 @@ public final class LaunchTransitionController {
         targetProcessRunning = targetAlreadyRunning;
         targetWindowReady = targetAlreadyRunning;
         uncertain = false;
+        startTakingLonger = false;
+        gameReadyConfirmed = false;
         terminalFailureState = null;
         detail = "";
         return publish();
+    }
+
+    /**
+     * The exact game start is still not ready past the local soft threshold. Only adds a notice:
+     * readiness, reveal and failure stay with the host observation and the privacy gate. A game
+     * whose window was once ready is running; a later window loss is not a slow start.
+     */
+    public synchronized void startTakingLonger(String transitionId) {
+        if (!accept(transitionId, null) || startTakingLonger || gameReadyConfirmed
+                || !isGameStartPending(state)) return;
+        startTakingLonger = true;
+        publish();
+    }
+
+    /** The host confirmed this attempt's game ready once; a manual reveal does not count. */
+    public synchronized boolean gameReadyConfirmed() {
+        return gameReadyConfirmed;
+    }
+
+    public static boolean isGameStartPending(LaunchTransitionState state) {
+        return state == LaunchTransitionState.GAME_START_REQUESTED
+                || state == LaunchTransitionState.GAME_STARTING
+                || state == LaunchTransitionState.GAME_PROCESS_RUNNING
+                || state == LaunchTransitionState.GAME_WINDOW_STABILIZING;
     }
 
     public synchronized void overlayRendered(String transitionId) {
@@ -195,6 +224,8 @@ public final class LaunchTransitionController {
         boolean newlyReady = !targetWindowReady;
         targetWindowReady = true;
         targetProcessRunning = true;
+        startTakingLonger = false;
+        if (kind == LaunchTransitionType.GAME) gameReadyConfirmed = true;
         // A frame rendered before the target window became ready can still contain
         // the desktop or a launcher. Require one frame produced after this exact
         // readiness edge before the privacy overlay may be removed.
@@ -535,7 +566,8 @@ public final class LaunchTransitionController {
     private LaunchTransitionSnapshot snapshotValue() {
         return new LaunchTransitionSnapshot(spec, state, activeStep,
                 overlayVisible, inputBlocked, operationAuthorized, revealAuthorized,
-                manualRevealAvailable, uncertain, detail);
+                manualRevealAvailable, uncertain, detail,
+                startTakingLonger && isGameStartPending(state));
     }
 
     static int stepForState(LaunchTransitionState state) {
