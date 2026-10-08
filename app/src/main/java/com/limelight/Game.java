@@ -4621,7 +4621,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
      * The Activity is finishing: tell the user, app-wide, when this Game's own close may have
      * left the game or stream on the host. A requesting console reports its own result.
      */
-    private static void reportGameLeftOnHost(Context application,
+    public static void reportGameLeftOnHost(Context application,
                                              HostSessionTermination.Outcome outcome,
                                              boolean ownClose) {
         if (!ownClose) return;
@@ -5871,14 +5871,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
      * manually revealed; also leaving its start error) and whose stream holds a Gateway control
      * generation: this attempt's cleanup runs first, then the whole host session closes (stream
      * and virtual display), stopping a game only when the close's permit verifies it, never
-     * only the local transport, which Sunshine would merely pause. Without a generation the
-     * host granted nothing yet, so only the transport closes.
+     * only the local transport, which Sunshine would merely pause. Without a generation only
+     * the transport closes here; the launch it abandons is closed by its StreamRuntime
+     * (StreamRuntime#abandonLaunch) whenever the host grants it.
      */
-    private boolean cancelUnrevealedProviderLaunchWithHostSession() {
+    private boolean cancelUnrevealedProviderLaunchWithHostSession(long controlGeneration) {
         if (transitionCoordinator == null
                 || !shouldCloseSessionOnStartCancel(transitionCoordinator.startsProviderGame(),
                 streamEverRevealed, transitionController.gameReadyConfirmed())
-                || bindControlGeneration() <= 0L) return false;
+                || controlGeneration <= 0L) return false;
         cancelPendingAutomaticReveal();
         if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
         // Claimed before reading the result: a cleanup completing meanwhile reaches the callback,
@@ -5989,7 +5990,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         transitionCancelInFlight = true;
         transitionController.cancel(transitionSpec.id);
-        if (cancelUnrevealedProviderLaunchWithHostSession()) return;
+        // One read decides: a generation granted after it is the abandoned launch's to close.
+        long controlGeneration = bindControlGeneration();
+        if (cancelUnrevealedProviderLaunchWithHostSession(controlGeneration)) return;
         if (transitionCoordinator != null) transitionCoordinator.cancel();
         cancelPendingAutomaticReveal();
         userInitiatedDisconnect = true;
@@ -6010,7 +6013,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             if (finished.compareAndSet(false, true)) finish();
         };
         transitionUiHandler.postDelayed(finishOnce, 5_000L);
+        StreamRuntime cancelled = runtime;
         stopConnection(finishOnce);
+        if (controlGeneration <= 0L && cancelled != null) cancelled.abandonLaunch();
     }
 
     private boolean returnRetainedObservationToDashboard() {

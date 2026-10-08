@@ -138,6 +138,25 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void runningGameBeforeItsProcessTokenIsPhaseTwo() {
+        // The provider runs the game (window-correlated process) while the tokenizing process
+        // scan still lags: the observation carries no verified process yet.
+        Harness harness = new Harness(LaunchTransitionType.GAME, gatewayWith(
+                snapshot(true, true, "starting", GAME, 0, false, "game", 0, "game_starting"),
+                snapshot(true, true, "running", GAME, 0, false, "game", 0,
+                        "waiting_for_game_window")));
+        harness.controller.streamConnected("transition-1");
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
+                harness.controller.snapshot().state);
+        assertEquals("waiting for game window", harness.controller.snapshot().detail);
+        assertFalse(harness.controller.snapshot().revealAuthorized);
+        assertTrue(harness.controller.snapshot().inputBlocked);
+    }
+
+    @Test
     public void slowStartShowsNoticeAfterThreeMinutesButNeverFails() {
         PlayniteTransitionGateway.Snapshot phaseOne = snapshot(true, true, "starting", GAME, 0,
                 false, "game", 0, "game_starting");
@@ -455,8 +474,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 gatewayWith(snapshot(true, true, "running", GAME, 0,
                         false, "game", 0, "waiting_for_game_identity")));
         identity.runObservation();
-        assertEquals(LaunchTransitionState.CONNECTING_STREAM,
+        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
                 identity.controller.snapshot().state);
+        assertEquals("waiting for process details", identity.controller.snapshot().detail);
         assertTrue(identity.controller.snapshot().inputBlocked);
 
         Harness fullscreen = new Harness(LaunchTransitionType.GAME,

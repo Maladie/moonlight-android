@@ -95,21 +95,27 @@ public class GameTransitionCancelContractTest {
         String cancel = text.substring(text.indexOf("private void cancelTransition()"),
                 text.indexOf("private boolean returnRetainedObservationToDashboard()"));
         String helper = text.substring(text.indexOf(
-                        "private boolean cancelUnrevealedProviderLaunchWithHostSession()"),
+                        "private boolean cancelUnrevealedProviderLaunchWithHostSession("),
                 text.indexOf("private void cancelPendingAutomaticReveal()"));
         String host = text.substring(text.indexOf("private void runWholeSessionTermination("),
                 text.indexOf("private void applyImmediateTerminalPrivacy("));
 
         // Cancel (and Back on the start error) never only drops the transport, which Sunshine
         // would merely pause with its virtual display left on the host.
-        int whole = cancel.indexOf("if (cancelUnrevealedProviderLaunchWithHostSession()) return;");
+        int whole = cancel.indexOf(
+                "if (cancelUnrevealedProviderLaunchWithHostSession(controlGeneration)) return;");
         assertTrue(whole > cancel.indexOf("transitionController.cancel(transitionSpec.id)"));
         assertTrue(whole < cancel.indexOf("transitionCoordinator.cancel()"));
         assertTrue(whole < cancel.indexOf("stopConnection(finishOnce)"));
         assertTrue(helper.contains("shouldCloseSessionOnStartCancel("));
         assertTrue(helper.contains("transitionController.gameReadyConfirmed()"));
-        // The live transport's generation, not only the one recorded at stage completion.
-        assertTrue(helper.contains("bindControlGeneration() <= 0L"));
+        // The live transport's generation, not only the one recorded at stage completion, read
+        // once: a grant arriving after that read is the abandoned launch's, closed by its runtime
+        // after the stop (so a grant racing the stop through the live path is closed too).
+        assertTrue(cancel.indexOf("long controlGeneration = bindControlGeneration();") < whole);
+        assertTrue(helper.contains("controlGeneration <= 0L"));
+        assertTrue(cancel.indexOf("stopConnection(finishOnce)") < cancel.indexOf(
+                "if (controlGeneration <= 0L && cancelled != null) cancelled.abandonLaunch();"));
         String bind = text.substring(text.indexOf("private long bindControlGeneration()"),
                 text.indexOf("private void stopConnection()"));
         assertTrue(bind.contains("runtime.controlGeneration()"));
@@ -139,7 +145,7 @@ public class GameTransitionCancelContractTest {
 
         assertTrue(text.contains("runOnUiThread(() -> applyTransitionSnapshot(snapshot))"));
         assertTrue(cancel.indexOf("transitionController.cancel(transitionSpec.id)")
-                < cancel.indexOf("cancelUnrevealedProviderLaunchWithHostSession()"));
+                < cancel.indexOf("cancelUnrevealedProviderLaunchWithHostSession("));
         assertTrue(Game.shouldShowTransitionOverlay(true, true, true, false));
         assertTrue(apply.indexOf("consoleLoadingView.showOpaque()")
                 < apply.indexOf("consoleLoadingView.showCancelling()"));
@@ -170,7 +176,7 @@ public class GameTransitionCancelContractTest {
     @Test public void ownCloseReportsEveryHostFailureAndConsoleRequestsKeepTheirOwn()
             throws IOException {
         String text = source();
-        String report = text.substring(text.indexOf("private static void reportGameLeftOnHost("),
+        String report = text.substring(text.indexOf("public static void reportGameLeftOnHost("),
                 text.indexOf("private void applyImmediateTerminalPrivacy("));
         assertTrue(report.contains("R.string.console_terminate_session_game_left"));
         // A requesting console shows the one message for its result; Game adds none.
@@ -183,7 +189,7 @@ public class GameTransitionCancelContractTest {
             throws IOException {
         String text = source();
         String host = text.substring(text.indexOf("private void runWholeSessionTermination("),
-                text.indexOf("private static void reportGameLeftOnHost("));
+                text.indexOf("public static void reportGameLeftOnHost("));
         String refused = host.substring(host.indexOf("if (!marked) {"),
                 host.indexOf("new Thread(() -> {"));
         assertTrue(refused.indexOf("reportGameLeftOnHost(application,\n"
@@ -194,7 +200,7 @@ public class GameTransitionCancelContractTest {
     @Test public void consoleRequestLearnsOfAGameLeftBehindAClosedStream() throws IOException {
         String text = source();
         String host = text.substring(text.indexOf("private void runWholeSessionTermination("),
-                text.indexOf("private static void reportGameLeftOnHost("));
+                text.indexOf("public static void reportGameLeftOnHost("));
         assertTrue(host.indexOf("gameLeft.set(outcome == HostSessionTermination.Outcome")
                 < host.indexOf("host.complete(outcome.streamClosed());"));
         assertFalse(host.contains("outcome.closed()"));

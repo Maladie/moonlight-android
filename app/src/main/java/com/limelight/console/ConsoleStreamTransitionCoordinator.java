@@ -907,8 +907,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 == LaunchTransitionState.GAME_RUNNING;
         boolean gameReportedRunning = kind == LaunchTransitionType.GAME
                 && "running".equalsIgnoreCase(snapshot.gameState);
-        if (snapshot.hasVerifiedProcessFor(gameId) || gameReportedRunning
-                && snapshot.processId > 0) {
+        // Phase 2 starts once the host has the game's process: a verified token, or the provider
+        // already running this exact game (its window probe correlated the process, while the
+        // tokenizing process scan may lag it by seconds). Readiness still needs both verified.
+        if (snapshot.hasVerifiedProcessFor(gameId) || gameReportedRunning) {
             transitionController.targetProcessRunning(
                     transitionSpec.id, transitionSpec.hostId, kind, gameId,
                     snapshot.windowReady ? "" : readinessPendingMessage(snapshot.reason));

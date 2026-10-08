@@ -55,6 +55,7 @@ public class NvConnection implements StreamInput {
     private final ControlBinding controlBinding;
     private final String controlBootstrapOperationId = "control-" + UUID.randomUUID();
     private volatile long controlGeneration;
+    private final NativeStartGate startGate = new NativeStartGate(connectionAllowed);
 
     public static final class ControlBinding {
         final ControlOperationClient client;
@@ -142,10 +143,9 @@ public class NvConnection implements StreamInput {
         synchronized (MoonBridge.class) {
             MoonBridge.stopConnection();
             MoonBridge.cleanupBridge();
+            // Now a pending connection can be processed
+            startGate.stopped();
         }
-
-        // Now a pending connection can be processed
-        connectionAllowed.release();
     }
 
     private InetAddress resolveServerAddress() throws IOException {
@@ -546,7 +546,7 @@ public class NvConnection implements StreamInput {
                 // Acquire the connection semaphore to ensure we only have one
                 // connection going at once.
                 try {
-                    connectionAllowed.acquire();
+                    startGate.acquire();
                 } catch (InterruptedException e) {
                     context.connListener.displayMessage(e.getMessage());
                     context.connListener.stageFailed(appName, 0, 0);
@@ -556,6 +556,9 @@ public class NvConnection implements StreamInput {
                 // Moonlight-core is not thread-safe with respect to connection start and stop, so
                 // we must not invoke that functionality in parallel.
                 synchronized (MoonBridge.class) {
+                    // Stopped while the app launched: the listener already learned the control
+                    // generation from stageComplete and owns the host stream's close.
+                    if (!startGate.tryBegin()) return;
                     MoonBridge.setupBridge(videoDecoderRenderer, audioRenderer, connectionListener);
                     int ret = MoonBridge.startConnection(context.serverAddress.address,
                             context.serverAppVersion, context.serverGfeVersion, context.rtspSessionUrl,
@@ -574,7 +577,7 @@ public class NvConnection implements StreamInput {
                         // LiStartConnection() failed, so the caller is not expected
                         // to stop the connection themselves. We need to release their
                         // semaphore count for them.
-                        connectionAllowed.release();
+                        startGate.startFailed();
                         return;
                     }
                 }

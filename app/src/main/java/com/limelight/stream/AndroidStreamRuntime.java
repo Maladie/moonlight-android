@@ -267,6 +267,30 @@ public final class AndroidStreamRuntime {
                     });
         }
 
+        @Override public void closeAbandonedLaunch(String streamSessionId,
+                                                   String executionProfileId,
+                                                   long controlGeneration) {
+            Intent record = launchIntent();
+            String profileId = com.limelight.gateway.GatewayConnection.normalizeProfileId(
+                    record.getStringExtra(Game.EXTRA_PROFILE_ID));
+            PlayniteTransitionGateway.ActorContext actor =
+                    record.getBooleanExtra(Game.EXTRA_CHILD_PROFILE, false)
+                    ? PlayniteTransitionGateway.ActorContext.child(profileId, executionProfileId)
+                    : PlayniteTransitionGateway.ActorContext.parent(profileId);
+            new Thread(() -> Game.reportGameLeftOnHost(app, HostSessionTermination.run(
+                    app, record.getStringExtra(Game.EXTRA_PC_UUID),
+                    record.getStringExtra(Game.EXTRA_HOST),
+                    record.getIntExtra(Game.EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
+                    record.getIntExtra(Game.EXTRA_HTTPS_PORT, 0),
+                    record.getStringExtra(Game.EXTRA_UNIQUEID),
+                    record.getByteArrayExtra(Game.EXTRA_SERVER_CERT),
+                    // No game id: this attempt has no verified game identity, so the close stops
+                    // no game; one still running reports CLOSED_GAME_UNVERIFIED, told to the user.
+                    streamSessionId, record.getIntExtra(Game.EXTRA_APP_ID, 0), "",
+                    controlGeneration, actor), true),
+                    "MoonWaker-CloseAbandonedLaunch").start();
+        }
+
         @Override public void runtimeEnded() {
             com.limelight.console.ConsoleStreamTransitionCoordinator.endDetachedOwner(
                     launchIntent().getStringExtra(Game.EXTRA_PC_UUID));
