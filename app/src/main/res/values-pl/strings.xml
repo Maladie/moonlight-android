@@ -1158,7 +1158,7 @@
     <string name="transition_host_session_locked_title">Sesja Windows jest zablokowana</string>
     <string name="transition_host_session_locked">Sesja Windows na hoście jest zablokowana. Wybierz „Odsłoń teraz”, aby odblokować ją na ekranie. Aby odblokowanie działało automatycznie, sprawdź zapisane dane logowania i uprawnienie tego urządzenia do zdalnego logowania w Host Control.</string>
     <string name="transition_stream_display_not_configured">Wyświetlacz streamowany przez host nie jest skonfigurowany</string>
-    <string name="transition_target_wrong_display">Gra przeniosła się poza streamowany wyświetlacz. Przywracanie właściwego ekranu…</string>
+    <string name="transition_target_wrong_display">Okno gry jest poza streamowanym ekranem. Obraz pozostaje ukryty.</string>
     <string name="console_provider_stop_waiting_for_process">Gra nadal się uruchamia i nie ma jeszcze procesu, który można zamknąć. Poczekaj chwilę i spróbuj ponownie.</string>
     <string name="transition_step_pending">○  %1$s — oczekuje</string>
     <string name="transition_step_active">●  %1$s — aktywny</string>

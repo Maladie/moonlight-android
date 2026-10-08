@@ -1246,7 +1246,7 @@
     <string name="transition_host_session_locked_title">Windows session locked</string>
     <string name="transition_host_session_locked">The Windows session on the host is locked. Choose Reveal now to unlock it on screen. For automatic unlocking, check the saved credentials and this device\'s remote sign-in permission in Host Control.</string>
     <string name="transition_stream_display_not_configured">The streamed display is not configured on the host</string>
-    <string name="transition_target_wrong_display">The game moved outside the streamed display. Restoring the correct display…</string>
+    <string name="transition_target_wrong_display">The game window is outside the streamed display. The picture stays hidden.</string>
     <string name="console_provider_stop_waiting_for_process">The game is still starting and has no process that can be closed yet. Wait a moment and try again.</string>
     <string name="transition_step_pending">○  %1$s — pending</string>
     <string name="transition_step_active">●  %1$s — active</string>

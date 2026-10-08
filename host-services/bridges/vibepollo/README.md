@@ -35,6 +35,9 @@ each concurrently installed instance a distinct loopback port. Never commit
 `api_token.dpapi`, `config.json`, logs or exported diagnostics.
 
 `GET /diagnostics/active-displays` returns fresh local display enumeration only.
+Each display carries `stream_virtual_display`, true when its adapter is one of
+the virtual display drivers Vibepollo ships (`Root\SunshineVirtualDisplay`,
+`root\sudomaker\sudovda`).
 The Game Provider readiness poll uses this bounded endpoint; the richer
 `/diagnostics/stream-sources` endpoint remains available for diagnostics and
 may perform authenticated Vibepollo API calls.

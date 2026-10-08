@@ -255,11 +255,6 @@ DIAGNOSTICS = ProviderDiagnostics()
 
 
 class StreamDisplayResolver:
-    DISPLAY_KEYS = {
-        "display", "display_name", "displayname", "monitor", "monitor_name",
-        "output", "output_name", "outputname", "output_name_override",
-    }
-
     def __init__(self, vibepollo_bridge: str) -> None:
         self.endpoint = vibepollo_bridge.rstrip("/") + "/diagnostics/active-displays" \
             if vibepollo_bridge else ""
@@ -276,23 +271,14 @@ class StreamDisplayResolver:
         return text.upper()
 
     @classmethod
-    def displays_from_payload(cls, payload: Any) -> list[str]:
-        found: set[str] = set()
-
-        def visit(value: Any, key: str = "") -> None:
-            if isinstance(value, dict):
-                for child_key, child in value.items():
-                    visit(child, str(child_key).casefold())
-            elif isinstance(value, list):
-                for child in value:
-                    visit(child, key)
-            elif key in cls.DISPLAY_KEYS:
-                normalized = cls._normalize(value)
-                if normalized:
-                    found.add(normalized)
-
-        visit(payload)
-        return sorted(found)
+    def stream_display_from_payload(cls, payload: Any) -> str:
+        """The single active display the Vibepollo Bridge marks as its stream's
+        virtual display; "" when there is none or more than one."""
+        displays = ((payload or {}).get("value") or {}).get("displays") or []
+        found = {cls._normalize(item.get("display_name")) for item in displays
+                 if isinstance(item, dict) and item.get("stream_virtual_display") is True}
+        found.discard("")
+        return found.pop() if len(found) == 1 else ""
 
     def resolve(self) -> str:
         now = time.monotonic()
@@ -302,8 +288,7 @@ class StreamDisplayResolver:
         try:
             with urllib.request.urlopen(self.endpoint, timeout=0.75) as response:
                 payload = json.loads(response.read(256 * 1024).decode("utf-8-sig"))
-            displays = self.displays_from_payload(payload)
-            self.cached = displays[0] if len(displays) == 1 else ""
+            self.cached = self.stream_display_from_payload(payload)
         except Exception:
             pass
         return self.cached

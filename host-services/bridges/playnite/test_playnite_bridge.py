@@ -3947,32 +3947,35 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.readiness["ready"])
         self.assertEqual("game_focus_requested", self.state.readiness["reason"])
 
-    def test_stream_display_is_resolved_only_from_named_fields(self):
-        payload = {
-            "sources": {
-                "session": {"value": {"display_name": "DISPLAY15"}},
-                "clients": {"value": {"name": "DISPLAY99", "output_name_override": ""}},
-            }
-        }
-        self.assertEqual(
-            [r"\\.\DISPLAY15"], StreamDisplayResolver.displays_from_payload(payload))
-
     def test_stream_display_resolver_uses_active_displays_endpoint(self):
         resolver = StreamDisplayResolver("http://127.0.0.1:47990/")
         self.assertEqual(
             "http://127.0.0.1:47990/diagnostics/active-displays", resolver.endpoint)
 
-    def test_stream_display_resolver_accepts_one_display_and_rejects_ambiguous_payload(self):
+    def test_stream_display_resolver_selects_only_the_single_stream_virtual_display(self):
+        def display(name, virtual, primary=False):
+            # Shape emitted by VibepolloBridge.ps1 Get-ActiveDisplayDiagnostics.
+            return {"display_name": "\\\\.\\" + name, "primary": primary,
+                    "stream_virtual_display": virtual,
+                    "bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080}}
+
+        def active(*displays):
+            return {"ok": True, "source": "Win32.EnumDisplayMonitors",
+                    "value": {"displays": list(displays)}}
+
         resolver = StreamDisplayResolver("http://127.0.0.1:47990")
         response = mock.MagicMock()
         response.__enter__.return_value = response
         payloads = [
-            ({"ok": True, "value": {"displays": [
-                {"display_name": "DISPLAY15", "bounds": {"width": 1920}}
-            ]}}, r"\\.\DISPLAY15"),
-            ({"ok": True, "value": {"displays": [
-                {"display_name": "DISPLAY15"}, {"display_name": "DISPLAY16"}
-            ]}}, ""),
+            # Failed topology APPLY: two physical outputs stay active beside the stream.
+            (active(display("DISPLAY1", False), display("DISPLAY2", False, True),
+                    display("DISPLAY15", True)), r"\\.\DISPLAY15"),
+            (active(display("DISPLAY1", False), display("DISPLAY2", False, True)), ""),
+            (active(display("DISPLAY15", True), display("DISPLAY16", True)), ""),
+            # No stream: a lone physical display is not the streamed display.
+            (active(display("DISPLAY2", False, True)), ""),
+            # Only the explicit boolean marks a stream display.
+            (active(display("DISPLAY15", "true")), ""),
         ]
         with mock.patch.object(GameProviderBridge.urllib.request, "urlopen",
                                return_value=response) as urlopen:
@@ -3980,7 +3983,7 @@ class BridgeStateTest(unittest.TestCase):
                 resolver.last_check = 0.0
                 response.read.return_value = json.dumps(payload).encode("utf-8")
                 self.assertEqual(expected, resolver.resolve())
-            self.assertEqual(2, urlopen.call_count)
+            self.assertEqual(len(payloads), urlopen.call_count)
             self.assertTrue(all(call.args[0] == resolver.endpoint for call in urlopen.call_args_list))
 
     def test_connector_patch_is_guarded_and_idempotent(self):
