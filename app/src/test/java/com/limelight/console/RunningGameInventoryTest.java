@@ -15,7 +15,8 @@ public class RunningGameInventoryTest {
     @Test public void activityUsesOnlyThePublishedSessionProjection() throws Exception {
         String source = source("src/main/java/com/limelight/console/ConsoleActivity.java",
                 "app/src/main/java/com/limelight/console/ConsoleActivity.java");
-        assertTrue(source.contains("Map<String, SessionSnapshot> publishedSessionSnapshots"));
+        // The projection owner publishes; the Activity keeps no copy of it.
+        assertFalse(source.contains("publishedSessionSnapshots"));
         assertTrue(source.contains("gateway.snapshot().sessionSnapshot"));
         assertFalse(source.contains("getPlayniteCurrentGame("));
         assertFalse(source.contains("RunningGameObservation"));

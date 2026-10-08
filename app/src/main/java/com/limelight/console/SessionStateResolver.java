@@ -38,6 +38,12 @@ final class SessionStateResolver {
         return owner;
     }
 
+    /** A forgotten host keeps no projection owner (nor its close or observation state). */
+    static synchronized void forgetHost(String hostId) {
+        String normalized = SessionSnapshot.normalize(hostId);
+        OWNERS.values().removeIf(owner -> owner.hostId.equals(normalized));
+    }
+
     static synchronized void resetProjectionOwnersForTests() {
         OWNERS.clear();
         diagnosticSink = MoonWakerDiagnostics::record;
@@ -192,6 +198,15 @@ final class SessionStateResolver {
         /** A local close finished: arm the bounded closing window at the next projection. */
         private boolean closingConfirmationArmed;
         private long closingConfirmationUntilMs;
+        /**
+         * A host-API close or a game stop; 0 when none runs. It counts for at most
+         * {@link #CLOSING_CONFIRMATION_MS} from its start, so a close whose task never finished
+         * cannot hold the host closing.
+         */
+        private long localCloseToken;
+        private long nextLocalCloseToken;
+        private long localCloseStartedAtMs;
+        private boolean localCloseEndsGame;
         private String producerBootId = "";
         private long producerRevision;
         private HostGatewayClient.SessionObservation observation;
@@ -345,6 +360,34 @@ final class SessionStateResolver {
             return retained == null ? null : model.snapshot();
         }
 
+        /**
+         * A close the client runs through the host API (no retained transport owns it), or a
+         * game stop ({@code endsGame}): until {@link #finishLocalClose} (or the bound passes) the
+         * session reads as closing; a game stop beside a live matching stream reads as ending
+         * the game instead and keeps the stream. Returns its token.
+         */
+        synchronized long beginLocalClose(long nowMs, boolean endsGame) {
+            if (nextLocalCloseToken == Long.MAX_VALUE) nextLocalCloseToken = 0L;
+            localCloseToken = ++nextLocalCloseToken;
+            localCloseStartedAtMs = nowMs;
+            localCloseEndsGame = endsGame;
+            return localCloseToken;
+        }
+
+        /**
+         * Ends the local close {@code token} began; a newer close keeps going. Any completed
+         * close is a termination boundary: observations gathered before it no longer count, and
+         * the session reads as closing until the host confirms it free (or the bound passes).
+         */
+        synchronized void finishLocalClose(long token, boolean closed) {
+            if (token == 0L) return;
+            if (token == localCloseToken) localCloseToken = 0L;
+            if (!closed) return;
+            retireObservation();
+            closingConfirmationArmed = true;
+            closingConfirmationUntilMs = 0L;
+        }
+
         private void retireObservationAtTerminationBoundary(
                 SessionModel.Snapshot retained) {
             if (retained == null || retained.terminationEpoch == observedTerminationEpoch) return;
@@ -364,6 +407,10 @@ final class SessionStateResolver {
         private void retireObservationAtTerminationBoundary(long terminationEpoch) {
             if (terminationEpoch == observedTerminationEpoch) return;
             observedTerminationEpoch = terminationEpoch;
+            retireObservation();
+        }
+
+        private void retireObservation() {
             lastAcceptedOrdinal = nextRequestOrdinal;
             observation = null;
             episodeKey = "";
@@ -486,9 +533,12 @@ final class SessionStateResolver {
             boolean pending = local.pendingReconnect && local.pending != null
                     && hostId.equals(SessionSnapshot.normalize(local.pending.hostUuid))
                     && executionProfileId.equals(local.pending.executionProfileId);
+            boolean localClosing = localCloseToken != 0L
+                    && nowMs - localCloseStartedAtMs < CLOSING_CONFIRMATION_MS;
+            boolean endingGame = localClosing && localCloseEndsGame;
             SessionSnapshot.State state;
-            if (matchingTransport && retainedState
-                    == SessionModel.State.TERMINATING) {
+            if ((localClosing && !(endingGame && knownLive)) || (matchingTransport
+                    && retainedState == SessionModel.State.TERMINATING)) {
                 state = SessionSnapshot.State.TERMINATING;
             } else if (matchingTransport && retainedState
                     == SessionModel.State.PREPARING) {
@@ -548,7 +598,7 @@ final class SessionStateResolver {
                     evidence == null ? 0 : evidence.processId,
                     evidence == null ? "" : evidence.processToken,
                     evidence == null ? "UNAVAILABLE" : evidence.windowEvidence.name(),
-                    reason, local.hostRunningAppId);
+                    reason, local.hostRunningAppId, endingGame);
         }
     }
 }

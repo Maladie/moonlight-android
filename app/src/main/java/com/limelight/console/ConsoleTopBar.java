@@ -113,7 +113,9 @@ final class ConsoleTopBar extends FrameLayout {
         texts.setDuplicateParentStateEnabled(true);
         hostName = text(ConsolePanel.LABEL_SP, focusColors(Color.WHITE, ConsolePanel.INK));
         hostName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        texts.addView(hostName);
+        // WRAP_CONTENT, not the vertical default MATCH_PARENT: a TextView of a fixed width only
+        // re-ellipsizes in place on setText, so a longer name kept an earlier, shorter width.
+        texts.addView(hostName, wrapText());
         hostLine = text(ConsolePanel.SECONDARY_SP,
                 focusColors(STATUS_TEXT, ConsolePanel.INK_SECONDARY));
         int dot = dp(6);
@@ -121,7 +123,7 @@ final class ConsoleTopBar extends FrameLayout {
         statusDot.setSize(dot, dot);
         hostLine.setCompoundDrawablesRelativeWithIntrinsicBounds(statusDot, null, null, null);
         hostLine.setCompoundDrawablePadding(dp(6));
-        texts.addView(hostLine);
+        texts.addView(hostLine, wrapText());
         hostStatus.addView(texts);
         row.addView(hostStatus, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -349,6 +351,11 @@ final class ConsoleTopBar extends FrameLayout {
     private static ColorStateList focusColors(int rest, int focused) {
         return new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}},
                 new int[]{focused, rest});
+    }
+
+    private static LinearLayout.LayoutParams wrapText() {
+        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
     }
 
     private TextView text(float sp, ColorStateList colors) {

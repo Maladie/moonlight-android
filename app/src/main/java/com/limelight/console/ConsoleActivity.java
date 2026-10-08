@@ -743,9 +743,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         final List<PlayniteDashboardItem> allItems;
         final List<PlayniteDashboardItem> unfilteredItems;
         final List<PlayniteDashboardItem> carouselItems;
-        final PlayniteSessionPresentation.Projection sessionProjection;
-        final String resumeGameId;
-        final String suspendedGameId;
+        /** The session signature the carousel order was built for; never the session itself. */
         final String sessionSignature;
 
         InitialLibraryPresentation(HostProfileKey profileKey,
@@ -754,8 +752,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                    List<PlayniteDashboardItem> allItems,
                                    List<PlayniteDashboardItem> unfilteredItems,
                                    List<PlayniteDashboardItem> carouselItems,
-                                   PlayniteSessionPresentation.Projection sessionProjection,
-                                   String resumeGameId, String suspendedGameId,
                                    String sessionSignature) {
             this.profileKey = profileKey;
             this.games = games;
@@ -763,9 +759,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             this.allItems = allItems;
             this.unfilteredItems = unfilteredItems;
             this.carouselItems = carouselItems;
-            this.sessionProjection = sessionProjection;
-            this.resumeGameId = resumeGameId;
-            this.suspendedGameId = suspendedGameId;
             this.sessionSignature = sessionSignature;
         }
     }
@@ -791,8 +784,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String renderedSunshineAppsKey = "";
     private String gridChildPolicyKey = "";
     private final Map<String, SessionSnapshot> cardBindBatchMemo = new LinkedHashMap<>();
-    private final Map<String, SessionSnapshot> publishedSessionSnapshots =
-            new ConcurrentHashMap<>();
     private final ConsoleSessionSubscriber sessionSubscriber =
             new ConsoleSessionSubscriber(this::queueConsoleUpdates);
     private SessionModel sessionModel;
@@ -1363,6 +1354,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 schedulePlayniteArtworkPrefetch(selected, renderedPlayniteItems);
             }
             loadPlayniteForHost(selected);
+            // Back on screen (for example from a stream): the last known state stays until the
+            // host's session is read now, past the poll cadence; nothing polls while hidden.
+            refreshSessionProjection(selected, accepted -> { });
         }
         if (refreshSessionOnResume) {
             refreshSessionOnResume = false;
@@ -4551,10 +4545,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         && expectedHostId.equals(latestHost.uuid)
                         && requestKey.equals(selectedProfileKey(expectedHostId))
                         && sameGatewayProfile(connection, latestConnection);
-                SessionSnapshot previous = publishedSessionSnapshots.get(stateKey);
-                if (projected != null) publishedSessionSnapshots.put(stateKey, projected);
+                // Renders only when what the library shows changed (presentation key).
                 if (sameRenderScope && active && expectedHostId.equals(selectedHostUuid)
-                        && projected != null && !projected.equals(previous)) {
+                        && projected != null) {
                     renderLibraryForSessionChange(currentHost(expectedHostId));
                 }
                 if (completion != null) completion.accept(projected != null && sameRenderScope);
@@ -4633,13 +4626,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     GatewayConnection.DEFAULT_PROFILE_ID);
         }
         HostProfileKey profileKey = new HostProfileKey(host.uuid, profileId);
-        String stateKey = profileKey.cacheKey();
         String executionProfileId = executionProfileId(host.uuid, profileKey.profileId);
         SuspendedSessionStore.Session suspended = suspendedSession(
                 host.uuid, profileKey.profileId);
-        SessionStateResolver.ProjectionOwner projectionOwner = SessionStateResolver.owner(
-                sessionModel,
-                host.uuid, profileKey.profileId, executionProfileId);
+        SessionStateResolver.ProjectionOwner projectionOwner = projectionOwner(profileKey);
         HostSleepStateStore.State sleep = sessionModel.records().hostSleep(host.uuid);
         SessionResumeManager.PendingSession pending =
                 sessionModel.records().pending;
@@ -4664,10 +4654,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 executionProfileId), pending, sleep != null,
                 sleep != null && sleep.sleepObservedAt > 0L, neutralStreamTarget);
         if (render) return projectionOwner.rendered(retained, local, SystemClock.uptimeMillis());
-        SessionSnapshot canonical = projectionOwner.current(
-                retained, local, SystemClock.uptimeMillis());
-        publishedSessionSnapshots.put(stateKey, canonical);
-        return canonical;
+        return projectionOwner.current(retained, local, SystemClock.uptimeMillis());
+    }
+
+    private SessionStateResolver.ProjectionOwner projectionOwner(HostProfileKey profileKey) {
+        return SessionStateResolver.owner(sessionModel, profileKey.hostId,
+                profileKey.profileId, executionProfileId(profileKey.hostId, profileKey.profileId));
     }
 
     private SuspendedSessionStore.Session suspendedSession(
@@ -4678,9 +4670,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String hostStatus(ComputerDetails host, SessionSnapshot snapshot) {
         int warmUp = sessionSubscriber.warmUpStatus(host.uuid, snapshot.neutralStreamTarget);
         if (warmUp != 0) return getString(warmUp);
-        if (snapshot.state == SessionSnapshot.State.TERMINATING) {
-            return getString(R.string.console_status_closing_session);
-        }
+        String closing = closingStatus(snapshot);
+        if (closing != null) return closing;
         if (snapshot.isSuspended()) {
             SuspendedSessionStore.Session suspended =
                     suspendedSession(host.uuid, selectedProfileId(host.uuid));
@@ -4730,6 +4721,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return getString(R.string.console_warm_up_error);
         }
         return getString(ConsoleHostPresentation.status(state));
+    }
+
+    /** What a local close or game stop in flight shows, or null when none runs. */
+    private String closingStatus(SessionSnapshot snapshot) {
+        if (snapshot.endingGame) return getString(R.string.playnite_ending_game);
+        return snapshot.state == SessionSnapshot.State.TERMINATING
+                ? getString(R.string.console_status_closing_session) : null;
     }
 
     private ConsoleHostPresentation.State consoleHostState(
@@ -4894,7 +4892,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         case TEST_CONNECTION: hideSidePanel(); ServerHelper.doNetworkTest(this); break;
                         case CHANGE_HOST: hideSidePanel(); leaveHost(); break;
                         case HARD_TERMINATE: confirmHardTerminateSession(host); break;
-                        case UNPAIR: unpairHost(host); break;
+                        case UNPAIR: confirmUnpairHost(host); break;
                         case REMOVE: confirmRemoveHost(host); break;
                     }
                 }));
@@ -5915,10 +5913,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showQuickLaunchItemActions(QuickLaunchManager.QuickLaunchItem item) {
         ComputerDetails host = hosts.get(item.computerUuid);
         SessionSnapshot session = renderedSessionSnapshot(host);
-        if (session.state == SessionSnapshot.State.TERMINATING) {
+        String closing = closingStatus(session);
+        if (closing != null) {
             showSidePanelBusy(getString(R.string.console_quick_launch_eyebrow),
-                    item.getDisplayNameLong(),
-                    getString(R.string.console_status_closing_session));
+                    item.getDisplayNameLong(), closing);
             return;
         }
         List<View> actions = new ArrayList<>();
@@ -6772,6 +6770,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
     }
 
+    /** Unpairing also forgets the host here (Gateway pairing, offline PINs, cache): confirm. */
+    private void confirmUnpairHost(ComputerDetails host) {
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView unpair = consolePanel.action(getString(R.string.console_unpair_host));
+        consolePanel.destructive(unpair);
+        cancel.setOnClickListener(view -> handlePanelBack());
+        unpair.setOnClickListener(view -> unpairHost(host));
+        showSidePanel(getString(R.string.console_host_eyebrow),
+                getString(R.string.console_unpair_host_title, host.name),
+                getString(R.string.console_unpair_host_details), cancel, unpair);
+    }
+
     private void unpairHost(ComputerDetails host) {
         if (host.state != ComputerDetails.State.ONLINE || host.activeAddress == null) {
             ConsoleUiFeedback.makeText(this, R.string.error_pc_offline, Toast.LENGTH_SHORT).show();
@@ -6996,12 +7006,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 suspendedSession(host.uuid, profileKey.profileId);
         String expectedSuspendId = suspended == null ? "" : suspended.suspendId;
         final String providerGameId = normalizeId(expectedProviderGameId);
-        // Progress stays visible until the close finishes; the finish hides it.
+        // The host status shows the close ("Closing session…"); no progress panel.
         hideSidePanelImmediately();
-        showSidePanelBusy(getString(R.string.console_status_active_session), getString(
-                R.string.console_terminate_session_title),
-                getString(R.string.console_status_closing_session));
-        String busyPanelKey = currentPanelKey;
         SessionModel.Snapshot retained = sessionModel.snapshot();
         if (retained.hostId.equalsIgnoreCase(host.uuid)
                 && retained.executionProfileId.equals(
@@ -7009,19 +7015,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && !retained.streamSessionId.isEmpty()) {
             sessionModel.dispatch(new SessionEvent.TerminateRequested(retained.streamSessionId,
                     terminationOutcome(outcome -> {
-                        finishTerminateSession(host, profileKey, expectedSuspendId, outcome,
-                                busyPanelKey);
+                        finishTerminateSession(host, profileKey, expectedSuspendId, outcome);
                         onRequestedStreamClosed();
                     })), result -> {
                 if (result == SessionModel.TerminationResult.NO_CONTROLLER) {
                     terminateSessionByControlPlane(host, profileKey, expectedSuspendId,
-                            providerGameId, busyPanelKey);
+                            providerGameId);
                 }
             });
             return;
         }
-        terminateSessionByControlPlane(host, profileKey, expectedSuspendId, providerGameId,
-                busyPanelKey);
+        terminateSessionByControlPlane(host, profileKey, expectedSuspendId, providerGameId);
     }
 
     /** A retained close's result; a game left behind a closed stream is its own outcome. */
@@ -7039,21 +7043,37 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void terminateSessionByControlPlane(ComputerDetails host, HostProfileKey profileKey,
-                                                String expectedSuspendId, String providerGameId,
-                                                String busyPanelKey) {
+                                                String expectedSuspendId, String providerGameId) {
+        SessionStateResolver.ProjectionOwner closing = projectionOwner(profileKey);
+        long closeToken = closing.beginLocalClose(SystemClock.uptimeMillis(), false);
+        queueSessionPresentationUpdate();
         executor.execute(() -> {
-            HostSessionTermination.Outcome outcome =
-                    terminateKnownControlPlane(host, profileKey.profileId, providerGameId);
-            mainHandler.post(() -> finishTerminateSession(
-                    host, profileKey, expectedSuspendId, outcome, busyPanelKey));
+            HostSessionTermination.Outcome outcome = null;
+            try {
+                outcome = terminateKnownControlPlane(host, profileKey.profileId, providerGameId);
+            } finally {
+                // Also on an unexpected failure: the host must not stay "closing".
+                closing.finishLocalClose(closeToken, outcome != null && outcome.streamClosed());
+                HostSessionTermination.Outcome finished = outcome;
+                mainHandler.post(() -> {
+                    if (finished != null) {
+                        finishTerminateSession(host, profileKey, expectedSuspendId, finished);
+                    }
+                    queueSessionPresentationUpdate();
+                });
+            }
         });
+    }
+
+    /** A local close changed what the host status and game tiles show. */
+    private void queueSessionPresentationUpdate() {
+        queueConsoleUpdates(ConsoleUpdateChannels.SELECTED_HOST
+                | ConsoleUpdateChannels.SESSION);
     }
 
     private void finishTerminateSession(ComputerDetails host, HostProfileKey profileKey,
                                         String expectedSuspendId,
-                                        HostSessionTermination.Outcome outcome,
-                                        String busyPanelKey) {
-        if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();
+                                        HostSessionTermination.Outcome outcome) {
         // The user's close: a closed stream ends the session even when a game was left.
         if (outcome.streamClosed()) {
             if (!expectedSuspendId.isEmpty()) {
@@ -7061,13 +7081,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         executionProfileId(host.uuid, profileKey.profileId),
                         expectedSuspendId));
             }
-            String stateKey = profileKey.cacheKey();
-            publishedSessionSnapshots.remove(stateKey);
             if (profileKey.equals(selectedProfileKey(host.uuid))) {
                 invalidateSessionProjectionRequest(host.uuid);
             }
         }
         refreshSessionState(host.uuid);
+        // The host confirms the closed session free now, not at the next poll cadence.
+        refreshSessionProjection(host, profileKey, accepted -> { });
         ConsoleUiFeedback.makeText(this,
                 outcome == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED
                         ? R.string.console_terminate_session_game_left
@@ -7160,7 +7180,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (host == null || profileKey == null
                 || !profileKey.hostId.equalsIgnoreCase(host.uuid)
                 || !profileKey.equals(selectedProfileKey(host.uuid))) return;
-        String stateKey = profileKey.cacheKey();
         SuspendedSessionStore.Session suspended =
                 suspendedSession(host.uuid, profileKey.profileId);
         if (suspended != null) {
@@ -7186,7 +7205,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             sessionModel.post(new SessionEvent.ReconnectCleared(streamSessionId));
             BackgroundStreamService.dismiss(this, streamSessionId);
         }
-        publishedSessionSnapshots.remove(stateKey);
         lastFreshRunningAppIds.remove(host.uuid);
         lastFreshStreamSessionIds.remove(host.uuid);
         if (profileKey.equals(selectedProfileKey(host.uuid))) {
@@ -7363,6 +7381,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             ProfileAuthorization.revoke();
             cancelWindowsProfileSwitch(false);
             cancelStreamingAutopilot(false);
+            cancelPlayniteRequest();
             cancelPlayniteArtworkPrefetch();
             stopAppListPoller();
             invalidateChildManagement();
@@ -7378,6 +7397,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             BackgroundStreamService.dismiss(this, pending.streamSessionId);
         }
         sessionModel.post(new SessionEvent.HostForgotten(uuid));
+        SessionStateResolver.forgetHost(uuid);
 
         managerBinder.removeComputer(host);
         assetLoader.deleteAssetsForComputer(uuid);
@@ -7394,7 +7414,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         String id = uuid.toLowerCase(Locale.ROOT);
         for (Collection<String> keys : Arrays.<Collection<String>>asList(
-                publishedSessionSnapshots.keySet(), cardBindBatchMemo.keySet(),
+                cardBindBatchMemo.keySet(),
                 sessionProjectionRequestedAt.keySet(),
                 sessionProjectionRequestGenerations.keySet(),
                 lastFreshRunningAppIds.keySet(), lastFreshStreamSessionIds.keySet(),
@@ -7664,16 +7684,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
+    /**
+     * Reuses the last rendered library for the first frame of a returning Home. The session is
+     * projected from the current model, never from the render before the stream; when that
+     * changes the carousel order, the caller renders the library in full instead.
+     */
     private boolean restoreInitialLibraryPresentation(ComputerDetails host) {
         InitialLibraryPresentation cached = initialLibraryPresentation;
         if (cached == null || !selectedProfileKey(host.uuid).equals(cached.profileKey)
                 || cached.games != currentPlayniteGames) return false;
+        SessionSnapshot session = renderedSessionSnapshot(host);
+        PlayniteSessionPresentation.Projection projection = PlayniteSessionPresentation.project(
+                session, cached.unfilteredItems,
+                preferences.getString("selected_playnite." + host.uuid, ""));
+        if (!projection.signature().equals(cached.sessionSignature)) return false;
         scheduleChildEligibilityBoundary(host);
         allPlayniteItems = cached.allItems;
         unfilteredPlayniteItems = cached.unfilteredItems;
-        playniteSessionProjection = cached.sessionProjection;
-        resumePlayniteGameId = cached.resumeGameId;
-        suspendedPlayniteGameId = cached.suspendedGameId;
+        playniteSessionProjection = projection;
+        resumePlayniteGameId = projection.resumeGameId;
+        suspendedPlayniteGameId = projection.suspendedGameId;
+        renderedSessionPresentationKey = sessionPresentationKey(host, session);
         applyPlayniteDiff(host, currentSunshineApps, cached.carouselItems,
                 "", "", false);
         renderedCarouselSessionSignature = cached.sessionSignature;
@@ -8057,8 +8088,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         initialLibraryPresentation = new InitialLibraryPresentation(
                 requestedKey, currentPlayniteGames, currentSunshineApps, allPlayniteItems,
                 unfilteredPlayniteItems, renderedPlayniteItems,
-                playniteSessionProjection, resumePlayniteGameId,
-                suspendedPlayniteGameId, renderedCarouselSessionSignature);
+                renderedCarouselSessionSignature);
         if (pendingExpandedLibraryRestore && CONSOLE_UI_V2
                 && !unfilteredItems.isEmpty()) {
             if (!requiresPreparedInitialCarouselFrame()) {
@@ -9575,10 +9605,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? Math.min(alpha, .46f) : alpha;
     }
 
-    /** The session is closing or its close is not yet confirmed: nothing can be started. */
+    /**
+     * The session is closing, its close is not yet confirmed, or a game stop runs: nothing can
+     * be started.
+     */
     private boolean isSessionClosing(ComputerDetails host) {
-        return host != null
-                && renderedSessionSnapshot(host).state == SessionSnapshot.State.TERMINATING;
+        return host != null && closingStatus(renderedSessionSnapshot(host)) != null;
     }
 
     private void stylePlayniteStateEmphasis(TextView state, PlayniteDashboardItem item,
@@ -10634,9 +10666,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                          PlayniteDashboardItem item) {
         if (host == null || item == null) return;
         SessionSnapshot session = resolveSessionSnapshot(host);
-        if (session.state == SessionSnapshot.State.TERMINATING) {
-            showSidePanelBusy(getString(R.string.console_apps_eyebrow), item.game.name,
-                    getString(R.string.console_status_closing_session));
+        String closing = closingStatus(session);
+        if (closing != null) {
+            showSidePanelBusy(getString(R.string.console_apps_eyebrow), item.game.name, closing);
             return;
         }
         GameOperationsController.Presentation operation =
@@ -10758,9 +10790,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     Toast.LENGTH_LONG).show();
             return;
         }
-        showSidePanelBusy(getString(R.string.playnite_game_options), item.game.name,
-                getString(R.string.playnite_ending_game));
-        String busyPanelKey = currentPanelKey;
+        // The host status shows the stop ("Ending game…") and greys the games; a live stream
+        // stays open to return to. No progress panel.
+        SessionStateResolver.ProjectionOwner closing = projectionOwner(confirmedKey);
+        long closeToken = closing.beginLocalClose(SystemClock.uptimeMillis(), true);
+        queueSessionPresentationUpdate();
         executor.execute(() -> {
             boolean success = false;
             try {
@@ -10768,10 +10802,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     throw new IOException("game_stop_profile_changed");
                 stopActiveProviderGame(host, expectedGameId, true, confirmedKey.profileId);
                 success = true;
-            } catch (IOException | RuntimeException ignored) { }
+            } catch (IOException | RuntimeException ignored) {
+            } finally {
+                closing.finishLocalClose(closeToken, success);
+            }
             boolean stopped = success;
             mainHandler.post(() -> {
-                if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();
+                queueSessionPresentationUpdate();
                 if (!confirmedKey.equals(selectedProfileKey(host.uuid))
                         || !host.uuid.equalsIgnoreCase(selectedHostUuid)) return;
                 if (stopped) {
@@ -11435,9 +11472,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showAppActions(ComputerDetails host, NvApp app, ImageView poster) {
         if (host == null || app == null || selectedProfileIsChild(host.uuid)) return;
         SessionSnapshot session = renderedSessionSnapshot(host);
-        if (session.state == SessionSnapshot.State.TERMINATING) {
-            showSidePanelBusy(getString(R.string.console_apps_eyebrow), app.getAppName(),
-                    getString(R.string.console_status_closing_session));
+        String closing = closingStatus(session);
+        if (closing != null) {
+            showSidePanelBusy(getString(R.string.console_apps_eyebrow), app.getAppName(), closing);
             return;
         }
         boolean online = ConsoleActionCatalog.isOnline(host);

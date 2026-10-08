@@ -844,6 +844,8 @@
     <string name="console_add_host_details">Hosty w pobliżu są wyszukiwane automatycznie. Możesz także ręcznie podać adres IP.</string>
     <string name="console_wake_host">Obudź hosta</string>
     <string name="console_unpair_host">Odparuj hosta</string>
+    <string name="console_unpair_host_title">Odparować hosta %1$s?</string>
+    <string name="console_unpair_host_details">MoonWaker odparuje komputer i zapomni go na tym urządzeniu.</string>
     <string name="console_host_status_description">%1$s. %2$s. Naciśnij Wybierz, aby otworzyć opcje hosta.</string>
     <string name="console_host_power_wake_description">%1$s jest offline. Wciśnij Wybierz, aby obudzić hosta.</string>
     <string name="console_host_waking_description">Trwa wybudzanie hosta %1$s. Zaczekaj.</string>

@@ -272,7 +272,9 @@ final class SessionOrchestrator implements AutoCloseable {
 
         SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
-        if (snapshot.state == SessionSnapshot.State.TERMINATING) {
+        // A game stop beside a live stream keeps only the way back to that stream open.
+        if (snapshot.state == SessionSnapshot.State.TERMINATING
+                || (snapshot.endingGame && !intent.matches(snapshot))) {
             diagnostic("WARN", "orchestration.rejected", request, intent,
                     "reason", Rejection.TERMINATING.name());
             // Under the loading layer a toast would leave the loader up with no error.

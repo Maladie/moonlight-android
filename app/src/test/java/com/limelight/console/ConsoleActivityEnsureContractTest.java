@@ -229,8 +229,8 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(stop.contains("!confirmedKey.equals(selectedProfileKey(host.uuid))"));
         assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true"));
         assertTrue(stop.contains("refreshSessionProjection(host, ignored -> { })"));
-        assertTrue(hardReset.contains("String stateKey = profileKey.cacheKey()"));
-        assertTrue(hardReset.contains("publishedSessionSnapshots.remove(stateKey)"));
+        assertTrue(hardReset.contains("invalidateSessionProjectionRequest(host.uuid)"));
+        assertFalse(source.contains("publishedSessionSnapshots"));
         assertFalse(source.contains("RunningGameObservation"));
         assertFalse(source.contains("getPlayniteCurrentGame("));
         assertTrue(hardReset.contains("lastFreshRunningAppIds.remove(host.uuid)"));
@@ -298,9 +298,11 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(host.contains("SessionSnapshot.State.TERMINATING"));
         assertTrue(host.contains("!terminating && ConsoleHostPresentation.canWake(host)"));
-        assertTrue(playnite.contains("SessionSnapshot.State.TERMINATING"));
-        assertTrue(sunshine.contains("SessionSnapshot.State.TERMINATING"));
-        assertTrue(quick.contains("SessionSnapshot.State.TERMINATING"));
+        // Closing or ending a game: one owner of what the busy row says.
+        assertTrue(source.contains("return snapshot.state == SessionSnapshot.State.TERMINATING"));
+        assertTrue(playnite.contains("String closing = closingStatus(session);"));
+        assertTrue(sunshine.contains("String closing = closingStatus(session);"));
+        assertTrue(quick.contains("String closing = closingStatus(session);"));
     }
 
     @Test public void carouselHistoryUsesExactGameIdentityInsteadOfSharedDesktopApp() throws IOException {
@@ -469,7 +471,9 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(retry.contains("sessionOrchestrator.cancel()"));
         assertFalse(retry.contains("showHome()"));
         assertTrue(resolve.contains("gateway.snapshot().sessionSnapshot"));
-        assertTrue(resolve.contains("publishedSessionSnapshots.put(stateKey, projected)"));
+        // Only the presentation key decides a render; no per-Activity copy of the projection.
+        assertTrue(resolve.contains("renderLibraryForSessionChange(currentHost(expectedHostId))"));
+        assertFalse(resolve.contains("publishedSessionSnapshots"));
         assertFalse(resolve.contains("getPlayniteCurrentGame("));
         assertFalse(resolve.contains("activePlayniteGameIds"));
     }
@@ -530,7 +534,8 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(failure.contains("Toast"));
         assertTrue(status.contains("sessionSubscriber.reconnectRequired(host.uuid)"));
         assertTrue(status.contains("sessionOrchestrator.hasPreparationForHost(host.uuid)"));
-        assertTrue(status.indexOf("SessionSnapshot.State.TERMINATING")
+        assertTrue(status.contains("closingStatus(snapshot)"));
+        assertTrue(status.indexOf("closingStatus(snapshot)")
                 < status.indexOf("warmUpStatus == WARM_UP_ERROR"));
         assertTrue(status.indexOf("ConsoleHostPresentation.State.ACTIVE_SESSION")
                 < status.indexOf("warmUpStatus == WARM_UP_ERROR"));
@@ -721,6 +726,13 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(restore.contains("cached.games != currentPlayniteGames"));
         assertTrue(restore.contains("selectedProfileKey(host.uuid).equals(cached.profileKey)"));
         assertTrue(restore.contains("applyPlayniteDiff("));
+        // The returning Home projects the current session, never the one before the stream.
+        assertTrue(restore.indexOf("SessionSnapshot session = renderedSessionSnapshot(host);")
+                < restore.indexOf("applyPlayniteDiff("));
+        assertTrue(restore.contains(
+                "if (!projection.signature().equals(cached.sessionSignature)) return false;"));
+        assertFalse(restore.contains("cached.sessionProjection"));
+        assertFalse(console.contains("final PlayniteSessionPresentation.Projection sessionProjection;"));
         assertFalse(restore.contains("PlayniteTargetResolver.resolve("));
         assertTrue(console.contains("final HostProfileKey profileKey;"));
         assertTrue(console.contains("requestedKey, currentPlayniteGames"));
