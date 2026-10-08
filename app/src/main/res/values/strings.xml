@@ -1109,8 +1109,6 @@
     <string name="playnite_game_fallback_name">the selected game</string>
     <string name="playnite_launch_unavailable">Launch unavailable</string>
     <string name="playnite_gateway_unavailable">MoonWaker game library service unavailable</string>
-    <string name="playnite_cached_library">Library may be out of date</string>
-    <string name="playnite_cached_library_age">Library may be out of date · last updated %1$s</string>
     <string name="playnite_refreshing_library">Refreshing library…</string>
     <string name="playnite_authentication_error">Authentication error</string>
     <string name="playnite_configure_gateway">Configure gateway</string>

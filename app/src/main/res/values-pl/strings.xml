@@ -1021,8 +1021,6 @@
     <string name="playnite_game_fallback_name">wybrana gra</string>
     <string name="playnite_launch_unavailable">Brak uruchamiania</string>
     <string name="playnite_gateway_unavailable">Usługa biblioteki gier MoonWaker jest niedostępna</string>
-    <string name="playnite_cached_library">Biblioteka może być nieaktualna</string>
-    <string name="playnite_cached_library_age">Biblioteka może być nieaktualna · ostatnio: %1$s</string>
     <string name="playnite_refreshing_library">Odświeżam bibliotekę…</string>
     <string name="playnite_authentication_error">Błąd autoryzacji</string>
     <string name="playnite_configure_gateway">Skonfiguruj gateway</string>

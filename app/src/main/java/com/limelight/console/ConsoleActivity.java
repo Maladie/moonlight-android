@@ -742,7 +742,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         final String resumeGameId;
         final String suspendedGameId;
         final String sessionSignature;
-        final long savedAt;
 
         InitialLibraryPresentation(HostProfileKey profileKey,
                                    List<PlayniteLibraryGame> games,
@@ -752,7 +751,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                    List<PlayniteDashboardItem> carouselItems,
                                    PlayniteSessionPresentation.Projection sessionProjection,
                                    String resumeGameId, String suspendedGameId,
-                                   String sessionSignature, long savedAt) {
+                                   String sessionSignature) {
             this.profileKey = profileKey;
             this.games = games;
             this.sunshineApps = sunshineApps;
@@ -763,7 +762,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             this.resumeGameId = resumeGameId;
             this.suspendedGameId = suspendedGameId;
             this.sessionSignature = sessionSignature;
-            this.savedAt = savedAt;
         }
     }
     private String expandedSearchQuery = "";
@@ -810,8 +808,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final Set<String> completedPlayniteInstallAnimations = new HashSet<>();
     private volatile List<NvApp> currentSunshineApps = Collections.emptyList();
     private volatile ResolvedTargets resolvedTargets;
-    private boolean playniteLibraryCached;
-    private long playniteLibraryCachedAt;
     private boolean playniteLibraryRefreshing;
     private boolean playniteInitialLoadPending;
     private String initialLocalAppsHostId = "";
@@ -3317,8 +3313,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         renderedPlayniteItems = Collections.emptyList();
         allPlayniteItems = Collections.emptyList();
         unfilteredPlayniteItems = Collections.emptyList();
-        playniteLibraryCached = false;
-        playniteLibraryCachedAt = 0L;
         initialLibraryPresentation = null;
         clearArtwork();
     }
@@ -7564,8 +7558,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         currentPlayniteProfileKey = cached.profileKey;
         currentPlayniteGames = cached.games;
         currentSunshineApps = cached.sunshineApps;
-        playniteLibraryCached = true;
-        playniteLibraryCachedAt = cached.savedAt;
         playniteLibraryError = null;
         playniteInitialLoadPending = false;
         initialLocalAppsHostId = host.uuid;
@@ -7591,8 +7583,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         renderedPlayniteItems = Collections.emptyList();
         allPlayniteItems = Collections.emptyList();
         unfilteredPlayniteItems = Collections.emptyList();
-        playniteLibraryCached = false;
-        playniteLibraryCachedAt = 0L;
         playniteLibraryError = null;
         playniteInitialLoadPending = true;
         if (!requiresPreparedInitialCarouselFrame()) showCarouselLoadingGhosts();
@@ -7607,8 +7597,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (cached != null) {
                     currentPlayniteProfileKey = requestKey;
                     currentPlayniteGames = cached.games;
-                    playniteLibraryCached = true;
-                    playniteLibraryCachedAt = cached.savedAt;
                 }
                 initialLocalLibraryHostId = host.uuid;
                 ComputerDetails latestHost = currentHost(host.uuid);
@@ -7700,15 +7688,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     boolean libraryChanged = !result.entry.games.equals(currentPlayniteGames);
                     currentPlayniteProfileKey = requestKey;
                     currentPlayniteGames = result.entry.games;
-                    playniteLibraryCachedAt = result.entry.savedAt;
-                    playniteLibraryCached = false;
                     playniteLibraryError = null;
                     reconcilePlayniteInstallations(latestHost, currentPlayniteGames);
                     if (libraryChanged) renderPlayniteLibrary(latestHost, currentSunshineApps);
                     else updatePlayniteLibraryStatus(latestHost);
                 } else {
                     playniteLibraryError = result.error;
-                    playniteLibraryCached = !currentPlayniteGames.isEmpty();
                     updatePlayniteLibraryStatus(latestHost);
                 }
                 mainHandler.removeCallbacks(playniteRefreshCycle);
@@ -7859,7 +7844,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && hostGatewayStore.loadForHost(host.uuid, address) != null;
         ConsoleLibraryStatus.State libraryStatus = ConsoleLibraryStatus.resolve(
                 playniteLibraryRefreshing, !currentPlayniteGames.isEmpty(),
-                playniteLibraryCached, playniteLibraryError, gatewayConfigured);
+                playniteLibraryError, gatewayConfigured);
         int textId;
         switch (libraryStatus) {
             case REFRESHING:
@@ -7883,9 +7868,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             case GATEWAY_UNAVAILABLE:
                 textId = R.string.playnite_gateway_unavailable;
                 break;
-            case CACHED:
-                textId = R.string.playnite_cached_library;
-                break;
             case CURRENT:
             default:
                 textId = 0;
@@ -7893,30 +7875,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         boolean showStatus = !playniteInitialLoadPending
                 && ConsoleLibraryStatus.visible(libraryStatus);
-        CharSequence status = !showStatus ? ""
-                : textId == R.string.playnite_cached_library
-                ? cachedLibraryStatusText() : getText(textId);
+        CharSequence status = showStatus ? getText(textId) : "";
         playniteLibraryStatus.setText(status);
         playniteLibraryStatus.setVisibility(showStatus ? View.VISIBLE : View.GONE);
         updateLibraryActionVisibility();
-        int color = ConsoleLibraryStatus.isError(libraryStatus)
-                ? 0xFFFFB74D : libraryStatus == ConsoleLibraryStatus.State.CACHED
-                ? 0xFFB8C9DC : 0xFFC8D2DC;
+        int color = ConsoleLibraryStatus.isError(libraryStatus) ? 0xFFFFB74D : 0xFFC8D2DC;
         playniteLibraryStatus.setTextColor(color);
         if (expandedCacheStatus != null) {
             expandedCacheStatus.setText(status);
             expandedCacheStatus.setTextColor(color);
             expandedCacheStatus.setVisibility(showStatus ? View.VISIBLE : View.GONE);
         }
-    }
-
-    private CharSequence cachedLibraryStatusText() {
-        if (playniteLibraryCachedAt <= 0L) return getText(R.string.playnite_cached_library);
-        long now = System.currentTimeMillis();
-        long savedAt = Math.min(now, playniteLibraryCachedAt);
-        CharSequence age = DateUtils.getRelativeTimeSpanString(savedAt, now,
-                DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE);
-        return getString(R.string.playnite_cached_library_age, age);
     }
 
     private void updateLibraryActionVisibility() {
@@ -8050,8 +8019,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 requestedKey, currentPlayniteGames, currentSunshineApps, allPlayniteItems,
                 unfilteredPlayniteItems, renderedPlayniteItems,
                 playniteSessionProjection, resumePlayniteGameId,
-                suspendedPlayniteGameId, renderedCarouselSessionSignature,
-                playniteLibraryCachedAt);
+                suspendedPlayniteGameId, renderedCarouselSessionSignature);
         if (pendingExpandedLibraryRestore && CONSOLE_UI_V2
                 && !unfilteredItems.isEmpty()) {
             if (!requiresPreparedInitialCarouselFrame()) {

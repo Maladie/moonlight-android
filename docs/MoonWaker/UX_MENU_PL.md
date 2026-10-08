@@ -354,7 +354,7 @@ wycięte w ikonie; liczniki w małych pigułkach.
 
 Zrobione w krokach 1–2 (sekcja 6): Wstecz na ekranie głównym nie zamyka aplikacji,
 Autopilot jako stan i przycisk, pomoc offline, „Pozostało dziś" w godzinach i minutach,
-napis o bibliotece tylko w stanach „odświeżam" i „nieaktualna", etykiety typu na
+napis o bibliotece tylko w stanie „odświeżam" i przy błędzie (stan „nieaktualna" usunięty 2026-10-09 — przesuwał karuzelę, a każde odświeżenie i tak go kończyło), etykiety typu na
 przyciskach filtrów.
 
 ## 6. Kolejność prac
