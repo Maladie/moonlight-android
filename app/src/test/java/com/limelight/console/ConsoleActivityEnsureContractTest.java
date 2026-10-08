@@ -340,6 +340,11 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(orchestration.contains("@Override public void sessionFailed("));
         assertTrue(resolver.contains("invalidateSessionProjectionRequest(host.uuid)"));
         assertTrue(resolver.contains("completion.accept(false)"));
+        // No exit before the poll starts may strand a waiting completion (endless loader).
+        String beforePoll = resolver.substring(resolver.indexOf("HostProfileKey requestKey"),
+                resolver.indexOf("executor.execute("));
+        assertEquals(3, beforePoll.split("if \\(completion != null\\) completion\\.accept"
+                + "\\(false\\);\\s+return;", -1).length - 1);
         assertTrue(resolver.contains(
                 "completion.accept(projected != null && sameRenderScope)"));
         assertTrue(activation.contains("showUncertainSessionMessage()"));
@@ -419,7 +424,13 @@ public class ConsoleActivityEnsureContractTest {
                         "private void refreshSessionProjection("),
                 source.indexOf("private void invalidateSessionProjectionRequest("));
 
+        String reject = source.substring(source.indexOf("@Override public void reject("),
+                source.indexOf("@Override public void confirmReplacement("));
+
         assertTrue(retry.contains("sessionOrchestrator.retry()"));
+        // A rejection after Retry lands on the raised loading layer, not in a toast over it.
+        assertTrue(reject.contains("if (streamLoadingView != null) {"));
+        assertTrue(reject.contains("streamLoadingView.showError(getString(message), \"\");"));
         assertFalse(retry.contains("sessionOrchestrator.cancel()"));
         assertFalse(retry.contains("showHome()"));
         assertTrue(resolve.contains("gateway.snapshot().sessionSnapshot"));

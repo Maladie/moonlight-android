@@ -70,6 +70,9 @@ public enum SessionFailure {
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
     UNCERTAIN_AFTER_REFRESH("uncertain.still_uncertain_after_refresh",
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
+    // The session began closing after the loading layer was raised for this request.
+    UNCERTAIN_TERMINATING("uncertain.terminating",
+            R.string.console_status_closing_session, R.string.console_session_uncertain_details),
     // ConsoleActivity activatePlayniteItem: no launch target could be chosen for the game.
     LAUNCH_TARGET_UNRESOLVED("launch.target_unresolved",
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),

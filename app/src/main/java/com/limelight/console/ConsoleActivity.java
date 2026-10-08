@@ -4500,13 +4500,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String stateKey = requestKey.cacheKey();
         if (!ConsoleActionCatalog.isOnline(host) || !ConsoleActionCatalog.isPaired(host)) {
             invalidateSessionProjectionRequest(host.uuid);
+            if (completion != null) completion.accept(false);
             return;
         }
         long now = SystemClock.uptimeMillis();
         if (completion != null) invalidateSessionProjectionRequest(host.uuid);
-        if ((completion == null && !sessionProjectionRefreshDue(now,
-                sessionProjectionRequestedAt.getOrDefault(stateKey, 0L)))
-                || !sessionProjectionRefreshInFlight.add(stateKey)) return;
+        if (completion == null && !sessionProjectionRefreshDue(now,
+                sessionProjectionRequestedAt.getOrDefault(stateKey, 0L))) return;
+        if (!sessionProjectionRefreshInFlight.add(stateKey)) {
+            // Still in flight only for a profile that is not selected, whose result is never
+            // accepted (sameRenderScope); every exit answers a waiting completion.
+            if (completion != null) completion.accept(false);
+            return;
+        }
         sessionProjectionRequestedAt.put(stateKey, now);
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection =
@@ -12151,6 +12157,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         message = R.string.scut_not_paired;
                         break;
                 }
+                // Under a raised loading layer (after Retry) a toast would leave its loader up.
+                if (streamLoadingView != null) {
+                    streamLoadingView.showError(getString(message), "");
+                    return;
+                }
                 ConsoleUiFeedback.makeText(ConsoleActivity.this, message,
                         Toast.LENGTH_SHORT).show();
             }
@@ -12590,23 +12601,29 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 }
             }
 
-            @Override public void sessionFailed(SessionFailure reason) {
-                showSessionFailure(reason);
+            @Override public void sessionFailed(PlayIntent intent, SessionFailure reason) {
+                showSessionFailure(reason, intent.hostId, intent.appName);
             }
         }, executor, mainHandler::post);
     }
 
-    private void showSessionFailure(SessionFailure reason) {
-        if (streamLoadingView != null) streamLoadingView.showError(
+    /** A refusal is never silent: one raised before any loading layer raises its own. */
+    private void showSessionFailure(SessionFailure reason, String hostId, String appName) {
+        if (streamLoadingView == null) {
+            ComputerDetails host = currentHost(hostId);
+            showLoading(host == null ? hostId : host.name, appName);
+        }
+        streamLoadingView.showError(
                 getString(reason.title), getString(reason.details), reason.code);
     }
 
     /** For failures outside the orchestrator: records, then shows the failure screen. */
     private void sessionFailed(SessionFailure reason, long orchestrationId,
-                               String hostId, String profileId, String detail) {
+                               String hostId, String profileId, String appName,
+                               String detail) {
         reason.record(orchestrationId, hostId, profileId,
                 resolveSessionSnapshot(currentHost(hostId), profileId), detail);
-        showSessionFailure(reason);
+        showSessionFailure(reason, hostId, appName);
     }
 
     private Boolean terminateLiveRetainedForReplacement(
@@ -12698,7 +12715,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 mainHandler.post(() -> {
                     if (token != hostPreparationGeneration.get() || !active) return;
                     sessionFailed(SessionFailure.SUPPORT_PREVIOUS_NOT_CLOSED, 0L,
-                            host.uuid, transitionProfileId, "");
+                            host.uuid, transitionProfileId, app.getAppName(), "");
                 });
                 return;
             }
@@ -12706,7 +12723,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (token != hostPreparationGeneration.get() || !active) return;
                 if (ready == null) {
                     sessionFailed(SessionFailure.SUPPORT_HOST_NOT_READY, 0L,
-                            host.uuid, transitionProfileId, "");
+                            host.uuid, transitionProfileId, app.getAppName(), "");
                     return;
                 }
                 launchPreparedStream(ready, app, "", transition, loadingArtworkPath,
@@ -12973,7 +12990,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     "host_id", intent.hostId, "profile_id", intent.profileId,
                     "app_id", target.getAppId(), "game_id", intent.playniteGameId);
             sessionFailed(SessionFailure.ATTACH_RESUME_INTENT_MISSING, orchestrationId,
-                    intent.hostId, intent.profileId, "");
+                    intent.hostId, intent.profileId, intent.appName, "");
             return;
         }
         attach.putExtra(Game.EXTRA_PENDING_SWITCH_HOST_ID, intent.hostId)
@@ -12997,7 +13014,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     "host_id", intent.hostId, "profile_id", intent.profileId,
                     "app_id", target.getAppId(), "game_id", intent.playniteGameId);
             sessionFailed(SessionFailure.ATTACH_START_ACTIVITY_FAILED, orchestrationId,
-                    intent.hostId, intent.profileId, "");
+                    intent.hostId, intent.profileId, intent.appName, "");
             return;
         }
         MoonWakerDiagnostics.record("INFO", "android.console",
@@ -13036,7 +13053,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             String refusal = savedRefusal != null ? savedRefusal
                     : startResumeActivity(intent, pending, null, false, 0L);
             if (refusal != null) sessionFailed(SessionFailure.RECONNECT_SAVED_SESSION_UNAVAILABLE,
-                    0L, intent.hostId, intent.profileId, refusal);
+                    0L, intent.hostId, intent.profileId, intent.appName, refusal);
             return;
         }
         BooleanSupplier cancelled = () -> !active
@@ -13065,14 +13082,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     if (refusal == null) return;
                     failClosedActorHandoff(intent, pending, accepted);
                     if (!handoffCancelled) sessionFailed(SessionFailure.RECONNECT_ACTOR_HANDOFF_FAILED,
-                            0L, intent.hostId, intent.profileId, refusal);
+                            0L, intent.hostId, intent.profileId, intent.appName, refusal);
                 });
             } catch (IOException | RuntimeException error) {
                 LimeLog.warning("Saved session actor handoff failed: " + error.getMessage());
                 if (timeAttachmentChanged) failClosedActorHandoff(intent, pending, binding);
                 mainHandler.post(() -> { if (!cancelled.getAsBoolean()) sessionFailed(
                         SessionFailure.RECONNECT_ACTOR_HANDOFF_FAILED, 0L, intent.hostId,
-                        intent.profileId, error.getMessage()); });
+                        intent.profileId, intent.appName, error.getMessage()); });
             }
         });
     }

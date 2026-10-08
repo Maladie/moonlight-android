@@ -763,9 +763,174 @@ public class SessionOrchestratorTest {
 
         orchestrator(effects).play(game());
 
+        // Still uncorrelated after its one refresh: refused under the loading layer.
+        assertEquals(1, effects.refreshes);
         assertEquals(java.util.Collections.singletonList(
                 SessionFailure.UNCERTAIN_RECOVERY_REQUIRED), effects.failures);
+        assertEquals(java.util.Collections.singletonList(1), effects.loadingsAtFailure);
+    }
+
+    @Test public void staleRecoveryRequiredRefreshesThenReconnects() {
+        Fake effects = new Fake();
+        // Play pressed in the hole between two host polls: stale evidence names no game.
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
+        effects.onRefresh = () -> effects.snapshot =
+                recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "game", true);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.loadings);
+        assertEquals(1, effects.refreshes);
+        assertEquals(HostLaunchPreflight.Action.RECONNECT, effects.preflightAction);
+        assertEquals(1, effects.reconnects);
+        assertEquals(0, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void recoveryEvidenceGoingStaleDuringPreflightIsRefreshedAgain() {
+        Fake effects = new Fake();
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
+        effects.onRefresh = () -> effects.snapshot =
+                recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "game", true);
+        effects.onReadiness = () -> effects.snapshot =
+                recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.loadings);
+        assertEquals(2, effects.refreshes);
+        assertEquals(1, effects.readiness);
+        assertEquals(1, effects.reconnects);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void correlatedRecoveryEvidenceNamingAnotherGameFailsVisibly() {
+        Fake effects = new Fake();
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "other", true);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_RECOVERY_REQUIRED), effects.failures);
+        assertEquals(java.util.Collections.singletonList(1), effects.loadingsAtFailure);
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.launches);
+        assertNull(effects.confirmation);
+    }
+
+    @Test public void refusedRefreshOfStaleRecoveryFailsVisiblyUnderLoadingLayer() {
+        Fake effects = new Fake();
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
+        // What the host poll answers when it cannot run at all (host offline, poll busy).
+        effects.refreshSuccess = false;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.refreshes);
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_REFRESH_FAILED), effects.failures);
+        assertEquals(java.util.Collections.singletonList(1), effects.loadingsAtFailure);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void terminatingWithRecoveryRequiredRejectsBeforeAnyLoadingLayer() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other",
+                SessionSnapshot.ObservationState.RECOVERY_REQUIRED);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(SessionOrchestrator.Rejection.TERMINATING, effects.rejection);
+        assertTrue(effects.failures.isEmpty());
         assertEquals(0, effects.loadings);
+        assertEquals(0, effects.refreshes);
+    }
+
+    @Test public void terminatingSeenUnderLoadingLayerFailsVisibly() {
+        Fake effects = new Fake();
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
+        effects.onRefresh = () -> effects.snapshot =
+                snapshot(SessionSnapshot.State.TERMINATING, 42, "game");
+
+        orchestrator(effects).play(game());
+
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_TERMINATING), effects.failures);
+        assertEquals(java.util.Collections.singletonList(1), effects.loadingsAtFailure);
+        assertNull(effects.rejection);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void retryWhileStillTerminatingRejectsUnderTheRaisedLoadingLayer() {
+        Fake effects = new Fake();
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
+        effects.onRefresh = () -> effects.snapshot =
+                snapshot(SessionSnapshot.State.TERMINATING, 42, "game");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_TERMINATING), effects.failures);
+        assertNull(effects.rejection);
+
+        // Retry re-enters with the layer still up; the Activity's reject must show it there.
+        orchestrator.retry();
+
+        assertEquals(SessionOrchestrator.Rejection.TERMINATING, effects.rejection);
+        assertEquals(1, effects.failures.size());
+        assertEquals(1, effects.loadings);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void correlatedRecoveryNamingNoGameOnNeutralWarmUpReconnects() {
+        Fake effects = new Fake();
+        effects.warmUpCarriesGame = true;
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", true, true);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(HostLaunchPreflight.Action.RECONNECT, effects.preflightAction);
+        assertEquals(1, effects.reconnects);
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+        assertNull(effects.confirmation);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void correlatedRecoveryNamingNoGameOnOrphanedNeutralStreamClosesAndLaunches() {
+        Fake effects = new Fake();
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", true, true);
+
+        orchestrator(effects).play(game());
+
+        // Current behavior: the orphaned neutral stream is closed without confirmation.
+        assertNull(effects.confirmation);
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.reconnects);
+        assertEquals(1, effects.closes);
+        assertEquals(Boolean.TRUE, effects.allowDestructiveCloseSeen);
+        assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
+        assertEquals(1, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void correlatedRecoveryNamingNoGameOnNonNeutralStreamAsksBeforeReplacement() {
+        Fake effects = new Fake();
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", true);
+
+        orchestrator(effects).play(game());
+
+        assertNotNull(effects.confirmation);
+        assertEquals(0, effects.loadings);
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+        assertTrue(effects.failures.isEmpty());
     }
 
     @Test public void preparingWarmUpBranchesReportDistinctCodes() {
@@ -1055,15 +1220,35 @@ public class SessionOrchestratorTest {
         return snapshot(state, appId, gameId, false, "", false, observation);
     }
 
+    private static SessionSnapshot recovery(SessionSnapshot.State state, String gameId,
+                                            boolean correlated) {
+        return recovery(state, gameId, correlated, false);
+    }
+
+    private static SessionSnapshot recovery(SessionSnapshot.State state, String gameId,
+                                            boolean correlated, boolean neutral) {
+        return snapshot(state, 42, gameId, false, "", neutral,
+                SessionSnapshot.ObservationState.RECOVERY_REQUIRED, correlated);
+    }
+
     private static SessionSnapshot snapshot(SessionSnapshot.State state,
                                             int appId, String gameId,
                                             boolean retained, String suspendId,
                                             boolean neutral,
                                             SessionSnapshot.ObservationState observation) {
+        return snapshot(state, appId, gameId, retained, suspendId, neutral, observation, false);
+    }
+
+    private static SessionSnapshot snapshot(SessionSnapshot.State state,
+                                            int appId, String gameId,
+                                            boolean retained, String suspendId,
+                                            boolean neutral,
+                                            SessionSnapshot.ObservationState observation,
+                                            boolean correlated) {
         boolean suspended = state == SessionSnapshot.State.SUSPENDED;
         return new SessionSnapshot("host", "default", "default", state, appId, gameId,
                 retained, suspended, false, false, false, suspendId, neutral,
-                observation, false,
+                observation, correlated,
                 "", 0L, 0L, 0L, 0L, 0L, "", "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0);
     }
@@ -1087,6 +1272,7 @@ public class SessionOrchestratorTest {
         final Queue<SessionSnapshot> snapshots = new ArrayDeque<>();
         SessionSnapshot afterClose = snapshot(SessionSnapshot.State.NONE, 0, "");
         final java.util.List<SessionFailure> failures = new java.util.ArrayList<>();
+        final java.util.List<Integer> loadingsAtFailure = new java.util.ArrayList<>();
         SessionOrchestrator.Rejection rejection;
         Runnable confirmation;
         Runnable onReadiness;
@@ -1228,7 +1414,10 @@ public class SessionOrchestratorTest {
             launchedOwnsFreshSunshineSession = ownsFreshSunshineSession;
         }
         @Override public void preflightFailed(HostLaunchPreflight.Failure failure) { }
-        @Override public void sessionFailed(SessionFailure reason) { failures.add(reason); }
+        @Override public void sessionFailed(PlayIntent intent, SessionFailure reason) {
+            failures.add(reason);
+            loadingsAtFailure.add(loadings);
+        }
     }
 
     private static final class QueuedExecutor implements Executor {

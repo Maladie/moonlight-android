@@ -84,7 +84,7 @@ final class SessionOrchestrator implements AutoCloseable {
                     String sourceSuspendId, boolean ownsFreshSunshineSession);
         void preflightFailed(HostLaunchPreflight.Failure failure);
         /** Shows the failure screen for this exact path; the orchestrator recorded it. */
-        void sessionFailed(SessionFailure reason);
+        void sessionFailed(PlayIntent intent, SessionFailure reason);
         PreparedWarmUp prepareHost(PlayIntent intent, long request,
                                    BooleanSupplier cancelled);
         void launchPreparedHost(PreparedWarmUp prepared,
@@ -97,6 +97,9 @@ final class SessionOrchestrator implements AutoCloseable {
     private final Dispatcher dispatcher;
     private final AtomicLong generation = new AtomicLong();
     private PlayIntent lastIntent;
+    /** The request and pass evaluating the refresh of an uncorrelated recovery observation. */
+    private long recoveryRefreshedRequest;
+    private int recoveryRefreshedPass;
     private volatile Preparation preparation;
     private volatile boolean closed;
 
@@ -269,16 +272,37 @@ final class SessionOrchestrator implements AutoCloseable {
 
         SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
-        if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
-                && !intent.matches(snapshot)) {
-            fail(request, intent, SessionFailure.UNCERTAIN_RECOVERY_REQUIRED, "");
-            return;
-        }
         if (snapshot.state == SessionSnapshot.State.TERMINATING) {
             diagnostic("WARN", "orchestration.rejected", request, intent,
                     "reason", Rejection.TERMINATING.name());
-            effects.reject(Rejection.TERMINATING);
+            // Under the loading layer a toast would leave the loader up with no error.
+            if (opaqueReady) fail(request, intent, SessionFailure.UNCERTAIN_TERMINATING, "");
+            else effects.reject(Rejection.TERMINATING);
             return;
+        }
+        if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
+                && !intent.matches(snapshot)) {
+            // Only correlated evidence naming another game refuses, and only under the loading
+            // layer. An uncorrelated observation (the hole between two host polls) decides
+            // nothing: it is refreshed and the request is evaluated on the fresh one, which
+            // refuses when it is the very pass that refresh produced.
+            boolean namesOtherGame = snapshot.observationCorrelated
+                    && !snapshot.playniteGameId.isEmpty();
+            if (namesOtherGame || !snapshot.observationCorrelated) {
+                if (!opaqueReady) {
+                    awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
+                            reuseOnly, preparedTarget, pass);
+                } else if (namesOtherGame || recoveryRefreshedRequest == request
+                        && recoveryRefreshedPass == pass) {
+                    fail(request, intent, SessionFailure.UNCERTAIN_RECOVERY_REQUIRED, "");
+                } else {
+                    recoveryRefreshedRequest = request;
+                    recoveryRefreshedPass = pass + 1;
+                    awaitFreshSession(request, intent, replacementAuthorized,
+                            reuseOnly, preparedTarget, pass);
+                }
+                return;
+            }
         }
         if (snapshot.state == SessionSnapshot.State.PREPARING
                 && intent.kind == PlayIntent.Kind.PLAYNITE_GAME) {
@@ -562,7 +586,7 @@ final class SessionOrchestrator implements AutoCloseable {
     private void fail(long request, PlayIntent intent, SessionFailure reason, String detail) {
         reason.record(request, intent.hostId, intent.profileId,
                 effects.resolve(intent.profileKey), detail);
-        effects.sessionFailed(reason);
+        effects.sessionFailed(intent, reason);
     }
 
     private void returnToRetained(long request, PlayIntent intent) {

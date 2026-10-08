@@ -424,6 +424,32 @@ public class SessionStateProjectionTest {
                 m.snapshot(), 15_001L).playniteGameId);
     }
 
+    @Test public void reconnectRequiredWithStaleEvidenceNamesNoGame() {
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "host", "child", 42, "game");
+        assertTrue(m.bindControlGeneration(controller, "session", 1L));
+        m.markReconnectRequired("session");
+        long ordinal = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", ordinal), m.snapshot(), 0L));
+
+        // Lost transport is never READY; once the episode expires it stays RECOVERY_REQUIRED,
+        // and the game is named only while the evidence is fresh and correlated.
+        SessionSnapshot fresh = owner.current(m.snapshot(), 15_000L);
+        assertEquals(SessionSnapshot.State.RECONNECT_REQUIRED, fresh.state);
+        assertEquals(SessionSnapshot.ObservationState.RECOVERY_REQUIRED,
+                fresh.observationState);
+        assertTrue(fresh.observationCorrelated);
+        assertEquals("game", fresh.playniteGameId);
+
+        SessionSnapshot stale = owner.current(m.snapshot(), 15_001L);
+        assertEquals(SessionSnapshot.State.RECONNECT_REQUIRED, stale.state);
+        assertEquals(SessionSnapshot.ObservationState.RECOVERY_REQUIRED,
+                stale.observationState);
+        assertFalse(stale.observationCorrelated);
+        assertEquals("observation_stale", stale.observationReason);
+        assertEquals("", stale.playniteGameId);
+    }
+
     @Test public void recoveryIsExplicitFencedAndNextPlayHasFreshIdentity() {
         Controller controller = new Controller();
         m.enterHome(controller, "session", "host",
