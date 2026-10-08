@@ -215,8 +215,72 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
                 controller.snapshot().state);
         assertTrue(controller.snapshot().manualRevealAvailable);
+        assertEquals(1, gateway.startGameCalls);
         coordinator.cancel();
         assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void lockedSessionRequestsOneHostUnlockBeforeTheManualGate() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, locked, locked);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        gateway.onUnlock = () -> assertFalse(
+                harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+
+        harness.runObservation();
+
+        assertEquals(1, gateway.unlockCalls);
+        assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
+                harness.controller.snapshot().state);
+        assertTrue(harness.controller.snapshot().overlayVisible);
+        assertTrue(harness.controller.snapshot().inputBlocked);
+    }
+
+    @Test
+    public void confirmedHostUnlockReReadsTheHostAndALaterLockUsesTheManualGate() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, snapshotReadyGame(), locked);
+        gateway.unlockResult = true;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        gateway.snapshotActions.add(() -> { });
+        gateway.snapshotActions.add(() -> {
+            assertFalse(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+            // The privacy gate still waits for its own fresh frame.
+            assertTrue(harness.controller.snapshot().overlayVisible);
+        });
+        gateway.snapshotActions.add(() ->
+                assertEquals(LaunchTransitionState.GAME_READY,
+                        harness.controller.snapshot().state));
+
+        harness.runObservation();
+
+        assertEquals(1, gateway.unlockCalls);
+        assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
+                harness.controller.snapshot().state);
+    }
+
+    @Test
+    public void hostUnlockStoppedTransitionCancelsPollingAndIgnoresTheResult() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, snapshotReadyGame());
+        gateway.unlockResult = true;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        gateway.onUnlock = () -> {
+            assertFalse(gateway.unlockCancelled.getAsBoolean());
+            harness.coordinator.stop();
+            assertTrue(gateway.unlockCancelled.getAsBoolean());
+        };
+
+        harness.runObservation();
+
+        assertEquals(1, gateway.unlockCalls);
+        assertEquals(1, gateway.snapshotIndex);
+        assertFalse(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+        assertFalse(harness.states.contains(LaunchTransitionState.GAME_READY));
     }
 
     @Test
@@ -2207,6 +2271,17 @@ public class ConsoleStreamTransitionCoordinatorTest {
         IOException startError;
         boolean focusGameError;
         boolean observeStartedProcessThenStop;
+        int unlockCalls;
+        boolean unlockResult;
+        Runnable onUnlock;
+        java.util.function.BooleanSupplier unlockCancelled;
+
+        @Override public boolean unlockHostSession(java.util.function.BooleanSupplier cancelled) {
+            unlockCalls++;
+            unlockCancelled = cancelled;
+            if (onUnlock != null) onUnlock.run();
+            return unlockResult;
+        }
 
         @Override public PlayniteTransitionGateway.Snapshot snapshot() throws IOException {
             if (observeStartedProcessThenStop) {

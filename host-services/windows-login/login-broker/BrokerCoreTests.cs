@@ -38,6 +38,7 @@ namespace MoonWaker.WindowsLogin
                 Run("MWLB/MWLR v1 framing matches the Configurator contract", TestWireProtocol);
                 Run("session classification handles lock and another active user", TestSessionClassification);
                 Run("session enumeration binds the Unicode WTS API", TestSessionEnumerationUsesUnicode);
+                Run("lock state is read from Windows, not from remembered events", TestLockStateIsRead);
                 Run("pipe ACLs keep all three channels local and separated", TestPipeSecurity);
                 Run("capability requires a registered compatible provider", TestCapability);
                 Run("SID remains authoritative when account display metadata changes", TestSidIdentity);
@@ -88,6 +89,16 @@ namespace MoonWaker.WindowsLogin
                 Assert((string)reply.Extra[3] == "ready" &&
                     (string)reply.Extra[4] == "none", "gateway profile state lost credential readiness");
             }
+            harness.Sessions.State = "unknown";
+            harness.Sessions.Reason = "session_lock_state_unknown";
+            using (BrokerReply reply = Gateway(harness.Core, BrokerCore.GatewayProfileState,
+                1, ProfileId, 2, Sid, 3, Account))
+            {
+                AssertOk(reply, "unknown");
+                Assert(reply.Reason == "session_lock_state_unknown",
+                    "gateway profile state dropped the unknown-state reason");
+            }
+            harness.Sessions.Reason = "none";
 
             using (BrokerReply reply = Management(harness.Core, BrokerCore.ManagementCredentialState,
                 1, ProfileId, 2, Sid, 3, Account))
@@ -407,6 +418,64 @@ namespace MoonWaker.WindowsLogin
             Assert(import != null && import.CharSet == CharSet.Unicode &&
                 import.EntryPoint == "WTSEnumerateSessionsW" && import.ExactSpelling,
                 "session enumeration must decode WTS station names as Unicode");
+        }
+
+        private static void TestLockStateIsRead()
+        {
+            Version windows10 = new Version(10, 0);
+            // A session locked before the service started (no SessionLock event
+            // ever seen) is classified from the WTS read alone.
+            ProfileIdentity identity = new ProfileIdentity(ProfileId, Sid, Account);
+            Assert(WindowsSessionStateBackend.Classify(identity, new[] {
+                new LoginSessionSnapshot { Sid = Sid, AccountName = Account, State = "active",
+                    Locked = WindowsSessionStateBackend.LockedFromSessionFlags(
+                        WindowsSessionStateBackend.SessionStateLock, windows10) }
+            }) == "locked", "a lock that predates the service was reported active");
+            Assert(!WindowsSessionStateBackend.LockedFromSessionFlags(
+                WindowsSessionStateBackend.SessionStateUnlock, windows10),
+                "WTS_SESSIONSTATE_UNLOCK was read as locked");
+            AssertLockFault(-1, windows10, "session_lock_state_unknown");
+            AssertLockFault(WindowsSessionStateBackend.SessionStateLock, new Version(6, 1),
+                "windows_version_unsupported");
+            // Nothing remembers notifications, so a missed SessionLock or
+            // SessionUnlock cannot outvote the next read.
+            Assert(typeof(WindowsSessionStateBackend).GetFields(
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public).Length == 0 &&
+                typeof(WindowsSessionStateBackend).GetMethod("Update",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public) == null,
+                "session backend keeps event-fed lock state");
+            Assert(!new MoonWakerLoginBrokerService().CanHandleSessionChangeEvent,
+                "service still subscribes to session-change notifications");
+
+            // Only the profile's own active session is read: an unreadable lock state
+            // of another user's session cannot break classification or switching.
+            Func<int, bool> unreadable = delegate(int id) {
+                throw new BrokerFault("action_required", "session_lock_state_unknown");
+            };
+            Assert(!WindowsSessionStateBackend.TargetLocked(identity, OtherSid, "active", 2,
+                unreadable), "another user's lock state was read");
+            Assert(!WindowsSessionStateBackend.TargetLocked(identity, Sid, "disconnected", 3,
+                unreadable), "an inactive target session's lock state was read");
+            Assert(WindowsSessionStateBackend.TargetLocked(identity, Sid, "active", 1,
+                delegate(int id) { return id == 1; }), "the target lock read was skipped");
+            bool targetFault = false;
+            try { WindowsSessionStateBackend.TargetLocked(identity, Sid, "active", 1, unreadable); }
+            catch (BrokerFault) { targetFault = true; }
+            Assert(targetFault, "an unreadable target lock state was not fail-closed");
+        }
+
+        private static void AssertLockFault(int flags, Version windows, string reason)
+        {
+            try
+            {
+                WindowsSessionStateBackend.LockedFromSessionFlags(flags, windows);
+            }
+            catch (BrokerFault fault)
+            {
+                Assert(fault.Reason == reason, "unexpected lock fault " + fault.Reason);
+                return;
+            }
+            throw new InvalidOperationException("ambiguous SessionFlags were accepted");
         }
 
         private static void TestPipeSecurity()
@@ -921,7 +990,12 @@ namespace MoonWaker.WindowsLogin
             internal string SwitchState = "logon_ui";
             internal string SwitchReason;
             internal int SwitchCount;
-            public string GetState(ProfileIdentity identity) { return State; }
+            internal string Reason = "none";
+            public string GetState(ProfileIdentity identity, out string reason)
+            {
+                reason = Reason;
+                return State;
+            }
             public string Switch(ProfileIdentity identity)
             {
                 SwitchCount++;

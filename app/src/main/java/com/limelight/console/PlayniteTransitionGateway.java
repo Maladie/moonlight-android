@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -413,6 +415,59 @@ public final class PlayniteTransitionGateway {
             values.add(new Event(event.sequence, event.name, event.gameId, event.gameName));
         }
         return new Events(values, result.latestSequence);
+    }
+
+    static final long HOST_UNLOCK_TIMEOUT_MILLIS = 30_000L;
+
+    /**
+     * One {@code system/session/ensure} for this actor, followed by its attempt until the host
+     * reports the session ready, refuses, or the bound expires (the attempt is then cancelled).
+     * The Gateway applies the actor's own entitlements. An answer for another request or actor,
+     * the caller's cancellation, the bound or a failed poll cancel the live attempt, so the
+     * broker never unlocks Windows for a launch that no longer wants it.
+     */
+    public boolean unlockHostSession(BooleanSupplier cancelled)
+            throws IOException, InterruptedException {
+        String requestId = "android-unlock-" + UUID.randomUUID();
+        HostLaunchPreflight.Session session = HostLaunchPreflight.Session.from(
+                client.ensureWindowsSession(connection, requestId));
+        String attemptId = session.attemptId;
+        long deadline = monotonicClock.getAsLong() + HOST_UNLOCK_TIMEOUT_MILLIS;
+        boolean settled = false;
+        try {
+            if (!correlated(session, requestId, attemptId)) return false;
+            while (session.canPoll()) {
+                if (cancelled.getAsBoolean()
+                        || monotonicClock.getAsLong() >= deadline) return false;
+                Thread.sleep(session.retryAfterMs);
+                if (cancelled.getAsBoolean()) return false;
+                session = HostLaunchPreflight.Session.from(client.getWindowsSessionStatus(
+                        connection, requestId, attemptId));
+                if (!correlated(session, requestId, attemptId)) return false;
+            }
+            settled = true;
+            return session.isReady();
+        } finally {
+            if (!settled && !attemptId.isEmpty()) cancelUnlock(requestId, attemptId);
+        }
+    }
+
+    private boolean correlated(HostLaunchPreflight.Session session, String requestId,
+                               String attemptId) {
+        return (session.requestId.isEmpty() || session.requestId.equals(requestId))
+                && (session.actorProfileId.isEmpty()
+                        || session.actorProfileId.equals(actorContext.actorProfileId))
+                && (session.executionProfileId.isEmpty()
+                        || session.executionProfileId.equals(actorContext.executionProfileId))
+                && (session.attemptId.isEmpty() || session.attemptId.equals(attemptId));
+    }
+
+    private void cancelUnlock(String requestId, String attemptId) {
+        try {
+            client.cancelWindowsSession(connection, requestId, attemptId);
+        } catch (IOException | RuntimeException ignored) {
+            // Best effort: Broker expiry remains authoritative.
+        }
     }
 
     public void showFullscreen() throws IOException {

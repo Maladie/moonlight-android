@@ -1140,6 +1140,7 @@
     <string name="preflight_credential_action_required">Dane logowania profilu %1$s wymagają aktualizacji w MoonWaker Host Control.</string>
     <string name="preflight_other_profile_active">Na komputerze aktywny jest inny profil Windows.</string>
     <string name="preflight_login_broker_unavailable">Usługa zdalnego logowania MoonWaker jest niedostępna.</string>
+    <string name="preflight_host_session_state_unreadable">Nie można odczytać stanu sesji Windows na hoście.</string>
     <string name="preflight_windows_sign_in_failed">Nie udało się zalogować profilu %1$s.</string>
     <string name="preflight_windows_sign_in_expired">Żądanie logowania profilu %1$s wygasło.</string>
     <string name="preflight_windows_sign_in_cancelled">Logowanie profilu %1$s zostało anulowane.</string>
@@ -1152,7 +1153,7 @@
     <string name="transition_readiness_unconfirmed">Nie udało się potwierdzić gotowości</string>
     <string name="transition_launcher_interaction_required">Launcher gry wymaga Twojej uwagi. Odsłoń stream, aby kontynuować, albo wróć, aby go zakończyć.</string>
     <string name="transition_host_session_locked_title">Sesja Windows jest zablokowana</string>
-    <string name="transition_host_session_locked">MoonWaker nie zdołał zalogować się automatycznie. Wybierz „Odsłoń teraz”, aby odblokować Windows ręcznie. Aby przywrócić autologowanie, sprawdź dane logowania i uprawnienie tego urządzenia w Host Control.</string>
+    <string name="transition_host_session_locked">Sesja Windows na hoście jest zablokowana. Wybierz „Odsłoń teraz”, aby odblokować ją na ekranie. Aby odblokowanie działało automatycznie, sprawdź zapisane dane logowania i uprawnienie tego urządzenia do zdalnego logowania w Host Control.</string>
     <string name="transition_stream_display_not_configured">Wyświetlacz streamowany przez host nie jest skonfigurowany</string>
     <string name="transition_target_wrong_display">Gra przeniosła się poza streamowany wyświetlacz. Przywracanie właściwego ekranu…</string>
     <string name="console_provider_stop_waiting_for_process">Gra nadal się uruchamia i nie ma jeszcze procesu, który można zamknąć. Poczekaj chwilę i spróbuj ponownie.</string>

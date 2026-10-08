@@ -2839,6 +2839,51 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         self.assertEqual("ready", result["state"])
         self.assertEqual(1, len(self.broker.begin_calls))
 
+    def test_ensure_unlocks_locked_session_and_names_unreadable_state(self):
+        self.broker.profile = self.broker.reply(
+            True, "locked", fields={3: "ready", 4: "none"})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-locked")
+        self.assertEqual(202, status)
+        self.assertEqual(
+            [("android-tv", "living-room", "request-locked")], self.broker.begin_calls)
+
+        self.broker.profile = self.broker.reply(
+            True, "unknown", "session_lock_state_unknown", {3: "ready", 4: "none"})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-unknown")
+        self.assertEqual(409, status)
+        self.assertEqual("session_lock_state_unknown", result["reason"])
+        self.assertEqual(1, len(self.broker.begin_calls))
+
+    def test_unknown_session_never_begins_and_maps_reasons_the_client_knows(self):
+        self.add_child()
+        self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
+        for success, broker_reason, credential, remote_state, expected in (
+                (True, "windows_version_unsupported", "ready", "unavailable",
+                 "windows_version_unsupported"),
+                (True, "session_enumeration_failed", "ready", "unavailable",
+                 "session_state_unknown"),
+                (True, "none", "ready", "unavailable", "session_state_unknown"),
+                # Credential not ready must not turn unknown into a sign-in attempt.
+                (True, "session_lock_state_unknown", "action_required", "unavailable",
+                 "session_lock_state_unknown"),
+                # A failed broker call leaves the session unknown as well.
+                (False, "session_enumeration_failed", "ready", "action_required",
+                 "credential_missing")):
+            self.broker.profile = self.broker.reply(
+                success, "unknown", broker_reason,
+                {3: credential, 4: "credential_missing"})
+            for profile_id in ("living-room", "kid"):
+                status, result = self.state.ensure_session(
+                    self.client, profile_id, "request-unknown")
+                self.assertEqual(409, status)
+                self.assertEqual("unknown", result["session_state"])
+                self.assertEqual(remote_state, result["remote_sign_in_state"])
+                self.assertEqual(expected, result["reason"])
+                # The child path signs in through begin() too, so this covers both.
+                self.assertEqual([], self.broker.begin_calls)
+
     def test_switch_maps_pending_and_missing_credential_attention(self):
         status, result = self.state.switch_session(
             self.client, "living-room", "request-switch")
