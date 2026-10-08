@@ -153,6 +153,9 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertEqual(1, len(self.closes))
         second = self.start_child("456")
         old = dict(self.gateway.control_state["stream"])
+        # TV: the background scan was older than its 10 s freshness when the switch's
+        # reauthorize came 93 ms after the stop; the stop itself must leave a fresh one.
+        self.bridge.state._running_scan_at -= 11
         self.gateway.request_context.request_id = "carousel-switch-stop"
         status, result = self.gateway.child_playnite_action(
             self.client, "kid", "game/stop-verified", {

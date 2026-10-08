@@ -567,7 +567,7 @@ public class SessionStateProjectionTest {
                 owner.current(ended, 7L).observationState);
     }
 
-    @Test public void verifiedCloseProjectsUncertainUntilAFreshIdlePollIsAccepted() {
+    @Test public void verifiedCloseProjectsClosingUntilAFreshIdlePollIsAccepted() {
         // The snapshot SessionOrchestrator re-resolves right after a CLOSED result (MW-02).
         Controller controller = new Controller();
         m.enterHome(controller, "session", "host",
@@ -582,10 +582,55 @@ public class SessionStateProjectionTest {
         clearRetainedTransport();
         SessionModel.Snapshot ended = m.snapshot();
 
-        assertEquals(SessionSnapshot.State.UNCERTAIN, owner.current(ended, 3L).state);
+        // Closing, not "uncertain": the console greys the games until the host is free.
+        assertEquals(SessionSnapshot.State.TERMINATING, owner.current(ended, 3L).state);
         long afterwards = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(idle("boot", 3L, afterwards), ended, 6L));
         assertEquals(SessionSnapshot.State.NONE, owner.current(ended, 7L).state);
+    }
+
+    @Test public void closingAfterACloseIsBoundedThenUncertainAgain() {
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(m.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", first),
+                m.snapshot(), 0L));
+        assertTrue(m.markTerminating(
+                "session", "host", 42, "game"));
+        clearRetainedTransport();
+        SessionModel.Snapshot ended = m.snapshot();
+
+        assertEquals(SessionSnapshot.State.TERMINATING, owner.current(ended, 100L).state);
+        assertEquals(SessionSnapshot.State.TERMINATING, owner.current(ended,
+                100L + SessionStateResolver.CLOSING_CONFIRMATION_MS - 1L).state);
+        assertEquals("no free state in time: the ordinary uncertain path applies",
+                SessionSnapshot.State.UNCERTAIN, owner.current(ended,
+                100L + SessionStateResolver.CLOSING_CONFIRMATION_MS).state);
+    }
+
+    @Test public void renderedProjectionDoesNotStartTheClosingBound() {
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(m.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", first),
+                m.snapshot(), 0L));
+        assertTrue(m.markTerminating(
+                "session", "host", 42, "game"));
+        clearRetainedTransport();
+        SessionModel.Snapshot ended = m.snapshot();
+        owner.nextRequestOrdinal(); // Consumes the boundary and arms the closing bound.
+
+        assertEquals(SessionSnapshot.State.TERMINATING,
+                owner.rendered(ended, SessionStateResolver.LocalFacts.NONE, 100L).state);
+        assertEquals("the bound starts at the first publication, not at a render",
+                SessionSnapshot.State.TERMINATING, owner.current(ended,
+                        100L + SessionStateResolver.CLOSING_CONFIRMATION_MS).state);
     }
 
     @Test public void responseCarryingASnapshotFromBeforeTheBoundaryIsRejected() {

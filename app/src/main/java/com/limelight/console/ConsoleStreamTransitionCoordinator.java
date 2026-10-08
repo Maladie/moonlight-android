@@ -75,6 +75,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String hostScreensaverActiveMessage();
         String launcherInteractionRequiredMessage();
         String windowStabilizingMessage();
+        String gameStartTimeoutMessage();
+        String previousGameRunningMessage();
+        String previousGameStopFailedMessage();
 
         boolean isPendingInstallation(String hostId, String gameId);
         String pendingInstallationName(String hostId, String gameId);
@@ -122,6 +125,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private boolean providerCleanupArmed;
     private boolean streamConnected;
     private boolean hostUnlockAttempted;
+    /** The stale earlier launch's game the host reported running instead of this one. */
+    private String previousGameId = "";
+    private String previousProcessToken = "";
+    private String previousGameName = "";
+    private boolean previousGameStopFailed;
     private long epoch;
 
     public ConsoleStreamTransitionCoordinator(
@@ -660,18 +668,29 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         // An attached attempt stops only an identity bound by its own observation. A holderless
         // owner (runtime ended, no presentation) may bind it from one authenticated snapshot.
         // Without an exact identity the cleanup is reported unconfirmed, never as success.
+        // A host reporting this request's own start failed without a process leaves nothing
+        // to stop: the cleanup completes without a stop.
         String ownedProcessToken = claimCurrentAttemptProcessToken();
-        if (ownedProcessToken.isEmpty() && bindFromSnapshot && gateway != null) {
+        PlayniteTransitionGateway.Snapshot observed = null;
+        long observedAt = 0L;
+        if (ownedProcessToken.isEmpty() && gateway != null) {
             try {
-                captureCurrentAttemptProcess(gateway.snapshot());
+                observed = gateway.snapshot();
+                observedAt = clock.now();
             } catch (IOException | RuntimeException unavailable) {
                 // Stays unconfirmed below.
             }
-            ownedProcessToken = claimCurrentAttemptProcessToken();
+            if (bindFromSnapshot) {
+                captureCurrentAttemptProcess(observed);
+                ownedProcessToken = claimCurrentAttemptProcessToken();
+            }
         }
         if (ownedProcessToken.isEmpty()) {
-            logTimeline("provider-stop-unconfirmed");
-            completeProviderCleanup(false);
+            boolean nothingToStop = nothingToStop(observed, observedAt);
+            if (nothingToStop) clearCurrentAttemptOwner();
+            logTimeline(nothingToStop ? "provider-cleanup-nothing-to-stop"
+                    : "provider-stop-unconfirmed");
+            completeProviderCleanup(nothingToStop);
             return;
         }
         logTimeline("provider-stop-requested");
@@ -692,6 +711,86 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             LimeLog.warning("Launch timeline transition=" + transitionSpec.id
                     + " provider-stop-failed: " + error.getMessage());
             completeProviderCleanup(false);
+        }
+    }
+
+    /**
+     * The host reports this request's game failed with no process: its "failed" state names this
+     * exact game and began after this request started. An unnamed game or a failure carried
+     * over from an earlier attempt is no evidence.
+     */
+    private boolean nothingToStop(PlayniteTransitionGateway.Snapshot snapshot, long observedAt) {
+        return snapshot != null && snapshot.gatewayReady
+                && "failed".equalsIgnoreCase(snapshot.gameState)
+                && snapshot.processId == 0
+                && snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId)
+                && stateBeganForThisRequest(snapshot, observedAt);
+    }
+
+    /**
+     * The host's current state episode began after this request's local Play. The episode age
+     * is measured on the host clock alone, so wall-clock skew between the devices does not
+     * matter; transport latency can only make an older episode look up to that much newer.
+     */
+    private boolean stateBeganForThisRequest(PlayniteTransitionGateway.Snapshot snapshot,
+                                             long observedAt) {
+        return snapshot.stateAgeMs >= 0L
+                && observedAt - snapshot.stateAgeMs >= requestStartedAtMillis;
+    }
+
+    /** The stale earlier launch's game name, when the host reported one. */
+    public synchronized String previousGameName() {
+        return previousGameName;
+    }
+
+    /**
+     * Stops the stale earlier launch's game by its verified process token; this attempt's own
+     * start then continues under the same observation.
+     */
+    public void stopPreviousGame() {
+        String gameId;
+        String processToken;
+        synchronized (this) {
+            gameId = previousGameId;
+            processToken = previousProcessToken;
+        }
+        long actionEpoch = currentEpoch();
+        if (gameId.isEmpty() || processToken.isEmpty() || gateway == null || actionEpoch < 0L) {
+            return;
+        }
+        try {
+            providerExecutor.execute(() -> {
+                boolean stopped;
+                try {
+                    gateway.stopGame(gameId, processToken);
+                    stopped = true;
+                } catch (IOException | RuntimeException error) {
+                    LimeLog.warning("Launch timeline transition=" + transitionSpec.id
+                            + " previous-game-stop-failed: " + error.getMessage());
+                    stopped = false;
+                }
+                logTimeline(stopped ? "previous-game-stopped" : "previous-game-stop-failed");
+                if (!isCurrent(actionEpoch)) return;
+                synchronized (this) {
+                    if (!processToken.equals(previousProcessToken)) return;
+                    previousGameStopFailed = !stopped;
+                    if (stopped) {
+                        previousGameId = "";
+                        previousProcessToken = "";
+                        previousGameName = "";
+                    }
+                }
+                if (stopped) {
+                    transitionController.targetStarting(transitionSpec.id, transitionSpec.hostId,
+                            LaunchTransitionType.GAME, transitionSpec.playniteGameId);
+                } else {
+                    transitionController.previousGameRunning(transitionSpec.id,
+                            transitionSpec.hostId, callbacks.previousGameStopFailedMessage());
+                }
+            });
+        } catch (RuntimeException error) {
+            LimeLog.warning("Launch timeline transition=" + transitionSpec.id
+                    + " previous-game-stop-dispatch-failed: " + error.getMessage());
         }
     }
 
@@ -862,7 +961,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                         && !"host_session_locked".equals(context.lastReadinessReason)
                         && isCurrent(runEpoch)) {
                     transitionController.timedOut(transitionSpec.id,
-                            readinessFailureMessage(context.lastReadinessReason));
+                            readinessFailureMessage(context.lastReadinessReason),
+                            prefersReveal(context.lastReadinessReason));
                     return;
                 }
             } catch (IOException | RuntimeException error) {
@@ -897,21 +997,47 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             return;
         }
         if (!snapshot.connectorReady) return;
-        boolean exactVerifiedGame = kind != LaunchTransitionType.GAME
-                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId);
-        if (!exactVerifiedGame) return;
+        String previousLaunch = SessionSnapshot.normalize(snapshot.previousLaunchGameId);
         if (kind == LaunchTransitionType.GAME
-                && "launcher_interaction_required".equals(snapshot.reason)) {
+                && "previous_launch_game_running".equals(snapshot.reason)
+                && !previousLaunch.isEmpty()
+                && !previousLaunch.equals(SessionSnapshot.normalize(transitionSpec.playniteGameId))
+                && !snapshot.previousLaunchProcessToken.isEmpty()) {
+            boolean stopFailed;
+            synchronized (this) {
+                if (!snapshot.previousLaunchProcessToken.equals(previousProcessToken)) {
+                    previousGameStopFailed = false;
+                }
+                previousGameId = snapshot.previousLaunchGameId.trim();
+                previousProcessToken = snapshot.previousLaunchProcessToken;
+                previousGameName = snapshot.previousLaunchName;
+                stopFailed = previousGameStopFailed;
+            }
+            transitionController.previousGameRunning(transitionSpec.id, transitionSpec.hostId,
+                    stopFailed ? callbacks.previousGameStopFailedMessage()
+                            : callbacks.previousGameRunningMessage());
+            return;
+        }
+        // A launcher prompt may precede any game identity: the reason alone is the evidence.
+        if (kind == LaunchTransitionType.GAME
+                && "launcher_interaction_required".equals(snapshot.reason)
+                && (gameId.isEmpty()
+                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId))) {
             transitionController.launcherInteractionRequired(
-                    transitionSpec.id, transitionSpec.hostId, gameId,
+                    transitionSpec.id, transitionSpec.hostId, transitionSpec.playniteGameId,
                     callbacks.launcherInteractionRequiredMessage());
             return;
         }
-        if (kind == LaunchTransitionType.GAME
+        boolean exactVerifiedGame = kind != LaunchTransitionType.GAME
+                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId);
+        if (!exactVerifiedGame) return;
+        boolean currentRequestState = !startsProviderGame()
+                || stateBeganForThisRequest(snapshot, clock.now());
+        if (kind == LaunchTransitionType.GAME && currentRequestState
                 && "failed".equalsIgnoreCase(snapshot.gameState)) {
             requestProviderCleanup();
             transitionController.error(transitionSpec.id,
-                    readinessFailureMessage(snapshot.reason));
+                    readinessFailureMessage(snapshot.reason), prefersReveal(snapshot.reason));
             return;
         }
         boolean targetWasRunning = transitionController.snapshot().state
@@ -921,7 +1047,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         // Phase 2 starts once the host has the game's process: a verified token, or the provider
         // already running this exact game (its window probe correlated the process, while the
         // tokenizing process scan may lag it by seconds). Readiness still needs both verified.
-        if (snapshot.hasVerifiedProcessFor(gameId) || gameReportedRunning) {
+        // A provider start counts only a host state that began after this request: an older
+        // "running" (an earlier game or attempt) keeps phase 1 ("Starting the game").
+        if (currentRequestState
+                && (snapshot.hasVerifiedProcessFor(gameId) || gameReportedRunning)) {
             transitionController.targetProcessRunning(
                     transitionSpec.id, transitionSpec.hostId, kind, gameId,
                     snapshot.windowReady ? "" : readinessPendingMessage(snapshot.reason));
@@ -937,8 +1066,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         } else if (kind == LaunchTransitionType.GAME && targetWasRunning) {
             transitionController.targetWindowLost(transitionSpec.id, transitionSpec.hostId,
                     kind, gameId, windowLostMessage(snapshot.reason));
-        } else if (snapshot.stableSamples > 0
-                || "stabilizing_target_window".equals(snapshot.reason)) {
+        } else if (currentRequestState && (snapshot.stableSamples > 0
+                || "stabilizing_target_window".equals(snapshot.reason))) {
             transitionController.targetWindowStabilizing(transitionSpec.id,
                     transitionSpec.hostId, kind, gameId,
                     callbacks.windowStabilizingMessage());
@@ -1004,6 +1133,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if ("game_exited_during_start".equals(reason)) {
             return callbacks.gameExitedDuringStartMessage();
         }
+        if ("game_start_timeout".equals(reason)) {
+            return callbacks.gameStartTimeoutMessage();
+        }
         String pending = readinessPendingMessage(reason);
         if (!pending.isEmpty()) return pending;
         return callbacks.readinessUnconfirmedMessage();
@@ -1039,6 +1171,13 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             return callbacks.hostScreensaverActiveMessage();
         }
         return "";
+    }
+
+    /** A launcher waiting for input or a window off the streamed display: reveal is the remedy. */
+    static boolean prefersReveal(String reason) {
+        return "game_start_timeout".equals(reason)
+                || "target_on_wrong_display".equals(reason)
+                || "launcher_interaction_required".equals(reason);
     }
 
     private static boolean isPrivacyGateFailure(String reason) {

@@ -482,9 +482,11 @@ other providers.
 
 ## 6. Privacy architecture
 
-### 6.1 Android privacy gate
+### 6.1 Android privacy cover
 
-`LaunchTransitionController` remains responsible for ensuring Android does not reveal the stream before:
+The privacy cover is a cosmetic UX layer, not a security or privacy boundary.
+`LaunchTransitionController` remains responsible for ensuring Android does not
+reveal the stream automatically before:
 
 - transport is ready;
 - correct host is correlated;
@@ -493,22 +495,27 @@ other providers.
 - a fresh video frame is observed after the readiness edge;
 - reveal animation has completed before input is unblocked.
 
-These invariants are architectural requirements.
+When readiness fails or stays uncertain while transport delivers frames, the
+user can always reveal manually ("Reveal now"); the cover never rejects them.
+After a manual reveal the cover does not return within that transition or
+stream; a later failure there is only a notice. It may return only with a new
+transition the user starts (for example a game started from the revealed
+Playnite).
 
 ### 6.2 Host Privacy Surface
 
-Android alone cannot guarantee that a desktop frame is never captured after an unexpected target crash.
+Android alone does not hide a desktop frame after an unexpected target crash.
 
-Before final v1.0 privacy guarantees, implement a host-side opaque privacy surface on the streamed display.
-
-Required semantics:
+An optional host-side opaque surface on the streamed display could improve the
+cosmetic transition. It is not implemented. If it is added, it should provide:
 
 - idempotent `privacy/show`;
 - idempotent `privacy/hide`;
 - transition ID required;
 - acknowledgement of effective transition ID;
 - host privacy surface shown before planned target replacement/close;
-- Android privacy surface stays opaque until host confirms target readiness and host privacy removal.
+- Android cover kept until host confirms target readiness and host surface
+  removal, with the manual reveal still available as in 6.1.
 
 ## 7. Boot, sleep, and remote sign-in
 
@@ -521,7 +528,7 @@ Wake-on-LAN / network ready
     -> target Windows session active (or one Broker attempt)
     -> selected profile Bridges ready
     -> target ready
-    -> existing Moonlight launch and transition privacy gates
+    -> existing Moonlight launch and transition privacy cover
 ```
 
 `PlayIntent` pins `(hostId, profileId)` for the entire operation. Android polls
@@ -529,7 +536,7 @@ one attempt for at most two minutes and cancels it best-effort when orchestratio
 is cancelled or profile selection changes. Broker expiry is the fallback.
 `INTERACTIVE_SESSION_READY` is separately observable; it is not a second
 transition state machine. `LaunchTransitionController` remains authoritative
-for stream privacy, fresh-frame readiness, reveal, and input gating.
+for the cosmetic privacy cover, fresh-frame readiness, reveal, and input gating.
 
 Changing the active Windows desktop is a separate, explicit `session/switch`
 mutation. The authenticated request requires `use_profile`, `remote_sign_in`, a

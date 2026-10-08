@@ -1,13 +1,18 @@
 import ctypes
 import json
 import os
+import tempfile
 import time
 import unittest
+from http import HTTPStatus
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from GameProviderBridge import (
-    FILETIME_UNIX_EPOCH, GAME_START_TIMEOUT, RUNNING_SCAN_DEADLINE, BridgeState,
-    ProviderDiagnostics, WindowProbe, WindowReadinessWorker)
+    FILETIME_UNIX_EPOCH, GAME_START_TIMEOUT, RUNNING_SCAN_DEADLINE, UNFINISHED_LAUNCH_TTL,
+    BridgeState, GameProviderHandler, ProviderDiagnostics, WindowProbe,
+    WindowReadinessWorker)
 from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
 
@@ -62,6 +67,33 @@ class ProcessIdentityStatusTest(unittest.TestCase):
             self.probe.kernel32.GetExitCodeProcess.side_effect = \
                 lambda _handle, value, code=exit_code: setattr(value._obj, "value", code) is None
             self.assertEqual(expected, self.probe.process_identity_status(44)[0])
+
+
+class SteamPromptWindowTest(unittest.TestCase):
+    def test_foreground_steam_window_on_the_display_wins_else_the_largest(self):
+        def window(hwnd, image, width, foreground=False, display=r"\\.\DISPLAY9",
+                   path=r"C:\Steam\bin\cef\steamwebhelper.exe"):
+            return {"hwnd": hwnd, "process_id": hwnd * 10, "image": image,
+                    "process_path": path, "display": display, "foreground": foreground,
+                    "bounds": [0, 0, width, 100], "monitor_bounds": [0, 0, 1920, 1080],
+                    "title": "secret"}
+        windows = [
+            window(1, "steamwebhelper.exe", 1920),
+            window(2, "steamwebhelper.exe", 400, foreground=True),
+            window(3, "steamwebhelper.exe", 3000, display=r"\\.\DISPLAY1"),
+            window(4, "game.exe", 4000, foreground=True, path=r"C:\Games\game.exe"),
+        ]
+        probe = object.__new__(WindowProbe)
+        probe.interactive_windows = mock.Mock(side_effect=lambda _all: list(windows))
+        steam = mock.Mock()
+        steam.executable.return_value = Path(r"C:\Steam\steam.exe")
+        selected = probe.steam_prompt_window(steam, r"\\.\DISPLAY9")
+        self.assertEqual(2, selected["hwnd"])
+        self.assertNotIn("title", selected)
+        windows[1]["foreground"] = False
+        self.assertEqual(1, probe.steam_prompt_window(steam, r"\\.\DISPLAY9")["hwnd"])
+        steam.executable.return_value = None
+        self.assertEqual({}, probe.steam_prompt_window(steam, r"\\.\DISPLAY9"))
 
 
 class RunningScanFreshnessTest(unittest.TestCase):
@@ -162,6 +194,18 @@ class RunningGamesTest(unittest.TestCase):
         result = self.state._stop_verified_running_game("epic:Cowbird", token)
         self.assertFalse(result["stopped_current"])
         self.assertEqual(newer, self.state.current)
+
+    def test_verified_stop_leaves_a_fresh_inventory_without_the_game(self):
+        # TV: reauthorize 93 ms after stop-verified saw a scan older than 10 s (409).
+        token = self.token("epic:Cowbird")
+        self.state._running_scan_at -= 11
+        self.probe.stop_verified_process.side_effect = lambda *_: setattr(
+            self.probe.scan_running_processes, "return_value", ([], "complete")) or True
+        self.assertTrue(self.state._stop_verified_running_game(
+            "epic:Cowbird", token)["stopped_current"])
+        process = self.state.observation_snapshot()["process"]
+        self.assertEqual(("ABSENT", "complete", []), (
+            process["evidence"], process["running_scan_status"], process["running_games"]))
 
     def test_old_token_reuse_profile_library_and_ambiguity_have_zero_effect(self):
         token = self.token()
@@ -886,6 +930,194 @@ class StartReadinessTest(unittest.TestCase):
         self.scan(identity(11, started=filetime(self.requested_at + 5)))
         self.assertNotIn("processId", self.state.current)
         self.assertEqual("PENDING", self.state.observation_snapshot()["process"]["evidence"])
+
+    def run_worker_once(self, probe):
+        resolver = mock.Mock()
+        resolver.resolve.return_value = None
+        self.state.installation_probes = mock.Mock(return_value=[])
+        self.state.refresh_running_games = mock.Mock()
+        with mock.patch("GameProviderBridge.time.sleep", side_effect=StopIteration):
+            with self.assertRaises(StopIteration):
+                WindowReadinessWorker(self.state, probe, resolver).run()
+
+    def test_steam_interstitial_is_launcher_interaction_without_start_timeout(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "logs"))
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 10))
+            with open(os.path.join(root, "logs", "console_log.txt"), "w") as log:
+                log.write(
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp changed task '
+                    f'to ShowInterstitials with ""\n'
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp waiting for '
+                    f'user response to ShowInterstitials ""\n')
+            self.state.game_operations.steam.root_resolver = lambda: Path(root)
+            self.state.library["steam:1"]["providerGameId"] = "1"
+            probe = mock.Mock()
+            probe.steam_prompt_window.return_value = {
+                "hwnd": 5, "process_id": 77, "image": "steamwebhelper.exe",
+                "display": r"\\.\DISPLAY9", "foreground": True}
+            self.run_worker_once(probe)
+        probe.sample.assert_not_called()
+        self.assertEqual("launcher_interaction_required", self.state.readiness["reason"])
+        self.assertEqual("launcher-interaction-required", self.state.events[-1]["event"])
+        # The user has not answered Steam yet: the start limit does not end the start.
+        self.now += GAME_START_TIMEOUT + 60
+        self.no_window()
+        self.assertEqual("starting", self.state.current["state"])
+        observation = self.state.observation_snapshot()
+        self.assertEqual("launcher_interaction_required", observation["provider"]["reason"])
+        self.assertEqual({"detail": "steam_ShowInterstitials", "image": "steamwebhelper.exe",
+                          "process_id": 77, "display": r"\\.\DISPLAY9", "foreground": True},
+                         observation["window"]["launcher"])
+
+    def test_steam_answered_prompt_is_not_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "logs"))
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 10))
+            with open(os.path.join(root, "logs", "console_log.txt"), "w") as log:
+                log.write(
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp waiting for '
+                    f'user response to ShowInterstitials ""\n'
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp continues with '
+                    f'user response "ShowInterstitials"\n'
+                    f'[{stamp}] GameAction [AppID 2, ActionID 7] : LaunchApp waiting for '
+                    f'user response to ShowInterstitials ""\n')
+            steam = SteamProvider(root_resolver=lambda: Path(root))
+            self.assertEqual("", steam.pending_launch_prompt({"providerGameId": "1"}))
+            self.assertEqual("ShowInterstitials",
+                             steam.pending_launch_prompt({"providerGameId": "2"}))
+            # Steam's own sub-second waits are not a prompt.
+            self.assertEqual("", steam.pending_launch_prompt(
+                {"providerGameId": "2"}, now=time.time() - 9))
+
+    def test_closed_session_abandons_a_start_without_a_game_process(self):
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("failed", self.state.current["state"])
+        result = self.state.abandon_start("steam:1")
+        self.assertTrue(result["accepted"], result)
+        self.assertEqual({"state": "idle"}, self.state.current)
+        self.assertEqual("idle", self.state.observation_snapshot()["game"]["state"])
+        self.assertFalse(self.state.abandon_start("steam:1")["accepted"])
+        # A start still in phase 1 is abandoned too; one with a game process is not.
+        self.state.current = {"state": "starting", "id": "steam:1",
+                              "installDir": r"C:\Games\HK", "launchRequestedAt": self.now}
+        self.assertTrue(self.state.abandon_start("steam:1")["accepted"])
+        self.state.current = {"state": "starting", "id": "steam:1", "processId": 11,
+                              "installDir": r"C:\Games\HK", "launchRequestedAt": self.now}
+        self.assertFalse(self.state.abandon_start("steam:1")["accepted"])
+        self.assertEqual("starting", self.state.current["state"])
+
+    def test_late_previous_launch_is_reported_not_adopted(self):
+        self.state.library["steam:1"]["name"] = "Hollow Knight"
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.state.current = {"state": "starting", "id": "steam:2",
+                              "installDir": r"C:\Games\Other", "launchRequestedAt": self.now}
+        b_requested_at = self.now
+        late = identity(11, started=filetime(b_requested_at + 30))
+        self.now += 30
+        self.scan(late)
+        self.no_window()
+        self.assertNotIn("processId", self.state.current)
+        self.assertEqual("previous_launch_game_running", self.state.readiness["reason"])
+        observation = self.state.observation_snapshot()
+        self.assertEqual("previous_launch_game_running", observation["provider"]["reason"])
+        previous = observation["window"]["previous_launch"]
+        self.assertEqual(("steam:1", 11, "Hollow Knight"),
+                         (previous["game_id"], previous["process_id"], previous["name"]))
+        running = observation["process"]["running_games"]
+        self.assertEqual([{key: previous[key] for key in (
+            "game_id", "process_id", "process_token")}], running)
+        # The user decides: no start timeout while that game holds the screen.
+        self.now = b_requested_at + GAME_START_TIMEOUT + 60
+        self.scan(late)
+        self.no_window()
+        self.assertEqual("starting", self.state.current["state"])
+        # Gone: the start limit runs again from then. The reason leaves with its block,
+        # before any window sample (the client rejects the reason without the block).
+        self.scan()
+        observation = self.state.observation_snapshot()
+        self.assertNotIn("previous_launch", observation["window"])
+        self.assertEqual("game_starting", observation["window"]["reason"])
+        self.assertEqual("game_starting", observation["provider"]["reason"])
+        self.no_window()
+        self.assertNotIn("previous_launch", self.state.observation_snapshot()["window"])
+        self.assertEqual("starting", self.state.current["state"])
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("game_start_timeout", self.state.current["reason"])
+
+    def post(self, path, body):
+        handler = object.__new__(GameProviderHandler)
+        handler.server = SimpleNamespace(state=self.state)
+        handler.path = path
+        handler.read_json = mock.Mock(return_value=body)
+        handler.send_json = mock.Mock()
+        handler._begin_diagnostics = mock.Mock()
+        handler._finish_diagnostics = mock.Mock()
+        handler.do_POST()
+        return handler.send_json.call_args.args
+
+    def test_abandon_start_route_runs_under_the_effect_fence(self):
+        binding = {"operation_id": "close-9", "generation": 9, "actor_lease_epoch": 3,
+                   "effect_sequence": 1, "actor_profile_id": "parent",
+                   "execution_profile_id": "parent", "stream_session_id": "stream-1"}
+        self.state.authorize_control_effect({**binding, "operation_id": "newer-10",
+                                             "generation": 10, "actor_lease_epoch": 4})
+        # A close older than the fence's high-water mark has zero effect.
+        status, response = self.post("/game/abandon-start",
+                                     {"game_id": "steam:1", "control_operation": binding})
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status)
+        self.assertIn("Stale", response["error"])
+        self.assertEqual("starting", self.state.current["state"])
+        status, response = self.post("/game/abandon-start", {
+            "game_id": "steam:1", "control_operation": {
+                **binding, "operation_id": "close-11", "generation": 11,
+                "actor_lease_epoch": 5}})
+        self.assertEqual(HTTPStatus.ACCEPTED, status, response)
+        self.assertEqual(("steam:1", True), (response["abandoned_game_id"],
+                                             response["accepted"]))
+        self.assertEqual({"state": "idle"}, self.state.current)
+
+    def fail_a_then_start_b(self):
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("steam:1", self.state._unfinished_launch["id"])
+        self.state.current = {"state": "starting", "id": "steam:2",
+                              "installDir": r"C:\Games\Other", "launchRequestedAt": self.now}
+
+    def test_unfinished_launch_expires_after_its_window(self):
+        self.fail_a_then_start_b()
+        self.now = self.requested_at + UNFINISHED_LAUNCH_TTL + 1
+        # Started by the user on the PC long after A's request: not the previous launch.
+        self.scan(identity(11, started=filetime(self.now)))
+        self.assertIsNone(self.state._unfinished_launch)
+        self.assertNotIn("previous_launch", self.state.observation_snapshot()["window"])
+
+    def test_unfinished_launch_ends_when_a_later_start_runs_or_a_is_adopted(self):
+        self.fail_a_then_start_b()
+        self.state.apply_window_sample({"qualified": False, "reason": "target_not_foreground",
+                                        "process_id": 21})
+        self.assertEqual("running", self.state.current["state"])
+        self.scan(identity(21, r"C:\Games\Other\other.exe", filetime(self.now)))
+        self.assertIsNone(self.state._unfinished_launch)
+        # A failed again, then its own request adopts its late process.
+        self.state.current = {"state": "starting", "id": "steam:1",
+                              "installDir": r"C:\Games\HK", "launchRequestedAt": self.now}
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.assertEqual("steam:1", self.state._unfinished_launch["id"])
+        self.scan(identity(11, started=filetime(self.now)))
+        self.assertEqual(11, self.state.current["processId"])
+        self.assertIsNone(self.state._unfinished_launch)
+
+    def test_new_start_of_the_unfinished_game_owns_it_again(self):
+        self.now += GAME_START_TIMEOUT
+        self.no_window()
+        self.state.game_operations.launch = mock.Mock(return_value={"accepted": True})
+        self.state.start_game("steam:1")
+        self.assertIsNone(self.state._unfinished_launch)
 
     def test_probe_reason_changes_are_recorded_once_without_titles(self):
         samples = iter([

@@ -5175,7 +5175,30 @@ class GatewayState:
                 return HTTPStatus.CONFLICT, self._control_result(active)
             if active.get("direction") == "transition" and effect_result is not None:
                 active["effect_result"] = json.loads(json.dumps(effect_result))
-            return HTTPStatus.OK, self._control_finish_locked(active, "succeeded", "none")
+            abandon = dict(active) if active.get("abandoned_start_game_id") else None
+            finished = self._control_finish_locked(active, "succeeded", "none")
+        if abandon is not None:
+            # Sent after the lock: a slow Bridge never stalls other control operations, and
+            # its effect fence rejects this binding once a newer operation reached it.
+            self._control_abandon_start(abandon)
+        return HTTPStatus.OK, finished
+
+    def _control_abandon_start(self, operation: dict[str, Any]) -> None:
+        """The closed stream's launch never produced a game process: the Bridge, the owner of
+        that start, drops it to idle under this permit so the host is free at once. Nothing
+        is stopped; a refusal (the start changed) leaves the provider's own state."""
+        game_id = str(operation["abandoned_start_game_id"])
+        ok, result = self.proxy_json(
+            "game_provider", "/game/abandon-start",
+            {"game_id": game_id,
+             "control_operation": ControlOperationPolicy.bridge_binding(operation)},
+            timeout=3.0, profile_id=operation["execution_profile_id"])
+        DIAGNOSTICS.record(
+            "control-launch-abandoned", "INFO" if ok else "WARN",
+            operation_id=operation.get("operation_id", ""), game_id=game_id,
+            accepted=bool(ok and isinstance(result, dict) and result.get("accepted")),
+            reason=str((result or {}).get("reason") or (result or {}).get("error") or "none")
+            if isinstance(result, dict) else "provider_response_unavailable")
 
     def control_operation_reconcile(self, client: dict[str, Any], body: dict[str, Any],
                                     request_id: str) -> tuple[int, dict[str, Any]]:
@@ -5405,7 +5428,9 @@ class GatewayState:
         if intent in {"full_quit", "hard_reset"} and self._control_launch_without_process(
                 current, expected_token, expected_game):
             return {"provider_game_id": "", "process_token": "", "process_id": 0,
-                    "provider_idle_confirmed": False}
+                    "provider_idle_confirmed": False,
+                    "abandoned_start_game_id": self._child_time_normalize_game_id(
+                        current.get("game_id"))}
         return {"provider_game_id": "", "process_token": "", "process_id": 0,
                 "provider_idle_confirmed": True} if idle else None
 

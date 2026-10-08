@@ -70,6 +70,10 @@ LOCKED_RUNNING_SCAN_DEADLINE = 0.25
 # Phase 1 of a start: from the request until a verified process of the game exists.
 # Phase 2 (process verified, waiting for its window) has no limit while that process lives.
 GAME_START_TIMEOUT = 90.0
+# A start that ended without a game process may still be launched late by its launcher
+# (an unanswered Steam ShowInterstitials took 9 minutes on the TV). Its game starting within
+# this window of that request is reported as the previous launch; later it is the user's own.
+UNFINISHED_LAUNCH_TTL = 15 * 60.0
 # A running screen saver hides the Default desktop a transition waits for. While a transition
 # is active it is asked to close again at this interval (it may come back after a close).
 SCREENSAVER_CLOSE_INTERVAL = 5.0
@@ -1164,6 +1168,25 @@ class WindowProbe:
         display = str(window.get("display") or "")
         return not expected_display or display.casefold() == expected_display.casefold()
 
+    def steam_prompt_window(self, provider: SteamProvider,
+                            expected_display: str) -> dict[str, Any]:
+        """The Steam window on the streamed display that shows a launch prompt: the
+        foreground one, else the largest (Big Picture renders the prompt inside itself)."""
+        executable = provider.executable()
+        if executable is None:
+            return {}
+        windows = [window for window in self.interactive_windows(True)
+                   if self._steam_window(window, executable.parent, expected_display)]
+        if not windows:
+            return {}
+        selected = max(windows, key=lambda window: (
+            bool(window.get("foreground")),
+            max(0, window["bounds"][2] - window["bounds"][0]) *
+            max(0, window["bounds"][3] - window["bounds"][1])))
+        return {key: selected[key] for key in (
+            "hwnd", "process_id", "image", "display", "bounds", "monitor_bounds",
+            "foreground")}
+
     def prepare_steam_launch(self, provider: SteamProvider,
                              expected_display: str = "") -> dict[str, Any]:
         if self.input_desktop_blocked() or self.uac_consent_pending(fail_closed=True) \
@@ -1757,6 +1780,11 @@ class BridgeState:
         self._launcher_interaction_required = False
         self._launcher_invoked_signature: tuple[Any, ...] | None = None
         self._launcher_invoked_at = 0.0
+        # The last start that ended without a game process (failed or abandoned), and the
+        # verified process such a late launcher start produced during another game's start.
+        self._unfinished_launch: dict[str, Any] | None = None
+        self._previous_launch_game: dict[str, Any] | None = None
+        self._previous_launch_seen_at = 0.0
         self.graceful_close: Callable[[int], bool] | None = None
         self.show_fullscreen_action: Callable[[], dict[str, Any]] | None = None
         self.focus_game_action: Callable[[int, str, str], dict[str, Any]] | None = None
@@ -3147,6 +3175,10 @@ class BridgeState:
             self._launcher_interaction_required = False
             self._launcher_invoked_signature = None
             self._launcher_invoked_at = 0.0
+            self._previous_launch_game = None
+            self._previous_launch_seen_at = 0.0
+            if (self._unfinished_launch or {}).get("id") == normalized:
+                self._unfinished_launch = None  # This request owns A's processes now.
         if provider in {self.game_operations.epic, self.game_operations.steam}:
             task_id = f"{normalized}:launch:{time.time_ns()}"
             with self.lock:
@@ -4079,8 +4111,29 @@ class BridgeState:
         self._launcher_interaction_required = False
         self._launcher_invoked_signature = None
         self._launcher_invoked_at = 0.0
+        self._previous_launch_game = None
         self._last_window_signature = None
         self._publish_locked("game-stopped", previous)
+
+    def abandon_start(self, game_id: Any) -> dict[str, Any]:
+        """A closed session ends its start that never produced a game process.
+
+        Nothing is stopped: the start goes idle so the host is free at once. A late launcher
+        start is remembered and reported, never adopted, while another game starts."""
+        normalized = self.resolve_game_id(game_id)
+        with self.lock:
+            state = str(self.current.get("state") or "").casefold()
+            if str(self.current.get("id") or "") != normalized \
+                    or state not in {"starting", "failed"} \
+                    or int(self.current.get("processId") or 0):
+                return {"accepted": False, "command": "abandon-start",
+                        "reason": "start_not_abandonable"}
+            self._unfinished_launch = {"id": normalized, "launchRequestedAt": float(
+                self.current.get("launchRequestedAt") or 0.0)}
+            self._complete_game_stop_locked()
+            self.readiness["reason"] = "start_abandoned"
+            return {"accepted": True, "command": "abandon-start",
+                    "abandoned_game_id": normalized}
 
     def _request_game_close_locked(self, process_id: int) -> bool:
         close = self.graceful_close
@@ -4354,17 +4407,14 @@ class BridgeState:
         except Exception:
             games, status, revision, reason = [], "unavailable", "", "scan_error"
         with self.lock:
-            if revision != self.library_revision or self.current is not observed_current:
+            if revision != self.library_revision or self.current is not observed_current \
+                    or self._running_scan_at > started:
+                # Stale: the catalog or the start changed, or a stop recorded a newer scan.
                 self._epic_playtime_samples.clear()
                 return
             self._sample_epic_playtime_locked(
                 games if status != "unavailable" else [], time.monotonic())
-            self._running_games = [{key: game[key] for key in (
-                "game_id", "process_id", "process_token")} for game in games]
-            previous = self._running_scan_status
-            self._running_scan_status = status
-            self._running_scan_revision = self.library_revision
-            self._running_scan_at = time.monotonic()
+            previous = self._record_running_scan_locked(games, status)
             self._apply_start_process_evidence_locked(games, status)
         elapsed = time.monotonic() - started
         if status != previous:
@@ -4374,6 +4424,24 @@ class BridgeState:
                                duration_ms=int(elapsed * 1000))
         if elapsed > 0.2:
             logging.warning("Running game scan took %.0fms (%s)", elapsed * 1000, status)
+
+    def _record_running_scan_locked(self, games: list[dict[str, Any]], status: str) -> str:
+        """Publish a running-game inventory as fresh now; returns the previous status."""
+        self._running_games = [{key: game[key] for key in (
+            "game_id", "process_id", "process_token")} for game in games]
+        previous = self._running_scan_status
+        self._running_scan_status = status
+        self._running_scan_revision = self.library_revision
+        self._running_scan_at = time.monotonic()
+        return previous
+
+    def _rescan_after_stop_locked(self) -> None:
+        """A verified stop ends with a fresh inventory, so a reauthorization right after it
+        sees the game gone instead of an inventory up to one background interval old."""
+        games, status, revision, _reason = self._verified_running_games(
+            LOCKED_RUNNING_SCAN_DEADLINE)
+        if status != "unavailable" and revision == self.library_revision:
+            self._record_running_scan_locked(games, status)
 
     def current_snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -4403,6 +4471,26 @@ class BridgeState:
                     "running_games": [dict(game) for game in self._running_games] if fresh else [],
                     "running_scan_status": self._running_scan_status if fresh else "unavailable",
                     "running_scan_revision": self._running_scan_revision if fresh else self.library_revision}
+
+    def _window_targets_locked(self) -> dict[str, Any]:
+        """The surface a non-ready start waits on: a launcher prompt the user must answer,
+        or the previous request's game (the user may stop it by its exact token)."""
+        targets: dict[str, Any] = {}
+        if self.readiness.get("reason") == "launcher_interaction_required":
+            targets["launcher"] = {
+                "detail": str(self.readiness.get("launcher_detail") or ""),
+                "image": str(self.readiness.get("image") or ""),
+                "process_id": int(self.readiness.get("process_id") or 0),
+                "display": str(self.readiness.get("display") or ""),
+                "foreground": bool(self.readiness.get("foreground")),
+            }
+        if self._previous_launch_game is not None:
+            previous = dict(self._previous_launch_game)
+            name = str((self.library.get(previous["game_id"]) or {}).get("name") or "")
+            if name:
+                previous["name"] = name
+            targets["previous_launch"] = previous
+        return targets
 
     def observation_snapshot(self) -> dict[str, Any]:
         """Capture game, process and window evidence at one lock linearization point."""
@@ -4491,7 +4579,8 @@ class BridgeState:
                                "target_kind") or "playnite"),
                            "stable_samples": int(self.readiness.get(
                                "stable_samples") or 0),
-                           "reason": str(self.readiness.get("reason") or reason)},
+                           "reason": str(self.readiness.get("reason") or reason),
+                           **self._window_targets_locked()},
                 "capabilities": {
                     "host_guide_allowed": bool(current.get("host_guide_allowed", False)),
                     "requires_connector": bool(current.get("requires_connector", False)),
@@ -4531,6 +4620,7 @@ class BridgeState:
                 self._complete_game_stop_locked()
             self._running_games = [game for game in self._running_games
                                    if game["process_token"] != token]
+            self._rescan_after_stop_locked()
             return {"accepted": True, "command": "stop", "force": False,
                     "stopped_game_id": normalized, "stopped_current": stopped_current}
 
@@ -4615,10 +4705,7 @@ class BridgeState:
 
             self._complete_game_stop_locked()
             self.readiness["reason"] = "session_hard_reset"
-            self._running_games = []
-            self._running_scan_status = status
-            self._running_scan_revision = self.library_revision
-            self._running_scan_at = time.monotonic()
+            self._record_running_scan_locked([], status)  # Every scanned game was killed.
             self._publish_locked("session-hard-reset", {
                 "stopped_count": len(stopped),
             })
@@ -4797,6 +4884,9 @@ class BridgeState:
             self.game_operations.finish_process(task_id)
         self.current = {"state": "failed", "id": game_id, "reason": reason, **{
             key: self.current[key] for key in START_REQUEST_KEYS if key in self.current}}
+        self._unfinished_launch = {"id": game_id, "launchRequestedAt": float(
+            self.current.get("launchRequestedAt") or 0.0)}
+        self._previous_launch_game = None
         self.readiness.update({"ready": False, "reason": reason, "stable_samples": 0})
         self._launcher_candidate_signature = None
         self._launcher_candidate_samples = 0
@@ -4817,6 +4907,29 @@ class BridgeState:
         state = str(self.current.get("state") or "").casefold()
         game_id = str(self.current.get("id") or "")
         requested_at = float(self.current.get("launchRequestedAt") or 0.0)
+        previous = self._unfinished_launch
+        if previous and (state == "running" or self.clock() - previous[
+                "launchRequestedAt"] > UNFINISHED_LAUNCH_TTL):
+            # A later start reached its game, or the launcher had its time: whatever A
+            # starts from now on is the user's own launch on the PC.
+            self._unfinished_launch = previous = None
+        stale = [game for game in games if previous and state == "starting"
+                 and not int(self.current.get("processId") or 0)
+                 and game["game_id"] == previous["id"] != game_id
+                 and (int(game["process_started_filetime"]) - FILETIME_UNIX_EPOCH) / 10_000_000
+                 >= previous["launchRequestedAt"]]
+        if stale:
+            # A late start of the previous request, not this one: reported, never adopted.
+            chosen = max(stale, key=lambda game: int(game["process_started_filetime"]))
+            self._previous_launch_game = {key: chosen[key] for key in (
+                "game_id", "process_id", "process_token")}
+        elif status == "complete" or state != "starting":
+            self._previous_launch_game = None
+            if self.readiness.get("reason") == "previous_launch_game_running":
+                # The reason never outlives its window.previous_launch block.
+                self.readiness.update({"reason": "waiting_for_game_window" if int(
+                    self.current.get("processId") or 0) else "game_starting",
+                    "stable_samples": 0})
         if state not in {"starting", "failed"} or not game_id or requested_at <= 0 \
                 or str(self.readiness.get("target_kind") or "").casefold() != "game":
             return
@@ -4834,6 +4947,8 @@ class BridgeState:
                 "processPath": str(chosen["process_path"]),
                 "processStartedFiletime": int(chosen["process_started_filetime"]),
             })
+            if previous and previous["id"] == game_id:
+                self._unfinished_launch = None  # A's late start is A's own again.
             if state == "failed" or self.readiness.get("reason") == "game_starting":
                 self.readiness.update({"ready": False, "reason": "waiting_for_game_window",
                                        "stable_samples": 0})
@@ -4887,6 +5002,15 @@ class BridgeState:
             if target_kind == "game" and current_state == "running" and \
                     sample.get("launcher_candidate"):
                 return
+            if target_kind == "game" and current_state == "starting" and \
+                    self._previous_launch_game is not None and \
+                    not int(self.current.get("processId") or 0) and \
+                    not sample.get("qualified"):
+                # The previous request's game holds the screen; the user decides. The start
+                # limit runs again from when it is gone.
+                self._previous_launch_seen_at = self.clock()
+                sample = {"qualified": False, "reason": "previous_launch_game_running"}
+                sample_reason = "previous_launch_game_running"
             if target_kind == "game" and current_state == "starting" and \
                     self._launcher_interaction_required and \
                     not sample.get("qualified") and \
@@ -5037,7 +5161,8 @@ class BridgeState:
                     and sample_reason in {
                         "waiting_for_game_identity", "waiting_for_game_window"} \
                     and launch_requested_at > 0 \
-                    and self.clock() - launch_requested_at >= GAME_START_TIMEOUT:
+                    and self.clock() - max(launch_requested_at, self._previous_launch_seen_at) \
+                    >= GAME_START_TIMEOUT:
                 self._fail_start_locked(
                     "launcher_closed_without_game"
                     if self._launcher_automation_attempted
@@ -5083,7 +5208,7 @@ class BridgeState:
                     self.readiness["launcher_detail"] = str(
                         sample["launcher_detail"])[:200]
                 for key in (
-                        "process_id", "display", "bounds", "monitor_bounds",
+                        "process_id", "image", "display", "bounds", "monitor_bounds",
                         "foreground", "foreground_hwnd", "foreground_display",
                         "foreground_process_id", "foreground_image"):
                     if key in sample:
@@ -5366,11 +5491,27 @@ class WindowReadinessWorker:
                                  launch_game.get("name") or "")
             expected_launcher_images = self.state.game_operations.expected_launcher_images(
                 launch_game) if launch_game else set()
+            steam = self.state.game_operations.steam
+            steam_prompt = steam.pending_launch_prompt(launch_game) \
+                if launch_in_progress and not process_id and launch_game and \
+                self.state.game_operations.provider_for(launch_game) is steam else ""
             if target_kind == "game" and \
                     str(current.get("state") or "").casefold() == "failed":
                 # apply_window_sample ignores a failed game and the running scan drives its
                 # adoption, so a kept installDir must not enumerate windows every tick.
                 sample = {"qualified": False, "reason": "game_start_failed"}
+            elif steam_prompt:
+                # Steam itself waits for the user (interstitial, launch dialog): no window
+                # heuristic sees it inside Big Picture, Steam's launch log does.
+                sample = {
+                    "qualified": False, "reason": "launcher_interaction_required",
+                    "launcher_candidate": True, "launcher_detail": "steam_" + steam_prompt,
+                    **self.probe.steam_prompt_window(steam, expected_display),
+                    "observed_game_id": str(current.get("id") or ""),
+                    "observed_target_kind": target_kind,
+                    "observed_launch_requested_at": launch_requested_at,
+                }
+                self.state.apply_window_sample(sample)
             elif target_kind == "game" and not process_id and not install_directory:
                 sample = {
                     "qualified": False, "reason": "waiting_for_game_identity",
@@ -5776,6 +5917,10 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                     body.get("control_operation"),
                     lambda: self.state._stop_verified_running_game(
                         body.get("game_id"), body.get("expected_process_token")))
+            elif path == "/game/abandon-start":
+                result = self.state.run_control_effect(
+                    body.get("control_operation"),
+                    lambda: self.state.abandon_start(body.get("game_id")))
             elif path == "/session/hard-reset":
                 if body.get("force") is not True:
                     raise ValueError("Explicit force confirmation is required.")

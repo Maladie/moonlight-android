@@ -63,6 +63,16 @@ public final class PlayniteTransitionGateway {
         public final String gameEvidence;
         public final String processEvidence;
         public final long transportGeneration;
+        /** The stale earlier launch's game and verified process token, when the host reports it. */
+        public final String previousLaunchGameId;
+        public final String previousLaunchProcessToken;
+        /** Optional display name of that earlier launch's game; empty when the host omits it. */
+        public final String previousLaunchName;
+        /**
+         * How long the host's current state episode had lasted when it was observed
+         * ({@code observed_at - state_since}, host clock only); -1 when unknown.
+         */
+        public final long stateAgeMs;
         final SessionSnapshot sessionSnapshot;
 
         Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
@@ -83,6 +93,17 @@ public final class PlayniteTransitionGateway {
                  String gameId, int processId, boolean windowReady, String targetKind,
                  int stableSamples, String reason, boolean hostGuideAllowed,
                  String processToken) {
+            this(gatewayReady, connectorReady, gameState, gameId, processId, windowReady,
+                    targetKind, stableSamples, reason, hostGuideAllowed, processToken, "", "",
+                    "", 0L);
+        }
+
+        Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
+                 String gameId, int processId, boolean windowReady, String targetKind,
+                 int stableSamples, String reason, boolean hostGuideAllowed,
+                 String processToken, String previousLaunchGameId,
+                 String previousLaunchProcessToken, String previousLaunchName,
+                 long stateAgeMs) {
             this.gatewayReady = gatewayReady;
             this.connectorReady = connectorReady;
             this.gameState = gameState;
@@ -99,6 +120,10 @@ public final class PlayniteTransitionGateway {
                     ? "ABSENT" : "VERIFIED";
             this.processEvidence = processId > 0 ? "VERIFIED" : "UNAVAILABLE";
             this.transportGeneration = 0L;
+            this.previousLaunchGameId = previousLaunchGameId;
+            this.previousLaunchProcessToken = previousLaunchProcessToken;
+            this.previousLaunchName = previousLaunchName;
+            this.stateAgeMs = stateAgeMs;
             this.sessionSnapshot = null;
         }
 
@@ -125,6 +150,10 @@ public final class PlayniteTransitionGateway {
             this.gameEvidence = fenced.gameEvidence.name();
             this.processEvidence = fenced.processEvidence.name();
             this.transportGeneration = projected.transportGeneration;
+            this.previousLaunchGameId = fenced.previousLaunchGameId;
+            this.previousLaunchProcessToken = fenced.previousLaunchProcessToken;
+            this.previousLaunchName = fenced.previousLaunchGameName;
+            this.stateAgeMs = fenced.observedAtUnixMs - fenced.stateSinceUnixMs;
             this.sessionSnapshot = projected;
         }
 
@@ -150,6 +179,13 @@ public final class PlayniteTransitionGateway {
                     ? "UNAVAILABLE" : observation.gameEvidence.name();
             this.processEvidence = projected.processEvidence;
             this.transportGeneration = projected.transportGeneration;
+            this.previousLaunchGameId = observation == null ? "" : observation.previousLaunchGameId;
+            this.previousLaunchProcessToken = observation == null
+                    ? "" : observation.previousLaunchProcessToken;
+            this.previousLaunchName = observation == null
+                    ? "" : observation.previousLaunchGameName;
+            this.stateAgeMs = observation == null
+                    ? -1L : observation.observedAtUnixMs - observation.stateSinceUnixMs;
             this.sessionSnapshot = projected;
         }
 

@@ -1079,7 +1079,7 @@
     <string name="transition_checking_game_launch_service">Sprawdzanie usługi uruchamiania gier</string>
     <string name="transition_waiting_fullscreen">Playnite działa — oczekiwanie na jego okno</string>
     <string name="transition_starting_game">Uruchamianie gry…</string>
-    <string name="transition_verifying_readiness">Gra działa — oczekiwanie na jej okno</string>
+    <string name="transition_verifying_readiness">Oczekiwanie na okno gry</string>
     <string name="transition_game_running_waiting_window">Gra uruchomiona — czekam na okno gry</string>
     <string name="transition_start_taking_longer">Uruchamianie trwa dłużej niż zwykle</string>
     <string name="transition_game_exited_during_start">Gra zamknęła się podczas uruchamiania</string>
@@ -1156,6 +1156,15 @@
     <string name="transition_stream_disconnected">Stream został rozłączony</string>
     <string name="transition_readiness_unconfirmed">Nie udało się potwierdzić gotowości</string>
     <string name="transition_launcher_interaction_required">Launcher gry wymaga Twojej uwagi. Odsłoń stream, aby kontynuować, albo wróć, aby go zakończyć.</string>
+    <string name="transition_launcher_waiting_title">Launcher czeka na odpowiedź</string>
+    <string name="transition_game_start_timeout">Gra nie uruchomiła się. Sprawdź, czy launcher nie czeka na odpowiedź — możesz go odsłonić.</string>
+    <string name="transition_previous_game_running_title">Uruchomiła się poprzednio wybrana gra</string>
+    <string name="transition_previous_game_running">Zamiast wybranej gry działa gra z wcześniejszego uruchomienia. Odsłoń ją albo zakończ, aby kontynuować uruchamianie wybranej gry.</string>
+    <string name="transition_previous_game_stop_failed">Nie udało się zakończyć tamtej gry. Spróbuj ponownie, odsłoń ją albo anuluj.</string>
+    <string name="transition_end_previous_game">Zakończ tamtą grę</string>
+    <string name="transition_previous_game_running_title_named">Uruchomiła się poprzednio wybrana gra: %1$s</string>
+    <string name="transition_previous_game_running_child">Zamiast wybranej gry działa gra z wcześniejszego uruchomienia. Odsłoń ją albo anuluj.</string>
+    <string name="transition_switch_authorization_pending">Poprzednia gra została zamknięta, ale host jeszcze nie potwierdził gotowości. Spróbuj ponownie.</string>
     <string name="transition_host_session_locked_title">Sesja Windows jest zablokowana</string>
     <string name="transition_host_session_locked">Sesja Windows na hoście jest zablokowana. Wybierz „Odsłoń teraz”, aby odblokować ją na ekranie. Aby odblokowanie działało automatycznie, sprawdź zapisane dane logowania i uprawnienie tego urządzenia do zdalnego logowania w Host Control.</string>
     <string name="transition_stream_display_not_configured">Wyświetlacz streamowany przez host nie jest skonfigurowany</string>

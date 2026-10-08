@@ -6,7 +6,8 @@ import java.util.Objects;
 
 /**
  * Thread-safe transition state machine. Every asynchronous signal is correlated
- * with the active transition and host before it can change privacy or input state.
+ * with the active transition and host before it can change cover or input state. The cover is
+ * cosmetic: whenever readiness fails or stays uncertain over a live stream, the user can remove it.
  */
 public final class LaunchTransitionController {
     public interface Listener {
@@ -38,6 +39,9 @@ public final class LaunchTransitionController {
     private boolean startTakingLonger;
     /** The host reported this attempt's game window ready at least once: its start finished. */
     private boolean gameReadyConfirmed;
+    private boolean revealPreferred;
+    /** A readiness failure after the user's manual reveal: reported, never covering again. */
+    private String notice = "";
     private LaunchTransitionState terminalFailureState;
     private String detail = "";
     private String diagnosticSignature = "";
@@ -75,6 +79,8 @@ public final class LaunchTransitionController {
         uncertain = false;
         startTakingLonger = false;
         gameReadyConfirmed = false;
+        revealPreferred = false;
+        notice = "";
         terminalFailureState = null;
         detail = "";
         return publish();
@@ -82,7 +88,7 @@ public final class LaunchTransitionController {
 
     /**
      * The exact game start is still not ready past the local soft threshold. Only adds a notice:
-     * readiness, reveal and failure stay with the host observation and the privacy gate. A game
+     * readiness, reveal and failure stay with the host observation and this controller. A game
      * whose window was once ready is running; a later window loss is not a slow start.
      */
     public synchronized void startTakingLonger(String transitionId) {
@@ -129,7 +135,8 @@ public final class LaunchTransitionController {
         }
         if (spec.type == LaunchTransitionType.PLAYNITE) {
             state = LaunchTransitionState.PLAYNITE_STARTING;
-        } else if (spec.type == LaunchTransitionType.GAME) {
+        } else if (spec.type == LaunchTransitionType.GAME && !targetProcessRunning) {
+            // A game started before the stream keeps its confirmed phase 2; never back to 1.
             state = LaunchTransitionState.GAME_START_REQUESTED;
         }
         evaluateReady();
@@ -242,8 +249,9 @@ public final class LaunchTransitionController {
                                               String gameId, String reason) {
         if (!acceptTarget(transitionId, hostId, kind, gameId)
                 || rejectsLateTargetSignal()) return;
+        // The live stream keeps its frames for "Reveal now"; automatic reveal still needs a
+        // fresh frame after the next readiness edge (targetWindowReady).
         targetWindowReady = false;
-        videoFrameReady = false;
         detail = reason == null ? "" : reason;
         state = kind == LaunchTransitionType.GAME
                 ? LaunchTransitionState.GAME_WINDOW_STABILIZING
@@ -275,7 +283,24 @@ public final class LaunchTransitionController {
         targetWindowReady = false;
         detail = reason == null ? "" : reason;
         state = LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED;
-        manualRevealAvailable = surfaceReady && streamConnected && videoFrameReady && inputReady;
+        manualRevealAvailable = transportReady();
+        publish();
+    }
+
+    /**
+     * The host reports a stale earlier launch's game running instead of this attempt's game.
+     * The user may reveal, end that game, or cancel; nothing is decided automatically.
+     */
+    public synchronized void previousGameRunning(String transitionId, String hostId,
+                                                 String reason) {
+        if (!accept(transitionId, hostId) || currentTarget != LaunchTransitionType.GAME
+                || revealAuthorized || revealCompleted || rejectsLateTargetSignal()) return;
+        overlayVisible = true;
+        inputBlocked = true;
+        targetWindowReady = false;
+        detail = reason == null ? "" : reason;
+        state = LaunchTransitionState.PREVIOUS_GAME_RUNNING;
+        manualRevealAvailable = transportReady();
         publish();
     }
 
@@ -299,7 +324,7 @@ public final class LaunchTransitionController {
         inputBlocked = true;
         revealAuthorized = false;
         revealCompleted = false;
-        manualRevealAvailable = surfaceReady && streamConnected && videoFrameReady && inputReady;
+        manualRevealAvailable = transportReady();
         publish();
     }
 
@@ -390,12 +415,18 @@ public final class LaunchTransitionController {
     }
 
     public synchronized void timedOut(String transitionId, String reason) {
-        if (!accept(transitionId, null)) return;
+        timedOut(transitionId, reason, false);
+    }
+
+    public synchronized void timedOut(String transitionId, String reason,
+                                      boolean revealPreferred) {
+        if (!accept(transitionId, null) || reportAfterManualReveal(reason)) return;
         state = LaunchTransitionState.TIMED_OUT;
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
-        manualRevealAvailable = false;
+        manualRevealAvailable = transportReady();
+        this.revealPreferred = revealPreferred;
         uncertain = true;
         terminalFailureState = LaunchTransitionState.TIMED_OUT;
         detail = reason == null ? "" : reason;
@@ -403,12 +434,18 @@ public final class LaunchTransitionController {
     }
 
     public synchronized void error(String transitionId, String reason) {
-        if (!accept(transitionId, null)) return;
+        error(transitionId, reason, false);
+    }
+
+    /** A failure never rejects the user: a live stream keeps "Reveal now" available. */
+    public synchronized void error(String transitionId, String reason, boolean revealPreferred) {
+        if (!accept(transitionId, null) || reportAfterManualReveal(reason)) return;
         state = LaunchTransitionState.ERROR;
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
-        manualRevealAvailable = false;
+        manualRevealAvailable = transportReady();
+        this.revealPreferred = revealPreferred;
         terminalFailureState = LaunchTransitionState.ERROR;
         detail = reason == null ? "" : reason;
         publish();
@@ -424,7 +461,7 @@ public final class LaunchTransitionController {
     }
 
     public synchronized void showStreamAnyway(String transitionId) {
-        if (!accept(transitionId, null) || (!manualRevealAvailable && !uncertain)) return;
+        if (!accept(transitionId, null) || !manualRevealAvailable) return;
         terminalFailureState = null;
         manualRevealOverride = true;
         revealAuthorized = true;
@@ -478,6 +515,7 @@ public final class LaunchTransitionController {
 
     private boolean requiresUserInteraction() {
         return state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED
+                || state == LaunchTransitionState.PREVIOUS_GAME_RUNNING
                 || state == LaunchTransitionState.HOST_SESSION_LOCKED;
     }
 
@@ -493,11 +531,11 @@ public final class LaunchTransitionController {
             publish();
             return;
         }
-        boolean transportReady = surfaceReady && streamConnected && videoFrameReady && inputReady;
+        boolean transportReady = transportReady();
         boolean targetReady = gatewayReady && targetProcessRunning && targetWindowReady;
         if (terminalFailureState != null) {
             state = terminalFailureState;
-            manualRevealAvailable = uncertain && transportReady;
+            manualRevealAvailable = transportReady;
             publish();
             return;
         }
@@ -518,6 +556,18 @@ public final class LaunchTransitionController {
             manualRevealAvailable = true;
         }
         publish();
+    }
+
+    /** The user chose to see this stream: a later failure is only a notice over it. */
+    private boolean reportAfterManualReveal(String reason) {
+        if (!manualRevealOverride || !revealCompleted) return false;
+        notice = reason == null ? "" : reason;
+        publish();
+        return true;
+    }
+
+    private boolean transportReady() {
+        return surfaceReady && streamConnected && videoFrameReady && inputReady;
     }
 
     private LaunchTransitionSnapshot publish() {
@@ -567,7 +617,7 @@ public final class LaunchTransitionController {
         return new LaunchTransitionSnapshot(spec, state, activeStep,
                 overlayVisible, inputBlocked, operationAuthorized, revealAuthorized,
                 manualRevealAvailable, uncertain, detail,
-                startTakingLonger && isGameStartPending(state));
+                startTakingLonger && isGameStartPending(state), revealPreferred, notice);
     }
 
     static int stepForState(LaunchTransitionState state) {
@@ -587,6 +637,7 @@ public final class LaunchTransitionController {
             case GAME_WINDOW_STABILIZING:
             case HOST_SESSION_LOCKED:
             case LAUNCHER_INTERACTION_REQUIRED:
+            case PREVIOUS_GAME_RUNNING:
             case GAME_STOPPING:
             case PLAYNITE_RETURNING:
             case PLAYNITE_STOPPING:

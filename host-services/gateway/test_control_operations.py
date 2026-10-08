@@ -1173,6 +1173,56 @@ class ControlOperationTest(unittest.TestCase):
         self.observe_launch("failed")
         self.close_permit(a1)
 
+    def test_close_after_failed_launch_abandons_that_start_in_the_bridge(self):
+        a1 = self.launched_stream()
+        self.observe_launch("failed")
+        calls = []
+
+        def control_lock_free():
+            # Another thread can take the control lock: the slow Bridge call blocks nobody.
+            free = []
+            probe = threading.Thread(target=lambda: free.append(
+                self.state.control_condition.acquire(timeout=1.0)
+                and self.state.control_condition.release() is None))
+            probe.start()
+            probe.join()
+            return free == [True]
+
+        self.state.proxy_json = lambda name, path, body, **kwargs: (
+            calls.append((name, path, body, kwargs, control_lock_free()))
+            or (True, {"accepted": True}))
+        status, close = self.acquire(self.request(
+            "a1-full_quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(200, status, close)
+        self.assertEqual([], calls)  # Nothing is abandoned before the close succeeds.
+        self.assertEqual(200, self.complete(close)[0])
+        self.assertEqual(1, len(calls))
+        name, path, body, kwargs, lock_free = calls[0]
+        self.assertTrue(lock_free)
+        self.assertEqual(("game_provider", "/game/abandon-start", "steam:7", "parent"),
+                         (name, path, body["game_id"], kwargs["profile_id"]))
+        self.assertEqual((close["operation_id"], close["generation"]), (
+            body["control_operation"]["operation_id"],
+            body["control_operation"]["generation"]))
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_close_succeeds_when_the_bridge_refuses_to_abandon(self):
+        a1 = self.launched_stream()
+        self.observe_launch("starting")
+        self.state.proxy_json = lambda *_args, **_kwargs: (
+            True, {"accepted": False, "reason": "start_not_abandonable"})
+        self.close_permit(a1)
+
+    def test_close_with_a_verified_process_abandons_nothing(self):
+        a1 = self.launched_stream()
+        self.observe_launch("starting", running=[
+            {"game_id": "steam:7", "process_id": 77, "process_token": "b" * 64}])
+        self.state.proxy_json = lambda *_args, **_kwargs: self.fail("no abandon")
+        status, close = self.acquire(self.request(
+            "a1-quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(200, status, close)
+        self.assertEqual(200, self.complete(close)[0])
+
     def test_close_after_failed_launch_when_retained_process_gone(self):
         a1 = self.launched_stream(token="a" * 64)
         self.observe_launch("failed")

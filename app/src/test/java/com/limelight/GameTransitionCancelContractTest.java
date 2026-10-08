@@ -1194,13 +1194,99 @@ public class GameTransitionCancelContractTest {
                 "retry-1", "retry-1", "retry-1", false, true, false));
     }
 
+    @Test public void cancelOnFailedStartObservationClosesTheWholeSession() throws IOException {
+        String text = source();
+        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
+                text.indexOf("private boolean closeFailedStartObservationSession()"));
+        String close = text.substring(
+                text.indexOf("private boolean closeFailedStartObservationSession()"),
+                text.indexOf("private boolean returnRetainedObservationToDashboard()"));
+        String rearm = text.substring(
+                text.indexOf("private boolean rearmFailedNewGameObservation("),
+                text.indexOf("private void updateRetainedTransitionIntent("));
+
+        assertTrue(rearm.contains("failedStartObservationId = observation.id;"));
+        assertTrue(cancel.indexOf("closeFailedStartObservationSession()")
+                < cancel.indexOf("returnRetainedObservationToDashboard()"));
+        assertTrue(close.contains("terminateWholeSessionVerified(null)"));
+        assertFalse(close.contains("openConsoleHome()"));
+        assertTrue(Game.isFailedStartObservation("observation-1", "observation-1"));
+        assertFalse(Game.isFailedStartObservation("", ""));
+        assertFalse("ordinary retained observation keeps its dashboard return",
+                Game.isFailedStartObservation("observation-1", "observation-2"));
+    }
+
+    @Test public void refusedAuthorizationAfterAStoppedGameRetriesOnceThenOffersRetry()
+            throws IOException {
+        String text = source();
+        String handoff = text.substring(text.indexOf("private void runRetainedActorHandoff("),
+                text.indexOf("static final String RETAINED_AUTHORIZATION_UNCONFIRMED"));
+        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
+                text.indexOf("private boolean closeFailedStartObservationSession()"));
+        String retry = text.substring(text.indexOf("private void retryTransition()"),
+                text.indexOf("private void retryRetainedObservation()"));
+        String settle = text.substring(
+                text.indexOf("private boolean settleOfferedAuthorizationRetry("),
+                text.indexOf("ProviderProcessIdentity\n            resolveRetainedProviderIdentity("));
+
+        assertTrue(handoff.contains("HttpURLConnection.HTTP_CONFLICT"));
+        assertTrue(handoff.contains("SystemClock.sleep(RETAINED_AUTHORIZATION_RETRY_DELAY_MS)"));
+        assertTrue(handoff.contains("offerRetainedAuthorizationRetry(operation)"));
+        assertTrue(cancel.indexOf("settleOfferedAuthorizationRetry(false)")
+                < cancel.indexOf("closeFailedStartObservationSession()"));
+        assertTrue(retry.indexOf("settleOfferedAuthorizationRetry(true)")
+                < retry.indexOf("retainedSwitch.retryRequested = true"));
+        assertTrue(settle.contains("settleStartFailedSwitch(operation)"));
+        assertTrue(Game.retriesRetainedAuthorization(false, 0));
+        assertFalse("exactly one quiet retry", Game.retriesRetainedAuthorization(false, 1));
+        assertFalse("a reused running game is not stopped: no retry",
+                Game.retriesRetainedAuthorization(true, 0));
+        assertTrue(Game.offersRetainedAuthorizationRetry(false, false,
+                Game.RETAINED_AUTHORIZATION_UNCONFIRMED));
+        assertFalse("a changed child time attachment still fails closed",
+                Game.offersRetainedAuthorizationRetry(true, false,
+                        Game.RETAINED_AUTHORIZATION_UNCONFIRMED));
+        assertFalse(Game.offersRetainedAuthorizationRetry(false, true,
+                Game.RETAINED_AUTHORIZATION_UNCONFIRMED));
+        assertFalse(Game.offersRetainedAuthorizationRetry(false, false,
+                "retained_switch_context_changed"));
+    }
+
+    @Test public void childIsNotOfferedToEndThePreviousLaunchGame() throws IOException {
+        String text = source();
+        String render = text.substring(
+                text.indexOf("snapshot.state == LaunchTransitionState.PREVIOUS_GAME_RUNNING) {\n"
+                        + "            String previousName"),
+                text.indexOf("} else if (snapshot.state == LaunchTransitionState.ERROR"));
+
+        assertTrue(render.contains("offersPreviousGameStop(isChildSession())"));
+        assertTrue(render.contains("R.string.transition_previous_game_running_title_named"));
+        assertTrue(text.contains("&& offersPreviousGameStop(isChildSession())) {\n"
+                + "                                transitionCoordinator.stopPreviousGame();"));
+        assertTrue(Game.offersPreviousGameStop(false));
+        assertFalse(Game.offersPreviousGameStop(true));
+    }
+
+    @Test public void failedStartObservationSurvivesRecreation() throws IOException {
+        String text = source();
+        String save = text.substring(text.indexOf("protected void onSaveInstanceState("),
+                text.indexOf("private void recordActivityIdentity("));
+        String create = text.substring(text.indexOf("protected void onCreate("),
+                text.indexOf("readChildSessionExtras();", text.indexOf("protected void onCreate(")));
+
+        assertTrue(save.contains("STATE_FAILED_START_OBSERVATION_ID, failedStartObservationId"));
+        assertTrue(create.contains("savedInstanceState.getString(\n"
+                + "                    STATE_FAILED_START_OBSERVATION_ID"));
+    }
+
     @Test public void retryFenceSurvivesRecreationAndUnownedTransportIsStopped()
             throws IOException {
         String game = source();
         String create = game.substring(game.indexOf("protected void onCreate("),
                 game.indexOf("private MediaCodecDecoderRenderer createDecoderRenderer"));
         String save = game.substring(game.indexOf("protected void onSaveInstanceState("),
-                game.indexOf("if (transitionCoordinator != null)"));
+                game.indexOf("if (transitionCoordinator != null)",
+                        game.indexOf("protected void onSaveInstanceState(")));
         String retry = game.substring(game.indexOf("private void retryTransition()"),
                 game.indexOf("private void retryRetainedObservation()"));
         String destroy = game.substring(game.indexOf("protected void onDestroy()"),

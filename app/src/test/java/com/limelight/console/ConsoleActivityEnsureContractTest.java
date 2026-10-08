@@ -280,6 +280,8 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(method.contains("R.string.console_checking_host"));
         assertTrue(method.contains("R.string.transition_checking_game_launch_service"));
         assertFalse(method.contains("R.string.console_wol_status"));
+        assertFalse("no game runs before the stream starts it",
+                method.contains("R.string.transition_verifying_readiness"));
     }
 
     @Test public void terminatingSessionDisablesHostAndGameSideActions()

@@ -214,6 +214,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean providerEndGameInFlight;
     private boolean timedOutRevealedReturnInFlight;
     private boolean retainedDashboardReturnInFlight;
+    /** The observation kept on the retained transport after this game's start failed. */
+    private String failedStartObservationId = "";
+    private String lastTransitionNotice = "";
     private String providerStartRejectedTransitionId = "";
     private String retryTransitionId = "";
     private final WholeSessionTermination.Owner wholeSessionTermination =
@@ -394,6 +397,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static final String EXTRA_AUTO_WARM_UP_CONVERTED = "AutoWarmUpConvertedToGame";
     private static final String STATE_TRANSITION_REVEALED = "ConsoleTransitionRevealed";
     private static final String STATE_RETRY_TRANSITION_ID = "ConsoleRetryTransitionId";
+    private static final String STATE_FAILED_START_OBSERVATION_ID =
+            "ConsoleFailedStartObservationId";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
     // A retained switch selected while no presentation was attached; submitted after attach.
     public static final String EXTRA_PENDING_SWITCH_HOST_ID = "PendingSwitchHostId";
@@ -424,6 +429,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 : savedInstanceState.getString(STATE_RETRY_TRANSITION_ID,
                 getIntent().getStringExtra(STATE_RETRY_TRANSITION_ID));
         if (retryTransitionId == null) retryTransitionId = "";
+        if (savedInstanceState != null) {
+            failedStartObservationId = savedInstanceState.getString(
+                    STATE_FAILED_START_OBSERVATION_ID, "");
+        }
         readChildSessionExtras();
         sourceSuspendId = normalizeOpaqueId(
                 getIntent().getStringExtra(EXTRA_SOURCE_SUSPEND_ID));
@@ -550,6 +559,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
 
                     @Override public void onRetry() {
+                        // The stale earlier launch's game: this slot reads "End that game".
+                        if (transitionController.snapshot().state
+                                == LaunchTransitionState.PREVIOUS_GAME_RUNNING) {
+                            if (transitionCoordinator != null
+                                    && offersPreviousGameStop(isChildSession())) {
+                                transitionCoordinator.stopPreviousGame();
+                            }
+                            return;
+                        }
                         retryTransition();
                     }
 
@@ -1751,6 +1769,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     protected void onSaveInstanceState(Bundle outState) {
         outState.putBoolean(STATE_TRANSITION_REVEALED, streamEverRevealed);
         outState.putString(STATE_RETRY_TRANSITION_ID, retryTransitionId);
+        outState.putString(STATE_FAILED_START_OBSERVATION_ID, failedStartObservationId);
         super.onSaveInstanceState(outState);
     }
 
@@ -3769,11 +3788,34 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 String authorizationId = ControlOperationClient.operationId("reauthorize",
                         streamSessionId, operation.request.appId,
                         expectedAuthorizationGeneration, nextChildId);
-                ControlOperationClient.Permit authorization = new ControlOperationClient(
-                        new GatewayTransport()).acquire(targetGateway.gatewayConnection(), authorizationId,
-                        "reauthorize", streamSessionId, operation.request.appId,
-                        expectedAuthorizationGeneration, operation.request.appId, nextChildId);
-                if (!authorization.succeeded()) throw new IOException("retained_authorization_unconfirmed");
+                ControlOperationClient authorizer = new ControlOperationClient(new GatewayTransport());
+                ControlOperationClient.Permit granted = null;
+                for (int attempt = 0; granted == null; attempt++) {
+                    try {
+                        ControlOperationClient.Permit permit = authorizer.acquire(
+                                targetGateway.gatewayConnection(), authorizationId,
+                                "reauthorize", streamSessionId, operation.request.appId,
+                                expectedAuthorizationGeneration, operation.request.appId,
+                                nextChildId);
+                        if (permit.succeeded()) granted = permit;
+                    } catch (GatewayTransport.GatewayException refused) {
+                        if (refused.statusCode() != java.net.HttpURLConnection.HTTP_CONFLICT) {
+                            throw refused;
+                        }
+                    }
+                    if (granted != null) break;
+                    if (!retriesRetainedAuthorization(reuseRunningGame, attempt)) {
+                        throw new IOException(RETAINED_AUTHORIZATION_UNCONFIRMED);
+                    }
+                    // The previous game is already stopped, but the host's process scan may
+                    // still lag that stop: one quiet retry of the same operation.
+                    SystemClock.sleep(RETAINED_AUTHORIZATION_RETRY_DELAY_MS);
+                    if (!isCurrentRetainedSwitch(operation)
+                            || operation.request.cancelled.getAsBoolean()) {
+                        throw new IOException("retained_switch_context_changed");
+                    }
+                }
+                final ControlOperationClient.Permit authorization = granted;
                 if (reuseRunningGame && (!operation.request.streamSessionId.equals(
                         authorization.streamSessionId)
                         || authorization.sunshineAppId != operation.request.appId
@@ -3869,9 +3911,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             pendingChildSessionId, allowance);
                 }
                 boolean failClosed = timeAttachmentMayHaveChanged;
+                boolean offerRetry = offersRetainedAuthorizationRetry(
+                        failClosed, reuseRunningGame, error.getMessage());
                 runOnUiThread(() -> {
                     if (!isCurrentRetainedSwitch(operation)) return;
-                    if (!failClosed && reuseRunningGame) {
+                    if (offerRetry) {
+                        offerRetainedAuthorizationRetry(operation);
+                    } else if (!failClosed && reuseRunningGame) {
                         recoverRetainedSwitch(operation,
                                 SessionModel.SwitchOutcome.FAILED,
                                 error.getMessage());
@@ -3884,6 +3930,48 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 });
             }
         }, "MoonWaker-SwitchActor").start();
+    }
+
+    static final String RETAINED_AUTHORIZATION_UNCONFIRMED = "retained_authorization_unconfirmed";
+    static final long RETAINED_AUTHORIZATION_RETRY_DELAY_MS = 1_500L;
+
+    /** Only a new game after a stopped one retries, and only once. */
+    static boolean retriesRetainedAuthorization(boolean reuseRunningGame, int attempt) {
+        return !reuseRunningGame && attempt == 0;
+    }
+
+    /**
+     * The previous game is stopped and the host still refused the new game's authorization:
+     * the stream stays open and the user decides (Retry starts the chosen game again).
+     */
+    static boolean offersRetainedAuthorizationRetry(boolean failClosed,
+                                                    boolean reuseRunningGame, String error) {
+        return !failClosed && !reuseRunningGame
+                && RETAINED_AUTHORIZATION_UNCONFIRMED.equals(error);
+    }
+
+    private void offerRetainedAuthorizationRetry(RetainedSwitch operation) {
+        settleNeutralRetainedStream(operation);
+        operation.authorizationRetryOffered = true;
+        transitionController.error(transitionSpec.id,
+                getString(R.string.transition_switch_authorization_pending));
+        // The console stops waiting; this stream carries the choice.
+        signalRetainedSwitchReuse(operation);
+    }
+
+    /**
+     * Retry or Cancel on an offered authorization retry settles through the start-failed path:
+     * Retry begins a new attempt for the chosen game, Cancel keeps the neutral stream.
+     */
+    private boolean settleOfferedAuthorizationRetry(boolean retry) {
+        RetainedSwitch operation = retainedSwitch;
+        if (operation == null || !operation.authorizationRetryOffered
+                || !isCurrentRetainedSwitch(operation)) return false;
+        operation.authorizationRetryOffered = false;
+        operation.retryRequested = retry;
+        operation.cancelRequested = !retry;
+        settleStartFailedSwitch(operation);
+        return true;
     }
 
     private ConsoleStreamTransitionCoordinator.ProviderProcessIdentity
@@ -4265,6 +4353,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 LaunchTransitionType.GAME_CONNECTION,
                 operation.request.appId, gameId, System.currentTimeMillis());
         transitionSpec = observation;
+        failedStartObservationId = observation.id;
         updateRetainedTransitionIntent(observation, gameId,
                 operation.request.newGameName, operation.request.artworkPath);
         streamEverRevealed = false;
@@ -4410,6 +4499,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean startFailedCleanupPending;
         boolean providerStartRejected;
         boolean retryRequested;
+        /** The host refused the new game's authorization twice; Retry/Cancel decide. */
+        boolean authorizationRetryOffered;
         boolean identityConflict;
 
         RetainedSwitch(SessionModel.SwitchRequest request,
@@ -5326,6 +5417,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         return getString(R.string.transition_window_stabilizing);
                     }
 
+                    @Override public String gameStartTimeoutMessage() {
+                        return getString(R.string.transition_game_start_timeout);
+                    }
+
+                    @Override public String previousGameRunningMessage() {
+                        return getString(isChildSession()
+                                ? R.string.transition_previous_game_running_child
+                                : R.string.transition_previous_game_running);
+                    }
+
+                    @Override public String previousGameStopFailedMessage() {
+                        return getString(R.string.transition_previous_game_stop_failed);
+                    }
+
                     @Override public boolean isPendingInstallation(String hostId, String gameId) {
                         return Game.this.isPendingInstallation(hostId, gameId);
                     }
@@ -5676,13 +5781,34 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 armNextVideoFrameForTransition(snapshot.spec.id, "transition-gate");
             }
         }
+        // After a manual reveal the user decided: a failure is a notice, never the cover again.
+        String notice = snapshot.notice.isEmpty() ? "" : snapshot.spec.id + '|' + snapshot.notice;
+        if (!notice.isEmpty() && !notice.equals(lastTransitionNotice)) {
+            lastTransitionNotice = notice;
+            displayMessage(snapshot.notice);
+        }
+        // The cover is cosmetic: every failure keeps "Reveal now" while the stream has frames.
+        boolean revealOffered = !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable;
+        consoleLoadingView.setRetryLabel(
+                snapshot.state == LaunchTransitionState.PREVIOUS_GAME_RUNNING
+                        ? R.string.transition_end_previous_game : R.string.transition_retry);
         if (snapshot.state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) {
             consoleLoadingView.showLauncherInteraction(
-                    getString(R.string.transition_game_failed),
+                    getString(R.string.transition_launcher_waiting_title),
                     snapshot.detail.isEmpty()
                             ? getString(R.string.transition_launcher_interaction_required)
                             : snapshot.detail,
-                    snapshot.manualRevealAvailable);
+                    revealOffered);
+        } else if (snapshot.state == LaunchTransitionState.PREVIOUS_GAME_RUNNING) {
+            String previousName = transitionCoordinator == null
+                    ? "" : transitionCoordinator.previousGameName();
+            // A child cannot end a game outside its own session (the Gateway refuses it).
+            consoleLoadingView.showError(previousName.isEmpty()
+                            ? getString(R.string.transition_previous_game_running_title)
+                            : getString(R.string.transition_previous_game_running_title_named,
+                            previousName),
+                    snapshot.detail, revealOffered, false,
+                    offersPreviousGameStop(isChildSession()));
         } else if (snapshot.state == LaunchTransitionState.ERROR
                 || snapshot.state == LaunchTransitionState.TIMED_OUT) {
             int title = transitionSpec.type == LaunchTransitionType.PLAYNITE
@@ -5694,7 +5820,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     snapshot.detail.isEmpty()
                             ? getString(R.string.transition_readiness_unconfirmed)
                             : snapshot.detail,
-                    snapshot.uncertain);
+                    revealOffered, snapshot.revealPreferred, true);
         } else if (snapshot.state == LaunchTransitionState.CANCELLED) {
             consoleLoadingView.showCancelling();
         }
@@ -5985,6 +6111,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (transitionController == null || transitionCancelInFlight) return;
         retryTransitionId = "";
         getIntent().removeExtra(STATE_RETRY_TRANSITION_ID);
+        if (settleOfferedAuthorizationRetry(false)) return;
+        if (closeFailedStartObservationSession()) return;
         if (returnRetainedObservationToDashboard()) return;
         if (retainedSwitch != null) {
             // A user Cancel overrides a retry-triggered retained cleanup.
@@ -6020,6 +6148,32 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         StreamRuntime cancelled = runtime;
         stopConnection(finishOnce);
         if (controlGeneration <= 0L && cancelled != null) cancelled.abandonLaunch();
+    }
+
+    /**
+     * Cancel on the observation kept after a failed start abandons that start like any other
+     * start cancel: the whole host session closes instead of returning to the console.
+     */
+    private boolean closeFailedStartObservationSession() {
+        if (!isFailedStartObservation(failedStartObservationId,
+                transitionSpec == null ? "" : transitionSpec.id)) return false;
+        transitionCancelInFlight = true;
+        transitionController.cancel(transitionSpec.id);
+        cancelPendingAutomaticReveal();
+        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+        terminateWholeSessionVerified(null);
+        return true;
+    }
+
+    /** Only a parent may end the stale earlier launch's game; a child reveals or cancels. */
+    static boolean offersPreviousGameStop(boolean childSession) {
+        return !childSession;
+    }
+
+    static boolean isFailedStartObservation(String failedStartObservationId,
+                                            String currentTransitionId) {
+        return failedStartObservationId != null && !failedStartObservationId.isEmpty()
+                && failedStartObservationId.equals(currentTransitionId);
     }
 
     private boolean returnRetainedObservationToDashboard() {
@@ -6169,6 +6323,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         String retryId = transitionSpec.id;
         retryTransitionId = retryId;
         getIntent().putExtra(STATE_RETRY_TRANSITION_ID, retryId);
+        if (settleOfferedAuthorizationRetry(true)) return;
         if (retainedSwitch != null && retainedSwitch.newSpec != null) {
             retainedSwitch.retryRequested = true;
             requestRetainedSwitchCancellation(retainedSwitch);

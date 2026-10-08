@@ -9268,7 +9268,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean installing = operation.installActive || operation.uninstallActive;
         ChildEligibilityProjection childPolicy = childEligibilityProjection(
                 host.uuid, selectedProfileId(host.uuid));
-        boolean childGameBlocked = childPolicy.blocked;
+        boolean childGameBlocked = childPolicy.blocked || isSessionClosing(host);
         card.setAlpha(childAwarePlayniteCardAlpha(host.uuid, item, operation,
                 resumeSession || suspendedSession, card.hasFocus()));
         if (!item.game.installed && !installing) {
@@ -9564,7 +9564,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         float alpha = playniteCardAlpha(item, operation, resumeSession, focused);
         ChildEligibilityProjection projection = childEligibilityProjection(
                 hostUuid, selectedProfileId(hostUuid));
-        return projection.blocked ? Math.min(alpha, .46f) : alpha;
+        return projection.blocked || isSessionClosing(currentHost(hostUuid))
+                ? Math.min(alpha, .46f) : alpha;
+    }
+
+    /** The session is closing or its close is not yet confirmed: nothing can be started. */
+    private boolean isSessionClosing(ComputerDetails host) {
+        return host != null
+                && renderedSessionSnapshot(host).state == SessionSnapshot.State.TERMINATING;
     }
 
     private void stylePlayniteStateEmphasis(TextView state, PlayniteDashboardItem item,
@@ -11985,7 +11992,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             case VIBEPOLLO_READY:
                 return getString(R.string.playnite_creating_vibepollo_app);
             default:
-                return getString(R.string.transition_verifying_readiness);
+                // TARGET_READY: the stream target exists; nothing has started a game yet.
+                return getString(R.string.transition_preparing_session);
         }
     }
 
@@ -12172,6 +12180,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         break;
 
                     case TERMINATING:
+                        // The host status and greyed tiles already say it; no extra toast.
+                        if (streamLoadingView == null) return;
                         message = R.string.console_status_closing_session;
                         break;
                     default:

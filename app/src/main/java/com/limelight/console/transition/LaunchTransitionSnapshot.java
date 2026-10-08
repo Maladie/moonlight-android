@@ -8,8 +8,15 @@ public final class LaunchTransitionSnapshot {
     public final boolean inputBlocked;
     public final boolean operationAuthorized;
     public final boolean revealAuthorized;
-    /** The stream has produced an input-ready frame but host readiness is still pending. */
+    /**
+     * The stream has produced an input-ready frame while host readiness is pending, failed or
+     * uncertain: the cosmetic cover can always be removed by the user.
+     */
     public final boolean manualRevealAvailable;
+    /** The failure is likely a launcher or off-screen window: "Reveal now" is the default focus. */
+    public final boolean revealPreferred;
+    /** A readiness failure after a manual reveal, shown without covering the stream. */
+    public final String notice;
     public final boolean uncertain;
     public final String detail;
     /** The game start passed the local soft threshold while still not ready; never a failure. */
@@ -19,7 +26,8 @@ public final class LaunchTransitionSnapshot {
                              int step, boolean overlayVisible, boolean inputBlocked,
                              boolean operationAuthorized, boolean revealAuthorized,
                              boolean manualRevealAvailable, boolean uncertain, String detail,
-                             boolean startTakingLonger) {
+                             boolean startTakingLonger, boolean revealPreferred,
+                             String notice) {
         this.spec = spec;
         this.state = state;
         this.step = step;
@@ -31,5 +39,7 @@ public final class LaunchTransitionSnapshot {
         this.uncertain = uncertain;
         this.detail = detail == null ? "" : detail;
         this.startTakingLonger = startTakingLonger;
+        this.revealPreferred = revealPreferred;
+        this.notice = notice == null ? "" : notice;
     }
 }
