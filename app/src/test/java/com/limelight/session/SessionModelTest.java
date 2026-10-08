@@ -24,7 +24,7 @@ public class SessionModelTest {
         };
     }
 
-    private static class FakeController
+    static class FakeController
             implements SessionModel.Controller {
         String origin;
         @Override public String getExecutionProfileId() { return origin; }

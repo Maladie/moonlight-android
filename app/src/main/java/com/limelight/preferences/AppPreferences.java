@@ -8,7 +8,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 public class AppPreferences {
-    private static final String APP_PREFERENCES_FILE = "AppPreferences";
+    public static final String APP_PREFERENCES_FILE = "AppPreferences";
     private static final String PREF_BITRATE_OVERRIDE = "bitrate_override"; // Global bitrate override
     private static final String PREF_PERF_OVERLAY_OVERRIDE = "perf_overlay_override"; // Global performance overlay override
     private static final String PREF_OVERRIDES_ENABLED = "overrides_enabled"; // Whether overrides section is enabled

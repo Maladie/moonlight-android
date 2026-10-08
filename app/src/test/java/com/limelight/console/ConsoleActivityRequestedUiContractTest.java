@@ -39,6 +39,36 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("launchDesktopSession(host)"));
     }
 
+    @Test public void removeAndUnpairShareTheOneLocalForgetPathWithoutHostCalls()
+            throws IOException {
+        String source = consoleActivitySource();
+        String menu = source.substring(source.indexOf("private void showHostSelectionOptions("),
+                source.indexOf("static HostGatewayClient.IntegrationProfile activeAuthorizedProfile("));
+        String confirm = source.substring(source.indexOf("private void confirmRemoveHost("),
+                source.indexOf("private boolean forgetHost("));
+        String forget = source.substring(source.indexOf("private boolean forgetHost("),
+                source.indexOf("private void selectHost("));
+        String unpair = source.substring(source.indexOf("private void unpairHost("),
+                source.indexOf("private void confirmSleepHost("));
+
+        assertTrue(menu.contains("case REMOVE: confirmRemoveHost(host)"));
+        assertTrue(confirm.contains("R.string.console_remove_host_title"));
+        assertTrue(confirm.contains("forgetHost(host)"));
+        assertTrue(unpair.contains("if (forget) forgetHost(host);"));
+        // Local only: no request to the host or its Gateway.
+        assertFalse(forget.contains("NvHTTP"));
+        assertFalse(forget.contains("hostGatewayClient"));
+        assertFalse(forget.contains("executor"));
+        // Session state ends locally first, then the records go, then host selection returns.
+        assertTrue(forget.indexOf("new SessionEvent.HostForgotten(uuid)")
+                < forget.indexOf("managerBinder.removeComputer(host)"));
+        assertTrue(forget.contains("hostGatewayStore.remove(uuid)"));
+        assertTrue(forget.contains("playniteLibraryRepository.forgetHost(uuid)"));
+        assertTrue(forget.contains("LocalHostRecords.sweep("));
+        assertTrue(forget.contains("if (selected || !hostSelectionVisible) showHostSelection(null);"));
+        assertFalse(source.contains("private void removeHost("));
+    }
+
     @Test public void endGameShowsProgressUntilTheStopCompletes() throws IOException {
         String source = consoleActivitySource();
         String confirm = source.substring(source.indexOf("private void confirmEndPlayniteGame("),

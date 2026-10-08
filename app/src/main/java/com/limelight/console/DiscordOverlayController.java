@@ -33,7 +33,7 @@ import java.util.function.LongConsumer;
 
 /** Discord state polling and Community projection for the active stream host only. */
 public final class DiscordOverlayController {
-    private static final String PREFS = "discord_overlay_state";
+    static final String PREFS = "discord_overlay_state";
     private static final String DOCK_KEY_PREFIX = "dock_enabled.";
     private static final long REFRESH_MS = 2_000L;
     private static final long DM_REFRESH_MS = 500L;

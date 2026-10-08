@@ -517,8 +517,9 @@
     <string name="console_sleep_accepted">Sleep request accepted by %1$s</string>
     <string name="console_sleep_failed">Unable to sleep %1$s. Check that the paired Gateway is available.</string>
     <string name="console_remove">Remove</string>
-    <string name="console_remove_host_title">Remove %1$s?</string>
-    <string name="console_remove_host_details">This removes the saved host, cached artwork, shortcuts, and paired Gateway data from this device.</string>
+    <string name="console_remove_host">Remove host</string>
+    <string name="console_remove_host_title">Remove host %1$s?</string>
+    <string name="console_remove_host_details">MoonWaker will forget this computer and its pairing.</string>
     <string name="console_host_removed">%1$s removed.</string>
     <string name="console_discord_connecting">Discord · checking connection</string>
     <string name="console_discord_disconnected">Discord · disconnected</string>

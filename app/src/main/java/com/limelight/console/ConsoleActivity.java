@@ -135,6 +135,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -209,6 +210,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     // The console UI is a product feature and must be identical in debug and release builds.
     private static final boolean CONSOLE_UI_V2 = true;
     private static final String PREFS = "console_dashboard";
+    /** Preference files whose per-host entries name the host UUID in their key or value. */
+    private static final String[] HOST_KEYED_PREFERENCES = {PREFS,
+            AppView.HIDDEN_APPS_PREF_FILENAME, AppPreferences.APP_PREFERENCES_FILE,
+            PlayniteLaunchTargetStore.PREFS, DiscordOverlayController.PREFS};
     private static final int REQUEST_BLUETOOTH_CONNECT = 2201;
     private static final int REQUEST_COMMUNITY_DICTATION = 2202;
     private static final long CONTROLLER_REFRESH_MS = 30_000L;
@@ -4890,6 +4895,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         case CHANGE_HOST: hideSidePanel(); leaveHost(); break;
                         case HARD_TERMINATE: confirmHardTerminateSession(host); break;
                         case UNPAIR: unpairHost(host); break;
+                        case REMOVE: confirmRemoveHost(host); break;
                     }
                 }));
     }
@@ -6779,6 +6785,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         ConsoleUiFeedback.makeText(this, R.string.unpairing, Toast.LENGTH_SHORT).show();
         executor.execute(() -> {
             String message;
+            boolean unpaired = false;
             try {
                 NvHTTP http = new NvHTTP(ServerHelper.getCurrentAddressFromComputer(host),
                         host.httpsPort, managerBinder.getUniqueId(), host.serverCert,
@@ -6787,9 +6794,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     message = getString(R.string.unpair_error);
                 } else {
                     http.unpair();
-                    message = getString(http.getPairState() == PairingManager.PairState.NOT_PAIRED
-                            ? R.string.unpair_success : R.string.unpair_fail);
-                    managerBinder.invalidateStateForComputer(host.uuid);
+                    unpaired = http.getPairState() == PairingManager.PairState.NOT_PAIRED;
+                    message = getString(unpaired ? R.string.unpair_success : R.string.unpair_fail);
                 }
             } catch (UnknownHostException error) {
                 message = getString(R.string.error_unknown_host);
@@ -6799,9 +6805,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 message = error.getMessage();
             }
             String result = message;
-            mainHandler.post(() -> ConsoleUiFeedback.makeText(this,
-                    result == null || result.isEmpty() ? getString(R.string.unpair_fail) : result,
-                    Toast.LENGTH_LONG).show());
+            boolean forget = unpaired;
+            mainHandler.post(() -> {
+                // The host no longer knows this device: forget it here the same way as "Usuń".
+                if (forget) forgetHost(host);
+                ConsoleUiFeedback.makeText(this,
+                        result == null || result.isEmpty() ? getString(R.string.unpair_fail) : result,
+                        Toast.LENGTH_LONG).show();
+            });
         });
     }
 
@@ -7319,57 +7330,85 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (hostUuid.equals(selectedHostUuid)) updateHostSelector();
     }
 
-    private void removeHost(ComputerDetails host) {
+    private void confirmRemoveHost(ComputerDetails host) {
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView remove = consolePanel.action(getString(R.string.console_remove));
+        consolePanel.destructive(remove);
+        cancel.setOnClickListener(view -> handlePanelBack());
+        remove.setOnClickListener(view -> {
+            hideSidePanel();
+            if (forgetHost(host)) {
+                ConsoleUiFeedback.makeText(this, getString(R.string.console_host_removed,
+                        host.name), Toast.LENGTH_LONG).show();
+            }
+        });
+        showSidePanel(getString(R.string.console_host_eyebrow),
+                getString(R.string.console_remove_host_title, host.name),
+                getString(R.string.console_remove_host_details), cancel, remove);
+    }
+
+    /**
+     * The one local cleanup when this device forgets a host ("Usuń", and "Odparuj hosta" after
+     * the host confirms). Never contacts the host: the session is ended locally first, then
+     * every record of the host goes, and the console returns to host selection.
+     */
+    private boolean forgetHost(ComputerDetails host) {
         if (managerBinder == null) {
             ConsoleUiFeedback.makeText(this, R.string.error_manager_not_running, Toast.LENGTH_LONG).show();
-            return;
+            return false;
         }
-        managerBinder.removeComputer(host);
-        assetLoader.deleteAssetsForComputer(host.uuid);
-        getSharedPreferences(AppView.HIDDEN_APPS_PREF_FILENAME, MODE_PRIVATE)
-                .edit().remove(host.uuid).apply();
-        new ShortcutHelper(this).disableComputerShortcut(
-                host, getString(R.string.scut_deleted_pc));
-        hostGatewayStore.remove(host.uuid);
-        flushPendingPlayniteSelection();
-        libraryViewStateStore.clear(host.uuid);
-        preferences.edit()
-                .remove("selected_playnite." + host.uuid)
-                .remove("app_scroll." + host.uuid)
-                .remove("playnite_hidden." + host.uuid)
-                .apply();
-        hosts.remove(host.uuid);
-        if (host.uuid.equals(autoLoginHostUuid)) {
-            autoLoginHostUuid = "";
-            preferences.edit().remove("auto_login_host").apply();
-        }
-
-        if (host.uuid.equals(selectedHostUuid)) {
+        String uuid = host.uuid;
+        boolean selected = uuid.equals(selectedHostUuid);
+        if (selected) {
+            ProfileAuthorization.revoke();
+            cancelWindowsProfileSwitch(false);
+            cancelStreamingAutopilot(false);
+            cancelPlayniteArtworkPrefetch();
             stopAppListPoller();
-            clearArtwork();
-            selectedHostUuid = hosts.isEmpty() ? null : hosts.keySet().iterator().next();
-            SharedPreferences.Editor editor = preferences.edit();
-            if (selectedHostUuid == null) editor.remove("selected_host");
-            else editor.putString("selected_host", selectedHostUuid);
-            editor.apply();
-            appRow.removeAllViews();
-            if (selectedHostUuid == null) {
-                appsLabel.setText(R.string.console_apps);
-                appRow.addView(text(getString(R.string.console_choose_host),
-                                15, 0xFFBDC4D8, false),
-                        new LinearLayout.LayoutParams(dp(500),
-                                ViewGroup.LayoutParams.MATCH_PARENT));
-            } else {
-                ComputerDetails selected = hosts.get(selectedHostUuid);
-                appsLabel.setText(getString(R.string.console_apps_host,
-                        selected.name.toUpperCase(Locale.ROOT)));
-                startAppListPoller(selected);
-                renderAppsAsync(selected);
-            }
+            invalidateChildManagement();
+            selectedHostUuid = null;
         }
-        renderHosts();
-        ConsoleUiFeedback.makeText(this, getString(R.string.console_host_removed, host.name),
-                Toast.LENGTH_LONG).show();
+        cancelOwnedWarmUp(uuid, false);
+        SessionModel.Snapshot retained = sessionModel.snapshot();
+        if (uuid.equalsIgnoreCase(retained.hostId) && !retained.streamSessionId.isEmpty()) {
+            BackgroundStreamService.dismiss(this, retained.streamSessionId);
+        }
+        SessionResumeManager.PendingSession pending = sessionModel.records().pending;
+        if (pending != null && uuid.equalsIgnoreCase(pending.hostUuid)) {
+            BackgroundStreamService.dismiss(this, pending.streamSessionId);
+        }
+        sessionModel.post(new SessionEvent.HostForgotten(uuid));
+
+        managerBinder.removeComputer(host);
+        assetLoader.deleteAssetsForComputer(uuid);
+        new ShortcutHelper(this).disableComputerShortcut(host, getString(R.string.scut_deleted_pc));
+        for (QuickLaunchManager.QuickLaunchItem item : quickLaunchManager.getAllQuickLaunchItems()) {
+            if (uuid.equals(item.computerUuid)) quickLaunchManager.removeQuickLaunchItem(item.key);
+        }
+        hostGatewayStore.remove(uuid);
+        playniteLibraryRepository.forgetHost(uuid);
+        playniteArtworkCache.forgetHost(uuid);
+        flushPendingPlayniteSelection();
+        for (String file : HOST_KEYED_PREFERENCES) {
+            LocalHostRecords.sweep(getSharedPreferences(file, MODE_PRIVATE), uuid);
+        }
+        String id = uuid.toLowerCase(Locale.ROOT);
+        for (Collection<String> keys : Arrays.<Collection<String>>asList(
+                publishedSessionSnapshots.keySet(), cardBindBatchMemo.keySet(),
+                sessionProjectionRequestedAt.keySet(),
+                sessionProjectionRequestGenerations.keySet(),
+                lastFreshRunningAppIds.keySet(), lastFreshStreamSessionIds.keySet(),
+                childCapabilityByProfile.keySet(), childLaunchBindings.keySet(),
+                childEligibilityObservedAt.keySet(), hostProfileRefreshGenerations.keySet())) {
+            keys.removeIf(key -> key.toLowerCase(Locale.ROOT).contains(id));
+        }
+        hosts.remove(uuid);
+        newlyDiscoveredHosts.remove(uuid);
+        if (uuid.equals(autoLoginHostUuid)) autoLoginHostUuid = "";
+
+        if (selected || !hostSelectionVisible) showHostSelection(null);
+        else renderHostSelection();
+        return true;
     }
 
     private void selectHost(ComputerDetails host, boolean focusApps) {

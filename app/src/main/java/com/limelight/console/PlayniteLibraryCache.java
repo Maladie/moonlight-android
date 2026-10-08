@@ -206,6 +206,13 @@ final class PlayniteLibraryCache {
         MEMORY.put(key.cacheKey(), entry);
     }
 
+    /** Drops the library of every profile of a host this device forgets. */
+    void forgetHost(String hostUuid) {
+        String prefix = hostUuid.trim().toLowerCase(java.util.Locale.ROOT) + "__";
+        for (String key : MEMORY.keySet()) if (key.startsWith(prefix)) MEMORY.remove(key);
+        LocalHostRecords.deleteProfileEntries(directory, hostUuid);
+    }
+
     private File fileFor(HostProfileKey key) {
         if (key == null || !key.cacheKey().matches("[A-Za-z0-9._-]{1,200}")) return null;
         return new File(directory, key.cacheKey() + ".json");

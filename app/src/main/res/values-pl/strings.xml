@@ -482,8 +482,9 @@
     <string name="console_sleep_accepted">Host %1$s przyjął żądanie uśpienia</string>
     <string name="console_sleep_failed">Nie można uśpić hosta %1$s. Sprawdź dostępność sparowanego Gateway.</string>
     <string name="console_remove">Usuń</string>
-    <string name="console_remove_host_title">Usunąć %1$s?</string>
-    <string name="console_remove_host_details">Spowoduje to usunięcie zapisanego hosta, okładek z pamięci podręcznej, skrótów i danych sparowanego Gateway z tego urządzenia.</string>
+    <string name="console_remove_host">Usuń hosta</string>
+    <string name="console_remove_host_title">Usunąć hosta %1$s?</string>
+    <string name="console_remove_host_details">MoonWaker zapomni ten komputer i jego parowanie.</string>
     <string name="console_host_removed">Usunięto %1$s.</string>
     <string name="console_discord_connecting">Discord · sprawdzanie połączenia</string>
     <string name="console_discord_disconnected">Discord · rozłączono</string>

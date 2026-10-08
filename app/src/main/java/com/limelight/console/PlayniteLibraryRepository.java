@@ -42,6 +42,8 @@ final class PlayniteLibraryRepository {
 
     PlayniteLibraryCache.Entry cached(HostProfileKey key) { return cache.read(key); }
 
+    void forgetHost(String hostUuid) { cache.forgetHost(hostUuid); }
+
     Result refresh(String hostUuid, GatewayConnection connection,
                    Cancellation cancellation) {
         return refresh(new HostProfileKey(hostUuid, connection.profileId()),

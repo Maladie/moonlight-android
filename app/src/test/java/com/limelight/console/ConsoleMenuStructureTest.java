@@ -47,7 +47,8 @@ public class ConsoleMenuStructureTest {
         assertEquals(Arrays.asList(ConsoleHostPanel.Action.RESUME,
                 ConsoleHostPanel.Action.CLOSE_SESSION, ConsoleHostPanel.Action.SLEEP,
                 ConsoleHostPanel.Action.TEST_CONNECTION, ConsoleHostPanel.Action.HARD_TERMINATE,
-                ConsoleHostPanel.Action.UNPAIR), menu.actions());
+                ConsoleHostPanel.Action.UNPAIR,
+                ConsoleHostPanel.Action.REMOVE), menu.actions());
         assertTrue(menu.items.get(0).enabled);
 
         facts.resumeAvailable = false;
@@ -62,6 +63,20 @@ public class ConsoleMenuStructureTest {
         assertFalse(actions.contains(ConsoleHostPanel.Action.SLEEP));
         // From host selection there is no host to leave.
         assertFalse(actions.contains(ConsoleHostPanel.Action.CHANGE_HOST));
+    }
+
+    @Test public void hostSelectionOffersRemoveLastEvenForAnUnreachableUnpairedHost() {
+        ConsoleActionMenu<ConsoleHostPanel.Action> menu =
+                ConsoleHostPanel.menu(new ConsoleHostPanel.Facts());
+
+        List<ConsoleHostPanel.Action> destructive = destructive(menu);
+        assertEquals(ConsoleHostPanel.Action.REMOVE, destructive.get(destructive.size() - 1));
+        assertTrue(menu.items.get(menu.items.size() - 1).enabled);
+
+        ConsoleHostPanel.Facts inHost = new ConsoleHostPanel.Facts();
+        inHost.inHost = true;
+        assertFalse(ConsoleHostPanel.menu(inHost).actions()
+                .contains(ConsoleHostPanel.Action.REMOVE));
     }
 
     @Test public void idleInstalledGameShowsOnlyMeaningfulGroups() {
