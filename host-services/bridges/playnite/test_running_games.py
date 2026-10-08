@@ -698,7 +698,7 @@ class NativeRunningGamesTest(unittest.TestCase):
         self.probe = object.__new__(WindowProbe)
         self.probe.kernel32 = mock.Mock()
         self.probe.user32 = mock.Mock()
-        self.probe.is_session_locked = mock.Mock(return_value=False)
+        self.probe.input_desktop_blocked = mock.Mock(return_value=False)
         self.probe.uac_consent_pending = mock.Mock(return_value=False)
         self.expected = identity()
         self.probe.process_identity = mock.Mock(return_value=dict(self.expected))
@@ -990,7 +990,7 @@ class StartReadinessTest(unittest.TestCase):
         probe.user32 = User32()
         probe.dwmapi = None
         probe.kernel32 = object()
-        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.input_desktop_blocked = mock.Mock(return_value=False)
         probe._process_tree = mock.Mock(return_value={11})
         probe._process_path = mock.Mock(side_effect=lambda pid: (
             r"C:\Games\HK\game.exe" if pid == 11 else r"C:\Apps\other.exe"))

@@ -1086,6 +1086,7 @@
     <string name="transition_waiting_game_identity">Playnite zgłosił uruchomienie gry — oczekiwanie na dane procesu</string>
     <string name="transition_game_window_not_fullscreen">Okno gry nie jest pełnoekranowe</string>
     <string name="transition_game_window_not_foreground">Okno gry nie jest aktywne</string>
+    <string name="transition_host_screensaver_active">Wybudzanie komputera…</string>
     <string name="transition_window_ready_waiting_frame">Okno gotowe — oczekiwanie na świeży obraz</string>
     <string name="transition_ready">Gotowe</string>
     <string name="transition_cancel">Anuluj uruchamianie</string>

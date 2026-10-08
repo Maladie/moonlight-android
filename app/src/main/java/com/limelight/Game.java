@@ -5314,6 +5314,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         return getString(R.string.transition_game_window_not_foreground);
                     }
 
+                    @Override public String hostScreensaverActiveMessage() {
+                        return getString(R.string.transition_host_screensaver_active);
+                    }
+
                     @Override public String launcherInteractionRequiredMessage() {
                         return getString(R.string.transition_launcher_interaction_required);
                     }

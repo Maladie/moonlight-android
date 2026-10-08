@@ -2696,15 +2696,12 @@ class LoginBrokerGatewayTest(unittest.TestCase):
             self.state.select_profile("kid")
         self.assertEqual([], self.broker.child_begin_calls)
 
-    def test_child_authorization_binds_parent_execution_and_needs_own_remote_grant(self):
+    def test_child_authorization_binds_parent_execution(self):
         child = self.add_child()
         with self.assertRaises(PermissionError):
             self.state.authorize_child_profile(self.client, "kid")
+        # The parent's ready auto sign-in stands in for a child remote_sign_in grant.
         self.client["profile_grants"]["kid"] = ["use_profile"]
-        with self.assertRaises(PermissionError):
-            self.state.ensure_session(self.client, "kid", "child-request")
-
-        self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
         status, result = self.state.ensure_session(
             self.client, "kid", "child-request")
         self.assertEqual(202, status)

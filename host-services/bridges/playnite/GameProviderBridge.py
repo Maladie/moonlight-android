@@ -70,6 +70,12 @@ LOCKED_RUNNING_SCAN_DEADLINE = 0.25
 # Phase 1 of a start: from the request until a verified process of the game exists.
 # Phase 2 (process verified, waiting for its window) has no limit while that process lives.
 GAME_START_TIMEOUT = 90.0
+# A running screen saver hides the Default desktop a transition waits for. While a transition
+# is active it is asked to close again at this interval (it may come back after a close).
+SCREENSAVER_CLOSE_INTERVAL = 5.0
+# A focus or Playnite-fullscreen request keeps its transition active this long; a game start
+# stays active for its whole starting phase.
+SCREENSAVER_WAKE_WINDOW = 60.0
 FILETIME_UNIX_EPOCH = 116_444_736_000_000_000
 # Correlated windows described in one window-probe diagnostic entry.
 PROBE_DIAGNOSTIC_WINDOWS = 4
@@ -301,7 +307,9 @@ class WindowProbe:
     PROCESS_TERMINATE = 0x0001
     MONITOR_DEFAULTTONEAREST = 2
     DWMWA_CLOAKED = 14
-    DESKTOP_SWITCHDESKTOP = 0x0100
+    DESKTOP_READOBJECTS = 0x0001
+    DESKTOP_WRITEOBJECTS = 0x0080
+    UOI_NAME = 2
     WM_CLOSE = 0x0010
     SW_RESTORE = 9
     TH32CS_SNAPPROCESS = 0x00000002
@@ -341,10 +349,20 @@ class WindowProbe:
             self.user32.OpenInputDesktop.argtypes = [
                 wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
             self.user32.OpenInputDesktop.restype = wintypes.HANDLE
-            self.user32.SwitchDesktop.argtypes = [wintypes.HANDLE]
-            self.user32.SwitchDesktop.restype = wintypes.BOOL
+            self.user32.OpenDesktopW.argtypes = [
+                wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            self.user32.OpenDesktopW.restype = wintypes.HANDLE
+            self.user32.GetUserObjectInformationW.argtypes = [
+                wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD)]
+            self.user32.GetUserObjectInformationW.restype = wintypes.BOOL
             self.user32.CloseDesktop.argtypes = [wintypes.HANDLE]
             self.user32.CloseDesktop.restype = wintypes.BOOL
+            self.user32.EnumDesktopWindows.argtypes = [
+                wintypes.HANDLE,
+                ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM),
+                wintypes.LPARAM]
+            self.user32.EnumDesktopWindows.restype = wintypes.BOOL
             self.user32.IsWindowVisible.argtypes = [wintypes.HWND]
             self.user32.IsWindowVisible.restype = wintypes.BOOL
             self.user32.IsWindow.argtypes = [wintypes.HWND]
@@ -564,7 +582,10 @@ class WindowProbe:
             self.kernel32.CloseHandle(snapshot)
 
     def stop_verified_process(self, expected: dict[str, Any], timeout: float) -> bool:
-        if not self.kernel32 or not self.user32 or self.is_session_locked() \
+        # WM_CLOSE reaches the game's windows on the Default desktop whether or not it
+        # takes input, so a screen saver does not block the stop; a locked session does.
+        if not self.kernel32 or not self.user32 \
+                or self.input_desktop_blocked() == "host_session_locked" \
                 or self.uac_consent_pending(fail_closed=True):
             return False
         pid = int(expected["process_id"])
@@ -758,17 +779,61 @@ class WindowProbe:
         copied = int(self.user32.GetClassNameW(hwnd, buffer, len(buffer)) or 0)
         return buffer.value[:copied].strip() if copied > 0 else ""
 
-    def is_session_locked(self) -> bool:
+    def input_desktop_blocked(self) -> str:
+        """'' only while the user's Default desktop takes input; else the fail-closed reason.
+
+        A running screen saver owns the "Screen-saver" input desktop, so the Default desktop
+        the game draws on is invisible even though the session is not (yet) locked."""
         if not self.user32:
-            return True
-        desktop = self.user32.OpenInputDesktop(
-            0, False, self.DESKTOP_SWITCHDESKTOP)
+            return "host_session_locked"
+        desktop = self.user32.OpenInputDesktop(0, False, 0)
         if not desktop:
-            return True
+            return "host_session_locked"
+        name = ctypes.create_unicode_buffer(64)
+        needed = wintypes.DWORD()
         try:
-            return not bool(self.user32.SwitchDesktop(desktop))
+            if not self.user32.GetUserObjectInformationW(
+                    desktop, self.UOI_NAME, name, ctypes.sizeof(name), ctypes.byref(needed)):
+                return "host_session_locked"
         finally:
             self.user32.CloseDesktop(desktop)
+        if name.value.casefold() == "default":
+            return ""
+        return "host_screensaver_active" if name.value.casefold() == "screen-saver" \
+            else "host_session_locked"
+
+    def close_screensaver(self) -> bool:
+        """Post WM_CLOSE to this user's running screen saver on its own desktop.
+
+        Same rights as the saver itself (it runs as this user in this session); no input is
+        injected and no setting changes. A secure saver then hands over to the lock screen."""
+        if not self.user32:
+            return False
+        own = self.process_identity(os.getpid(), include_owner=True)
+        desktop = self.user32.OpenDesktopW(
+            "Screen-saver", 0, False, self.DESKTOP_READOBJECTS | self.DESKTOP_WRITEOBJECTS)
+        if own is None or not desktop:
+            if desktop:
+                self.user32.CloseDesktop(desktop)
+            return False
+        posted: list[bool] = []
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def visit(hwnd: int, _lparam: int) -> bool:
+            pid = wintypes.DWORD()
+            self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            saver = self.process_identity(int(pid.value), include_owner=True)
+            if saver is not None and saver["user_sid"] == own["user_sid"] \
+                    and saver["session_id"] == own["session_id"] \
+                    and str(saver["process_path"]).casefold().endswith(".scr"):
+                posted.append(bool(self.user32.PostMessageW(hwnd, self.WM_CLOSE, 0, 0)))
+            return True
+
+        try:
+            self.user32.EnumDesktopWindows(desktop, callback_type(visit), 0)
+        finally:
+            self.user32.CloseDesktop(desktop)
+        return any(posted)
 
     @staticmethod
     def uac_consent_pending(fail_closed: bool = False) -> bool:
@@ -935,7 +1000,7 @@ class WindowProbe:
             }
         # UAC switches Windows to the secure desktop. A pre-existing Epic manifest
         # must not complete the operation while consent is still waiting.
-        if self.is_session_locked() or self.uac_consent_pending():
+        if self.input_desktop_blocked() or self.uac_consent_pending():
             return {"requires_attention": True, "reason": "secure_desktop",
                     "hwnd": 0, "title": "", "image": ""}
         provider_sample = self.game_operations.sample(baseline)
@@ -992,7 +1057,7 @@ class WindowProbe:
     def focus_installation_window(self, hwnd: int) -> dict[str, Any]:
         if not self.user32 or hwnd <= 0 or not self.user32.IsWindow(hwnd):
             raise RuntimeError("The installation window is no longer available.")
-        if self.is_session_locked():
+        if self.input_desktop_blocked():
             raise PermissionError("The installation requires confirmation on the PC.")
         current_thread = int(self.kernel32.GetCurrentThreadId())
         target_thread = int(self.user32.GetWindowThreadProcessId(hwnd, None))
@@ -1018,7 +1083,7 @@ class WindowProbe:
     def focus_game_window(self, process_id: int, install_directory: str,
                           expected_display: str) -> dict[str, Any]:
         sample = self.sample("game", process_id, expected_display, install_directory)
-        if sample.get("reason") == "host_session_locked":
+        if sample.get("reason") in {"host_session_locked", "host_screensaver_active"}:
             raise PermissionError("The Windows session is locked.")
         hwnd = int(sample.get("hwnd") or 0)
         if not hwnd or str(sample.get("display", "")).casefold() != \
@@ -1099,8 +1164,8 @@ class WindowProbe:
 
     def prepare_steam_launch(self, provider: SteamProvider,
                              expected_display: str = "") -> dict[str, Any]:
-        if self.is_session_locked() or self.uac_consent_pending(fail_closed=True) \
-                or self.is_session_locked():
+        if self.input_desktop_blocked() or self.uac_consent_pending(fail_closed=True) \
+                or self.input_desktop_blocked():
             return {"ready": False, "reason": "host_session_locked"}
         if provider.executable() is None:
             return {"ready": False, "reason": "steam_unavailable"}
@@ -1108,8 +1173,8 @@ class WindowProbe:
         if result.get("reason") == "launcher_interaction_required":
             result = {"ready": True, "reason": "steam_big_picture_unconfirmed"}
         # The Steam UI request may race with a lock or UAC prompt; recheck before dispatch.
-        if result.get("ready") and (self.is_session_locked()
-                or self.uac_consent_pending(fail_closed=True) or self.is_session_locked()):
+        if result.get("ready") and (self.input_desktop_blocked()
+                or self.uac_consent_pending(fail_closed=True) or self.input_desktop_blocked()):
             return {"ready": False, "reason": "host_session_locked"}
         return result
 
@@ -1150,7 +1215,7 @@ class WindowProbe:
             return {"ready": True, "reason": "steam_not_running"}
         if len(matches) != 1:
             return {"ready": False, "reason": "steam_process_ambiguous"}
-        if self.is_session_locked() or self.uac_consent_pending(fail_closed=True):
+        if self.input_desktop_blocked() or self.uac_consent_pending(fail_closed=True):
             return {"ready": False, "reason": "host_session_locked"}
         expected = matches[0]
 
@@ -1178,7 +1243,7 @@ class WindowProbe:
     def ensure_steam_big_picture(self, provider: SteamProvider,
                                  expected_display: str,
                                  timeout: float = 15.0) -> dict[str, Any]:
-        if self.user32 and self.is_session_locked():
+        if self.user32 and self.input_desktop_blocked():
             return {"ready": False, "reason": "host_session_locked"}
         executable = provider.executable()
         if executable is None:
@@ -1257,9 +1322,10 @@ class WindowProbe:
     def can_reveal_without_global_foreground(
             cls, bounds: list[int], monitor_bounds: list[int],
             foreground_display: str, expected_display: str) -> bool:
-        foreground_is_on_stream = bool(foreground_display) and \
-            foreground_display.casefold() == expected_display.casefold()
-        return not foreground_is_on_stream and cls.fills_monitor(bounds, monitor_bounds)
+        # No foreground at all (HWND 0 or no monitor) is not evidence of another monitor.
+        foreground_elsewhere = bool(foreground_display) and \
+            foreground_display.casefold() != expected_display.casefold()
+        return foreground_elsewhere and cls.fills_monitor(bounds, monitor_bounds)
 
     def invoke_game_launcher(self, candidate: dict[str, Any],
                              detect_only: bool = False) -> dict[str, Any]:
@@ -1375,8 +1441,9 @@ class WindowProbe:
                tracked_process_path: str = "") -> dict[str, Any]:
         if not self.user32:
             return {"qualified": False, "reason": "window_probe_unavailable"}
-        if self.is_session_locked():
-            return {"qualified": False, "reason": "host_session_locked"}
+        blocked = self.input_desktop_blocked()
+        if blocked:
+            return {"qualified": False, "reason": blocked}
 
         windows: list[dict[str, Any]] = []
         correlated_windows: list[dict[str, Any]] = []
@@ -1680,6 +1747,7 @@ class BridgeState:
         self.command_sender: Callable[[dict[str, Any]], None] | None = None
         self.expected_display = expected_display.strip()
         self._last_window_signature: tuple[Any, ...] | None = None
+        self._screensaver_wake_requested_at = 0.0
         self._launch_baseline: dict[str, Any] = {}
         self._launcher_candidate_signature: tuple[Any, ...] | None = None
         self._launcher_candidate_samples = 0
@@ -4687,6 +4755,7 @@ class BridgeState:
                 "stable_samples": 0,
             }
             self._last_window_signature = None
+            self._screensaver_wake_requested_at = self.clock()
             action = self.show_fullscreen_action
         if not action:
             raise RuntimeError("Playnite Fullscreen activation is unavailable.")
@@ -4706,6 +4775,7 @@ class BridgeState:
             self.readiness.update({
                 "ready": False, "reason": "game_focus_requested", "stable_samples": 0})
             self._last_window_signature = None
+            self._screensaver_wake_requested_at = self.clock()
         if not action:
             raise RuntimeError("Game focus activation is unavailable.")
         details = action(process_id, install_directory, expected_display)
@@ -5056,6 +5126,8 @@ class BridgeState:
                 "foreground_process_id": sample.get("foreground_process_id"),
                 "foreground_image": sample.get("foreground_image"),
             })
+            if ready:
+                self._screensaver_wake_requested_at = 0.0
             if ready and not previous_ready:
                 self._publish_locked("target-window-ready", dict(self.readiness))
 
@@ -5206,6 +5278,7 @@ class WindowReadinessWorker:
         last_provider_probe_at = 0.0
         last_running_scan = 0.0
         last_sample_reason = "none"
+        last_screensaver_close_at = float("-inf")
         while True:
             resolved_display = self.display_resolver.resolve()
             if resolved_display:
@@ -5225,6 +5298,7 @@ class WindowReadinessWorker:
                 launcher_postcondition_failed = \
                     self.state._launcher_postcondition_failed_locked()
                 launch_requested_at = float(current.get("launchRequestedAt") or 0.0)
+                screensaver_wake_requested_at = self.state._screensaver_wake_requested_at
             target_kind = str(readiness.get("target_kind", "playnite"))
             launch_in_progress = target_kind == "game" and \
                 str(current.get("state") or "").casefold() == "starting"
@@ -5240,6 +5314,27 @@ class WindowReadinessWorker:
             if probe_provider_launcher:
                 last_provider_probe_key = provider_probe_key
                 last_provider_probe_at = probe_now
+            # A transition must not wait behind a running screen saver, which may return
+            # after a close. Nobody waits when no transition is active (a game played locally),
+            # and a start the user walked away from stops waking after the same window.
+            wake_since = max(launch_requested_at if launch_in_progress else 0.0,
+                             screensaver_wake_requested_at)
+            wake_target = wake_since > 0 and \
+                probe_now - wake_since < SCREENSAVER_WAKE_WINDOW
+            if wake_target and \
+                    probe_now - last_screensaver_close_at >= SCREENSAVER_CLOSE_INTERVAL:
+                try:
+                    if self.probe.input_desktop_blocked() == "host_screensaver_active":
+                        last_screensaver_close_at = probe_now
+                        DIAGNOSTICS.record(
+                            "window-probe.screensaver-close",
+                            game_id=str(current.get("id") or ""), target_kind=target_kind,
+                            requested=self.probe.close_screensaver())
+                except Exception as error:
+                    # Advisory: a Win32 failure must not stop readiness monitoring.
+                    last_screensaver_close_at = probe_now
+                    DIAGNOSTICS.record("window-probe.screensaver-close-failed",
+                                       level="WARN", error=error)
             launch_task_id = str(current.get("launchTaskId") or "")
             if target_kind == "game" and launch_task_id \
                     and str(current.get("state") or "").casefold() == "starting":

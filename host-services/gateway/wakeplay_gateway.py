@@ -1166,7 +1166,8 @@ class GatewayState:
         active = self.child_time_session
         if isinstance(active, dict):
             persisted = {key: value for key, value in active.items()
-                         if key not in {"last_monotonic", "restarted"}}
+                         if key not in {"last_monotonic", "restarted",
+                                        "unconfirmed_since_monotonic"}}
         else:
             persisted = None
         self.child_time_usage["active_session"] = persisted
@@ -1965,6 +1966,34 @@ class GatewayState:
         parent_id = str(self.config["profiles"][actor_profile_id]["parent_profile_id"])
         return parent_id, self.config["profiles"][parent_id]
 
+    def authorize_child_session_control(self, client: dict[str, Any], actor_profile_id: str,
+                                        parent: dict[str, Any]) -> None:
+        """Owner decision: for the parent's Windows session (unlock, sign-in,
+        switch) a child acts as the parent once the parent has set up automatic
+        sign-in: enabled, mapped and with a stored credential.
+
+        That is the parent's ``remote_sign_in_state == "ready"``, or the same
+        configuration blocked only by another active user (the switch case),
+        and the parent's own ``use_profile`` and ``remote_sign_in`` grants on
+        this client: the child
+        never does more on a device than the parent could. Without both the
+        child's own ``remote_sign_in`` grant is required. Game library and play
+        time stay enforced separately.
+        """
+        try:
+            self.authorize_child_profile(client, actor_profile_id, "remote_sign_in")
+        except PermissionError:
+            parent_id = str(self.config["profiles"][actor_profile_id]["parent_profile_id"])
+            grants = client.get("profile_grants", {})
+            parent_grants = grants.get(parent_id, []) if isinstance(grants, dict) else []
+            if (not isinstance(parent_grants, list) or "use_profile" not in parent_grants or
+                    "remote_sign_in" not in parent_grants):
+                raise
+            login = self.profile_login_state(parent)
+            if (login["remote_sign_in_state"] != "ready" and
+                    login["reason"] != "other_user_active"):
+                raise
+
     def is_child_profile(self, profile_id: str | None) -> bool:
         profile = self.config.get("profiles", {}).get(str(profile_id or ""))
         return (isinstance(profile, dict) and
@@ -2453,7 +2482,7 @@ class GatewayState:
                                          "execution_profile_id": execution_id,
                                          "request_id": request_id}
         # Remote sign-in is checked only when the parent really needs a logon.
-        self.authorize_child_profile(client, actor_profile_id, "remote_sign_in")
+        self.authorize_child_session_control(client, actor_profile_id, parent)
         if (not parent.get("remote_sign_in_enabled") or
                 parent.get("account_mapping_status") != "resolved"):
             return HTTPStatus.CONFLICT, {
@@ -2480,7 +2509,8 @@ class GatewayState:
         if not REQUEST_ID_PATTERN.fullmatch(request_id):
             raise ValueError("A valid X-Request-Id header is required.")
         execution_id, parent = self.child_execution_profile(
-            client, actor_profile_id, "remote_sign_in")
+            client, actor_profile_id, "use_profile")
+        self.authorize_child_session_control(client, actor_profile_id, parent)
         if not parent.get("remote_sign_in_enabled"):
             return HTTPStatus.CONFLICT, {
                 "ok": False, "state": "action_required",
@@ -2518,7 +2548,7 @@ class GatewayState:
                 not re.fullmatch(r"[0-9a-f]{32}", attempt_id)):
             raise ValueError("Valid attempt and request IDs are required.")
         execution_id, parent = self.child_execution_profile(
-            client, actor_profile_id, "remote_sign_in")
+            client, actor_profile_id, "use_profile")
         result = self.login_broker.attempt_state(
             self.broker_client_id(client), execution_id, request_id, attempt_id)
         status, body = self._child_attempt_result(
@@ -2543,7 +2573,7 @@ class GatewayState:
                 not re.fullmatch(r"[0-9a-f]{32}", attempt_id)):
             raise ValueError("Valid attempt and request IDs are required.")
         execution_id, parent = self.child_execution_profile(
-            client, actor_profile_id, "remote_sign_in")
+            client, actor_profile_id, "use_profile")
         result = self.login_broker.cancel(
             self.broker_client_id(client), execution_id, request_id, attempt_id)
         return self._child_attempt_result(
@@ -4287,6 +4317,33 @@ class GatewayState:
                     "running_games": [], "running_scan_status": running_scan_status,
                     **exact, "snapshot": result}
         return {"kind": "unavailable", **exact, "snapshot": result}
+
+    @staticmethod
+    def _child_time_running_verdict(session: dict[str, Any],
+                                    current: dict[str, Any]) -> str:
+        """alive, ended, replaced or unconfirmed for a running session's bound process.
+
+        ``current`` must be read with the session as target. Only positive evidence ends
+        a session; a provider or scan outage without a verified token is unconfirmed.
+        """
+        stored = GatewayState._child_time_process_token(session)
+        if current.get("kind") == "idle":
+            return "ended"  # with a target, idle already required it gone or reused
+        if current.get("kind") != "active":
+            return "unconfirmed"
+        if GatewayState._child_time_normalize_game_id(current.get("game_id")) != \
+                GatewayState._child_time_provider_game(session):
+            return "replaced"
+        token = GatewayState._child_time_process_token(current.get("identity"))
+        if token:
+            return "alive" if token == stored else "replaced"
+        if current.get("target_token") == stored:
+            if current.get("target_status") == "reused":
+                return "replaced"
+            if current.get("target_status") == "gone" \
+                    and current.get("running_scan_status") == "complete":
+                return "ended"
+        return "unconfirmed"
 
     @staticmethod
     def _child_time_session_matches(session: dict[str, Any], actor_id: str,
@@ -6504,11 +6561,11 @@ class GatewayState:
             body.update({"ok": False, "state": "blocked", "reason": "child_session_expired"})
             return HTTPStatus.CONFLICT, body
         session = self.child_time_session
-        current = self._child_time_current_game(str(session.get("execution_profile_id") or "")) \
-            if isinstance(session, dict) else {"kind": "idle"}
-        if (current.get("kind") != "active" or
-                self._child_time_normalize_game_id(current.get("game_id")) !=
-                self._child_time_provider_game(session)):
+        verdict = self._child_time_running_verdict(session, self._child_time_current_game(
+            str(session.get("execution_profile_id") or ""), session)) \
+            if isinstance(session, dict) else "unconfirmed"
+        # Housekeeping owns ended and unconfirmed sessions; resume never ends on an outage.
+        if verdict not in {"alive", "replaced"}:
             body.update({"ok": False, "state": "blocked", "reason": "child_session_expired"})
             return HTTPStatus.CONFLICT, body
         actor = self.config.get("profiles", {}).get(
@@ -6519,10 +6576,8 @@ class GatewayState:
             return self._child_time_finish(
                 client, session, str(body.get("reason") or "daily_limit_reached"),
                 resume_wall)
-        token = self._child_time_process_token(current.get("identity"))
-        if not token or token != self._child_time_process_token(session):
-            return self._child_time_finish(client, session,
-                                           "child_session_expired", resume_wall)
+        if verdict == "replaced":
+            return self._child_time_finish(client, session, "game_replaced", resume_wall)
         return status, body
 
     def child_time_session_heartbeat(self, client: dict[str, Any], actor_profile_id: str,
@@ -6575,7 +6630,20 @@ class GatewayState:
                 "ok": False, "state": str(session.get("phase") or "launch_pending"),
                 "reason": "policy_unavailable", "session_id": session_id,
             }
-        current = self._child_time_current_game(parent_id)
+        current = self._child_time_current_game(parent_id, session)
+        phase = str(session.get("phase") or "launch_pending")
+        if phase == "running":
+            verdict = self._child_time_running_verdict(session, current)
+            if verdict == "ended":
+                return self._child_time_release_lease(client, session, "game_ended", wall)
+            if verdict == "replaced":
+                # A replacement process is not proof that the shared transport is
+                # finished. Retire only the old exact token, then close the same
+                # fenced stream without touching the replacement process.
+                return self._child_time_finish(client, session, "game_replaced", wall)
+            return self._child_time_charge_running(
+                client, session, actor_id, parent_id, actor,
+                confirmed=verdict == "alive")
         if current.get("kind") == "unavailable":
             with self.lock:
                 self._child_time_checkpoint_locked()
@@ -6588,7 +6656,6 @@ class GatewayState:
         exact_current = (current.get("kind") == "active" and
                          self._child_time_normalize_game_id(current.get("game_id")) ==
                          self._child_time_provider_game(session))
-        phase = str(session.get("phase") or "launch_pending")
         # Housekeeping also runs while /game/start is still waiting for the
         # launcher. An idle snapshot is expected until that launch is observed.
         awaiting_launch = (phase == "launch_pending" and
@@ -6645,25 +6712,37 @@ class GatewayState:
                 client, actor_id, parent_id, actor, policy, wall, session,
                 state="running", reason="none")
             return HTTPStatus.OK, body
-        if phase != "running":
-            body = self._child_time_body(
-                client, actor_id, parent_id, actor, policy, wall, session,
-                state=phase, reason=str(session.get("end_reason") or
-                                       "cleanup_required"), ok=False)
-            return HTTPStatus.CONFLICT, body
-        stored_token = self._child_time_process_token(session)
-        if not token or (stored_token and token != stored_token):
-            return self._child_time_finish(
-                client, session, "child_session_expired", wall)
+        body = self._child_time_body(
+            client, actor_id, parent_id, actor, policy, wall, session,
+            state=phase, reason=str(session.get("end_reason") or
+                                   "cleanup_required"), ok=False)
+        return HTTPStatus.CONFLICT, body
+
+    def _child_time_charge_running(self, client: dict[str, Any], session: dict[str, Any],
+                                   actor_id: str, parent_id: str, actor: dict[str, Any],
+                                   confirmed: bool) \
+            -> tuple[int, dict[str, Any]]:
+        """Charge a running session; an unconfirmed observation is charged as play.
+
+        The child never gains time from an outage: elapsed time is charged and the limit
+        and schedule are enforced on every tick, and an outage longer than
+        CHILD_TIME_FAILURE_TOLERANCE_SECONDS ends the session fail-closed.
+        """
         with self.lock:
             if self.child_time_session is not session:
                 raise PermissionError("stale_child_session")
+            # Read time when charging, after the Bridge request. Another
+            # heartbeat may have charged a newer timestamp while we waited.
+            _monotonic, wall = self._child_time_now(actor)
+            if confirmed:
+                session.pop("unconfirmed_since_monotonic", None)
+            else:
+                session.setdefault("unconfirmed_since_monotonic", _monotonic)
+            unconfirmed_seconds = _monotonic - float(
+                session.get("unconfirmed_since_monotonic", _monotonic))
             if session.get("clock_rollback"):
                 rolled_back = True
             else:
-                # Read time when charging, after the Bridge request. Another
-                # heartbeat may have charged a newer timestamp while we waited.
-                _monotonic, wall = self._child_time_now(actor)
                 _charged, rolled_back = self._child_time_accrue_locked(
                     session, _monotonic, wall,
                     float(session.get("last_playable_seconds", 0.0)))
@@ -6680,6 +6759,8 @@ class GatewayState:
         if float(policy.get("playable_now_seconds", 0.0)) <= 0:
             return self._child_time_finish(client, session,
                                            str(policy.get("reason") or "daily_limit_reached"), wall)
+        if unconfirmed_seconds >= CHILD_TIME_FAILURE_TOLERANCE_SECONDS:
+            return self._child_time_finish(client, session, "game_unobservable", wall)
         with self.lock:
             session["last_playable_seconds"] = float(
                 policy.get("playable_now_seconds", 0.0))
@@ -8066,8 +8147,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
             request_id = str(query.get("request_id", [""])[0]).strip()
             if attempt_id or request_id:
                 if self.state.is_child_profile(header_profile):
-                    self.state.authorize_child_profile(
-                        authenticated_client, profile_id, "remote_sign_in")
                     status, result = self.state.child_attempt_status(
                         authenticated_client, profile_id, request_id, attempt_id)
                 else:
@@ -8441,8 +8520,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
                             "ok": False, "state": "action_required",
                             "reason": "request_id_mismatch"})
                         return
+                    # The Broker binds the attempt to this client, actor and request;
+                    # cancelling one's own attempt never needs the sign-in grant.
                     actor_id = self._authorize_public_child(
-                        authenticated_client, "remote_sign_in")
+                        authenticated_client, "use_profile")
                     status, result = self.state.cancel_session_attempt(
                         authenticated_client, actor_id, attempt_request_id,
                         attempt_id)
@@ -8453,10 +8534,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                             "ok": False, "state": "action_required",
                             "reason": "invalid_request_body"})
                         return
-                    actor_id = self._authorize_public_child(
-                        authenticated_client,
-                        "use_profile" if path.endswith("/ensure") else
-                        "remote_sign_in")
+                    # Sign-in authority is decided by the state layer for ensure and switch.
+                    actor_id = self._authorize_public_child(authenticated_client)
                     status, result = (self.state.ensure_session(
                         authenticated_client, actor_id, request_id)
                         if path.endswith("/ensure") else

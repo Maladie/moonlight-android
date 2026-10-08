@@ -487,6 +487,43 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void screensaverReportsWakingWithoutSpendingTheHostUnlock() {
+        FakeGateway gateway = gatewayWith(snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_screensaver_active"));
+        FakeClock clock = new FakeClock();
+        gateway.snapshotAction = () -> clock.value += 3_000L;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals("waking computer", harness.controller.snapshot().detail);
+        assertEquals(0, gateway.unlockCalls);
+        // The reconnect's focus request is what lets the Bridge close the saver.
+        assertEquals(1, gateway.focusGameCalls);
+        assertTrue(harness.controller.snapshot().inputBlocked);
+        assertFalse(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+    }
+
+    @Test
+    public void screensaverThatNeverClosesTimesOutUnlikeALock() {
+        PlayniteTransitionGateway.Snapshot saver = snapshot(true, false, "idle", "", 0,
+                false, "playnite", 0, "host_screensaver_active");
+        FakeGateway gateway = gatewayWith(saver, saver);
+        FakeClock clock = new FakeClock();
+        gateway.snapshotActions.add(() -> clock.value = 0L);
+        gateway.snapshotActions.add(() -> clock.value = 61_000L);
+        Harness harness = new Harness(LaunchTransitionType.PLAYNITE, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.TIMED_OUT, harness.controller.snapshot().state);
+        assertEquals("waking computer", harness.controller.snapshot().detail);
+        assertEquals(0, gateway.unlockCalls);
+    }
+
+    @Test
     public void fullscreenRequestIsNotRepeatedAfterSuccess() {
         PlayniteTransitionGateway.Snapshot unready = snapshot(true, true, "idle", "", 0,
                 false, "playnite", 0, "");
@@ -514,6 +551,41 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         assertEquals(3, gateway.focusGameCalls);
         assertEquals(Arrays.asList(3_000L, 6_000L, 9_000L), gateway.focusTimes);
+    }
+
+    @Test
+    public void screensaverWakeDoesNotSpendTheGameFocusAttempts() {
+        PlayniteTransitionGateway.Snapshot saver = snapshot(true, true, "running", GAME,
+                42, false, "game", 0, "host_screensaver_active");
+        PlayniteTransitionGateway.Snapshot background = snapshot(true, true, "running", GAME,
+                42, false, "game", 0, "target_not_foreground");
+        FakeGateway gateway = gatewayWith(saver, saver, saver, saver,
+                background, background, background, background);
+        FakeClock clock = new FakeClock();
+        gateway.snapshotAction = () -> clock.value += 3_000L;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals(Arrays.asList(3_000L, 6_000L, 9_000L, 15_000L, 18_000L, 21_000L),
+                gateway.focusTimes);
+    }
+
+    @Test
+    public void startingGameBehindScreensaverLeavesTheWakeToTheBridge() {
+        PlayniteTransitionGateway.Snapshot saver = snapshot(true, true, "starting", GAME,
+                0, false, "game", 0, "host_screensaver_active");
+        FakeGateway gateway = gatewayWith(saver, saver, saver);
+        FakeClock clock = new FakeClock();
+        gateway.snapshotAction = () -> clock.value += 3_000L;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals(3, gateway.snapshotIndex);
+        assertEquals(0, gateway.focusGameCalls);
     }
 
     @Test
@@ -2552,6 +2624,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             return "window not fullscreen";
         }
         @Override public String gameWindowNotForegroundMessage() { return "window not active"; }
+        @Override public String hostScreensaverActiveMessage() { return "waking computer"; }
         @Override public String launcherInteractionRequiredMessage() { return "reveal launcher"; }
         @Override public String windowStabilizingMessage() { return "stabilizing"; }
         @Override public boolean isPendingInstallation(String hostId, String gameId) {

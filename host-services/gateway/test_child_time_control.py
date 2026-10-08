@@ -400,7 +400,7 @@ class ChildTimeControlTest(unittest.TestCase):
 
         self.assertEqual(200, status, body)
         self.assertEqual("ended", body["state"])
-        self.assertEqual("child_session_expired", body["reason"])
+        self.assertEqual("game_replaced", body["reason"])
         self.assertIsNone(self.state.child_time_session)
         self.assertIsNone(self.state.control_state["stream"])
         self.assertFalse(self.streamer_active)
@@ -414,6 +414,106 @@ class ChildTimeControlTest(unittest.TestCase):
 
     def test_housekeeping_different_game_replacement_closes_only_shared_stream(self):
         self.assert_replacement_closes_stream_without_stopping_replacement("steam:999")
+
+    def scan_outage(self, target_status="alive"):
+        """Joint-5: game still current and its process alive, but the running scan failed."""
+        self.current = {"id": "steam:123", "state": "running", "processId": 42,
+                        "running_games": [], "running_scan_status": "unavailable"}
+        inner = self.state.proxy
+
+        def proxy(name, path, *args, **kwargs):
+            ok, body = inner(name, path, *args, **kwargs)
+            target = body.get("process", {}).get("target") if ok else None
+            if isinstance(target, dict) and self.current.get("id"):  # until stopped
+                target["status"] = target_status
+            return ok, body
+        self.state.proxy = proxy
+        return inner
+
+    def used(self):
+        return self.state.child_time_usage["days"].get("kid", {}).get("2026-01-03", 0)
+
+    def test_scan_outage_keeps_running_child_session_and_still_charges(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        for status in ("alive", "unknown", "gone"):  # gone without a complete scan proves nothing
+            with self.subTest(target=status):
+                inner = self.scan_outage(status)
+                before = self.used()
+                self.clock.advance(30)
+                status_code, body = self.state.child_time_housekeeping_tick()
+                self.assertEqual((200, "running"), (status_code, body["state"]), body)
+                status_code, body = self.state.child_time_session_resume(
+                    self.client, "kid", session_id)
+                self.assertEqual(409, status_code)
+                self.assertIs(session, self.state.child_time_session)
+                self.assertEqual(before + 30, self.used())
+                self.state.proxy = inner
+        self.state.proxy = lambda *args, **kwargs: (False, {"error": "bridge_unavailable"})
+        self.clock.advance(30)
+        self.assertEqual(200, self.state.child_time_housekeeping_tick()[0])
+        self.assertIs(session, self.state.child_time_session)
+        self.assertFalse(any(c[1] == "/game/stop-verified" for c in self.bridge_calls))
+
+    def test_scan_outage_still_ends_child_session_when_time_runs_out(self):
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 60
+        self.start_running()
+        inner = self.scan_outage()
+        self.clock.advance(30)
+        self.assertEqual("running", self.state.child_time_housekeeping_tick()[1]["state"])
+        self.clock.advance(31)
+        self.assert_terminal_after_scan_recovers(inner, "daily_limit_reached")
+        self.assertEqual(60, self.used())
+
+    def assert_terminal_after_scan_recovers(self, inner, reason):
+        # The verified stop needs a verified identity, so cleanup waits for the scan.
+        _status, body = self.state.child_time_housekeeping_tick()
+        session = self.state.child_time_session
+        self.assertTrue(body["cleanup_required"], body)
+        self.assertEqual(("cleanup_required", reason),
+                         (session["phase"], session["terminal_reason"]))
+        self.state.proxy = inner
+        self.current = {"id": "steam:123", "state": "running", "processId": 42,
+                        "running_games": [{"game_id": "steam:123", "process_id": 42,
+                                           "process_token": TOKEN}]}
+        self.clock.advance(5)
+        _status, body = self.state.child_time_housekeeping_tick()
+        self.assertEqual(("ended", reason), (body["state"], body["reason"]), body)
+        self.assertIsNone(self.state.child_time_session)
+
+    def test_long_observation_outage_ends_child_session_fail_closed(self):
+        self.start_running()
+        inner = self.scan_outage()
+        ticks = int(wakeplay_gateway.CHILD_TIME_FAILURE_TOLERANCE_SECONDS // 30)
+        for _ in range(ticks):  # the outage starts at the first unconfirmed tick
+            self.clock.advance(30)
+            _status, body = self.state.child_time_housekeeping_tick()
+            self.assertEqual("running", body["state"])
+        self.clock.advance(30)
+        self.assert_terminal_after_scan_recovers(inner, "game_unobservable")
+        self.assertEqual((ticks + 1) * 30, self.used())  # every outage tick was charged
+
+    def test_confirmed_game_end_ends_child_session_as_game_ended(self):
+        for scenario in ("idle", "gone_after_complete_scan"):
+            with self.subTest(scenario=scenario):
+                self.start_running()
+                self.current = ({"id": "", "state": "idle", "running_games": []}
+                                if scenario == "idle" else
+                                {"id": "steam:123", "state": "running", "processId": 42,
+                                 "running_games": [], "running_scan_status": "complete"})
+                self.clock.advance(5)
+                _status, body = self.state.child_time_housekeeping_tick()
+                self.assertEqual(("ended", "game_ended"), (body["state"], body["reason"]))
+                self.assertIsNone(self.state.child_time_session)
+                self.state.control_state["stream"] = None
+
+    def test_reused_process_id_ends_child_session_as_game_replaced(self):
+        self.start_running()
+        self.scan_outage("reused")
+        self.clock.advance(5)
+        _status, body = self.state.child_time_housekeeping_tick()
+        self.assertEqual(("ended", "game_replaced"), (body["state"], body["reason"]))
+        self.assertIsNone(self.state.child_time_session)
 
     def test_terminal_cleanup_uses_exact_streamer_app_after_android_disconnect(self):
         session_id = self.start_running()
@@ -1201,8 +1301,8 @@ class ChildTimeControlTest(unittest.TestCase):
         before_usage = json.dumps(self.state.child_time_usage["days"], sort_keys=True)
         self.clock.advance(1)
 
-        def replace_after_read(parent_id):
-            current = original(parent_id)
+        def replace_after_read(parent_id, target=None):
+            current = original(parent_id, target)
             with self.state.lock:
                 self.state.child_time_session = replacement
                 self.state.control_state["stream"]["child_session_id"] = replacement["session_id"]
@@ -2108,14 +2208,14 @@ class ChildTimeControlTest(unittest.TestCase):
         session_id = self.start_running()
         self.clock.advance(10)
         read_current = self.state._child_time_current_game
-        def overlapping_read(parent_id):
+        def overlapping_read(parent_id, target=None):
             self.state._child_time_current_game = read_current
             self.clock.advance(2)
             status, body = self.state.child_time_session_heartbeat(
                 self.client, "kid", session_id)
             self.assertEqual(200, status)
             self.assertEqual("running", body["state"])
-            return read_current(parent_id)
+            return read_current(parent_id, target)
         self.state._child_time_current_game = overlapping_read
         status, body = self.state.child_time_session_heartbeat(
             self.client, "kid", session_id)

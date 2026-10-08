@@ -27,6 +27,7 @@ class FakeBroker:
             True, "pending", fields={3: "0123456789abcdef0123456789abcdef"})
         self.legacy_begin_calls = []
         self.child_begin_calls = []
+        self.switch_calls = []
 
     @staticmethod
     def reply(success, state, reason="none", fields=None):
@@ -41,6 +42,10 @@ class FakeBroker:
 
     def begin(self, *args):
         self.legacy_begin_calls.append(args)
+        return self.begin_result
+
+    def switch_session(self, *args):
+        self.switch_calls.append(args)
         return self.begin_result
 
     def begin_child(self, client_id, actor_profile_id, profile, request_id):
@@ -419,6 +424,165 @@ class ChildProfilesGatewayTest(unittest.TestCase):
         self.assertEqual([], self.broker.child_begin_calls)
         self.assertEqual(1, len(self.broker.legacy_begin_calls))
         self.assertEqual("living-room", self.broker.legacy_begin_calls[0][1]["id"])
+
+    def _locked_parent_with_auto_unlock(self, enabled=True, credential="ready",
+                                        parent_grant=True):
+        parent = self.state.config["profiles"]["living-room"]
+        parent["account_mapping_status"] = "resolved"
+        parent["remote_sign_in_enabled"] = enabled
+        self.broker.profile = self.broker.reply(
+            True, "locked", fields={3: credential, 4: "none" if credential == "ready"
+                                    else "credential_missing"})
+        self.client["profile_grants"] = {"kid": ["use_profile"]}
+        if parent_grant:
+            self.client["profile_grants"]["living-room"] = ["use_profile", "remote_sign_in"]
+        attempt = "0123456789abcdef0123456789abcdef"
+        self.broker.attempt_state = lambda *args: self.broker.reply(
+            True, "pending", fields={3: attempt})
+        self.broker.cancel = lambda *args: self.broker.reply(
+            True, "cancelled", "attempt_cancelled", fields={3: attempt})
+        return attempt
+
+    def test_child_unlocks_locked_parent_when_parent_enabled_auto_unlock(self):
+        attempt = self._locked_parent_with_auto_unlock()
+
+        status, result = self.state.ensure_session(self.client, "kid", "kid-unlock")
+        self.assertEqual(202, status)
+        self.assertEqual(("kid", "living-room", attempt), (
+            result["actor_profile_id"], result["execution_profile_id"],
+            result["attempt_id"]))
+        self.assertEqual("living-room", self.broker.legacy_begin_calls[0][1]["id"])
+        self.assertEqual(202, self.state.child_attempt_status(
+            self.client, "kid", "kid-unlock", attempt)[0])
+        self.assertEqual(200, self.state.cancel_session_attempt(
+            self.client, "kid", "kid-unlock", attempt)[0])
+
+    def test_child_session_control_refused_without_parent_device_grant(self):
+        # The child never does more on a device than the parent could there.
+        for session_state, call in (("locked", "ensure"), ("signed_out", "ensure"),
+                                    ("other_user_active", "switch")):
+            with self.subTest(session_state=session_state):
+                self._locked_parent_with_auto_unlock(parent_grant=False)
+                self.client["profile_grants"]["living-room"] = ["use_profile"]
+                self.broker.profile["state"] = session_state
+                with self.assertRaises(PermissionError):
+                    if call == "ensure":
+                        self.state.ensure_session(self.client, "kid", "kid-unlock")
+                    else:
+                        self.state.switch_session(self.client, "kid", "kid-switch")
+                self.assertEqual([], self.broker.legacy_begin_calls)
+                self.assertEqual([], self.broker.switch_calls)
+
+    def test_child_unlock_refused_without_parent_auto_unlock(self):
+        for enabled, credential in ((False, "ready"), (True, "action_required")):
+            with self.subTest(enabled=enabled, credential=credential):
+                attempt = self._locked_parent_with_auto_unlock(enabled, credential)
+                with self.assertRaises(PermissionError):
+                    self.state.ensure_session(self.client, "kid", "kid-unlock")
+                self.assertEqual([], self.broker.legacy_begin_calls)
+
+    def _child_handler(self, method, path, request_id="kid-unlock", body=b""):
+        handler = object.__new__(wakeplay_gateway.GatewayHandler)
+        handler.server = SimpleNamespace(state=self.state)
+        handler.client_address = ("192.0.2.1", 12345)
+        handler.headers = Message()
+        handler.headers["Authorization"] = "Bearer token"
+        handler.headers["X-WakePlay-Profile"] = "kid"
+        handler.headers["X-MoonWaker-Capabilities"] =             wakeplay_gateway.CHILD_PROFILES_CAPABILITY
+        handler.headers["X-Request-Id"] = request_id
+        handler.headers["Content-Length"] = str(len(body))
+        handler.rfile = io.BytesIO(body)
+        handler.path = wakeplay_gateway.API_PREFIX + path
+        responses = []
+        handler.send_json = lambda status, value: responses.append((int(status), value))
+        getattr(handler, "do_" + method)()
+        return responses[-1]
+
+    def test_child_http_status_and_cancel_of_own_attempt_need_no_sign_in_grant(self):
+        self.state.child_profiles_api_enabled = True
+        # The parent is no longer ready and the child never had remote_sign_in:
+        # the child still observes and cancels its own Broker-bound attempt.
+        attempt = self._locked_parent_with_auto_unlock(enabled=False)
+        status_path = ("/system/session/status?request_id=kid-unlock&attempt_id=" +
+                       attempt)
+        status, result = self._child_handler("GET", status_path)
+        self.assertEqual((202, "pending"), (status, result["state"]))
+
+        cancel = json.dumps({"attempt_id": attempt}).encode("utf-8")
+        status, result = self._child_handler("POST", "/system/session/cancel", body=cancel)
+        self.assertEqual((200, "cancelled"), (status, result["state"]))
+
+        self.broker.attempt_state = lambda *args: LoginBrokerClient.unavailable()
+        status, result = self._child_handler("GET", status_path)
+        self.assertEqual((503, "broker_unavailable"), (status, result["state"]))
+        self.broker.cancel = lambda *args: LoginBrokerClient.unavailable()
+        status, result = self._child_handler("POST", "/system/session/cancel", body=cancel)
+        self.assertEqual((503, "broker_unavailable"), (status, result["state"]))
+        self.assertEqual([], self.broker.legacy_begin_calls)
+
+    def test_child_signs_in_signed_out_or_disconnected_parent_with_auto_unlock(self):
+        for session_state in ("signed_out", "disconnected"):
+            with self.subTest(session_state=session_state):
+                self.broker.legacy_begin_calls = []
+                self._locked_parent_with_auto_unlock()
+                self.broker.profile = self.broker.reply(
+                    True, session_state, fields={3: "ready", 4: "none"})
+                status, result = self.state.ensure_session(
+                    self.client, "kid", "kid-logon")
+                self.assertEqual(202, status)
+                self.assertEqual(("kid", "living-room", session_state), (
+                    result["actor_profile_id"], result["execution_profile_id"],
+                    result["session_state"]))
+                self.assertEqual("living-room",
+                                 self.broker.legacy_begin_calls[0][1]["id"])
+
+    def test_child_sign_in_of_signed_out_parent_refused_without_auto_unlock(self):
+        for enabled, credential in ((False, "ready"), (True, "action_required")):
+            with self.subTest(enabled=enabled, credential=credential):
+                self._locked_parent_with_auto_unlock(enabled, credential)
+                self.broker.profile["state"] = "signed_out"
+                with self.assertRaises(PermissionError):
+                    self.state.ensure_session(self.client, "kid", "kid-logon")
+                self.assertEqual([], self.broker.legacy_begin_calls)
+
+    def test_child_switches_to_parent_on_parent_terms_with_auto_unlock(self):
+        self._locked_parent_with_auto_unlock()
+        self.broker.profile = self.broker.reply(
+            True, "other_user_active", fields={3: "ready", 4: "none"})
+        status, result = self.state.switch_session(self.client, "kid", "kid-switch")
+        self.assertEqual(202, status)
+        self.assertEqual(("kid", "living-room"), (
+            result["actor_profile_id"], result["execution_profile_id"]))
+        self.assertEqual("living-room", self.broker.switch_calls[0][1]["id"])
+
+        # Same refusals as the parent: an unmapped account never reaches the Broker.
+        parent = self.state.config["profiles"]["living-room"]
+        parent["account_mapping_status"] = "unresolved"
+        self.broker.profile["fields"] = {3: "ready", 4: "none"}
+        with self.assertRaises(PermissionError):
+            self.state.switch_session(self.client, "kid", "kid-switch-2")
+        self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
+        status, result = self.state.switch_session(self.client, "kid", "kid-switch-3")
+        self.assertEqual((409, "account_mapping_required"), (status, result["reason"]))
+        self.assertEqual(1, len(self.broker.switch_calls))
+
+    def test_child_switch_refused_without_parent_auto_unlock(self):
+        for enabled, credential in ((False, "ready"), (True, "action_required")):
+            with self.subTest(enabled=enabled, credential=credential):
+                self._locked_parent_with_auto_unlock(enabled, credential)
+                self.broker.profile["state"] = "other_user_active"
+                with self.assertRaises(PermissionError):
+                    self.state.switch_session(self.client, "kid", "kid-switch")
+                self.assertEqual([], self.broker.switch_calls)
+
+    def test_child_http_switch_needs_no_child_sign_in_grant(self):
+        self.state.child_profiles_api_enabled = True
+        self._locked_parent_with_auto_unlock()
+        self.broker.profile["state"] = "other_user_active"
+        status, result = self._child_handler(
+            "POST", "/system/session/switch", request_id="kid-switch", body=b"{}")
+        self.assertEqual((202, "kid"), (status, result["actor_profile_id"]))
+        self.assertEqual(1, len(self.broker.switch_calls))
 
     @staticmethod
     def decode_wire(wire):

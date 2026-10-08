@@ -1174,6 +1174,7 @@
     <string name="transition_waiting_game_identity">Playnite reported the game as running — waiting for process details</string>
     <string name="transition_game_window_not_fullscreen">The game window is not fullscreen</string>
     <string name="transition_game_window_not_foreground">The game window is not active</string>
+    <string name="transition_host_screensaver_active">Waking the computer…</string>
     <string name="transition_window_ready_waiting_frame">Window ready — waiting for a fresh picture</string>
     <string name="transition_ready">Ready</string>
     <string name="transition_cancel">Cancel launch</string>

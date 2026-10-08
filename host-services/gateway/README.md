@@ -67,10 +67,15 @@ the header retain the fixed five-minute lease for compatibility.
   Failures use a per-client/profile cooldown.
 - `POST /api/v1/system/session/ensure` - returns `ready` for an already-active
   selected profile, or starts a bounded remote Windows sign-in attempt when the
-  client also has the `remote_sign_in` grant.
+  client also has the `remote_sign_in` grant. A child profile without that
+  grant controls its parent's Windows session (unlock, sign-in, switch) like
+  the parent, while the parent's automatic sign-in is set up (enabled, mapped,
+  credential stored) and the parent's own grant on this same client includes
+  `remote_sign_in`; its game library and play time stay enforced.
 - `POST /api/v1/system/session/switch` - explicitly disconnects the active local
   console session through Fast User Switching and starts or resumes the selected
-  profile; it requires `use_profile`, `remote_sign_in`, and an idempotent request ID.
+  profile; it requires `use_profile`, `remote_sign_in` (or, for a child, the
+  parent's automatic sign-in above), and an idempotent request ID.
 - `GET /api/v1/system/session/status` - returns coarse session state, or polls a
   bound attempt when `attempt_id` and `request_id` are supplied.
 - `POST /api/v1/system/session/cancel` - idempotently cancels a bound attempt.

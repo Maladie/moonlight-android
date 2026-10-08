@@ -72,6 +72,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String gameExitedDuringStartMessage();
         String gameWindowNotFullscreenMessage();
         String gameWindowNotForegroundMessage();
+        String hostScreensaverActiveMessage();
         String launcherInteractionRequiredMessage();
         String windowStabilizingMessage();
 
@@ -789,13 +790,23 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 }
 
                 long now = clock.now();
+                // Behind a screen saver the focus request of a reconnect is what makes the
+                // Bridge close the saver; a start is covered by the Bridge's own launch.
+                // Waking the saver has its own budget so it cannot use up the real focus attempts.
+                boolean focusRequired = "target_not_foreground".equals(readinessReason);
+                boolean wakeRequired = "host_screensaver_active".equals(readinessReason)
+                        && "running".equalsIgnoreCase(snapshot.gameState);
                 if (snapshot.gatewayReady && "game".equalsIgnoreCase(snapshot.targetKind)
                         && !snapshot.windowReady
-                        && "target_not_foreground".equals(readinessReason)
-                        && context.gameFocusAttempts < 3
+                        && ((focusRequired && context.gameFocusAttempts < 3)
+                            || (wakeRequired && context.screensaverWakeAttempts < 3))
                         && now - context.lastGameFocusAttempt >= 3_000L) {
                     context.lastGameFocusAttempt = now;
-                    context.gameFocusAttempts++;
+                    if (focusRequired) {
+                        context.gameFocusAttempts++;
+                    } else {
+                        context.screensaverWakeAttempts++;
+                    }
                     try {
                         gateway.focusGame();
                     } catch (IOException ignored) {
@@ -1021,6 +1032,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
         if ("target_not_foreground".equals(reason)) {
             return callbacks.gameWindowNotForegroundMessage();
+        }
+        // Not a lock: the Bridge is waking the screensaver itself, and the broker would
+        // answer "ready", so the one tryHostUnlock attempt is kept for a real lock.
+        if ("host_screensaver_active".equals(reason)) {
+            return callbacks.hostScreensaverActiveMessage();
         }
         return "";
     }
@@ -1397,6 +1413,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         boolean lockScreenPresented;
         boolean targetWindowReadyLogged;
         int gameFocusAttempts;
+        int screensaverWakeAttempts;
         long lastGameFocusAttempt;
         String lastReadinessReason = "";
         String loggedReadinessReason = "";
