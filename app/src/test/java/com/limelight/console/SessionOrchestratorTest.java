@@ -439,6 +439,57 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.launches);
     }
 
+    @Test public void uncorrelatedRecoveryRefreshedToPendingNeutralStreamAsksWithoutSecondRefresh() {
+        Fake effects = new Fake();
+        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
+        effects.onRefresh = () -> effects.snapshot = snapshot(
+                SessionSnapshot.State.RECONNECT_REQUIRED, 77, "", false, "", true);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.refreshes);
+        assertNotNull(effects.confirmation);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void projectionStillStaleAfterPreflightRefreshAsksNeverCloses() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                77, "game", false, "", true, SessionSnapshot.ObservationState.READY, true);
+        effects.onReadiness = () -> effects.snapshot = snapshot(
+                SessionSnapshot.State.RECONNECT_REQUIRED, 77, "", false, "", true);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(HostLaunchPreflight.Action.RECONNECT, effects.preflightAction);
+        assertEquals(1, effects.refreshes);
+        assertNotNull(effects.confirmation);
+        assertEquals(0, effects.closes);
+        assertNull(effects.allowDestructiveCloseSeen);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void fullscreenReconnectOnNeutralStreamReconnectsWithoutRefreshOrAsking() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                77, "", false, "", true);
+
+        orchestrator(effects).play(PlayIntent.playniteFullscreen("host", 77, "Desktop", false));
+
+        assertEquals(HostLaunchPreflight.Action.RECONNECT, effects.preflightAction);
+        assertEquals(1, effects.reconnects);
+        assertEquals(0, effects.refreshes);
+        assertNull(effects.confirmation);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
     @Test public void cancelledNeutralWarmUpReconnectIgnoresStaleOpaqueFrame() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
