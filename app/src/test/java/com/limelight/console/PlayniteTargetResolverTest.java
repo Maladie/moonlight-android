@@ -12,6 +12,12 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
 public class PlayniteTargetResolverTest {
+    @Test public void onlyTheHostDesktopStreamShowsTheLocalizedLabel() {
+        assertEquals("Pulpit", PlayniteTargetResolver.appDisplayName("Desktop", "Pulpit"));
+        assertEquals("Desktop 2", PlayniteTargetResolver.appDisplayName("Desktop 2", "Pulpit"));
+        assertNull(PlayniteTargetResolver.appDisplayName(null, "Pulpit"));
+    }
+
     @Test public void missingGameTargetRemainsUnconfiguredEvenWithPlayniteFallback() {
         PlayniteLibraryGame game = game("My Game");
 

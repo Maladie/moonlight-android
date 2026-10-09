@@ -4466,7 +4466,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         quickResumeButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         quickResumeButton.setEnabled(visible);
         if (visible) {
-            String appName = findAppName(host, snapshot.hostGameAppId);
+            String appName = appDisplayName(findAppName(host, snapshot.hostGameAppId));
             quickResumeButton.setText(appName == null
                     ? getString(R.string.console_quick_resume)
                     : getString(R.string.console_quick_resume_app, appName));
@@ -4770,12 +4770,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return null;
     }
 
+    private String appDisplayName(String appName) {
+        return PlayniteTargetResolver.appDisplayName(appName,
+                getString(R.string.console_launch_desktop));
+    }
+
     private String activeSessionName(ComputerDetails host, SessionSnapshot snapshot) {
         for (PlayniteDashboardItem item : unfilteredPlayniteItems) {
             if (snapshot.playniteGameId.equals(
                     SessionSnapshot.normalize(item.stableId()))) return item.game.name;
         }
-        return findAppName(host, snapshot.hostGameAppId);
+        return appDisplayName(findAppName(host, snapshot.hostGameAppId));
     }
 
     private void addHost() {
@@ -5835,7 +5840,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (items.isEmpty()) actions.add(consolePanel.note(getString(R.string.console_quick_launch_empty)));
         for (QuickLaunchManager.QuickLaunchItem item : items) {
             TextView action = consolePanel.action(getString(R.string.console_quick_launch_item,
-                    item.getDisplayName(), item.computerName));
+                    appDisplayName(item.getDisplayName()), item.computerName));
             action.setOnClickListener(view -> launchQuickItem(item));
             action.setOnLongClickListener(view -> {
                 showQuickLaunchItemActions(item);
@@ -5866,14 +5871,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             for (NvApp app : loadApps(host, true)) {
                 if (isQuickLaunch(host.uuid, app.getAppId())) continue;
                 TextView add = consolePanel.action(getString(R.string.console_quick_launch_add_item,
-                        app.getAppName(), host.name));
+                        appDisplayName(app.getAppName()), host.name));
                 add.setTag("quick.add:" + host.uuid + ":" + app.getAppId());
                 add.setOnClickListener(view -> {
                     quickLaunchManager.addQuickLaunchItem(host, app);
                     renderedAppsSignature = null;
                     if (host.uuid.equals(selectedHostUuid)) renderAppsAsync(host);
                     ConsoleUiFeedback.makeText(this, getString(R.string.console_quick_launch_added,
-                            app.getAppName()), Toast.LENGTH_SHORT).show();
+                            appDisplayName(app.getAppName())), Toast.LENGTH_SHORT).show();
                     showQuickLaunchPanel();
                 });
                 actions.add(add);
@@ -5965,7 +5970,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         consolePanel.destructive(remove);
         remove.setOnClickListener(view -> confirmRemoveQuickLaunchItem(item));
         actions.add(remove);
-        showSidePanel(getString(R.string.console_quick_launch_eyebrow), item.getDisplayName(),
+        showSidePanel(getString(R.string.console_quick_launch_eyebrow),
+                appDisplayName(item.getDisplayName()),
                 item.computerName, actions.toArray(new View[0]));
     }
 
@@ -7014,7 +7020,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 executionProfileId(host.uuid, profileKey.profileId))
                 && !retained.streamSessionId.isEmpty()) {
             sessionModel.dispatch(new SessionEvent.TerminateRequested(retained.streamSessionId,
-                    terminationOutcome(outcome -> {
+                    providerGameId, terminationOutcome(outcome -> {
                         finishTerminateSession(host, profileKey, expectedSuspendId, outcome);
                         onRequestedStreamClosed();
                     })), result -> {
@@ -9252,7 +9258,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private boolean isFreshExactRunningManagedGame(ComputerDetails host,
                                                     PlayniteDashboardItem item) {
-        return host != null && isExactRunningManagedGame(host, item, resolveSessionSnapshot(host));
+        if (host == null) return false;
+        SessionSnapshot snapshot = resolveSessionSnapshot(host);
+        // A stop already in flight leaves nothing to end: every "End game" entry reads this.
+        return !snapshot.endingGame && isExactRunningManagedGame(host, item, snapshot);
     }
 
     private boolean isExactRunningManagedGame(ComputerDetails host, PlayniteDashboardItem item,
@@ -11273,7 +11282,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         copy.setGravity(Gravity.TOP);
         copy.setPadding(dp(debugCarousel ? 7 : 14), dp(debugCarousel ? 4 : 12),
                 dp(debugCarousel ? 7 : 14), dp(debugCarousel ? 3 : 10));
-        TextView name = text(app.getAppName(), debugCarousel ? 9 : 15, Color.WHITE, true);
+        TextView name = text(appDisplayName(app.getAppName()), debugCarousel ? 9 : 15,
+                Color.WHITE, true);
         name.setMaxLines(debugCarousel ? 1 : 2);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         updateCarouselMarquee(name, false);
@@ -11323,7 +11333,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return false;
         });
         card.setContentDescription(getString(R.string.console_app_description,
-                app.getAppName(), metadata, hostReady
+                appDisplayName(app.getAppName()), metadata, hostReady
                         ? running ? getString(R.string.console_resume) : getString(R.string.console_play)
                         : getString(R.string.console_app_options_action)));
         card.setOnFocusChangeListener((v, focused) -> {
@@ -11474,7 +11484,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         SessionSnapshot session = renderedSessionSnapshot(host);
         String closing = closingStatus(session);
         if (closing != null) {
-            showSidePanelBusy(getString(R.string.console_apps_eyebrow), app.getAppName(), closing);
+            showSidePanelBusy(getString(R.string.console_apps_eyebrow),
+                    appDisplayName(app.getAppName()), closing);
             return;
         }
         boolean online = ConsoleActionCatalog.isOnline(host);
@@ -11512,7 +11523,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     hideSidePanel();
                     new ConsoleAppStreamSettings(this, settingsScreen).open(
                             getString(R.string.console_apps_eyebrow),
-                            host.uuid + ":" + app.getAppId(), app.getAppName(), false, null);
+                            host.uuid + ":" + app.getAppId(),
+                            appDisplayName(app.getAppName()), false, null);
                 });
         if (online && paired) {
             resolved.add(ConsoleAction.enabled("app.streaming_autopilot",
@@ -11571,7 +11583,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         getString(R.string.console_close), null));
         List<View> actions = new ArrayList<>();
         for (ConsoleAction action : resolved) actions.add(actionView(action));
-        showSidePanel(getString(R.string.console_apps_eyebrow), app.getAppName(),
+        showSidePanel(getString(R.string.console_apps_eyebrow),
+                appDisplayName(app.getAppName()),
                 getString(R.string.console_app_actions_details), actions.toArray(new View[0]));
     }
 
@@ -12712,7 +12725,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         CountDownLatch completed = new CountDownLatch(1);
         // Runs on the orchestration worker: waiting for the model never blocks the main thread.
         SessionModel.TerminationResult started = sessionModel.await(
-                new SessionEvent.TerminateRequested(retained.streamSessionId,
+                new SessionEvent.TerminateRequested(retained.streamSessionId, "",
                         terminationOutcome(outcome -> {
                             result.set(outcome);
                             completed.countDown();
@@ -13382,7 +13395,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         streamLoadingEpoch = SystemClock.uptimeMillis();
         streamLoadingView = new ConsoleStreamLoadingView(
-                this, appName, null, streamLoadingEpoch, reducedMotion);
+                this, appDisplayName(appName), null, streamLoadingEpoch, reducedMotion);
         streamLoadingView.setSplashArtwork(loadingArtworkPath);
         loadingLayer.addView(streamLoadingView, match());
         streamLoadingView.configureForPlaynite(
@@ -14643,7 +14656,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             });
         });
         sessionModel.dispatch(new SessionEvent.TerminateRequested(expectedStreamSessionId,
-                complete), result -> {
+                "", complete), result -> {
             if (result == SessionModel.TerminationResult.STARTED) {
                 showSidePanelBusy(getString(R.string.console_title),
                         getString(R.string.console_close_game_and_moonwaker),

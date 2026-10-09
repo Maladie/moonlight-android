@@ -23,6 +23,7 @@ import com.limelight.console.SessionFailure;
 import com.limelight.console.DiscordOverlayController;
 import com.limelight.console.DiscordDmNotificationCoordinator;
 import com.limelight.console.DiscordDmToastView;
+import com.limelight.console.PlayniteTargetResolver;
 import com.limelight.console.PlayniteTransitionGateway;
 import com.limelight.console.PlayniteIdentityResolutionPolicy;
 import com.limelight.console.HostGatewayStore;
@@ -530,7 +531,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.uptimeMillis());
             consoleLoadingView = new ConsoleStreamLoadingView(
                     this,
-                    getIntent().getStringExtra(EXTRA_APP_NAME),
+                    appDisplayName(getIntent().getStringExtra(EXTRA_APP_NAME)),
                     getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),
                     launchStartedAtMillis,
                     getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false));
@@ -1363,7 +1364,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (appName != null) {
-                builder.setTitle(appName);
+                builder.setTitle(appDisplayName(appName));
                 if (pcName != null) {
                     builder.setSubtitle(pcName);
                 }
@@ -3449,9 +3450,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void terminateRetainedSession(
-            SessionModel.TerminationCallback completion) {
+            String gameId, SessionModel.TerminationCallback completion) {
         // The model runs this for the console that asked; that console owns what is shown next.
-        terminateWholeSessionVerified(completion, true);
+        terminateWholeSessionVerified(completion, true, gameId);
     }
 
     @Override
@@ -4401,7 +4402,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (title != null && !title.trim().isEmpty()) {
             appName = title.trim();
             getIntent().putExtra(EXTRA_APP_NAME, appName);
-            consoleLoadingView.setTitle(appName);
+            consoleLoadingView.setTitle(appDisplayName(appName));
         }
         if (artworkPath != null && !artworkPath.trim().isEmpty()) {
             getIntent().putExtra(EXTRA_CONSOLE_LOADING_ARTWORK, artworkPath.trim());
@@ -4562,13 +4563,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }, "MoonWaker-StopProviderGame").start();
     }
 
-    private void terminateWholeSessionVerified(SessionModel.TerminationCallback completion) {
-        terminateWholeSessionVerified(completion, false);
+    private String appDisplayName(String appName) {
+        return PlayniteTargetResolver.appDisplayName(appName,
+                getString(R.string.console_launch_desktop));
     }
 
-    /** {@code requesterPresentsHome}: the console that asked shows what follows, not Game. */
+    private void terminateWholeSessionVerified(SessionModel.TerminationCallback completion) {
+        terminateWholeSessionVerified(completion, false, "");
+    }
+
+    /**
+     * {@code requesterPresentsHome}: the console that asked shows what follows, not Game.
+     * {@code namedGameId}: the game that console named to stop; empty stops this stream's own.
+     */
     private void terminateWholeSessionVerified(SessionModel.TerminationCallback completion,
-            boolean requesterPresentsHome) {
+            boolean requesterPresentsHome, String namedGameId) {
         runOnUiThread(() -> {
             if (!wholeSessionTermination.begin()) {
                 if (completion != null) completion.complete(false);
@@ -4580,8 +4589,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     getIntent().getStringExtra(EXTRA_PC_UUID));
             final int expectedAppId = getIntent().getIntExtra(
                     EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
-            final String expectedGameId = transitionSpec == null
-                    ? "" : transitionSpec.playniteGameId;
+            // The model's markers carry the session's own game; only the host stop takes the
+            // game the requester named.
+            final String expectedGameId =
+                    transitionSpec == null ? "" : transitionSpec.playniteGameId;
+            final String stoppedGameId = namedGameId.isEmpty() ? expectedGameId : namedGameId;
             final PlayniteTransitionGateway.ActorContext actorContext =
                     currentGatewayActorContext();
             final long expectedControlGeneration = Math.max(0L,
@@ -4605,7 +4617,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     (directTermination, marked) -> runWholeSessionTermination(completion,
                             requesterPresentsHome, privacy,
                             directTermination, marked,
-                            expectedSessionId, expectedHostId, expectedAppId, expectedGameId,
+                            expectedSessionId, expectedHostId, expectedAppId, stoppedGameId,
                             actorContext, expectedControlGeneration);
             if (!hostCorrelated) {
                 terminate.accept(null, false);
@@ -6001,9 +6013,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
      * manually revealed; also leaving its start error) and whose stream holds a Gateway control
      * generation: this attempt's cleanup runs first, then the whole host session closes (stream
      * and virtual display), stopping a game only when the close's permit verifies it, never
-     * only the local transport, which Sunshine would merely pause. Without a generation only
-     * the transport closes here; the launch it abandons is closed by its StreamRuntime
-     * (StreamRuntime#abandonLaunch) whenever the host grants it.
+     * only the local transport, which Sunshine would merely pause. Otherwise only the transport
+     * closes here; cancelTransition decides (shouldAbandonLaunchOnCancel) whether the stopped
+     * StreamRuntime also closes the host stream its launch opened (StreamRuntime#abandonLaunch).
      */
     private boolean cancelUnrevealedProviderLaunchWithHostSession(long controlGeneration) {
         if (transitionCoordinator == null
@@ -6121,7 +6133,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         transitionCancelInFlight = true;
-        transitionController.cancel(transitionSpec.id);
+        LaunchTransitionState cancelledState =
+                transitionController.cancel(transitionSpec.id).state;
+        boolean revealedBeforeCancel = streamEverRevealed;
         // One read decides: a generation granted after it is the abandoned launch's to close.
         long controlGeneration = bindControlGeneration();
         if (cancelUnrevealedProviderLaunchWithHostSession(controlGeneration)) return;
@@ -6147,7 +6161,24 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         transitionUiHandler.postDelayed(finishOnce, 5_000L);
         StreamRuntime cancelled = runtime;
         stopConnection(finishOnce);
-        if (controlGeneration <= 0L && cancelled != null) cancelled.abandonLaunch();
+        if (cancelled != null && shouldAbandonLaunchOnCancel(controlGeneration, cancelledState,
+                revealedBeforeCancel)) {
+            cancelled.abandonLaunch();
+        }
+    }
+
+    /**
+     * The stopped runtime closes the host stream its launch opened when this cancel saw no
+     * control generation (a later grant is its to close), and when the host session was locked
+     * before the stream revealed anything: that stream showed nothing to keep, and left paused
+     * it would refuse the next launch. A revealed stream stays paused on a locked host.
+     */
+    static boolean shouldAbandonLaunchOnCancel(long controlGeneration,
+                                               LaunchTransitionState cancelledState,
+                                               boolean streamEverRevealed) {
+        return controlGeneration <= 0L
+                || cancelledState == LaunchTransitionState.HOST_SESSION_LOCKED
+                && !streamEverRevealed;
     }
 
     /**

@@ -729,7 +729,7 @@ public class StreamRuntimeTest {
         @Override public void clearReconnectRecord(String id) { reconnectCleared.add(id); }
         @Override public void controlGenerationBound(String id, long generation) { }
         @Override public void terminateHost(StreamRuntime runtime,
-                                            SessionModel.Snapshot session,
+                                            SessionModel.Snapshot session, String gameId,
                                             SessionModel.TerminationCallback c) { }
         final List<String> abandonedCloses = Collections.synchronizedList(new ArrayList<>());
         @Override public void closeAbandonedLaunch(String id, String profile, long generation) {
@@ -760,7 +760,7 @@ public class StreamRuntimeTest {
         }
         @Override public void switchGame(SessionModel.SwitchRequest r,
                                          SessionModel.SwitchCallback c) { }
-        @Override public void terminateRetainedSession(SessionModel.TerminationCallback c) { }
+        @Override public void terminateRetainedSession(String gameId, SessionModel.TerminationCallback c) { }
         @Override public void onTransportParked() { }
         @Override public void onRuntimeDisconnected() { disconnected.incrementAndGet(); }
         @Override public void onTransportStopping() { }

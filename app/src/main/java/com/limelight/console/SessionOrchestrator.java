@@ -97,6 +97,8 @@ final class SessionOrchestrator implements AutoCloseable {
     private final Dispatcher dispatcher;
     private final AtomicLong generation = new AtomicLong();
     private PlayIntent lastIntent;
+    /** The request still being decided; 0 once it was handed off, refused or failed. */
+    private long inFlight;
     /** The request and pass evaluating the refresh of an unresolved observation. */
     private long refreshedRequest;
     private int refreshedPass;
@@ -140,6 +142,7 @@ final class SessionOrchestrator implements AutoCloseable {
                     "reason", Rejection.UNPAIRED.name());
             effects.reject(Rejection.UNPAIRED); return;
         }
+        inFlight = request;
         evaluate(request, intent, false, false, false, null, 0);
     }
 
@@ -198,9 +201,11 @@ final class SessionOrchestrator implements AutoCloseable {
     void cancel() {
         long cancelled = generation.getAndIncrement();
         preparation = null;
-        if (!closed && lastIntent != null) {
+        // Only a request still being decided is cancelled; one already launched is not.
+        if (!closed && inFlight == cancelled && lastIntent != null) {
             diagnostic("INFO", "orchestration.cancelled", cancelled, lastIntent);
         }
+        inFlight = 0L;
     }
     void retry() {
         PlayIntent intent = lastIntent;
@@ -218,6 +223,7 @@ final class SessionOrchestrator implements AutoCloseable {
         if (pending.pendingGame != null) return true;
         pending.pendingGame = intent;
         lastIntent = intent;
+        inFlight = pending.request;
         effects.showLoading(intent, LaunchTransitionType.GAME, () ->
                 dispatcher.post(() -> {
                     if (!currentPreparation(pending) || pending.launchClaimed) return;
@@ -233,6 +239,7 @@ final class SessionOrchestrator implements AutoCloseable {
                 || prepared.profileKey != null
                 && !pending.profileKey.equals(prepared.profileKey)) {
             preparation = null;
+            inFlight = 0L;
             if (pending.pendingGame != null) effects.preparationFailed();
             return;
         }
@@ -246,6 +253,7 @@ final class SessionOrchestrator implements AutoCloseable {
                 || pending.pendingGame != null && !pending.opaqueReady) return;
         pending.launchClaimed = true;
         preparation = null;
+        inFlight = 0L;
         effects.launchPreparedHost(
                 pending.prepared, pending.pendingGame, pending.request);
     }
@@ -253,6 +261,7 @@ final class SessionOrchestrator implements AutoCloseable {
     private void failPreparation(Preparation pending) {
         if (!currentPreparation(pending)) return;
         preparation = null;
+        inFlight = 0L;
         effects.preparationFailed();
     }
 
@@ -277,6 +286,7 @@ final class SessionOrchestrator implements AutoCloseable {
                 || (snapshot.endingGame && !intent.matches(snapshot))) {
             diagnostic("WARN", "orchestration.rejected", request, intent,
                     "reason", Rejection.TERMINATING.name());
+            inFlight = 0L;
             // Under the loading layer a toast would leave the loader up with no error.
             if (opaqueReady) fail(request, intent, SessionFailure.UNCERTAIN_TERMINATING, "");
             else effects.reject(Rejection.TERMINATING);
@@ -488,7 +498,10 @@ final class SessionOrchestrator implements AutoCloseable {
                             : result.failure.reason.name());
             dispatcher.post(() -> {
                 if (!current(request)) return;
-                if (result.status == HostLaunchPreflight.Status.FAILED) effects.preflightFailed(result.failure);
+                if (result.status == HostLaunchPreflight.Status.FAILED) {
+                    inFlight = 0L;
+                    effects.preflightFailed(result.failure);
+                }
                 else if (result.status == HostLaunchPreflight.Status.READY)
                     evaluate(request, intent, replacementAuthorized, reuseOnly,
                             true, result.target, pass + 1);
@@ -577,6 +590,7 @@ final class SessionOrchestrator implements AutoCloseable {
                 }
                 if (result == CloseResult.PRESENTATION_REQUIRED) {
                     diagnostic("INFO", "orchestration.presentation_required", request, intent);
+                    inFlight = 0L;
                     effects.attachPresentationForSwitch(request, intent, preparedTarget);
                     return;
                 }
@@ -610,6 +624,7 @@ final class SessionOrchestrator implements AutoCloseable {
 
     /** Records the failure with the snapshot at this moment, then shows its screen. */
     private void fail(long request, PlayIntent intent, SessionFailure reason, String detail) {
+        inFlight = 0L;
         reason.record(request, intent.hostId, intent.profileId,
                 effects.resolve(intent.profileKey), detail);
         effects.sessionFailed(intent, reason);
@@ -617,11 +632,13 @@ final class SessionOrchestrator implements AutoCloseable {
 
     private void returnToRetained(long request, PlayIntent intent) {
         diagnostic("INFO", "orchestration.return_retained", request, intent);
+        inFlight = 0L;
         effects.returnToRetainedStream();
     }
 
     private void reconnect(long request, PlayIntent intent) {
         diagnostic("INFO", "orchestration.reconnect", request, intent);
+        inFlight = 0L;
         effects.reconnectSavedSession(intent);
     }
 
@@ -630,6 +647,7 @@ final class SessionOrchestrator implements AutoCloseable {
                         boolean ownsFreshSunshineSession) {
         diagnostic("INFO", "orchestration.launch", request, intent,
                 "operation", type.name(), "app_id", target.getAppId());
+        inFlight = 0L;
         effects.launch(intent, target, type, sourceSuspendId, ownsFreshSunshineSession);
     }
 

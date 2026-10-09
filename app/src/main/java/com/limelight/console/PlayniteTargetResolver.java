@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Locale;
 
 /** Resolves explicit mappings and exact, unique names emitted by Vibepollo's Playnite sync. */
-final class PlayniteTargetResolver {
+public final class PlayniteTargetResolver {
     static final String MOONWAKER_STREAM_NAME = "MoonWaker Stream";
     static final String MOONWAKER_STREAM_UUID =
             "6d6f6f6e-7761-4b65-9273-747265616d00";
@@ -191,6 +191,14 @@ final class PlayniteTargetResolver {
         return app != null && normalize(MOONWAKER_STREAM_NAME).equals(
                 normalize(app.getAppName()))
                 && MOONWAKER_STREAM_UUID.equals(normalizeUuid(app.getAppUuid()));
+    }
+
+    /**
+     * The host names its desktop stream "Desktop"; the UI shows {@code desktopLabel}. Display
+     * only: keys, comparisons and extras keep the host's name.
+     */
+    public static String appDisplayName(String appName, String desktopLabel) {
+        return "Desktop".equals(appName) ? desktopLabel : appName;
     }
 
     static NvApp resolveLegacyProviderStream(List<NvApp> apps) {

@@ -264,7 +264,9 @@ public class LaunchTransitionControllerTest {
     @Test
     public void cancellationIgnoresLateReady() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
-        controller.cancel("transition-1");
+        LaunchTransitionState before = controller.snapshot().state;
+        assertEquals(before, controller.cancel("transition-1").state);
+        assertEquals(LaunchTransitionState.CANCELLED, controller.cancel("other").state);
         controller.gatewayConnected("transition-1", HOST);
         controller.targetWindowReady("transition-1", HOST,
                 LaunchTransitionType.GAME, GAME);

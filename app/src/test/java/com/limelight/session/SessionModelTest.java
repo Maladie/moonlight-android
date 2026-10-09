@@ -31,6 +31,7 @@ public class SessionModelTest {
         boolean parkResult = true;
         boolean disconnected;
         boolean terminated;
+        String terminatedGameId;
         int terminations;
         boolean completeTermination = true;
         boolean terminationResult = true;
@@ -76,8 +77,9 @@ public class SessionModelTest {
             }
         }
         @Override public void terminateRetainedSession(
-                SessionModel.TerminationCallback completion) {
+                String gameId, SessionModel.TerminationCallback completion) {
             terminated = true;
+            terminatedGameId = gameId;
             terminations++;
             terminationCompletion = completion;
             if (completeTermination && completion != null) {
@@ -499,6 +501,29 @@ public class SessionModelTest {
         assertEquals(SessionModel.State.RECONNECT_REQUIRED,
                 m.state());
         assertFalse(m.canResumeInstantly());
+    }
+
+    @Test public void terminateCarriesTheGameTheRequesterNamed() {
+        FakeController controller = new FakeController();
+        m.enterHome(controller, SESSION_A, "host", 7, "");
+
+        assertEquals(SessionModel.TerminationResult.STARTED, m.call(
+                new SessionEvent.TerminateRequested(SESSION_A, "named", null)));
+        assertEquals("named", controller.terminatedGameId);
+    }
+
+    @Test public void failedTerminationOfANamedGameLeavesTheSessionsOwnGame() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        m.enterHome(controller, SESSION_A, "host", 7, "");
+
+        assertEquals(SessionModel.TerminationResult.STARTED, m.call(
+                new SessionEvent.TerminateRequested(SESSION_A, "named", null)));
+        controller.terminationCompletion.complete(false);
+        m.drain();
+
+        assertEquals(SessionModel.State.HOME_LIVE, m.snapshot().state);
+        assertEquals("", m.snapshot().playniteGameId);
     }
 
     @Test public void terminateInvokesOwnerAndRemovesResumeState() {

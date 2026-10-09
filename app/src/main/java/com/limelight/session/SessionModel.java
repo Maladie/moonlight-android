@@ -51,7 +51,8 @@ public final class SessionModel {
         default boolean cancelPreparingTransport(Snapshot preparing) { return false; }
         default boolean preparingHomeFrameSubmitted(Snapshot preparing) { return false; }
         void disconnectRetainedStream(TerminationCallback completion);
-        void terminateRetainedSession(TerminationCallback completion);
+        /** {@code gameId}: the game the requester named to stop; empty for the session's own. */
+        void terminateRetainedSession(String gameId, TerminationCallback completion);
         void switchGame(SwitchRequest request, SwitchCallback completion);
     }
 
@@ -1335,8 +1336,8 @@ public final class SessionModel {
         return true;
     }
 
-    void terminate(String expectedStreamSessionId, TerminationCallback completion,
-                   Reply<TerminationResult> reply) {
+    void terminate(String expectedStreamSessionId, String gameId,
+                   TerminationCallback completion, Reply<TerminationResult> reply) {
         if (!matches(streamSessionId, expectedStreamSessionId) || state == State.PREPARING) {
             reply.accept(TerminationResult.NO_CONTROLLER);
             return;
@@ -1377,7 +1378,7 @@ public final class SessionModel {
         };
         effect(() -> {
             try {
-                owner.terminateRetainedSession(finished);
+                owner.terminateRetainedSession(gameId, finished);
             } catch (RuntimeException error) {
                 finished.complete(false);
             }

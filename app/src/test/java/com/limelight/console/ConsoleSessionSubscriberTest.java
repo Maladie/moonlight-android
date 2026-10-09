@@ -24,7 +24,7 @@ public class ConsoleSessionSubscriberTest {
                 @Override public void disconnectRetainedStream(
                         SessionModel.TerminationCallback completion) { }
                 @Override public void terminateRetainedSession(
-                        SessionModel.TerminationCallback completion) { }
+                        String gameId, SessionModel.TerminationCallback completion) { }
                 @Override public void switchGame(
                         SessionModel.SwitchRequest request,
                         SessionModel.SwitchCallback completion) { }

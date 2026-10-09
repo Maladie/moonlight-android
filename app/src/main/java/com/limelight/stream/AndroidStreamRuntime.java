@@ -229,6 +229,7 @@ public final class AndroidStreamRuntime {
 
         @Override public void terminateHost(StreamRuntime runtime,
                                             SessionModel.Snapshot session,
+                                            String gameId,
                                             SessionModel.TerminationCallback
                                                     completion) {
             Intent record = launchIntent();
@@ -249,7 +250,8 @@ public final class AndroidStreamRuntime {
                                 record.getIntExtra(Game.EXTRA_HTTPS_PORT, 0),
                                 record.getStringExtra(Game.EXTRA_UNIQUEID),
                                 record.getByteArrayExtra(Game.EXTRA_SERVER_CERT),
-                                session.streamSessionId, session.appId, session.playniteGameId,
+                                session.streamSessionId, session.appId,
+                                gameId.isEmpty() ? session.playniteGameId : gameId,
                                 session.controlGeneration, actor);
                         // A closed stream ends the session; a game left behind it is reported.
                         gameLeft.set(outcome

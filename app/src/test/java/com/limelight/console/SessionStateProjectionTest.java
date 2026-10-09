@@ -1021,7 +1021,7 @@ public class SessionStateProjectionTest {
             disconnected = true;
         }
         @Override public void terminateRetainedSession(
-                SessionModel.TerminationCallback completion) {
+                String gameId, SessionModel.TerminationCallback completion) {
             terminated = true;
         }
         @Override public void switchGame(SessionModel.SwitchRequest request,

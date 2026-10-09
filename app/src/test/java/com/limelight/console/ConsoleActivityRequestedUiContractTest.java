@@ -505,6 +505,35 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(badge.contains("activePlayniteGame"));
     }
 
+    @Test public void endGameIsUnavailableWhileAStopIsAlreadyInFlight() throws Exception {
+        String source = consoleActivitySource();
+        String fresh = source.substring(source.indexOf(
+                        "private boolean isFreshExactRunningManagedGame("),
+                source.indexOf("private boolean isExactRunningManagedGame("));
+        String confirm = source.substring(source.indexOf("private void confirmEndPlayniteGame("),
+                source.indexOf("private void requestEndPlayniteGame("));
+        String request = source.substring(source.indexOf("private void requestEndPlayniteGame("),
+                source.indexOf("private void restoreCachedPlaynitePoster("));
+
+        // The one predicate behind the menu entry, the confirmation and the request itself.
+        assertTrue(fresh.contains("!snapshot.endingGame"));
+        assertTrue(source.contains(
+                "facts.gameRunning = isFreshExactRunningManagedGame(host, item);"));
+        assertTrue(confirm.contains("if (!isFreshExactRunningManagedGame(host, item)) return;"));
+        assertTrue(request.indexOf("!isFreshExactRunningManagedGame(host, item)")
+                < request.indexOf("closing.beginLocalClose("));
+    }
+
+    @Test public void closingARetainedSessionNamesTheGameItsDialogNamed() throws Exception {
+        String source = consoleActivitySource();
+        String request = source.substring(source.indexOf("private void requestTerminateSession("),
+                source.indexOf("private static SessionModel.TerminationCallback"));
+
+        assertTrue(request.contains(
+                "new SessionEvent.TerminateRequested(retained.streamSessionId,\n"
+                        + "                    providerGameId, terminationOutcome("));
+    }
+
     @Test public void stopResultDoesNotMutateAnAlternateActivitySnapshot() throws Exception {
         String source = consoleActivitySource();
         assertFalse(source.contains("markExactPlayniteGameIdle("));
