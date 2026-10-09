@@ -56,7 +56,7 @@ public final class StreamRuntime implements NvConnectionListener,
         void controlGenerationBound(String streamSessionId, long controlGeneration);
         /** Host-side whole-session termination for a runtime without a presentation. */
         void terminateHost(StreamRuntime runtime, SessionModel.Snapshot session,
-                           SessionModel.TerminationCallback completion);
+                           String gameId, SessionModel.TerminationCallback completion);
         /**
          * Closes the whole host stream a launch opened after this runtime was abandoned (the
          * start was cancelled while the launch was in flight); any failure is told to the user.
@@ -80,7 +80,8 @@ public final class StreamRuntime implements NvConnectionListener,
         boolean preparingHomeFrameSubmitted(SessionModel.Snapshot preparing);
         void switchGame(SessionModel.SwitchRequest request,
                         SessionModel.SwitchCallback completion);
-        void terminateRetainedSession(SessionModel.TerminationCallback completion);
+        void terminateRetainedSession(String gameId,
+                                      SessionModel.TerminationCallback completion);
         /** The runtime parked the stream (decoder detached, audio muted); hide video and input. */
         void onTransportParked();
         /** The runtime finished an explicit disconnect; the presentation may finish itself. */
@@ -655,8 +656,9 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     /**
-     * The presentation cancelled its launch, after stopping this runtime, while it saw no control
-     * generation. A grant that already arrived (even through the live path, before the stop)
+     * The presentation cancelled its launch, after stopping this runtime, and left the host
+     * stream that launch opened to this runtime: it saw no control generation yet, or the host
+     * session was locked before anything was revealed. A grant that already arrived (even through the live path, before the stop)
      * closes now; a later one closes in {@link #stageComplete}, whatever the session model has
      * processed of the cancel by then.
      */
@@ -817,10 +819,10 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     @Override public void terminateRetainedSession(
-            SessionModel.TerminationCallback completion) {
+            String gameId, SessionModel.TerminationCallback completion) {
         Presentation p = attached();
         if (p != null) {
-            p.terminateRetainedSession(completion);
+            p.terminateRetainedSession(gameId, completion);
             return;
         }
         // Mandatory privacy effects before any asynchronous local or host stop.
@@ -829,7 +831,7 @@ public final class StreamRuntime implements NvConnectionListener,
         }
         transport.setAudioVolume(0f);
         platform.clearReconnectRecord(streamSessionId);
-        platform.terminateHost(this, platform.sessionModel().snapshot(), completion);
+        platform.terminateHost(this, platform.sessionModel().snapshot(), gameId, completion);
     }
 
     @Override public void switchGame(SessionModel.SwitchRequest request,

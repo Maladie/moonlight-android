@@ -2597,7 +2597,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             completion.complete(true);
         }
         @Override public void terminateRetainedSession(
-                SessionModel.TerminationCallback completion) {
+                String gameId, SessionModel.TerminationCallback completion) {
             terminateCalls++;
             completion.complete(true);
         }

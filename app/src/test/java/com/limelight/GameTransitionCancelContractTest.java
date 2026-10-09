@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -115,7 +116,10 @@ public class GameTransitionCancelContractTest {
         assertTrue(cancel.indexOf("long controlGeneration = bindControlGeneration();") < whole);
         assertTrue(helper.contains("controlGeneration <= 0L"));
         assertTrue(cancel.indexOf("stopConnection(finishOnce)") < cancel.indexOf(
-                "if (controlGeneration <= 0L && cancelled != null) cancelled.abandonLaunch();"));
+                "shouldAbandonLaunchOnCancel(controlGeneration, cancelledState,"));
+        // The cancelled state comes from the cancel itself, not from a separate earlier read.
+        assertTrue(cancel.contains("transitionController.cancel(transitionSpec.id).state"));
+        assertFalse(cancel.contains("transitionController.snapshot()"));
         String bind = text.substring(text.indexOf("private long bindControlGeneration()"),
                 text.indexOf("private void stopConnection()"));
         assertTrue(bind.contains("runtime.controlGeneration()"));
@@ -171,6 +175,40 @@ public class GameTransitionCancelContractTest {
         // A revealed, host-confirmed game keeps the ordinary cancel; observations never close.
         assertFalse(Game.shouldCloseSessionOnStartCancel(true, true, true));
         assertFalse(Game.shouldCloseSessionOnStartCancel(false, false, false));
+    }
+
+    @Test public void backOnALockedHostClosesTheStreamItsLaunchAcquired() {
+        // The acquire succeeded (a control generation) but the locked host showed nothing.
+        assertTrue(Game.shouldAbandonLaunchOnCancel(
+                3L, LaunchTransitionState.HOST_SESSION_LOCKED, false));
+        // No generation yet: a later grant is the abandoned launch's to close.
+        assertTrue(Game.shouldAbandonLaunchOnCancel(
+                0L, LaunchTransitionState.CONNECTING_STREAM, false));
+        assertFalse(Game.shouldAbandonLaunchOnCancel(
+                3L, LaunchTransitionState.CONNECTING_STREAM, false));
+    }
+
+    @Test public void backOnALockedHostKeepsARevealedStreamPaused() {
+        assertFalse(Game.shouldAbandonLaunchOnCancel(
+                3L, LaunchTransitionState.HOST_SESSION_LOCKED, true));
+    }
+
+    @Test public void modelMarkersCarryTheSessionsOwnGameNotTheNamedOne() throws IOException {
+        String text = source();
+        String method = text.substring(
+                text.indexOf("boolean requesterPresentsHome, String namedGameId) {"),
+                text.indexOf("private Runnable terminalPrivacyOnce()"));
+        // Only the host stop takes the named game; both model markers keep the session's own.
+        assertTrue(method.contains("final String expectedGameId =\n"
+                + "                    transitionSpec == null ? \"\" : transitionSpec.playniteGameId;"));
+        assertEquals(2, method.split("stoppedGameId", -1).length - 1);
+        assertTrue(method.contains(
+                "expectedSessionId, expectedHostId, expectedAppId, stoppedGameId,\n"
+                        + "                            actorContext, expectedControlGeneration);"));
+        assertTrue(method.contains("new SessionEvent.DirectTerminationBegun(runtime,\n"
+                + "                        expectedSessionId, expectedHostId, expectedAppId, expectedGameId)"));
+        assertTrue(method.contains("new SessionEvent.TerminatingMarked(expectedSessionId,\n"
+                + "                        expectedHostId, expectedAppId, expectedGameId)"));
     }
 
     @Test public void ownCloseReportsEveryHostFailureAndConsoleRequestsKeepTheirOwn()
@@ -297,14 +335,14 @@ public class GameTransitionCancelContractTest {
         assertTrue(helper.contains("Runnable privacy = terminalPrivacyOnce()"));
         assertTrue(helper.contains(
                 "requesterPresentsHome ? () -> { } : this::openTerminalConsoleHome"));
-        assertTrue(helper.contains("terminateWholeSessionVerified(completion, false)"));
+        assertTrue(helper.contains("terminateWholeSessionVerified(completion, false, \"\")"));
         assertTrue(helper.contains("HostSessionTermination.run("));
         assertFalse(helper.contains("quitApp("));
         // The model runs this for a requesting console; Game must not clear it by opening Home.
         String requested = text.substring(text.indexOf(
                         "public void terminateRetainedSession("),
                 text.indexOf("public void switchGame("));
-        assertTrue(requested.contains("terminateWholeSessionVerified(completion, true);"));
+        assertTrue(requested.contains("terminateWholeSessionVerified(completion, true, gameId);"));
         assertFalse(requested.contains("openTerminalConsoleHome"));
         String home = text.substring(text.indexOf("private void openTerminalConsoleHome("),
                 text.indexOf("private void restoreParkedStream("));
@@ -628,7 +666,7 @@ public class GameTransitionCancelContractTest {
         assertFalse(text.contains("providerAlreadyStopped"));
         assertTrue(terminate.contains("HostSessionTermination.run("));
         assertTrue(terminate.contains(
-                "terminateWholeSessionVerified(completion, false)"));
+                "terminateWholeSessionVerified(completion, false, \"\")"));
         assertTrue(terminate.contains(
                 "DirectTerminationCompleted.abandoned"));
         assertTrue(terminate.contains("stopConnectionResult("));

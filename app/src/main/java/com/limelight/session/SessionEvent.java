@@ -465,20 +465,26 @@ public abstract class SessionEvent<R> {
 
     // ---- termination ---------------------------------------------------------------------------
 
-    /** Whole-session quit of the retained transport; completion receives the final result. */
+    /**
+     * Whole-session quit of the retained transport; completion receives the final result.
+     * {@code gameId} is the game the requester named to stop; empty stops the session's own.
+     */
     public static final class TerminateRequested extends SessionEvent<TerminationResult> {
         private final String sessionId;
+        private final String gameId;
         private final TerminationCallback completion;
 
-        public TerminateRequested(String sessionId, TerminationCallback completion) {
+        public TerminateRequested(String sessionId, String gameId,
+                                  TerminationCallback completion) {
             this.sessionId = sessionId;
+            this.gameId = gameId == null ? "" : gameId;
             this.completion = completion;
         }
 
         @Override TerminationResult failure() { return TerminationResult.NO_CONTROLLER; }
 
         @Override void apply(SessionModel m, Reply<TerminationResult> reply) {
-            m.terminate(sessionId, completion, reply);
+            m.terminate(sessionId, gameId, completion, reply);
         }
     }
 

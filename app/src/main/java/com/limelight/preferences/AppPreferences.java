@@ -66,7 +66,12 @@ public class AppPreferences {
     }
 
     public static AppSettings getAppSettings(Context context, String appKey) {
-        SharedPreferences prefs = context.getSharedPreferences(APP_PREFERENCES_FILE, Context.MODE_PRIVATE);
+        return getAppSettings(context.getSharedPreferences(APP_PREFERENCES_FILE,
+                Context.MODE_PRIVATE), appKey);
+    }
+
+    /** Reads from an already opened {@link #APP_PREFERENCES_FILE}, for many apps in a row. */
+    public static AppSettings getAppSettings(SharedPreferences prefs, String appKey) {
         String jsonString = prefs.getString(appKey, null);
         
         if (jsonString == null) {

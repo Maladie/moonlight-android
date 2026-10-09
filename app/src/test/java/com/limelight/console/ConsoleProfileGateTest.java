@@ -166,6 +166,28 @@ public class ConsoleProfileGateTest {
         assertTrue(libraryRefresh.contains("profileGateHostUuid != null"));
     }
 
+    @Test public void appCardsRenderOnHostEntryNotUnderTheProfileGate() throws Exception {
+        String source = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java")),
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String appRender = between(source,
+                "private void renderAppsAsync(ComputerDetails host, boolean focusApps)",
+                "private void runLibraryUpdateWhenNavigationIdle(");
+        String entry = between(source, "private void enterHostAfterProfileGate(",
+                "private void closeProfileGate()");
+        String select = between(source, "private void selectHost(",
+                "private void cancelOwnedWarmUp(");
+
+        assertTrue(appRender.contains("if (profileGateHostUuid != null) return;"));
+        assertTrue(entry.indexOf("profileGateHostUuid = null")
+                < entry.indexOf("selectHost(host, focusApps)"));
+        assertTrue(select.contains("renderAppsAsync(host, focusApps)"));
+        // A PIN confirmed for the already selected profile enters no host, so it renders itself.
+        String apply = between(source, "private void applySelectedProfile(",
+                "currentSunshineApps = loadApps(host);");
+        assertTrue(apply.contains("renderAppsAsync(host);"));
+    }
+
     @Test public void toolbarLeaveReturnsToProfileGateWhenMultipleProfilesExist()
             throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(

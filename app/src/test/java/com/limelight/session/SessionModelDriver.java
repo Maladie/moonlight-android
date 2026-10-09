@@ -299,7 +299,7 @@ public final class SessionModelDriver {
                 gameId));
     }
     public TerminationResult terminate(String sessionId, TerminationCallback completion) {
-        return call(new SessionEvent.TerminateRequested(sessionId, completion));
+        return call(new SessionEvent.TerminateRequested(sessionId, "", completion));
     }
     public boolean clearIfMatches(String sessionId) {
         return call(new SessionEvent.Cleared(sessionId));

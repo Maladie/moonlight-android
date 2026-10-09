@@ -134,7 +134,7 @@ public class S05ControlPlaneContractTest {
         assertTrue(close.contains("terminateWholeSessionVerified(null)"));
         String common = between(game, "private void terminateWholeSessionVerified("
                         + "SessionModel.TerminationCallback completion,\n"
-                        + "            boolean requesterPresentsHome)",
+                        + "            boolean requesterPresentsHome, String namedGameId)",
                 "private void applyImmediateTerminalPrivacy(");
         assertTrue(common.contains("if (!wholeSessionTermination.begin())"));
         assertTrue(common.contains("stopChildMonitoring()"));

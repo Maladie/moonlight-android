@@ -36,7 +36,10 @@ final class ConsoleGameCard {
         boolean installNeedsAttention;
         /** The attention prompt can only be answered on the PC itself. */
         boolean attentionOnPc;
-        /** This exact game runs on the host under the selected profile. */
+        /**
+         * This exact game runs on the host under the selected profile; false while that game
+         * is being ended.
+         */
         boolean gameRunning;
         /** The active stream session belongs to this game. */
         boolean sessionActive;

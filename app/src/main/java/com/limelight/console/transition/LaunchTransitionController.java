@@ -451,13 +451,16 @@ public final class LaunchTransitionController {
         publish();
     }
 
-    public synchronized void cancel(String transitionId) {
-        if (!accept(transitionId, null)) return;
+    /** Returns the snapshot the cancel replaced (the current one when it does not apply). */
+    public synchronized LaunchTransitionSnapshot cancel(String transitionId) {
+        LaunchTransitionSnapshot before = snapshotValue();
+        if (!accept(transitionId, null)) return before;
         state = LaunchTransitionState.CANCELLED;
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
         publish();
+        return before;
     }
 
     public synchronized void showStreamAnyway(String transitionId) {

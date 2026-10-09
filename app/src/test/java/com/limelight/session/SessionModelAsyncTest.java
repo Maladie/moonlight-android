@@ -32,7 +32,7 @@ public class SessionModelAsyncTest {
         @Override public void disconnectRetainedStream(
                 SessionModel.TerminationCallback completion) { }
         @Override public void terminateRetainedSession(
-                SessionModel.TerminationCallback completion) { }
+                String gameId, SessionModel.TerminationCallback completion) { }
         @Override public void switchGame(SessionModel.SwitchRequest request,
                                          SessionModel.SwitchCallback completion) {
             trace.add("owner.switch");
@@ -188,7 +188,7 @@ public class SessionModelAsyncTest {
         SessionModel.TerminationCallback[] owned = new SessionModel.TerminationCallback[1];
         Owner owner = new Owner() {
             @Override public void terminateRetainedSession(
-                    SessionModel.TerminationCallback completion) {
+                    String gameId, SessionModel.TerminationCallback completion) {
                 owned[0] = completion;
             }
         };
@@ -259,7 +259,7 @@ public class SessionModelAsyncTest {
         driver.drain();
         assertEquals(Boolean.FALSE, answer[0]);
         assertEquals(SessionModel.TerminationResult.NO_CONTROLLER,
-                new SessionEvent.TerminateRequested("s", null).failure());
+                new SessionEvent.TerminateRequested("s", "", null).failure());
         assertEquals(SessionModel.SwitchResult.NOT_ELIGIBLE, new SessionEvent.SwitchRequested(
                 "h", "p", "p", false, 1, "g", "", "", "", 0L, null, null).failure());
     }
