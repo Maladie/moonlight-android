@@ -5,7 +5,7 @@ import android.content.SharedPreferences;
 
 /** Explicit host-scoped Playnite game -> Sunshine app mappings. */
 final class PlayniteLaunchTargetStore {
-    private static final String PREFS = "playnite_launch_targets";
+    static final String PREFS = "playnite_launch_targets";
     private final SharedPreferences preferences;
 
     PlayniteLaunchTargetStore(Context context) {

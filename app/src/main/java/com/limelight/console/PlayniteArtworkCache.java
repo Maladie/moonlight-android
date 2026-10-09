@@ -72,6 +72,11 @@ final class PlayniteArtworkCache {
         }
     }
 
+    /** Deletes the artwork of every profile of a host this device forgets. */
+    void forgetHost(String hostUuid) {
+        LocalHostRecords.deleteProfileEntries(directory, hostUuid);
+    }
+
     private static boolean valid(String hostUuid, String gameId, String kind) {
         return hostUuid != null && hostUuid.matches("[A-Za-z0-9._-]{1,128}") &&
                 HostGatewayClient.isPlayniteId(gameId) &&

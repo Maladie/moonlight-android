@@ -56,6 +56,8 @@ final class SessionSnapshot {
      * ({@link #equals}, {@link #signature}), so a gateway projection still compares equal.
      */
     final int hostRunningAppId;
+    /** A game stop this client runs is in flight; a live stream beside it stays ACTIVE. */
+    final boolean endingGame;
 
     SessionSnapshot(String hostId, String profileId, String executionProfileId,
                     State state, int hostGameAppId, String playniteGameId,
@@ -69,7 +71,7 @@ final class SessionSnapshot {
                     long actorLeaseEpoch, String operationId, String transitionId,
                     String streamSessionId, String processEvidence, int processId,
                     String processToken, String windowEvidence, String observationReason,
-                    int hostRunningAppId) {
+                    int hostRunningAppId, boolean endingGame) {
         this.hostId = normalize(hostId);
         this.profileId = GatewayConnection.normalizeProfileId(profileId);
         this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
@@ -106,6 +108,7 @@ final class SessionSnapshot {
         this.windowEvidence = windowEvidence == null ? "UNAVAILABLE" : windowEvidence;
         this.observationReason = observationReason == null ? "" : observationReason;
         this.hostRunningAppId = hostRunningAppId;
+        this.endingGame = endingGame;
     }
 
     static SessionSnapshot pending(String hostId, String actorProfileId,
@@ -114,7 +117,7 @@ final class SessionSnapshot {
                 State.UNCERTAIN, 0, "", false, false, false,
                 false, false, "", false, ObservationState.PENDING, false,
                 "", 0L, 0L, 0L, 0L, 0L, "", "", "",
-                "UNAVAILABLE", 0, "", "UNAVAILABLE", "observation_pending", 0);
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "observation_pending", 0, false);
     }
 
     boolean hasActiveSession() { return state == State.ACTIVE; }
@@ -139,7 +142,7 @@ final class SessionSnapshot {
                 + "|" + controlGeneration + "|" + actorLeaseEpoch + "|" + operationId
                 + "|" + transitionId + "|" + streamSessionId + "|" + processEvidence
                 + "|" + processId + "|" + processToken + "|" + windowEvidence
-                + "|" + observationReason;
+                + "|" + observationReason + "|" + endingGame;
     }
 
     @Override public boolean equals(Object value) {
@@ -160,6 +163,7 @@ final class SessionSnapshot {
                 && controlGeneration == other.controlGeneration
                 && actorLeaseEpoch == other.actorLeaseEpoch
                 && processId == other.processId
+                && endingGame == other.endingGame
                 && hostId.equals(other.hostId) && profileId.equals(other.profileId)
                 && executionProfileId.equals(other.executionProfileId)
                 && state == other.state
@@ -185,7 +189,7 @@ final class SessionSnapshot {
                 producerRevision, requestOrdinal,
                 transportGeneration, controlGeneration, actorLeaseEpoch, operationId,
                 transitionId, streamSessionId, processEvidence, processId, processToken,
-                windowEvidence, observationReason);
+                windowEvidence, observationReason, endingGame);
     }
 
     static String normalize(String value) {

@@ -932,6 +932,16 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.launches);
     }
 
+    @Test public void endingAGameBesideALiveStreamRejectsOnlyAnotherGame() {
+        Fake effects = new Fake();
+        effects.snapshot = endingGame(7, "other");
+
+        orchestrator(effects).play(game());
+
+        assertEquals(SessionOrchestrator.Rejection.TERMINATING, effects.rejection);
+        assertEquals(0, effects.launches);
+    }
+
     @Test public void terminatingWithRecoveryRequiredRejectsBeforeAnyLoadingLayer() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other",
@@ -1297,6 +1307,14 @@ public class SessionOrchestratorTest {
         return PlayIntent.playniteGame("host", 42, "Game", false, "game", "game");
     }
 
+    private static SessionSnapshot endingGame(int appId, String gameId) {
+        return new SessionSnapshot("host", "default", "default",
+                SessionSnapshot.State.ACTIVE, appId, gameId, true, false, false, false, false,
+                "", false, SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, true);
+    }
+
     private static SessionSnapshot snapshot(SessionSnapshot.State state,
                                             int appId, String gameId) {
         return snapshot(state, appId, gameId, false, "", false);
@@ -1346,7 +1364,7 @@ public class SessionOrchestratorTest {
                 retained, suspended, false, false, false, suspendId, neutral,
                 observation, correlated,
                 "", 0L, 0L, 0L, 0L, 0L, "", "", "",
-                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0);
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
     private static final class Fake implements SessionOrchestrator.Effects {

@@ -15,7 +15,7 @@ final class ConsoleHostPanel {
         SLEEP(R.drawable.ic_console_moon), CLOSE_SESSION(R.drawable.ic_console_close),
         TEST_CONNECTION(R.drawable.ic_console_pulse), CHANGE_HOST(R.drawable.ic_console_leave_host),
         HARD_TERMINATE(R.drawable.ic_console_power),
-        UNPAIR(R.drawable.ic_console_unlink);
+        UNPAIR(R.drawable.ic_console_unlink), REMOVE(R.drawable.ic_console_trash);
 
         /** Line icon of the row (section 4.7). */
         final int icon;
@@ -58,11 +58,13 @@ final class ConsoleHostPanel {
         menu.group(R.string.console_section_more)
                 .add(Action.TEST_CONNECTION, R.string.pcview_menu_test_network, true);
         if (facts.inHost) menu.add(Action.CHANGE_HOST, R.string.console_change_host, true);
-        return menu.addDestructive(Action.HARD_TERMINATE, R.string.console_hard_terminate_session,
-                        facts.online && facts.paired && facts.gatewayAvailable)
+        menu.addDestructive(Action.HARD_TERMINATE, R.string.console_hard_terminate_session,
+                facts.online && facts.paired && facts.gatewayAvailable)
                 .addDestructive(Action.UNPAIR, R.string.console_unpair_host,
-                        facts.online && facts.paired)
-                .done();
+                        facts.online && facts.paired);
+        // Host selection only; removal is local, so it works for an unreachable host too.
+        if (!facts.inHost) menu.addDestructive(Action.REMOVE, R.string.console_remove_host, true);
+        return menu.done();
     }
 
     private static void power(ConsoleActionMenu<Action> menu, Facts facts) {

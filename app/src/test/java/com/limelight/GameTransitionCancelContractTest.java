@@ -317,10 +317,11 @@ public class GameTransitionCancelContractTest {
         Path consolePath = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
         if (!Files.exists(consolePath)) consolePath = Paths.get("app").resolve(consolePath);
         String console = new String(Files.readAllBytes(consolePath), StandardCharsets.UTF_8);
-        // The host-panel close shows progress until done; a failure dismissed over a closed
-        // stream hands the Home over instead of leaving a stream Home without a stream.
+        // The host-panel close shows its progress in the host status, not a panel; a failure
+        // dismissed over a closed stream hands the Home over instead of leaving a stream Home
+        // without a stream.
         String request = "private void requestTerminateSession(ComputerDetails host, String";
-        assertTrue(console.substring(console.indexOf(request), console.indexOf(
+        assertFalse(console.substring(console.indexOf(request), console.indexOf(
                 "sessionModel.dispatch(", console.indexOf(request))).contains("showSidePanelBusy("));
         String cancel = console.substring(console.indexOf("@Override public void onCancel()"),
                 console.indexOf("@Override public void onRetry()"));

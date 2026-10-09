@@ -39,7 +39,50 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("launchDesktopSession(host)"));
     }
 
-    @Test public void endGameShowsProgressUntilTheStopCompletes() throws IOException {
+    @Test public void removeAndUnpairShareTheOneLocalForgetPathWithoutHostCalls()
+            throws IOException {
+        String source = consoleActivitySource();
+        String menu = source.substring(source.indexOf("private void showHostSelectionOptions("),
+                source.indexOf("static HostGatewayClient.IntegrationProfile activeAuthorizedProfile("));
+        String confirm = source.substring(source.indexOf("private void confirmRemoveHost("),
+                source.indexOf("private boolean forgetHost("));
+        String forget = source.substring(source.indexOf("private boolean forgetHost("),
+                source.indexOf("private void selectHost("));
+        String unpair = source.substring(source.indexOf("private void unpairHost("),
+                source.indexOf("private void confirmSleepHost("));
+
+        String confirmUnpair = source.substring(source.indexOf("private void confirmUnpairHost("),
+                source.indexOf("private void unpairHost("));
+
+        assertTrue(menu.contains("case REMOVE: confirmRemoveHost(host)"));
+        // Unpairing forgets the host too, so it is confirmed like "Usuń".
+        assertTrue(menu.contains("case UNPAIR: confirmUnpairHost(host)"));
+        assertTrue(confirmUnpair.contains("R.string.console_unpair_host_title, host.name"));
+        assertTrue(confirmUnpair.contains("R.string.console_unpair_host_details"));
+        assertTrue(confirmUnpair.contains("consolePanel.destructive(unpair);"));
+        assertTrue(confirmUnpair.contains("unpair.setOnClickListener(view -> unpairHost(host));"));
+        assertTrue(confirmUnpair.contains("cancel.setOnClickListener(view -> handlePanelBack());"));
+        // No request or session owner of a forgotten host outlives it.
+        assertTrue(forget.contains("cancelPlayniteRequest();"));
+        assertTrue(forget.contains("SessionStateResolver.forgetHost(uuid);"));
+        assertTrue(confirm.contains("R.string.console_remove_host_title"));
+        assertTrue(confirm.contains("forgetHost(host)"));
+        assertTrue(unpair.contains("if (forget) forgetHost(host);"));
+        // Local only: no request to the host or its Gateway.
+        assertFalse(forget.contains("NvHTTP"));
+        assertFalse(forget.contains("hostGatewayClient"));
+        assertFalse(forget.contains("executor"));
+        // Session state ends locally first, then the records go, then host selection returns.
+        assertTrue(forget.indexOf("new SessionEvent.HostForgotten(uuid)")
+                < forget.indexOf("managerBinder.removeComputer(host)"));
+        assertTrue(forget.contains("hostGatewayStore.remove(uuid)"));
+        assertTrue(forget.contains("playniteLibraryRepository.forgetHost(uuid)"));
+        assertTrue(forget.contains("LocalHostRecords.sweep("));
+        assertTrue(forget.contains("if (selected || !hostSelectionVisible) showHostSelection(null);"));
+        assertFalse(source.contains("private void removeHost("));
+    }
+
+    @Test public void endGameShowsItsProgressInTheHostStatusNotAPanel() throws IOException {
         String source = consoleActivitySource();
         String confirm = source.substring(source.indexOf("private void confirmEndPlayniteGame("),
                 source.indexOf("private void requestEndPlayniteGame("));
@@ -48,26 +91,41 @@ public class ConsoleActivityRequestedUiContractTest {
         String completion = request.substring(request.indexOf("mainHandler.post("));
 
         assertTrue(confirm.contains("hideSidePanelImmediately();"));
-        assertTrue(request.indexOf("showSidePanelBusy(") < request.indexOf("executor.execute("));
-        assertTrue(request.contains("R.string.playnite_ending_game"));
-        assertTrue(request.contains("String busyPanelKey = currentPanelKey;"));
-        assertTrue(completion.indexOf(
-                "if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();")
-                < completion.indexOf("return;"));
+        assertFalse(request.contains("showSidePanelBusy("));
+        assertFalse(request.contains("busyPanelKey"));
+        assertTrue(request.indexOf(
+                "long closeToken = closing.beginLocalClose(SystemClock.uptimeMillis(), true);")
+                < request.indexOf("executor.execute("));
+        // The stop ends in finally, before any stale-scope return: the status always returns.
+        String stopFinally = "} finally {\n                closing.finishLocalClose(closeToken, success);";
+        assertTrue(request.contains(stopFinally));
+        assertTrue(request.indexOf(stopFinally) < request.indexOf("mainHandler.post("));
+        assertTrue(completion.contains("return;"));
+        // The host status (and every busy row) says "Ending the game…" while the stop runs.
+        assertTrue(source.contains(
+                "if (snapshot.endingGame) return getString(R.string.playnite_ending_game);"));
+        assertTrue(source.contains("String closing = closingStatus(snapshot);"));
     }
 
-    @Test public void closeSessionHidesOnlyItsOwnProgressPanel() throws IOException {
+    @Test public void closeSessionShowsItsProgressInTheHostStatusNotAPanel() throws IOException {
         String source = consoleActivitySource();
         String request = source.substring(source.indexOf("private void requestTerminateSession("),
                 source.indexOf("private void terminateSessionByControlPlane("));
-        String finish = source.substring(source.indexOf("private void finishTerminateSession("));
+        String controlPlane = source.substring(
+                source.indexOf("private void terminateSessionByControlPlane("),
+                source.indexOf("private void finishTerminateSession("));
 
-        assertTrue(request.indexOf("showSidePanelBusy(")
-                < request.indexOf("String busyPanelKey = currentPanelKey;"));
-        String guard =
-                "if (sidePanelTransient && busyPanelKey.equals(currentPanelKey)) hideSidePanel();";
-        assertTrue(finish.contains(guard));
-        assertTrue(finish.indexOf(guard) < finish.indexOf("if (outcome.streamClosed())"));
+        assertTrue(request.contains("hideSidePanelImmediately();"));
+        assertFalse(request.contains("showSidePanelBusy("));
+        assertFalse(source.contains("busyPanelKey"));
+        assertTrue(controlPlane.indexOf(
+                "closing.beginLocalClose(SystemClock.uptimeMillis(), false)")
+                < controlPlane.indexOf("executor.execute("));
+        // Also when the task throws: the close ends in finally, not in a posted callback.
+        String closeFinally = controlPlane.substring(controlPlane.indexOf("} finally {"));
+        assertTrue(closeFinally.indexOf("closing.finishLocalClose(closeToken, outcome != null"
+                + " && outcome.streamClosed());") < closeFinally.indexOf("mainHandler.post("));
+        assertTrue(closeFinally.contains("closing.finishLocalClose("));
         assertFalse(source.contains("if (sidePanelTransient) hideSidePanel();"));
     }
 

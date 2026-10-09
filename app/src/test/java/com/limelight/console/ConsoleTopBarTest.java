@@ -46,6 +46,21 @@ public class ConsoleTopBarTest {
                 "name=\"console_status_active_app\">Stream · %1$s<"));
     }
 
+    /** A vertical LinearLayout defaults children to MATCH_PARENT: setText would not re-measure. */
+    @Test public void hostTextsWrapSoALongerNameIsMeasuredAgain() throws Exception {
+        String source = source("com/limelight/console/ConsoleTopBar.java");
+        assertTrue(source.contains("texts.addView(hostName, wrapText());"));
+        assertTrue(source.contains("texts.addView(hostLine, wrapText());"));
+        assertFalse(source.contains("texts.addView(hostName);"));
+        assertFalse(source.contains("texts.addView(hostLine);"));
+    }
+
+    private static String source(String relative) throws Exception {
+        Path path = Paths.get("src/main/java", relative);
+        if (!Files.exists(path)) path = Paths.get("app/src/main/java", relative);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+    }
+
     private static String resource(String relative) throws Exception {
         Path path = Paths.get("src/main/res", relative);
         if (!Files.exists(path)) path = Paths.get("app/src/main/res", relative);

@@ -517,8 +517,9 @@
     <string name="console_sleep_accepted">Sleep request accepted by %1$s</string>
     <string name="console_sleep_failed">Unable to sleep %1$s. Check that the paired Gateway is available.</string>
     <string name="console_remove">Remove</string>
-    <string name="console_remove_host_title">Remove %1$s?</string>
-    <string name="console_remove_host_details">This removes the saved host, cached artwork, shortcuts, and paired Gateway data from this device.</string>
+    <string name="console_remove_host">Remove host</string>
+    <string name="console_remove_host_title">Remove host %1$s?</string>
+    <string name="console_remove_host_details">MoonWaker will forget this computer and its pairing.</string>
     <string name="console_host_removed">%1$s removed.</string>
     <string name="console_discord_connecting">Discord · checking connection</string>
     <string name="console_discord_disconnected">Discord · disconnected</string>
@@ -879,6 +880,8 @@
     <string name="console_add_host_details">Nearby hosts are discovered automatically. You can also enter an IP address manually.</string>
     <string name="console_wake_host">Wake host</string>
     <string name="console_unpair_host">Unpair host</string>
+    <string name="console_unpair_host_title">Unpair host %1$s?</string>
+    <string name="console_unpair_host_details">MoonWaker will unpair the computer and forget it on this device.</string>
     <string name="console_host_status_description">%1$s. %2$s. Press Select to open host options.</string>
     <string name="console_host_power_wake_description">%1$s is offline. Press Select to wake the host.</string>
     <string name="console_host_waking_description">%1$s is waking. Please wait.</string>
@@ -1109,8 +1112,6 @@
     <string name="playnite_game_fallback_name">the selected game</string>
     <string name="playnite_launch_unavailable">Launch unavailable</string>
     <string name="playnite_gateway_unavailable">MoonWaker game library service unavailable</string>
-    <string name="playnite_cached_library">Library may be out of date</string>
-    <string name="playnite_cached_library_age">Library may be out of date · last updated %1$s</string>
     <string name="playnite_refreshing_library">Refreshing library…</string>
     <string name="playnite_authentication_error">Authentication error</string>
     <string name="playnite_configure_gateway">Configure gateway</string>
@@ -1154,7 +1155,7 @@
     <string name="playnite_running_badge">RUNNING</string>
     <string name="playnite_running_badge_description">%1$s is currently running</string>
     <string name="playnite_end_game_success">The game has ended. Other games and the stream were not closed.</string>
-    <string name="playnite_ending_game">Ending game…</string>
+    <string name="playnite_ending_game">Ending the game…</string>
     <string name="playnite_end_game_confirmation">End this game? Other games and the stream will not be closed.</string>
     <string name="playnite_source">Source: %1$s</string>
     <string name="playnite_stream_settings">Game streaming settings</string>

@@ -647,6 +647,19 @@ public abstract class SessionEvent<R> {
         }
     }
 
+    /** The device forgets the host: local session reset and all of its records removed. */
+    public static final class HostForgotten extends BooleanEvent {
+        private final String hostId;
+
+        public HostForgotten(String hostId) {
+            this.hostId = hostId;
+        }
+
+        @Override void apply(SessionModel m, Reply<Boolean> reply) {
+            reply.accept(m.forgetHost(hostId));
+        }
+    }
+
     // ---- actor ---------------------------------------------------------------------------------
 
     public static final class ActorBound extends BooleanEvent {

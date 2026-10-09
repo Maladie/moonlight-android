@@ -7,6 +7,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 
+import com.limelight.console.LocalHostRecords;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 
@@ -1483,6 +1484,21 @@ public final class SessionModel {
                 }
             });
         }
+        return true;
+    }
+
+    /**
+     * The device forgets a host: its live, retained or preparing session is reset locally and
+     * every record of it (reconnect, suspended sessions, sleep, host-selection request) is gone.
+     */
+    boolean forgetHost(String hostId) {
+        String host = normalize(hostId);
+        if (host.isEmpty()) return false;
+        hardResetIfHostMatches(host);
+        if (LocalHostRecords.mentions(stores.resume, host)) stores.resume.edit().clear().apply();
+        LocalHostRecords.sweep(stores.suspended, host);
+        LocalHostRecords.sweep(stores.sleep, host);
+        recordsChanged = true;
         return true;
     }
 

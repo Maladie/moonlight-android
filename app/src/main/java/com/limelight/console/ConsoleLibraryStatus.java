@@ -10,13 +10,17 @@ final class ConsoleLibraryStatus {
         INVALID_RESPONSE,
         SERVER_ERROR,
         GATEWAY_UNAVAILABLE,
-        CACHED,
         CURRENT
     }
 
     private ConsoleLibraryStatus() { }
 
-    static State resolve(boolean refreshing, boolean hasGames, boolean cached,
+    /**
+     * A library shown from the local cache is not a status of its own: every refresh either
+     * replaces it or ends in an error, so a "may be out of date" line could only flash while a
+     * refresh is still owed (for example on return from a stream).
+     */
+    static State resolve(boolean refreshing, boolean hasGames,
                          PlayniteLibraryRepository.ErrorKind error,
                          boolean gatewayConfigured) {
         if (refreshing && !hasGames) return State.REFRESHING;
@@ -31,21 +35,20 @@ final class ConsoleLibraryStatus {
         }
         if (error == PlayniteLibraryRepository.ErrorKind.SERVER) return State.SERVER_ERROR;
         if (error != null) return State.GATEWAY_UNAVAILABLE;
-        if (cached) return State.CACHED;
         // A populated library remains usable while its background refresh runs.
         return State.CURRENT;
     }
 
     /**
-     * The status line is shown only while a refresh has nothing to show yet, for a stale cache
-     * and for errors; a current library (also during its periodic background refresh) shows
-     * nothing and reserves no space.
+     * The status line is shown only while a refresh has nothing to show yet and for errors; a
+     * current library (also during its periodic background refresh) shows nothing and reserves
+     * no space.
      */
     static boolean visible(State state) {
         return state != State.CURRENT;
     }
 
     static boolean isError(State state) {
-        return state != State.REFRESHING && state != State.CACHED && state != State.CURRENT;
+        return state != State.REFRESHING && state != State.CURRENT;
     }
 }
