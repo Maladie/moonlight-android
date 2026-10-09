@@ -150,6 +150,7 @@ import java.util.Date;
 import java.util.UUID;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.regex.Pattern;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -2694,11 +2695,25 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && isAllowedChildEligibilityReason(reason);
     }
 
+    private static final Pattern CHILD_POLICY_COLON_OFFSET =
+            Pattern.compile(".*[+-]\\d{2}:\\d{2}$");
+    /** Guarded by itself: a SimpleDateFormat is not thread-safe. */
+    private static final SimpleDateFormat[] CHILD_POLICY_TIME_FORMATS = {
+            childPolicyTimeFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+            childPolicyTimeFormat("yyyy-MM-dd'T'HH:mm:ssZ"),
+            childPolicyTimeFormat("yyyy-MM-dd HH:mm:ssZ")};
+
+    private static SimpleDateFormat childPolicyTimeFormat(String pattern) {
+        SimpleDateFormat format = new SimpleDateFormat(pattern, Locale.ROOT);
+        format.setLenient(false);
+        return format;
+    }
+
     static long parseChildPolicyTime(String value) {
         String text = value == null ? "" : value.trim();
         if (text.isEmpty()) return -1L;
         if (text.endsWith("Z")) text = text.substring(0, text.length() - 1) + "+0000";
-        else if (text.matches(".*[+-]\\d{2}:\\d{2}$")) {
+        else if (CHILD_POLICY_COLON_OFFSET.matcher(text).matches()) {
             text = text.substring(0, text.length() - 3) + text.substring(text.length() - 2);
         }
         int fractionStart = text.indexOf('.');
@@ -2712,19 +2727,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             text = text.substring(0, fractionStart + 1) + fraction
                     + text.substring(fractionEnd);
         }
-        String[] patterns = {"yyyy-MM-dd'T'HH:mm:ss.SSSZ",
-                "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd HH:mm:ssZ"};
-        for (String pattern : patterns) {
-            try {
-                SimpleDateFormat format = new SimpleDateFormat(pattern, Locale.ROOT);
-                format.setLenient(false);
-                ParsePosition position = new ParsePosition(0);
-                Date parsed = format.parse(text, position);
-                if (parsed != null && position.getIndex() == text.length()) {
-                    return parsed.getTime();
+        synchronized (CHILD_POLICY_TIME_FORMATS) {
+            for (SimpleDateFormat format : CHILD_POLICY_TIME_FORMATS) {
+                try {
+                    ParsePosition position = new ParsePosition(0);
+                    Date parsed = format.parse(text, position);
+                    if (parsed != null && position.getIndex() == text.length()) {
+                        return parsed.getTime();
+                    }
+                } catch (RuntimeException ignored) {
+                    // Try the next server timestamp shape.
                 }
-            } catch (RuntimeException ignored) {
-                // Try the next server timestamp shape.
             }
         }
         return -1L;
@@ -4249,7 +4262,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void applySelectedProfile(ComputerDetails host, String profileId) {
         ProfileAuthorization.grant(host.uuid);
-        if (!changeSelectedProfile(host, profileId)) return;
+        if (!changeSelectedProfile(host, profileId)) {
+            // An app-list change that arrived under the PIN gate was not rendered.
+            renderAppsAsync(host);
+            return;
+        }
         currentSunshineApps = loadApps(host);
         updateHostSelector();
         refreshHostProfiles(host);
@@ -7550,6 +7567,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             mainHandler.post(() -> runLibraryUpdateWhenNavigationIdle(() -> {
                 if (generation != appListRenderGeneration.get()) return;
+                // Under the profile gate nothing renders: entering the host renders afresh.
+                if (profileGateHostUuid != null) return;
                 if (!uuid.equals(selectedHostUuid)) return;
                 if (!requestKey.equals(selectedProfileKey(uuid))) return;
                 ComputerDetails latestHost = currentHost(uuid);
@@ -9316,7 +9335,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 host.uuid, selectedProfileId(host.uuid));
         boolean childGameBlocked = childPolicy.blocked || isSessionClosing(host);
         card.setAlpha(childAwarePlayniteCardAlpha(host.uuid, item, operation,
-                resumeSession || suspendedSession, card.hasFocus()));
+                resumeSession || suspendedSession, card.hasFocus(), childPolicy.blocked));
         if (!item.game.installed && !installing) {
             android.graphics.ColorMatrixColorFilter muted = uninstalledArtworkFilter;
             poster.setColorFilter(muted);
@@ -9383,7 +9402,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         playniteInstallKey(host.uuid, item))) {
             card.animate().cancel();
             float restingAlpha = childAwarePlayniteCardAlpha(host.uuid, item, operation,
-                    resumeSession || suspendedSession, card.hasFocus());
+                    resumeSession || suspendedSession, card.hasFocus(), childPolicy.blocked);
             if (reducedMotion) {
                 card.setAlpha(restingAlpha);
             } else {
@@ -9537,7 +9556,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             GameOperationsController.Presentation focusedOperation =
                     gameOperationsController.presentation(hostUuid, item.game);
             card.setAlpha(childAwarePlayniteCardAlpha(hostUuid, item, focusedOperation,
-                    sessionCard, focused));
+                    sessionCard, focused, childEligibilityProjection(
+                            hostUuid, selectedProfileId(hostUuid)).blocked));
             stylePlayniteStateEmphasis(views.state, item, focusedOperation,
                     sessionCard, focused);
             updateCarouselMarquee(views.name, focused);
@@ -9606,11 +9626,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private float childAwarePlayniteCardAlpha(String hostUuid, PlayniteDashboardItem item,
                                               GameOperationsController.Presentation operation,
-                                              boolean resumeSession, boolean focused) {
+                                              boolean resumeSession, boolean focused,
+                                              boolean childBlocked) {
         float alpha = playniteCardAlpha(item, operation, resumeSession, focused);
-        ChildEligibilityProjection projection = childEligibilityProjection(
-                hostUuid, selectedProfileId(hostUuid));
-        return projection.blocked || isSessionClosing(currentHost(hostUuid))
+        return childBlocked || isSessionClosing(currentHost(hostUuid))
                 ? Math.min(alpha, .46f) : alpha;
     }
 
@@ -11202,7 +11221,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             apps = Collections.emptyList();
         }
         int runningAppId = renderedSessionSnapshot(host).hostRunningAppId;
-        String signature = appRenderSignature(host, apps, runningAppId);
+        // One preferences handle per render: the signature and every card read it in memory.
+        SharedPreferences appSettings = getSharedPreferences(
+                AppPreferences.APP_PREFERENCES_FILE, MODE_PRIVATE);
+        String signature = appRenderSignature(host, apps, runningAppId, appSettings);
         Object firstTag = appRow.getChildCount() > 0 ? appRow.getChildAt(0).getTag() : null;
         if (signature.equals(renderedAppsSignature) && firstTag instanceof String &&
                 ((String) firstTag).startsWith("app:")) return;
@@ -11229,7 +11251,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     dp(700), ViewGroup.LayoutParams.MATCH_PARENT));
         } else {
             for (NvApp app : apps) {
-                appRow.addView(appCard(host, app, runningAppId), cardSpacing());
+                appRow.addView(appCard(host, app, runningAppId, appSettings),
+                        cardSpacing());
             }
         }
         if (portraitLayout) {
@@ -11254,7 +11277,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         wireHomeFocusNavigation();
     }
 
-    private View appCard(ComputerDetails host, NvApp app, int runningAppId) {
+    private View appCard(ComputerDetails host, NvApp app, int runningAppId,
+                         SharedPreferences appSettings) {
         boolean debugCarousel = CONSOLE_UI_V2 && !portraitLayout;
         LinearLayout card = cardBase(dp(portraitLayout ? 220 : debugCarousel ? 84 : 205),
                 dp(portraitLayout ? 225 : debugCarousel ? 150 : 225));
@@ -11293,7 +11317,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean running = runningAppId == app.getAppId();
         boolean hostReady = ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host);
-        boolean customSettings = !AppPreferences.getAppSettings(this,
+        boolean customSettings = !AppPreferences.getAppSettings(appSettings,
                 host.uuid + ":" + app.getAppId()).useGlobalSettings;
         boolean quickLaunch = isQuickLaunch(host.uuid, app.getAppId());
         String metadata = !ConsoleActionCatalog.isOnline(host)
@@ -11384,7 +11408,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private String appRenderSignature(ComputerDetails host, List<NvApp> apps,
-                                      int runningAppId) {
+                                      int runningAppId, SharedPreferences appSettings) {
         StringBuilder value = new StringBuilder(host.uuid).append('|')
                 .append(host.state).append('|').append(host.pairState).append('|')
                 .append(runningAppId).append('|').append(showHiddenApps);
@@ -11394,7 +11418,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     .append(':').append(isQuickLaunch(host.uuid, app.getAppId()))
                     .append(':').append(preferences.getLong(appHistoryKey(
                             host.uuid, app.getAppId()), 0L))
-                    .append(':').append(AppPreferences.getAppSettings(this, appKey)
+                    .append(':').append(AppPreferences.getAppSettings(appSettings, appKey)
                             .useGlobalSettings);
         }
         return value.toString();

@@ -2031,7 +2031,8 @@ public class OverlayMenuView extends LinearLayout {
                     getContext().getString(R.string.discord_dm_keyboard_cursor_legend),
                     getContext().getString(R.string.discord_dm_keyboard_send_legend),
                     getContext().getString(R.string.discord_dm_keyboard_history_scroll_legend),
-                    getContext().getString(R.string.discord_dm_keyboard_media_open_legend));
+                    getContext().getString(R.string.discord_dm_keyboard_media_open_legend),
+                    true);
         }
     }
 

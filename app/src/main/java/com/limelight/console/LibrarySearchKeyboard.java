@@ -91,8 +91,7 @@ final class LibrarySearchKeyboard extends LinearLayout {
                 context.getString(R.string.discord_dm_keyboard_shift_legend),
                 context.getString(R.string.discord_dm_keyboard_backspace_legend),
                 context.getString(R.string.discord_dm_keyboard_cursor_legend),
-                context.getString(R.string.playnite_search_done_legend), "", "");
-        keyboard.setMicrophoneVisible(false);
+                context.getString(R.string.playnite_search_done_legend), "", "", false);
         addView(keyboard, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
     }
 

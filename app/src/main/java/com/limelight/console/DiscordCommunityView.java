@@ -1191,7 +1191,7 @@ final class DiscordCommunityView extends FrameLayout {
                 @Override public void onOpenVisibleAdditionalContent() { openVisibleAdditionalContent(); }
             }, getContext().getString(R.string.discord_dm_keyboard_microphone),
                     getContext().getString(R.string.discord_dm_keyboard_space),
-                    getContext().getString(R.string.discord_dm_send), "", "", "", "", "", "");
+                    getContext().getString(R.string.discord_dm_send), "", "", "", "", "", "", true);
             directKeyboard.setCompactMode(true);
             directKeyboardRecipientId = recipientId;
             directKeyboardVisible = true;

@@ -271,6 +271,38 @@ public class ConsoleChildProfileUiContractTest {
                         "2026-09-06T12:00:00+02:00"));
     }
 
+    @Test public void childPolicyTimeAcceptsOnlyTheServerTimestampShapes() {
+        long noon = 1_788_696_000_000L; // 2026-09-06T12:00:00Z
+        assertEquals(noon, ConsoleActivity.parseChildPolicyTime("2026-09-06T12:00:00Z"));
+        assertEquals(noon, ConsoleActivity.parseChildPolicyTime("  2026-09-06T12:00:00Z\n"));
+        assertEquals(noon, ConsoleActivity.parseChildPolicyTime("2026-09-06 12:00:00Z"));
+        assertEquals(noon, ConsoleActivity.parseChildPolicyTime("2026-09-06T14:00:00+02:00"));
+        assertEquals(noon, ConsoleActivity.parseChildPolicyTime("2026-09-06T14:00:00+0200"));
+        assertEquals(noon, ConsoleActivity.parseChildPolicyTime("2026-09-06 07:00:00-05:00"));
+        assertEquals(noon + 500L, ConsoleActivity.parseChildPolicyTime(
+                "2026-09-06T12:00:00.5Z"));
+        assertEquals(noon + 123L, ConsoleActivity.parseChildPolicyTime(
+                "2026-09-06T12:00:00.123456789Z"));
+        assertEquals(noon + 250L, ConsoleActivity.parseChildPolicyTime(
+                "2026-09-06T07:00:00.250-05:00"));
+        // Repeated and interleaved shapes parse the same: no state leaks between calls.
+        for (int round = 0; round < 3; round++) {
+            assertEquals(noon, ConsoleActivity.parseChildPolicyTime("2026-09-06 12:00:00Z"));
+            assertEquals(noon + 500L, ConsoleActivity.parseChildPolicyTime(
+                    "2026-09-06T12:00:00.5Z"));
+            assertEquals(-1L, ConsoleActivity.parseChildPolicyTime("2026-09-06T12:00:00"));
+        }
+
+        for (String rejected : new String[] {null, "", "   ", "not-a-date",
+                "2026-09-06T12:00:00", "2026-09-06", "2026-09-06T12:00Z",
+                "2026-13-06T12:00:00Z", "2026-09-31T12:00:00Z", "2026-09-06T25:00:00Z",
+                "2026-09-06T12:00:00Zjunk", "2026-09-06 12:00:00.5Z",
+                "2026-09-06T12:00:00+02", "1788696000"}) {
+            assertEquals(String.valueOf(rejected), -1L,
+                    ConsoleActivity.parseChildPolicyTime(rejected));
+        }
+    }
+
     @Test public void childEligibilityGateRejectsEveryNonReadyOrDeniedState() {
         assertTrue(ConsoleActivity.childEligibilityCanLaunch(
                 true, "ready", "none", 1L));

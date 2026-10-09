@@ -94,7 +94,8 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
     public EmbeddedTvKeyboardView(Context context, Callback callback, String microphoneLabel,
                            String spaceLabel, String sendLabel, String shiftLegend,
                            String backspaceLegend, String cursorLegend, String sendLegend,
-                           String historyScrollLegend, String mediaOpenLegend) {
+                           String historyScrollLegend, String mediaOpenLegend,
+                           boolean microphone) {
         super(context);
         this.callback = callback;
         this.microphoneLabel = microphoneLabel;
@@ -109,6 +110,8 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
         setFocusable(false);
         setFocusableInTouchMode(false);
         setPadding(dp(2), dp(2), dp(2), dp(2));
+        // Library search has no dictation: its keyboard is built without the microphone key.
+        model.setMicrophone(microphone);
         rebuild();
     }
 
@@ -125,12 +128,6 @@ public final class EmbeddedTvKeyboardView extends FrameLayout {
     public void setCompactMode(boolean compact) {
         if (compactMode == compact) return;
         compactMode = compact;
-        rebuild();
-    }
-
-    /** Library search has no dictation: its keyboard drops the microphone key. */
-    void setMicrophoneVisible(boolean visible) {
-        model.setMicrophone(visible);
         rebuild();
     }
 
