@@ -765,8 +765,9 @@ public class ConsoleActivityEnsureContractTest {
                 < localLibrary.lastIndexOf("requestPlayniteRefresh("));
         assertTrue(preDraw.contains("prepareInitialCarouselFrame()"));
         assertTrue(prepare.contains("initialLocalPresentationReady("));
-        assertTrue(prepare.contains("View target = firstFocusableChild(appRow)"));
-        assertTrue(prepare.contains("appScroll.scrollTo(0, 0)"));
+        assertTrue(prepare.contains(
+                "View target = inherited != null ? inherited : firstFocusableChild(appRow)"));
+        assertTrue(prepare.contains("appScroll.scrollTo(scroll, 0)"));
         assertTrue(prepare.contains("target.requestFocus()"));
         assertTrue(prepare.contains("enterExpandedLibrary(true)"));
         assertTrue(prepare.contains("return false;"));

@@ -263,6 +263,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private long autoWarmUpAttempt;
     private boolean autoWarmUpConvertedToGame;
     private boolean autoWarmUpRetained;
+    private boolean screenCovered;
     private boolean parkWarmUpWhenConnected;
     private final Object autoWarmUpGateLock = new Object();
     private final AtomicBoolean autoWarmUpHomeFrameAccepted = new AtomicBoolean();
@@ -537,7 +538,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     this,
                     appDisplayName(getIntent().getStringExtra(EXTRA_APP_NAME)),
                     getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),
-                    launchStartedAtMillis,
                     getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false));
             if (hasAutoWarmUpTransportIdentity() && !autoWarmUpConvertedToGame) {
                 consoleLoadingView.showNeutralWarmUpAppearance();
@@ -640,6 +640,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         streamView.setOnGenericMotionListener(this);
         streamView.setOnKeyListener(this);
         streamView.setInputCallbacks(this);
+        if (hasAutoWarmUpTransportIdentity() && !autoWarmUpConvertedToGame) {
+            // A hidden warm-up shows nothing of its own: the console stays on screen under
+            // this window until the Home's frame is accepted.
+            streamView.setVisibility(View.INVISIBLE);
+            consoleLoadingView.setSeeThrough(true);
+        } else {
+            View decor = getWindow().getDecorView();
+            decor.postOnAnimation(() -> decor.postOnAnimation(this::coverScreen));
+        }
 
         // Listen for touch events on the background touch view to enable trackpad mode
         // to work on areas outside of the StreamView itself. We use a separate View
@@ -2008,6 +2017,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean returningFromStreamHome = streamHomeVisible;
         if (streamHomeVisible) {
             streamHomeVisible = false;
+            coverScreen();
             if (runtime != null) {
                 runtime.setAudioVolume(attachment, isOwnedHiddenAutoWarmUp() ? 0f : 1f);
             }
@@ -3442,6 +3452,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     || !autoWarmUpHomeFrameAccepted.compareAndSet(false, true)) {
                 return false;
             }
+            coverScreen();
             transitionController.overlayRendered(transitionSpec.id);
             logLaunchMilestone("opaque-home-frame-submitted");
             transitionCoordinator.start();
@@ -4183,6 +4194,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void applyRetainedTransition(
             RetainedSwitch operation, LaunchTransitionSpec next,
             ConsoleStreamTransitionCoordinator coordinator) {
+        coverScreen();
         consoleLoadingView.showFullTransitionAppearance();
         operation.newSpec = next;
         transitionSpec = next;
@@ -6621,6 +6633,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             autoWarmUpHomeFrameAccepted.set(true);
         }
         if (!exactPreparing) autoWarmUpRetained = true;
+        coverScreen();
         if (exactPreparing && attachment != null) {
             MoonWakerDiagnostics.record("INFO", "android.stream", "warm_up.reattached",
                     "stream_session_id", streamSessionId, "state", retained.state.name(),
@@ -7224,6 +7237,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void saveReconnect(boolean autoResume) {
         sessionModel.post(new SessionEvent.ReconnectSaved(getIntent(), streamSessionId,
                 autoResume));
+    }
+
+    /**
+     * The window starts see-through (StreamBaseTheme, API 30) and covers what is under it only
+     * once a frame of its own is ready: its first frame, or for a hidden warm-up the Home's.
+     */
+    private void coverScreen() {
+        if (screenCovered || isFinishing() || isDestroyed()) return;
+        screenCovered = true;
+        streamView.setVisibility(View.VISIBLE);
+        if (consoleLoadingView != null) consoleLoadingView.setSeeThrough(false);
+        getWindow().setBackgroundDrawableResource(android.R.color.black);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setTranslucent(false);
     }
 
     private void openPreparingConsoleHome() {

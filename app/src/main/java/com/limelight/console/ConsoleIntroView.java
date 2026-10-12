@@ -133,6 +133,7 @@ final class ConsoleIntroView extends FrameLayout {
     private final BooleanSupplier homeData;
     private BooleanSupplier cardsPending = () -> false;
     private Runnable buildCard = () -> { };
+    private Runnable ended = () -> { };
     private final Set<String> loadingPosters;
     private final Predicate<Object> artworkShown;
     private final TimeAnimator clock = new TimeAnimator();
@@ -312,6 +313,16 @@ final class ConsoleIntroView extends FrameLayout {
     static void afterEntrance(ConsoleIntroView intro, Runnable step) {
         if (intro == null || !intro.entering()) step.run();
         else intro.untilEntered.add(step);
+    }
+
+    /** Whether the intro is on screen: standing on its opening frame, moving or leaving. */
+    boolean running() {
+        return running;
+    }
+
+    /** {@code action} runs each time a running intro has ended. */
+    void whenEnded(Runnable action) {
+        ended = action;
     }
 
     /** Whether the entrance is still on, or steps that waited for its end still are. */
@@ -585,6 +596,7 @@ final class ConsoleIntroView extends FrameLayout {
         awaited = null;
         prebuilt = false;
         clock.end();
+        boolean wasRunning = running;
         if (running) {
             home.setScaleX(1f);
             home.setScaleY(1f);
@@ -609,6 +621,7 @@ final class ConsoleIntroView extends FrameLayout {
         shot = null;
         // Last, as in frame(): what waited for the entrance runs now.
         runEntered();
+        if (wasRunning) ended.run();
     }
 
     /**

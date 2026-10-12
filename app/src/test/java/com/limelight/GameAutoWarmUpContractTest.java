@@ -63,6 +63,60 @@ public class GameAutoWarmUpContractTest {
                 < apply.indexOf("transitionController.begin(next)"));
     }
 
+    @Test public void windowCoversWhatIsUnderItOnlyOnceItsOwnFrameIsReady() throws IOException {
+        String game = source();
+        String create = between(game, "protected void onCreate(",
+                "private MediaCodecDecoderRenderer createDecoderRenderer");
+        String cover = between(game, "private void coverScreen() {",
+                "private void openPreparingConsoleHome()");
+        String theme = sourceFile("app/src/main/res/values-v30/styles.xml");
+
+        // The window is see-through from its start; only Game makes it opaque.
+        assertTrue(theme.contains("<style name=\"StreamBaseTheme\" parent=\"AppBaseTheme\">"));
+        assertTrue(theme.contains("<item name=\"android:windowIsTranslucent\">true</item>"));
+        assertTrue(theme.contains(
+                "<item name=\"android:windowBackground\">@android:color/transparent</item>"));
+        assertTrue(cover.contains("if (screenCovered || isFinishing() || isDestroyed()) return;"));
+        assertTrue(cover.contains("streamView.setVisibility(View.VISIBLE);"));
+        assertTrue(cover.contains("consoleLoadingView.setSeeThrough(false);"));
+        assertTrue(cover.contains(
+                "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setTranslucent(false);"));
+        assertEquals(1, game.split("setTranslucent\\(", -1).length - 1);
+
+        // A hidden warm-up draws nothing and has no video surface; anything else covers the
+        // screen after its first frame.
+        String start = between(create, "streamView.setInputCallbacks(this);",
+                "View backgroundTouchView");
+        assertTrue(start.contains(
+                "if (hasAutoWarmUpTransportIdentity() && !autoWarmUpConvertedToGame) {"));
+        assertTrue(start.indexOf("streamView.setVisibility(View.INVISIBLE);")
+                < start.indexOf("} else {"));
+        assertTrue(start.indexOf("consoleLoadingView.setSeeThrough(true);")
+                < start.indexOf("} else {"));
+        assertTrue(start.indexOf("} else {") < start.indexOf(
+                "decor.postOnAnimation(() -> decor.postOnAnimation(this::coverScreen));"));
+
+        // The hidden warm-up covers the screen with the Home's accepted frame, before the
+        // transport is asked to start, and whenever it turns into a game or loses its Home.
+        String accepted = between(game, "public boolean preparingHomeFrameSubmitted(",
+                "public void terminateRetainedSession(");
+        assertTrue(accepted.indexOf("compareAndSet(false, true)")
+                < accepted.indexOf("coverScreen();"));
+        assertTrue(accepted.indexOf("coverScreen();")
+                < accepted.indexOf("startConnectionIfReady("));
+        String resumed = between(game, "private boolean resumeAcceptedWarmUp()",
+                "static boolean shouldResumeAcceptedWarmUp(");
+        assertTrue(resumed.indexOf("autoWarmUpHomeFrameAccepted.set(true);")
+                < resumed.indexOf("coverScreen();"));
+        String apply = between(game, "private void applyRetainedTransition(",
+                "private void advancePreparingSwitch(");
+        assertTrue(apply.indexOf("coverScreen();")
+                < apply.indexOf("consoleLoadingView.showFullTransitionAppearance()"));
+        String resume = between(game, "protected void onResume() {", "protected void onStop() {");
+        assertTrue(resume.indexOf("if (isFinishing() || isDestroyed()) return;")
+                < resume.indexOf("coverScreen();"));
+    }
+
     @Test public void warmUpMapsOnlyToGenericOrObservationConnection() throws IOException {
         String create = between(source(), "protected void onCreate(",
                 "private MediaCodecDecoderRenderer createDecoderRenderer");

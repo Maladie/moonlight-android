@@ -149,6 +149,77 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.loadings);
     }
 
+    @Test public void preparedHostOpensOnlyOnceTheStreamScreenMayOpen() {
+        Fake effects = new Fake();
+        effects.mayOpenPreparedHost = false;
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        // The preparation itself is not held back: only the launch waits.
+        worker.runNext();
+        main.runNext();
+        assertEquals(1, effects.prepareCalls);
+        assertEquals(0, effects.preparedLaunches);
+        assertTrue(orchestrator.hasPreparationForHost("host"));
+        orchestrator.openPreparedHost();
+        assertEquals(0, effects.preparedLaunches);
+
+        effects.mayOpenPreparedHost = true;
+        orchestrator.openPreparedHost();
+        assertEquals(1, effects.preparedLaunches);
+        assertNull(effects.preparedGame);
+        orchestrator.openPreparedHost();
+        assertEquals(1, effects.preparedLaunches);
+    }
+
+    @Test public void playWhileThePreparedHostWaitsTakesItOver() {
+        Fake effects = new Fake();
+        effects.mayOpenPreparedHost = false;
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        worker.runNext();
+        main.runNext();
+        effects.mayOpenPreparedHost = true;
+        // Play arrives before the waiting launch is opened: one launch, carrying the game.
+        orchestrator.play(game());
+        main.runAll();
+        orchestrator.openPreparedHost();
+
+        assertEquals(1, effects.loadings);
+        assertEquals(0, effects.readiness);
+        assertEquals(0, effects.launches);
+        assertEquals(1, effects.preparedLaunches);
+        assertEquals("game", effects.preparedGame.playniteGameId);
+        assertEquals(effects.prepareRequest, effects.preparedLaunchRequest);
+    }
+
+    @Test public void preparedHostCancelledWhileItWaitsNeverOpens() {
+        for (int scenario = 0; scenario < 3; scenario++) {
+            Fake effects = new Fake();
+            effects.mayOpenPreparedHost = false;
+            QueuedExecutor worker = new QueuedExecutor();
+            QueuedDispatcher main = new QueuedDispatcher();
+            SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+            orchestrator.prepareHost("host");
+            worker.runNext();
+            main.runNext();
+            // A pause or a profile change, a host change, the console's end.
+            if (scenario == 0) orchestrator.cancel();
+            else if (scenario == 1) assertTrue(orchestrator.cancelPreparation("host"));
+            else orchestrator.close();
+            effects.mayOpenPreparedHost = true;
+            orchestrator.openPreparedHost();
+
+            assertEquals(0, effects.preparedLaunches);
+        }
+    }
+
     @Test public void queuedReadyThenClickWaitsForOpaqueAndCannotDoubleLaunch() {
         Fake effects = new Fake();
         effects.deferLoading = true;
@@ -1632,6 +1703,7 @@ public class SessionOrchestratorTest {
         PlayIntent preparedGame;
         int prepareCalls;
         int preparationFailures;
+        boolean mayOpenPreparedHost = true;
 
         int returned;
         int reconnects;
@@ -1698,6 +1770,7 @@ public class SessionOrchestratorTest {
             prepareCancelled = cancelled;
             return preparedWarmUp;
         }
+        @Override public boolean mayOpenPreparedHost() { return mayOpenPreparedHost; }
         @Override public void launchPreparedHost(
                 SessionOrchestrator.PreparedWarmUp prepared,
                 PlayIntent pendingGame, long request) {

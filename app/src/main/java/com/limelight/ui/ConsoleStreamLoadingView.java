@@ -11,7 +11,6 @@ import android.graphics.BitmapFactory;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
@@ -31,19 +30,25 @@ import android.widget.TextView;
 
 import com.limelight.R;
 
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Random;
 
 /** A fully opaque, modal privacy surface rendered in the Activity window above video. */
 public final class ConsoleStreamLoadingView extends FrameLayout {
     private static final long MESSAGE_INTERVAL_MS = 2300L;
+    // ponytail: the last decoded splash stays for the window that takes the cover over (a few
+    // MB until another game's artwork replaces it); key it by file version if artwork can
+    // change under one path.
+    private static String decodedSplashPath = "";
+    private static Bitmap decodedSplash;
 
     public ConsoleStreamLoadingView(Context context) {
-        this(context, null, null, 0L, false);
+        this(context, null, null, false);
     }
 
     public ConsoleStreamLoadingView(Context context, AttributeSet attrs) {
-        this(context, null, null, 0L, false);
+        this(context, null, null, false);
     }
 
     public interface Actions {
@@ -73,6 +78,11 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final TextView retryView;
     private final TextView showAnywayView;
     private final boolean reducedMotion;
+    /**
+     * This cover continues one another window shows now: until it is attached it takes that
+     * one's message and shows its artwork at once, so its first frame is the frame on screen.
+     */
+    private boolean handedOver;
     private int currentStep = 1;
     private boolean error;
     private boolean closingPresentation;
@@ -111,9 +121,10 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     };
 
     public ConsoleStreamLoadingView(Context context, String title, String initialMessage,
-                                    long animationEpoch, boolean reducedMotion) {
+                                    boolean reducedMotion) {
         super(context);
         this.reducedMotion = reducedMotion;
+        handedOver = initialMessage != null && !initialMessage.trim().isEmpty();
         messages = getResources().getStringArray(R.array.console_loading_messages);
         setClickable(true);
         setFocusable(true);
@@ -123,7 +134,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         setElevation(dp(64));
         setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
-        defaultBackdrop = new Backdrop(context, animationEpoch);
+        defaultBackdrop = new Backdrop(context);
         addView(defaultBackdrop, match());
         defaultShade = new View(context);
         defaultShade.setBackgroundColor(0x57000000);
@@ -143,9 +154,9 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         titleView.setMaxLines(2);
         defaultContent.addView(titleView, row());
 
-        messageView = text(initialMessage == null || initialMessage.trim().isEmpty()
-                ? context.getString(R.string.transition_preparing_session)
-                : initialMessage, 23, 0xFFE5E8F5, false);
+        messageView = text(handedOver ? initialMessage
+                : context.getString(R.string.transition_preparing_session),
+                23, 0xFFE5E8F5, false);
         messageView.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams messageParams = row();
         messageParams.topMargin = dp(12);
@@ -203,8 +214,25 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
         configureForPlaynite(false);
         setStep(1, context.getString(R.string.transition_preparing_session));
-        scheduleLoadingMessage(false);
+        if (handedOver) {
+            lastMessageIndex = Arrays.asList(messages).indexOf(initialMessage);
+            if (!reducedMotion) handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
+            requestDefaultActionFocus();
+        } else {
+            scheduleLoadingMessage(false);
+        }
         post(this::requestDefaultActionFocus);
+    }
+
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        // On screen from here on: artwork fades in and messages change as on any cover.
+        handedOver = false;
+    }
+
+    /** See-through, the cover draws nothing of its own: what is under its window shows. */
+    public void setSeeThrough(boolean seeThrough) {
+        setBackgroundColor(seeThrough ? Color.TRANSPARENT : Color.BLACK);
     }
 
     public void setActions(Actions actions) {
@@ -274,6 +302,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     private Bitmap decodeSplashArtwork(String path) {
+        if (decodedSplash != null && path.equals(decodedSplashPath)) return decodedSplash;
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeFile(path, bounds);
@@ -283,7 +312,9 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         options.inSampleSize = LoadingArtworkPolicy.sampleSize(
                 bounds.outWidth, bounds.outHeight, 1920);
         options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        return BitmapFactory.decodeFile(path, options);
+        decodedSplash = BitmapFactory.decodeFile(path, options);
+        decodedSplashPath = path;
+        return decodedSplash;
     }
 
     public void configureForPlaynite(boolean playnite) {
@@ -759,10 +790,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     private void applySplashArtwork(Bitmap bitmap) {
-        if (stopped) {
-            bitmap.recycle();
-            return;
-        }
+        if (stopped) return;
         if (splashArtworkView != null) {
             splashArtworkView.animate().cancel();
             splashArtworkView.setVisibility(VISIBLE);
@@ -777,7 +805,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         splashArtworkView = artwork;
         artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
         artwork.setImageBitmap(bitmap);
-        artwork.setAlpha(0f);
+        artwork.setAlpha(handedOver ? 1f : 0f);
         int screenWidth = getResources().getDisplayMetrics().widthPixels;
         int screenHeight = getResources().getDisplayMetrics().heightPixels;
         LayoutParams panorama = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -831,11 +859,13 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         centerControlsParams.bottomMargin = dp(24);
         addView(centerControls, centerControlsParams);
 
-        artwork.animate().alpha(1f).setDuration(reducedMotion ? 0L : 260L).start();
+        if (!handedOver) {
+            artwork.animate().alpha(1f).setDuration(reducedMotion ? 0L : 260L).start();
+        }
         bringChildToFront(messageView);
         bringChildToFront(centerControls);
         requestDefaultActionFocus();
-        showSplashMessageImmediately();
+        if (!handedOver) showSplashMessageImmediately();
     }
 
     private void showSplashMessageImmediately() {
@@ -992,13 +1022,10 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     private static final class Backdrop extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final float phase;
         private Shader backgroundShader;
 
-        Backdrop(Context context, long animationEpoch) {
+        Backdrop(Context context) {
             super(context);
-            long epoch = animationEpoch > 0L ? animationEpoch : SystemClock.uptimeMillis();
-            phase = (SystemClock.uptimeMillis() - epoch) / 9000f;
         }
 
         @Override protected void onSizeChanged(int width, int height,
@@ -1015,12 +1042,9 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             canvas.drawRect(0, 0, width, height, paint);
             paint.setShader(null);
             paint.setColor(0x347C4DFF);
-            canvas.drawCircle(width * (.76f + .05f * (float) Math.sin(phase)),
-                    height * (.20f + .05f * (float) Math.cos(phase)), height * .44f, paint);
+            canvas.drawCircle(width * .76f, height * .25f, height * .44f, paint);
             paint.setColor(0x2937B5FF);
-            canvas.drawCircle(width * (.20f + .04f * (float) Math.cos(phase * .8f)),
-                    height * (.84f + .04f * (float) Math.sin(phase * .8f)),
-                    height * .52f, paint);
+            canvas.drawCircle(width * .24f, height * .84f, height * .52f, paint);
         }
     }
 }

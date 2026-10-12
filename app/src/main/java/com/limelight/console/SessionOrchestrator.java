@@ -102,6 +102,11 @@ public final class SessionOrchestrator implements AutoCloseable {
         void sessionFailed(PlayIntent intent, SessionFailure reason);
         PreparedWarmUp prepareHost(PlayIntent intent, long request,
                                    BooleanSupplier cancelled);
+        /**
+         * False while opening the stream screen would stall what is on screen (an entry
+         * intro); {@link #openPreparedHost} follows once it no longer would.
+         */
+        boolean mayOpenPreparedHost();
         void launchPreparedHost(PreparedWarmUp prepared,
                                 PlayIntent pendingGame, long request);
         void preparationFailed();
@@ -260,12 +265,19 @@ public final class SessionOrchestrator implements AutoCloseable {
     private void maybeLaunch(Preparation pending) {
         if (!currentPreparation(pending) || pending.launchClaimed
                 || pending.prepared == null
-                || pending.pendingGame != null && !pending.opaqueReady) return;
+                || pending.pendingGame != null && !pending.opaqueReady
+                || !effects.mayOpenPreparedHost()) return;
         pending.launchClaimed = true;
         preparation = null;
         inFlight = 0L;
         effects.launchPreparedHost(
                 pending.prepared, pending.pendingGame, pending.request);
+    }
+
+    /** The stream screen may open now: a prepared host that waited for this launches. */
+    void openPreparedHost() {
+        Preparation pending = preparation;
+        if (pending != null) maybeLaunch(pending);
     }
 
     private void failPreparation(Preparation pending) {

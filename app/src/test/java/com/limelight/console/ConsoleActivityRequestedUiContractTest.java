@@ -309,7 +309,8 @@ public class ConsoleActivityRequestedUiContractTest {
                 "android:scaleX=\"1.15\""));
     }
 
-    @Test public void initialCarouselFocusAlwaysTargetsTheFirstCard() throws IOException {
+    @Test public void initialCarouselFocusTargetsTheFirstCardExceptInAWarmUpHome()
+            throws IOException {
         String source = consoleActivitySource();
         String prepared = source.substring(source.indexOf(
                         "protected final boolean prepareInitialCarouselFrame("),
@@ -318,8 +319,22 @@ public class ConsoleActivityRequestedUiContractTest {
                         "private void requestPendingInitialGameFocus("),
                 source.indexOf("private int maxCarouselGameCount("));
 
-        assertTrue(prepared.contains("View target = firstFocusableChild(appRow)"));
-        assertTrue(prepared.contains("appScroll.scrollTo(0, 0)"));
+        // A warm-up's Home takes over the card and scroll position of the console under it,
+        // from what that console saved when it paused; any other Home starts on the first.
+        assertTrue(prepared.contains("View inherited = warmUpClientAttempt > 0L"
+                + " ? carouselCard(lastCarouselGameId) : null;"));
+        assertTrue(prepared.contains(
+                "View target = inherited != null ? inherited : firstFocusableChild(appRow)"));
+        assertTrue(prepared.contains("int scroll = inherited == null ? 0\n"
+                + "                        : preferences.getInt(\"app_scroll.\" + host.uuid, 0);"));
+        assertTrue(prepared.indexOf("appScroll.scrollTo(scroll, 0)")
+                < prepared.indexOf("target.requestFocus()"));
+        assertTrue(prepared.contains(
+                "if (inherited != null && appRow.isLayoutRequested()) return false;"));
+        String pause = source.substring(source.indexOf("protected void onPause()"),
+                source.indexOf("protected void onDestroy()"));
+        assertTrue(pause.contains("flushPendingPlayniteSelection();"));
+        assertTrue(pause.contains("saveScrollPositions();"));
         assertTrue(focus.contains("View target = firstFocusableChild(appRow)"));
         assertFalse(focus.contains("lastCarouselGameId"));
         assertFalse(focus.contains("selected_playnite."));
