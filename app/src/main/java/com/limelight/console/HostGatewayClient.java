@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 class HostGatewayClient {
     static final int DEFAULT_PORT = 8785;
@@ -485,13 +486,12 @@ class HostGatewayClient {
         }
 
         private static boolean isGuid(String value) {
-            return value != null && value.matches(
-                    "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+            return value != null && PLAYNITE_GUID.matcher(value).matches();
         }
 
         private static String providerFrom(String source) {
             String value = source == null ? "" : source.trim().toLowerCase(Locale.ROOT);
-            return value.matches("[a-z][a-z0-9_-]{1,31}") ? value : "playnite";
+            return PROVIDER_NAME.matcher(value).matches() ? value : "playnite";
         }
 
         private static String sourceKey(String source) {
@@ -2395,17 +2395,25 @@ class HostGatewayClient {
         return "";
     }
 
+    private static final Pattern PLAYNITE_GUID = Pattern.compile(
+            "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    private static final Pattern PROVIDER_SCOPED_ID = Pattern.compile(
+            "[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}");
+    private static final Pattern PROVIDER_NAME = Pattern.compile("[a-z][a-z0-9_-]{1,31}");
+    private static final Pattern PLAYNITE_RECORD_ID = Pattern.compile(
+            "(?i)(?:playnite:)?[0-9a-f]{8}-[0-9a-f]{4}-"
+                    + "[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+
     static boolean isPlayniteId(String value) {
-        return value != null && (value.matches(
-                "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-                || value.matches("[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}"));
+        return value != null && (PLAYNITE_GUID.matcher(value).matches()
+                || PROVIDER_SCOPED_ID.matcher(value).matches());
     }
 
     static String providerOrLegacy(String provider, String source) {
         String explicit = provider == null ? "" : provider.trim().toLowerCase(Locale.ROOT);
-        if (explicit.matches("[a-z][a-z0-9_-]{1,31}")) return explicit;
+        if (PROVIDER_NAME.matcher(explicit).matches()) return explicit;
         String legacy = source == null ? "" : source.trim().toLowerCase(Locale.ROOT);
-        return legacy.matches("[a-z][a-z0-9_-]{1,31}") ? legacy : "playnite";
+        return PROVIDER_NAME.matcher(legacy).matches() ? legacy : "playnite";
     }
 
     static boolean hasExactProviderIdentity(String id, String provider,
@@ -2414,8 +2422,7 @@ class HostGatewayClient {
         String owner = provider == null ? "" : provider.trim().toLowerCase(Locale.ROOT);
         String providerId = providerGameId == null ? "" : providerGameId.trim();
         if ("playnite".equals(owner)) {
-            return recordId.matches("(?i)(?:playnite:)?[0-9a-f]{8}-[0-9a-f]{4}-"
-                    + "[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+            return PLAYNITE_RECORD_ID.matcher(recordId).matches();
         }
         return !providerId.isEmpty() && recordId.equals(owner + ":" + providerId);
     }

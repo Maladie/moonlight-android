@@ -118,9 +118,12 @@ public final class PlayniteTargetResolver {
         return result;
     }
 
+    private static final java.util.regex.Pattern WHITESPACE_RUN =
+            java.util.regex.Pattern.compile("\\s+");
+
     private static String normalize(String value) {
-        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT)
-                .replaceAll("\\s+", " ");
+        return value == null ? "" : WHITESPACE_RUN.matcher(
+                value.trim().toLowerCase(Locale.ROOT)).replaceAll(" ");
     }
 
     private PlayniteTargetResolver() { }

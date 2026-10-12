@@ -252,15 +252,20 @@ final class PlayniteLibraryGame {
 
     private static String text(String value) { return value == null ? "" : value.trim(); }
 
+    private static final java.util.regex.Pattern GUID = java.util.regex.Pattern.compile(
+            "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    private static final java.util.regex.Pattern PROVIDER_NAME =
+            java.util.regex.Pattern.compile("[a-z][a-z0-9_-]{1,31}");
+    private static final java.util.regex.Pattern BLANK_LINE_RUN =
+            java.util.regex.Pattern.compile("(?:\\r?\\n[ \\t]*){3,}");
+
     private static boolean isGuid(String value) {
-        return text(value).matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
-                + "[0-9a-f]{4}-[0-9a-f]{12}");
+        return GUID.matcher(text(value)).matches();
     }
 
     private static String providerFrom(String source) {
         String normalized = text(source).toLowerCase(java.util.Locale.ROOT);
-        return normalized.matches("[a-z][a-z0-9_-]{1,31}")
-                ? normalized : "playnite";
+        return PROVIDER_NAME.matcher(normalized).matches() ? normalized : "playnite";
     }
 
     private static String sourceKey(String source) {
@@ -269,6 +274,6 @@ final class PlayniteLibraryGame {
     }
 
     private static String descriptionText(String value) {
-        return text(value).replaceAll("(?:\\r?\\n[ \\t]*){3,}", "\n\n");
+        return BLANK_LINE_RUN.matcher(text(value)).replaceAll("\n\n");
     }
 }

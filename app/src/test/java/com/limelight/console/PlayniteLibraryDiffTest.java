@@ -7,6 +7,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class PlayniteLibraryDiffTest {
@@ -35,6 +36,26 @@ public class PlayniteLibraryDiffTest {
                 selected.stableId(), 1, Arrays.asList(inserted, selected, first)));
         assertEquals(first.stableId(), PlayniteLibraryDiff.selectionAfter(
                 selected.stableId(), 1, Arrays.asList(inserted, first)));
+    }
+
+    @Test public void renderBuildsAllOfAFewMissingCardsButOnlyTheLeadingOnesOfMany() {
+        // A small difference is built whole, wherever it lands.
+        for (int position = 0; position < 13; position++) {
+            assertTrue(PlayniteLibraryDiff.buildsInRender(position, 1));
+            assertTrue(PlayniteLibraryDiff.buildsInRender(position, 3));
+        }
+        // A first render of 13: three cards now, ten placeholders for later frames.
+        int builtNow = 0;
+        for (int position = 0; position < 13; position++) {
+            boolean now = PlayniteLibraryDiff.buildsInRender(position, 13);
+            assertEquals(position < 3, now);
+            if (now) builtNow++;
+        }
+        assertEquals(3, builtNow);
+        // A render arriving mid-build (leading cards exist, four still missing) builds none
+        // of the remaining positions itself; with three left it finishes them.
+        assertFalse(PlayniteLibraryDiff.buildsInRender(9, 4));
+        assertTrue(PlayniteLibraryDiff.buildsInRender(10, 3));
     }
 
     private static PlayniteDashboardItem item(String suffix, long seconds, String cover) {
