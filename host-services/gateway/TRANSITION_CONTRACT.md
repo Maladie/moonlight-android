@@ -215,8 +215,103 @@ process identity; only the Bridge binds one again. The rule does not apply while
 time session is active. Any other mismatch keeps the record and the former answers
 (`managed_stream_conflict`, `unmanaged_stream`).
 
+## Close session from Host Control
+
+Host Control (tray menu, `Ctrl+Alt+Shift+End`, its secure-desktop pipe) ends the session of
+its Windows account through the Gateway, never through a Bridge. The only local channel is
+a file beside `gateway.json`; the Gateway has no loopback-only route and no pipe.
+
+- `host-close-request.json` is created by the installer. Local accounts and the Gateway
+  service may read and overwrite it in place (`(R,W)`), not delete or replace it: an account
+  that could remove the file would disable the channel until a reinstall. Host Control
+  writes `{"request_id": 32 lowercase hex, "expires_at": Unix seconds, at most 60 s ahead,
+  "profile_id": the standard profile of its Windows account}` and nothing else.
+- The Gateway trusts the `profile_id` of the request: it cannot tell which Windows account
+  wrote the file. Any local account can therefore close the session of any standard
+  profile. This is the owner's deliberate choice for a home host; the request can name
+  nothing but a configured standard profile and can only close.
+- The Gateway reads it once a second on its housekeeping thread, at most 1024 bytes. It
+  empties the file in place (deleting it would drop the ACL) and accepts only that exact
+  shape, an unexpired request, a `request_id` it has not seen and a configured standard
+  profile. Anything else executes nothing; unparsable content is discarded only when read
+  twice, so a write in flight is not lost. The file carries no path, command or endpoint.
+- `host-close-result.json` (readable by local users through the directory ACL) reports
+  `{"request_id", "state": "accepted" | "completed" | "refused", "reason", "updated_at"}`.
+  Reasons are fixed classes; the file never holds tokens, client or game identities.
+
+The request is a host operation on the Gateway's own stream record and uses the existing
+owners:
+
+- A control operation in flight is never superseded: the request stays `accepted` and is
+  tried again each second until it expires, then is refused as `operation_in_progress`. A
+  session of another execution profile is refused as `session_on_other_profile`.
+- A child time session ends through its terminal operation with reason `host_closed`, as
+  the host's own ends of a child session do: play time is charged up to the close, the
+  verified game stops, the stream closes and its record is withdrawn.
+- Otherwise a stream record is closed by the owner's `full_quit` on that record, held by
+  the Gateway as `host-close:<request_id>`: the permit names the provider game and process
+  token, `/game/stop-verified` stops exactly that process, the streamer is closed only when
+  it runs the record's application for the record's client, and the terminal write
+  withdraws the record. A close that cannot finish ends its permit as failed and leaves the
+  record as the handle of what still runs.
+- Without a stream record the Gateway holds a permit of its own (`intent` `host_close`, a
+  new generation and actor epoch), stops the provider's verified game process and then
+  closes the streamer only while the `MoonWaker Stream` application is the one application
+  it runs. A game that does not confirm its stop leaves the streamer open
+  (`game_stop_unconfirmed`); any other streamer application is always left.
+- A game process the provider cannot confirm (its Bridge is stopped, it reports another
+  process than the record's, its state is unverified) does not refuse Host Control's close:
+  the Gateway closes the stream alone, through the same identity-checked streamer close,
+  and answers `completed` with `stream_closed_game_unconfirmed` - the stream is closed, the
+  game may still run on the host. The record is withdrawn, no process is stopped, and a
+  start the provider still shows without a game process is abandoned as after any host
+  close (its Bridge refuses once a process exists). Without a stream record this applies
+  to the own `MoonWaker Stream` application; with neither a verifiable game nor that
+  application nothing is closed (`game_state_unverified`). A client's own `full_quit` still
+  needs the confirmed process (`retained_process_unconfirmed`), and so does the close of a
+  child time session.
+- A permit the Gateway holds itself carries `host_held`, which only its own callers set. A
+  Gateway restart ends such a permit as `gateway_restarted`; an operation ID does not make
+  a permit the host's. The public control-operation routes refuse the IDs the Gateway
+  derives for itself (`host-close:`, `host-idle:`, `child-terminal:`, `child-game-stop:`)
+  with HTTP 400, so no client can name, replay or finish such an operation.
+
+### A stream nobody uses
+
+A stream record can outlive every client: a start the Gateway adopted after its client
+died, or a TV that went away while the application stays paused. Its owner alone could
+close it, so it would hold the host for ever. On its housekeeping thread the Gateway
+therefore closes a record when, for 10 minutes without interruption
+(`HOST_IDLE_STREAM_CLOSE_SECONDS`, the owner's choice), the streamer authoritatively
+reports no client transport and the game provider proves itself idle.
+
+- The wait is measured on the monotonic clock from the first such observation, sampled
+  every 30 s. It starts again when a client transport or a game is seen, when any control
+  operation or child session touched the record (its counters moved), and when the Gateway
+  restarts. An unreadable sample neither starts nor ends it.
+- It never closes a record whose game runs - a paused session with its game stays for a
+  resume, by design - nor one with a connected client, during a control operation, or
+  while a child time session exists.
+- The close is the host's `full_quit` above, held as `host-idle:<generation>` with every
+  fence of it. Under the permit the provider must prove itself idle once more; otherwise
+  the permit ends as failed (`provider_not_idle`) and the record stays. Nothing but the
+  record's own streamer application is closed. Diagnostics: `host-idle-stream-close`.
+
+Every completed close advanced the generation and the actor epoch. The TV that streamed
+learns of it like of any stream that ended on the host: its transport ends, and a control
+operation with the old generation is answered `managed_stream_unavailable` (or
+`stream_generation_superseded` once the same owner started again).
+
 ## Contract version
 
 The capability is `control_operations_v2` (`protocol_version` 7 in `version.json`). A client
 and a host from different sides of this change do not negotiate control operations: the
 client refuses to start a stream without the capability it knows.
+
+Per-game streamer applications are gone from the contract: `vibepollo/apps/ensure`,
+`vibepollo/apps/status`, the `vibepollo_apps` capability entry and the library field
+`vibepollo_state` no longer exist, and the Vibepollo Bridge keeps only the neutral
+`MoonWaker Stream` application. Per-game applications an older host created stay in the
+streamer's configuration: nothing deletes them, and the Bridge token's scope grants no
+`DELETE`. Nothing in the control-operation contract changed, so the
+capability and the protocol version stay.

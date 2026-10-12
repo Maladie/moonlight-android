@@ -1103,7 +1103,6 @@
     <string name="playnite_game_details">Game details</string>
     <string name="playnite_metadata_unknown">Unknown</string>
     <string name="playnite_game_details_body">Status: %1$s\nLast played: %2$s\nTime played: %3$s\nLibrary: %4$s\nGenres: %5$s\n\n%6$s</string>
-    <string name="playnite_preparing_short">Preparing…</string>
     <string name="playnite_ready_short">Ready</string>
     <string name="playnite_configuration_short">Setup needed</string>
     <string name="playnite_install_starting">Starting installation of “%1$s”…</string>
@@ -1141,7 +1140,6 @@
     <string name="playnite_legend_back">Back</string>
     <string name="playnite_no_installed_games">The game library has no installed games.</string>
     <string name="playnite_launch_not_configured">Launch not configured</string>
-    <string name="playnite_creating_vibepollo_app">Preparing the game in Vibepollo…</string>
     <string name="playnite_target_saved">Sunshine launch target saved for %1$s</string>
     <string name="playnite_change_target">Change Sunshine launch target</string>
     <string name="playnite_clear_target">Clear launch target</string>

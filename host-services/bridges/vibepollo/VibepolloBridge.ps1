@@ -110,12 +110,11 @@ $script:DiagnosticsCache = $null
 $script:DiagnosticsCacheTime = [datetime]::MinValue
 $script:ApiProcessTimeoutMs = 5000
 $script:MoonWakerClientPermissions = 0x07001F00 # list, view, launch and all input devices
-$script:GameRecordIdPattern = '^(?:[a-z][a-z0-9_-]{1,31}:[a-z0-9._-]{1,128}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
 
 function Invoke-VibepolloApi {
     param(
         [string]$Path = '',
-        [ValidateSet("GET", "POST", "PATCH", "DELETE")][string]$Method = "GET",
+        [ValidateSet("GET", "POST", "PATCH")][string]$Method = "GET",
         $Body = $null,
         [switch]$Binary,
         [switch]$RawText,
@@ -1307,239 +1306,6 @@ function Ensure-MoonWakerStream {
     throw "Vibepollo did not return the ensured MoonWaker Stream application"
 }
 
-function Find-AppsByPlayniteId {
-    param([object[]]$Apps, [string]$GameId)
-    $matches = @()
-    for ($index = 0; $index -lt $Apps.Count; $index++) {
-        $app = $Apps[$index]
-        $id = [string](Get-PropertyValue $app @("playnite-id", "playnite_id") "")
-        if ($id.Equals($GameId, [StringComparison]::OrdinalIgnoreCase)) {
-            $remoteIndex = [int](Get-PropertyValue $app @("index") $index)
-            $matches += [pscustomobject]@{ app = $app; index = $remoteIndex }
-        }
-    }
-    return @($matches)
-}
-
-function Get-PlayniteAppScore {
-    param($App)
-    $score = @($App.PSObject.Properties).Count
-    foreach ($field in @("image-path", "playnite-icon-path", "cmd", "prep-cmd", "state-cmd")) {
-        $value = Get-PropertyValue $App @($field) $null
-        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
-            $score += 100
-        }
-    }
-    return $score
-}
-
-function Select-CanonicalPlayniteApp {
-    param([object[]]$Matches)
-    return @($Matches | Sort-Object `
-        @{ Expression = { Get-PlayniteAppScore $_.app }; Descending = $true }, `
-        @{ Expression = { $_.index }; Descending = $false })[0]
-}
-
-function Remove-DuplicatePlayniteApps {
-    param([object[]]$Matches, $Canonical)
-    if ($Matches.Count -le 1) { return 0 }
-    $canonicalUuid = [string](Get-PropertyValue $Canonical.app @("uuid") "")
-    $canonicalId = [string](Get-PropertyValue $Canonical.app @("id") "")
-    $duplicates = @($Matches | Where-Object {
-        $uuid = [string](Get-PropertyValue $_.app @("uuid") "")
-        $id = [string](Get-PropertyValue $_.app @("id") "")
-        -not (($canonicalUuid -and $uuid -eq $canonicalUuid) -or
-            ($canonicalId -and $id -eq $canonicalId))
-    } | Sort-Object index -Descending)
-    $removed = 0
-    foreach ($duplicate in $duplicates) {
-        try {
-            [void](Invoke-VibepolloApi ("/api/apps/{0}" -f [int]$duplicate.index) DELETE)
-            $removed++
-        }
-        catch {
-            # Older/scoped tokens may not allow DELETE. Keep the canonical app and
-            # report the skipped cleanup instead of making launch preparation fail.
-            Write-BridgeLog "Skipped duplicate Playnite app at index $($duplicate.index): $($_.Exception.Message)" "WARN"
-        }
-    }
-    return $removed
-}
-
-function Get-PlayniteAppStatus {
-    param([string]$GameId)
-    $normalizedId = $GameId.Trim().ToLowerInvariant()
-    if ($normalizedId -notmatch $script:GameRecordIdPattern) {
-        throw "Invalid game record ID"
-    }
-    $matches = @(Find-AppsByPlayniteId @(Get-VibepolloApps) $normalizedId)
-    if ($matches.Count -eq 0) {
-        return [pscustomobject]@{ ok = $true; state = "missing"; playnite_game_id = $normalizedId }
-    }
-    $canonical = Select-CanonicalPlayniteApp $matches
-    $result = New-EnsuredPlayniteAppResult $canonical $false $false 0
-    $result | Add-Member -NotePropertyName state -NotePropertyValue "ready"
-    $result | Add-Member -NotePropertyName duplicates `
-        -NotePropertyValue ([Math]::Max(0, $matches.Count - 1))
-    return $result
-}
-
-function New-EnsuredPlayniteAppResult {
-    param($Match, [bool]$Created, [bool]$Updated, [int]$Deduplicated)
-    $app = $Match.app
-    $numericId = 0L
-    [void][long]::TryParse([string](Get-PropertyValue $app @("id") "0"), [ref]$numericId)
-    return [pscustomobject]@{
-        ok = $true; created = $Created; updated = $Updated
-        uuid = [string](Get-PropertyValue $app @("uuid") "")
-        app_id = $numericId
-        index = [int]$Match.index
-        name = [string](Get-PropertyValue $app @("name") "")
-        playnite_game_id = [string](Get-PropertyValue $app @("playnite-id", "playnite_id") "")
-        deduplicated = $Deduplicated
-    }
-}
-
-function Ensure-PlayniteApp {
-    param([string]$GameId, [string]$Name)
-    $normalizedId = $GameId.Trim().ToLowerInvariant()
-    $normalizedName = $Name.Trim()
-    if ($normalizedId -notmatch $script:GameRecordIdPattern) {
-        throw "Invalid game record ID"
-    }
-    if ([string]::IsNullOrWhiteSpace($normalizedName) -or $normalizedName.Length -gt 200 -or
-        $normalizedName -match '[\x00-\x1f\x7f]') {
-        throw "Invalid application name"
-    }
-    $isProviderRecord = $normalizedId -match '^[a-z][a-z0-9_-]{1,31}:'
-
-    $apps = @(Get-VibepolloApps)
-    $existing = @(Find-AppsByPlayniteId $apps $normalizedId)
-    if ($existing.Count -gt 0) {
-        $canonical = Select-CanonicalPlayniteApp $existing
-        $managed = [string](Get-PropertyValue $canonical.app @("playnite-managed") "")
-        if ($isProviderRecord) {
-            # Rebuild every direct-provider target from a command-free allowlist.
-            # Copying an existing payload could preserve a legacy Playnite command.
-            $payload = [ordered]@{
-                index = [int]$canonical.index
-                name = $normalizedName
-                "playnite-id" = $normalizedId
-                "playnite-managed" = "manual"
-                "exit-timeout" = 10
-            }
-            $created = $false
-        }
-        elseif ($managed -in @("manual", "auto")) {
-            # The native Playnite integration launches a short-lived helper process.
-            # Monitoring that helper as the streamed application makes Vibepollo end a
-            # healthy session a few seconds after the real game has started. Keep the
-            # stream detached from the helper; game lifetime remains observable through
-            # the Playnite integration itself.
-            if ([bool](Get-PropertyValue $canonical.app @("auto-detach") $false)) {
-                $deduplicated = Remove-DuplicatePlayniteApps $existing $canonical
-                $result = New-EnsuredPlayniteAppResult $canonical $false $false $deduplicated
-                $result | Add-Member -NotePropertyName state -NotePropertyValue "ready"
-                return $result
-            }
-            $payload = ConvertTo-RemoteJsonSafe $canonical.app
-            $payload["index"] = [int]$canonical.index
-            $created = $false
-        }
-        else {
-            # Older MoonWaker versions used a private marker. Vibepollo's native
-            # manual marker is required so its Playnite integration enriches the
-            # same record instead of publishing a second transient application.
-            $payload = ConvertTo-RemoteJsonSafe $canonical.app
-            $payload["index"] = [int]$canonical.index
-            $payload["playnite-managed"] = "manual"
-            [void]$payload.Remove("playnite-source")
-            $created = $false
-        }
-    }
-    else {
-        if ($isProviderRecord) {
-            # Steam/Epic targets deliberately have no inherited Playnite command.
-            # Android starts the authoritative provider through /api/v1/game/start.
-            $created = $true
-            $payload = [ordered]@{
-                index = -1
-                name = $normalizedName
-                "playnite-id" = $normalizedId
-                "playnite-managed" = "manual"
-                "exit-timeout" = 10
-            }
-        }
-        else {
-            $expectedName = Get-NormalizedAppName $normalizedName
-            $sameName = @($apps | Where-Object {
-                (Get-NormalizedAppName (Get-PropertyValue $_ @("name") "")) -eq $expectedName
-            })
-            if ($sameName.Count -gt 1) {
-                throw "Multiple Vibepollo applications already use this name"
-            }
-
-            $created = $sameName.Count -eq 0
-            if ($created) {
-                $payload = [ordered]@{
-                    index = -1
-                    name = $normalizedName
-                    "playnite-id" = $normalizedId
-                    "playnite-managed" = "manual"
-                    "exit-timeout" = 10
-                }
-            } else {
-                # Vibepollo replaces an app record on POST. Copy every legacy field first
-                # so assigning the Playnite ID never resets command, image or hook settings.
-                $payload = ConvertTo-RemoteJsonSafe $sameName[0]
-                $payload["index"] = [array]::IndexOf($apps, $sameName[0])
-                $payload["playnite-id"] = $normalizedId
-                $payload["playnite-managed"] = "manual"
-                [void]$payload.Remove("playnite-source")
-            }
-        }
-    }
-    # The stream target only provides a detached surface; the provider owns launch.
-    $payload["auto-detach"] = $true
-    [void](Invoke-VibepolloApi "/api/apps" POST $payload)
-    $script:CacheTime.Clear()
-    $script:SnapshotCache = $null
-    $deadline = (Get-Date).AddSeconds(6)
-    $canonical = $null
-    $lastSignature = ""
-    $stableReads = 0
-    do {
-        Start-Sleep -Milliseconds 350
-        $updatedApps = @(Get-VibepolloApps)
-        $matches = @(Find-AppsByPlayniteId $updatedApps $normalizedId)
-        if ($matches.Count -gt 0) {
-            $candidate = Select-CanonicalPlayniteApp $matches
-            $signature = @(
-                [string](Get-PropertyValue $candidate.app @("uuid") ""),
-                [string](Get-PropertyValue $candidate.app @("id") ""),
-                [string](Get-PropertyValue $candidate.app @("image-path") ""),
-                [string](Get-PropertyValue $candidate.app @("playnite-managed") "")
-            ) -join "|"
-            if ($signature -eq $lastSignature) { $stableReads++ }
-            else { $lastSignature = $signature; $stableReads = 1 }
-            $canonical = $candidate
-            if ($stableReads -ge 3) { break }
-        }
-    } while ((Get-Date) -lt $deadline)
-    if ($null -eq $canonical) { throw "Vibepollo did not return the ensured application" }
-    $matches = @(Find-AppsByPlayniteId @(Get-VibepolloApps) $normalizedId)
-    $canonical = Select-CanonicalPlayniteApp $matches
-    $deduplicated = Remove-DuplicatePlayniteApps $matches $canonical
-    if ($deduplicated -gt 0) {
-        $script:CacheTime.Clear(); $script:SnapshotCache = $null
-        $canonical = Select-CanonicalPlayniteApp @(
-            Find-AppsByPlayniteId @(Get-VibepolloApps) $normalizedId)
-    }
-    $result = New-EnsuredPlayniteAppResult $canonical $created (-not $created) $deduplicated
-    $result | Add-Member -NotePropertyName state -NotePropertyValue "ready"
-    return $result
-}
-
 function Invoke-Action {
     param([string]$Name, $Query)
     switch ($Name) {
@@ -1673,17 +1439,6 @@ try {
                     Send-JsonResponse $request.Stream (Get-StreamSourceDiagnostics)
                 }
                 '^/apps$' { Send-JsonResponse $request.Stream ([pscustomobject]@{ apps = (Get-Snapshot).apps }) }
-                '^/apps/ensure$' {
-                    if ($request.Method -ne "POST") {
-                        Send-JsonResponse $request.Stream ([pscustomobject]@{ ok = $false; error = "POST required" }) 405
-                        continue
-                    }
-                    $body = if ([string]::IsNullOrWhiteSpace($request.Body)) {
-                        [pscustomobject]@{}
-                    } else { $request.Body | ConvertFrom-Json }
-                    $result = Ensure-PlayniteApp ([string]$body.playnite_game_id) ([string]$body.name)
-                    Send-JsonResponse $request.Stream $result $(if ($result.created) { 201 } else { 200 })
-                }
                 '^/apps/stream/ensure$' {
                     if ($request.Method -ne "POST") {
                         Send-JsonResponse $request.Stream ([pscustomobject]@{ ok = $false; error = "POST required" }) 405
@@ -1691,10 +1446,6 @@ try {
                     }
                     $result = Ensure-MoonWakerStream
                     Send-JsonResponse $request.Stream $result $(if ($result.created) { 201 } else { 200 })
-                }
-                '^/apps/status$' {
-                    $gameId = [uri]::UnescapeDataString([string]$request.Query["playnite_game_id"])
-                    Send-JsonResponse $request.Stream (Get-PlayniteAppStatus $gameId)
                 }
                 '^/clients$' { Send-JsonResponse $request.Stream ([pscustomobject]@{ clients = (Get-Snapshot).clients }) }
                 '^/pair$' {

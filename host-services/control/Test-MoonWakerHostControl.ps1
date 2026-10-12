@@ -130,9 +130,17 @@ if (-not $vibepolloBridgeSource.Contains('$script:PythonExe = Get-CompatiblePyth
 }
 if (-not $uiSource.Contains('Ctrl+Alt+Shift+End') -or
     -not $uiSource.Contains('RegisterHotKey(Handle, StreamHotkeyId') -or
-    -not $uiSource.Contains('RunControlAsync("CloseStream", null)') -or
+    -not $uiSource.Contains('RunControlAsync("CloseSession", null)') -or
+    -not $uiSource.Contains('new StreamHotkeyPipe(this, CloseSession)') -or
     -not $uiSource.Contains('MoonWakerHostControl.StreamHotkey.')) {
-    throw "Host Control stream hotkey or its secure-desktop pipe is missing."
+    throw "Host Control close-session hotkey or its secure-desktop pipe is missing."
+}
+if ($hostControlSource.Contains('/action/close-app') -or
+    $hostControlSource.Contains('Invoke-RestMethod -Uri ($endpoint') -or
+    $uiSource.Contains('"CloseStream"') -or
+    -not $hostControlSource.Contains('"host-close-request.json"') -or
+    -not $hostControlSource.Contains('"host-close-result.json"')) {
+    throw "Host Control must close a session through the Gateway request file only."
 }
 
 function Get-FreeTcpPort {
@@ -628,76 +636,124 @@ print(json.dumps({"ok": True, "status": 200,
 
     [ordered]@{ profile_id = "default"; updated_at = 1 } | ConvertTo-Json |
         Set-Content -LiteralPath (Join-Path $gateway "runtime-status.json") -Encoding UTF8
-    $closeRequestPath = Join-Path $root "close-stream-request.txt"
-    $closeReadyPath = Join-Path $root "close-stream-port.txt"
-    $closeListenerScript = Join-Path $root "close-listener.ps1"
+    # "Close session" asks the Gateway through its local request file and reports the
+    # Gateway's answer; a stand-in for the Gateway answers here.
+    $hostCloseRequestPath = Join-Path $gateway "host-close-request.json"
+    $hostCloseAnswerPath = Join-Path $gateway "host-close-result.json"
+    $hostCloseSeenPath = Join-Path $root "host-close-seen.json"
+    $closeResponderScript = Join-Path $root "close-responder.ps1"
     @'
-param([int]$Port, [string]$RequestPath, [string]$ReadyPath)
-$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
-$client = $null
-try {
-    $listener.Start()
-    [IO.File]::WriteAllText($ReadyPath,
-        ([Net.IPEndPoint]$listener.LocalEndpoint).Port.ToString(), [Text.Encoding]::ASCII)
-    $client = $listener.AcceptTcpClient()
-    $stream = $client.GetStream()
-    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
-    $firstLine = $reader.ReadLine()
-    while (-not [string]::IsNullOrEmpty($reader.ReadLine())) {}
-    [IO.File]::WriteAllText($RequestPath, $firstLine, [Text.Encoding]::ASCII)
-    $body = '{"ok":true}'
-    $bodyBytes = [Text.Encoding]::UTF8.GetBytes($body)
-    $headers = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
-    $headerBytes = [Text.Encoding]::ASCII.GetBytes($headers)
-    $stream.Write($headerBytes, 0, $headerBytes.Length)
-    $stream.Write($bodyBytes, 0, $bodyBytes.Length)
-    $stream.Flush()
-} finally {
-    if ($client) { $client.Dispose() }
-    $listener.Stop()
+param([string]$RequestPath, [string]$AnswerPath, [string]$SeenPath,
+    [string]$State, [string]$Reason, [switch]$Late)
+$deadline = [DateTime]::UtcNow.AddSeconds(20)
+while ([DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 100
+    $raw = ""
+    try { $raw = Get-Content -LiteralPath $RequestPath -Raw -ErrorAction Stop } catch { continue }
+    if ([string]::IsNullOrWhiteSpace($raw) -or $raw.Trim() -eq "{}") { continue }
+    $request = $null
+    try { $request = $raw | ConvertFrom-Json } catch { continue }
+    if (-not $request.PSObject.Properties["request_id"]) { continue }
+    [IO.File]::WriteAllText($SeenPath, $raw, [Text.UTF8Encoding]::new($false))
+    if ($Late) {
+        # A busy Gateway that read the request answers only after Host Control withdrew it.
+        while ([DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+            $current = ""
+            try { $current = Get-Content -LiteralPath $RequestPath -Raw -ErrorAction Stop } catch { continue }
+            if (([string]$current).Trim() -eq "{}") { break }
+        }
+    }
+    [IO.File]::WriteAllText($RequestPath, "{}", [Text.UTF8Encoding]::new($false))
+    foreach ($step in @("accepted", $State)) {
+        $stepReason = if ($step -eq "accepted") { "none" } else { $Reason }
+        [ordered]@{ request_id = [string]$request.request_id; state = $step; reason = $stepReason } |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath $AnswerPath -Encoding UTF8
+        Start-Sleep -Milliseconds 400
+    }
+    break
 }
-'@ | Set-Content -LiteralPath $closeListenerScript -Encoding UTF8
-    $closeListenerProcess = Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -PassThru `
-        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $closeListenerScript,
-            "-Port", 0, "-RequestPath", $closeRequestPath, "-ReadyPath", $closeReadyPath)
-    $deadline = [DateTime]::UtcNow.AddSeconds(5)
-    while ([DateTime]::UtcNow -lt $deadline -and
-        -not (Test-Path -LiteralPath $closeReadyPath) -and -not $closeListenerProcess.HasExited) {
-        Start-Sleep -Milliseconds 100
+'@ | Set-Content -LiteralPath $closeResponderScript -Encoding UTF8
+    foreach ($case in @(
+            @{ State = "completed"; Reason = "stream_and_game_closed"; Ok = $true; Late = $false },
+            @{ State = "completed"; Reason = "stream_closed_game_unconfirmed"; Ok = $true; Late = $false },
+            @{ State = "refused"; Reason = "operation_in_progress"; Ok = $false; Late = $false },
+            @{ State = "completed"; Reason = "stream_closed"; Ok = $true; Late = $true })) {
+        [IO.File]::WriteAllText($hostCloseRequestPath, "{}", [Text.UTF8Encoding]::new($false))
+        Remove-Item -LiteralPath $hostCloseAnswerPath, $hostCloseSeenPath -Force `
+            -ErrorAction SilentlyContinue
+        $closeResponderArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            $closeResponderScript, "-RequestPath", $hostCloseRequestPath,
+            "-AnswerPath", $hostCloseAnswerPath, "-SeenPath", $hostCloseSeenPath,
+            "-State", $case.State, "-Reason", $case.Reason)
+        # The late answer arrives after a shortened wait for the request to be taken up.
+        $closeAcceptSeconds = 25
+        if ($case.Late) {
+            $closeResponderArguments += "-Late"
+            $closeAcceptSeconds = 5
+        }
+        $closeListenerProcess = Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -PassThru `
+            -ArgumentList $closeResponderArguments
+        $requestedAt = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        & $scriptPath -Action CloseSession -CloseAcceptSeconds $closeAcceptSeconds `
+            -ResultPath $resultPath | Out-Null
+        $closeResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        $closeListenerExited = $closeListenerProcess.WaitForExit(5000)
+        $seen = $null
+        try { $seen = Get-Content -LiteralPath $hostCloseSeenPath -Raw | ConvertFrom-Json } catch {}
+        $seenNames = ""
+        $lifetime = 0
+        if ($seen) {
+            $seenNames = @($seen.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object) -join ","
+            $lifetime = [int64]$seen.expires_at - $requestedAt
+        }
+        if ([bool]$closeResult.ok -ne $case.Ok -or [string]$closeResult.state -ne $case.State -or
+            [string]$closeResult.reason -ne $case.Reason -or -not $closeListenerExited -or
+            $seenNames -ne "expires_at,profile_id,request_id" -or
+            [string]$seen.request_id -notmatch '^[0-9a-f]{32}$' -or
+            [string]$seen.profile_id -ne "default" -or $lifetime -lt 1 -or $lifetime -gt 60) {
+            throw "Host Control did not pass the close-session request and its answer: case=$($case.State); late=$($case.Late); ok=$($closeResult.ok); state=$($closeResult.state); reason=$($closeResult.reason); error=$($closeResult.error); responder_exited=$closeListenerExited; request=$seenNames; lifetime=$lifetime"
+        }
+        $closeListenerProcess = $null
     }
-    if (-not (Test-Path -LiteralPath $closeReadyPath)) {
-        throw "The close-stream test listener did not start."
+
+    # No Gateway takes the request up: Host Control says so and withdraws the request.
+    [IO.File]::WriteAllText($hostCloseRequestPath, "{}", [Text.UTF8Encoding]::new($false))
+    Remove-Item -LiteralPath $hostCloseAnswerPath -Force -ErrorAction SilentlyContinue
+    & $scriptPath -Action CloseSession -CloseAcceptSeconds 2 -ResultPath $resultPath | Out-Null
+    $silentClose = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+    $withdrawn = (Get-Content -LiteralPath $hostCloseRequestPath -Raw).Trim()
+    if ($silentClose.ok -or [string]$silentClose.reason -ne "gateway_not_responding" -or
+        $withdrawn -ne "{}") {
+        throw "Host Control did not report a silent Gateway or left its request behind: reason=$($silentClose.reason); error=$($silentClose.error); request=$withdrawn"
     }
-    $closePort = [int](Get-Content -LiteralPath $closeReadyPath -Raw)
-    $gatewayConfig = Get-Content -LiteralPath (Join-Path $gateway "gateway.json") -Raw |
-        ConvertFrom-Json
-    $gatewayConfig.profiles.default.vibepollo_bridge = "http://127.0.0.1:$closePort"
-    $gatewayConfig | ConvertTo-Json -Depth 5 |
-        Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
-    & $scriptPath -Action CloseStream -ResultPath $resultPath | Out-Null
-    $closeResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-    $closeListenerExited = $closeListenerProcess.WaitForExit(5000)
-    $closeRequest = Get-Content -LiteralPath $closeRequestPath -Raw -ErrorAction SilentlyContinue
-    if (-not $closeResult.ok -or -not $closeListenerExited -or
-        $closeRequest -ne "POST /action/close-app HTTP/1.1") {
-        throw "Host Control did not send the close-stream request to the active local profile: error=$($closeResult.error); listener_exited=$closeListenerExited; request=$closeRequest"
-    }
-    $closeListenerProcess = $null
 
     # A stale runtime-status hint must not choose between profiles of one account.
+    $gatewayConfig = Get-Content -LiteralPath (Join-Path $gateway "gateway.json") -Raw |
+        ConvertFrom-Json
     $ambiguousConfig = Get-Content -LiteralPath (Join-Path $gateway "gateway.json") -Raw |
         ConvertFrom-Json
     $ambiguousConfig.profiles.foreign.owner_sid = $currentSid
     $ambiguousConfig.profiles.foreign.windows_account_sid = $currentSid
     $ambiguousConfig | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
-    & $scriptPath -Action CloseStream -ResultPath $resultPath | Out-Null
+    & $scriptPath -Action CloseSession -ResultPath $resultPath | Out-Null
     $ambiguousClose = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-    if ($ambiguousClose.ok -or [string]$ambiguousClose.error -notmatch 'jednoznacznie') {
-        throw "Host Control selected a close target from the runtime-status hint: error=$($ambiguousClose.error)"
+    if ($ambiguousClose.ok -or [string]$ambiguousClose.reason -ne "profile_ambiguous" -or
+        (Get-Content -LiteralPath $hostCloseRequestPath -Raw).Trim() -ne "{}") {
+        throw "Host Control selected a close target from the runtime-status hint: reason=$($ambiguousClose.reason); error=$($ambiguousClose.error)"
     }
     $gatewayConfig | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
+
+    # Host Control never creates the request file: only the installer grants that channel.
+    Remove-Item -LiteralPath $hostCloseRequestPath -Force
+    & $scriptPath -Action CloseSession -ResultPath $resultPath | Out-Null
+    $missingChannel = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+    if ($missingChannel.ok -or [string]$missingChannel.reason -ne "channel_missing" -or
+        (Test-Path -LiteralPath $hostCloseRequestPath)) {
+        throw "Host Control created the Gateway close-request channel by itself: reason=$($missingChannel.reason)"
+    }
 
     $listenerScript = Join-Path $root "listener.ps1"
     @'
@@ -749,7 +805,7 @@ try { $listener.Start(); while ($true) { Start-Sleep -Seconds 1 } } finally { $l
     Write-Output "Host Control Discord and Vibepollo configuration test passed."
     Write-Output "Host Control diagnostic export test passed."
     Write-Output "Host Control ownership and correlated Gateway stop tests passed."
-    Write-Output "Host Control stream hotkey action test passed."
+    Write-Output "Host Control close-session request test passed."
 } finally {
     if ($listenerProcess -and -not $listenerProcess.HasExited) {
         Stop-Process -Id $listenerProcess.Id -Force -ErrorAction SilentlyContinue

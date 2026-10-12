@@ -1,9 +1,9 @@
 # Vibepollo Bridge
 
 Vibepollo Bridge is a loopback-only PowerShell service used by Wake & Play Host
-Gateway. It exposes health information, allow-listed FIX actions and an
-idempotent `POST /apps/ensure` endpoint used to create a Playnite-backed app
-without exposing Vibepollo directly to the network. Its small Python transport
+Gateway. It exposes health information, allow-listed FIX actions and keeps the
+single neutral `MoonWaker Stream` application every game start uses, without
+exposing Vibepollo directly to the network. It creates no per-game applications. Its small Python transport
 is required because it communicates
 with the local Vibepollo HTTPS API using a modern TLS stack.
 
@@ -12,15 +12,8 @@ API token, then use `Start-VibepolloBridge.ps1` and
 `Test-VibepolloBridge.ps1`. The token is stored with Windows DPAPI and is not
 portable to another Windows profile.
 
-The token must allow `GET` and `POST` on `/api/apps` and `DELETE` on
-`/api/apps/*`. Host Control's **Integracje** dialog
-uses `moonwaker-token-scopes.example.json` when it creates or renews the token.
-Existing apps are matched by Playnite GUID first; legacy exact-name entries are
-migrated by sending their complete record so custom commands, images and hooks
-are preserved. Records sharing the same non-empty Playnite GUID are migrated
-conservatively: the richest record is retained and only the remaining records
-with that exact GUID are removed. Apps without a Playnite GUID are never
-considered duplicates.
+The token must allow `GET` and `POST` on `/api/apps`; the Bridge deletes no
+streamer application. Host Control's **Integracje** dialog uses `moonwaker-token-scopes.example.json` when it creates or renews the token.
 
 `POST /pair` is the loopback-only half of MoonWaker's unified host pairing flow.
 It submits the pending Moonlight PIN to Vibepollo, identifies the newly paired

@@ -97,6 +97,18 @@ class ControlOperationPolicy:
             not isinstance(item, dict) or item.get("running") is not False for item in apps)
 
     @staticmethod
+    def streamer_runs_only(snapshot: Any, app_uuid: str) -> bool:
+        """The streamer authoritatively runs exactly the application with this UUID."""
+        if ControlOperationPolicy._authoritative_session(snapshot) is None:
+            return False
+        apps = ControlOperationPolicy._snapshot_items(snapshot.get("apps"))
+        if apps is None or any(not isinstance(item, dict)
+                               or type(item.get("running")) is not bool for item in apps):
+            return False
+        running = [item for item in apps if item["running"]]
+        return len(running) == 1 and str(running[0].get("uuid") or "").lower() == app_uuid
+
+    @staticmethod
     def streamer_snapshot_authoritative(snapshot: Any) -> bool:
         return ControlOperationPolicy._authoritative_session(snapshot) is not None
 

@@ -39,7 +39,6 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         void focusGame() throws IOException;
         void focusInstallation(String gameId) throws IOException;
         boolean verifyInstallation(String gameId) throws IOException;
-        void ensureInstalledGameTarget(String gameId, String gameName) throws IOException;
         default void startGame(String gameId) throws IOException { }
         default void stopGame(String gameId, String processToken) throws IOException { }
         /** One Gateway session ensure; true only when the host reports the session ready. */
@@ -1090,14 +1089,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String name = event.name == null ? "" : event.name;
         if ("game-installed".equals(name)) {
             if (!callbacks.isPendingInstallation(transitionSpec.hostId, event.gameId)) return;
-            String gameName = installationName(event);
-            try {
-                gateway.ensureInstalledGameTarget(event.gameId, gameName);
-            } catch (IOException | RuntimeException ignored) { }
-            if (isCurrent(runEpoch)) {
-                callbacks.onInstallationCompleted(
-                        transitionSpec.hostId, event.gameId, gameName);
-            }
+            callbacks.onInstallationCompleted(
+                    transitionSpec.hostId, event.gameId, installationName(event));
         } else if ("game-installation-cancelled".equals(name)) {
             if (!callbacks.isPendingInstallation(transitionSpec.hostId, event.gameId)) return;
             if (!isCurrent(runEpoch)) return;
@@ -1458,11 +1451,6 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
             @Override public boolean verifyInstallation(String gameId) throws IOException {
                 return gateway.verifyInstallation(gameId);
-            }
-
-            @Override public void ensureInstalledGameTarget(
-                    String gameId, String gameName) throws IOException {
-                gateway.ensureInstalledGameTarget(gameId, gameName);
             }
 
             @Override public void startGame(String gameId) throws IOException {

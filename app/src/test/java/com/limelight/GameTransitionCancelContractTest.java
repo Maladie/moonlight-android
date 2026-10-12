@@ -571,16 +571,25 @@ public class GameTransitionCancelContractTest {
         String start = connection.substring(connection.indexOf("private boolean startApp("),
                 connection.indexOf("private boolean startAppEffect("));
         int refused = start.indexOf("startRefused = true;");
-        assertTrue(refused > start.indexOf("controlBinding.client.acquire(")
-                && refused < start.indexOf("catch (IOException unavailable)"));
         assertEquals(refused, start.lastIndexOf("startRefused = true;"));
-        // Every refused acquire is a control rejection, whatever its status: none of them
-        // reaches the generic stage failure with its port hints.
+        // Only a 4xx answer is a refusal. A 5xx or an unreadable 2xx may follow a granted
+        // permit, so it takes the lost-answer path below it: reconcile, then abandon.
+        int guard = start.indexOf("if (refusedStatus >= 400 && refusedStatus < 500) {");
+        int lost = start.indexOf("reconciled = controlBinding.client.reconcile(");
+        assertTrue(guard > start.indexOf("catch (IOException unavailable)")
+                && refused > guard && refused < start.indexOf("throw unavailable;")
+                && start.indexOf("throw unavailable;") < lost
+                && lost < start.indexOf("abandonControlStart(operationId"));
+        // A refused acquire is a control rejection whatever its 4xx status: none of them
+        // reaches the generic stage failure with its port hints, and a pairing or grant
+        // refusal (no reason in its body) keeps its cause.
         assertTrue(connection.contains(
                 "e instanceof GatewayTransport.GatewayException && (startRefused\n"));
-        assertTrue(connection.contains("context.connListener.controlRejected(\n"
-                + "                                appName, reason == null ? \"\" : reason,"
-                + " startRefused);"));
+        assertTrue(connection.contains(
+                "if (reason == null) reason = status == 401 ? \"unauthorized\"\n"
+                + "                                : status == 403 ? \"forbidden\" : \"\";\n"
+                + "                        context.connListener.controlRejected("
+                + "appName, reason, startRefused);"));
 
         String rejected = text.substring(text.indexOf("public void controlRejected("),
                 text.indexOf("public void connectionTerminated("));

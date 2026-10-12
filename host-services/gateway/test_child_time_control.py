@@ -385,6 +385,38 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertIsNone(self.state.control_state["stream"])
         self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
 
+    def test_host_control_close_ends_the_child_session_game_and_stream(self):
+        session_id = self.start_running()
+        self.clock.advance(60)
+        generation = self.state.control_state["stream"]["generation"]
+        request = "0123456789abcdef0123456789abcdef"
+        self.config_path.with_name("host-close-request.json").write_text(json.dumps({
+            "request_id": request, "profile_id": "parent",
+            "expires_at": int(wakeplay_gateway.time.time()) + 30}), encoding="utf-8-sig")
+        self.state.host_close_poll()
+
+        result = json.loads(self.config_path.with_name("host-close-result.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual((request, "completed", "session_closed"),
+                         (result["request_id"], result["state"], result["reason"]))
+        self.assertIsNone(self.state.child_time_session)
+        self.assertEqual("host_closed",
+                         self.state.child_time_completed[session_id]["reason"])
+        self.assertEqual(60, self.used())
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertGreater(self.state.control_state["generation"], generation)
+        self.assertEqual("", self.current["id"])
+        stops = [call for call in self.bridge_calls if call[1] == "/game/stop-verified"]
+        self.assertEqual(1, len(stops))
+        self.assertEqual(TOKEN, stops[0][2]["expected_process_token"])
+        self.assertEqual("child-terminal:" + session_id,
+                         stops[0][2]["control_operation"]["operation_id"])
+        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        # The child's TV meets what it meets after any host-side end of its session.
+        with self.assertRaisesRegex(PermissionError, "child_session_binding_mismatch"):
+            self.state.child_time_session_heartbeat(self.client, "kid", session_id)
+
     def assert_replacement_closes_stream_without_stopping_replacement(self, game_id):
         self.start_running()
         replacement_token = "b" * 64

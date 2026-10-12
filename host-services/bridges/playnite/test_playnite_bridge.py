@@ -4286,21 +4286,21 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIn("$play.EmulatorId", patched)
         self.assertIn("$PlayniteApi.Database.Emulators", patched)
 
-    def test_vibepollo_rebuilds_existing_direct_provider_target_from_allowlist(self):
+    def test_vibepollo_bridge_manages_no_per_game_applications(self):
         script = Path(__file__).parents[1] / "vibepollo" / "VibepolloBridge.ps1"
         source = script.read_text(encoding="utf-8-sig")
 
-        provider_branch = source.index("if ($isProviderRecord) {")
-        managed_branch = source.index('elseif ($managed -in @("manual", "auto"))')
-        self.assertLess(provider_branch, managed_branch)
-        self.assertIn("Rebuild every direct-provider target from a command-free allowlist",
-                      source)
+        for removed in ("Ensure-PlayniteApp", "Get-PlayniteAppStatus",
+                        "Remove-DuplicatePlayniteApps", "'^/apps/ensure$'",
+                        "'^/apps/status$'", '"playnite-managed" = "manual"', " DELETE)"):
+            self.assertNotIn(removed, source)
+        self.assertIn("'^/apps/stream/ensure$'", source)
 
     def test_vibepollo_ensures_one_command_free_neutral_stream_additively(self):
         script = Path(__file__).parents[1] / "vibepollo" / "VibepolloBridge.ps1"
         source = script.read_text(encoding="utf-8-sig")
         start = source.index("function Ensure-MoonWakerStream {")
-        end = source.index("\nfunction Find-AppsByPlayniteId", start)
+        end = source.index("\nfunction Invoke-Action", start)
         ensure = source[start:end]
 
         self.assertIn('$name = "MoonWaker Stream"', ensure)

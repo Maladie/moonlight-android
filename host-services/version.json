@@ -1,6 +1,6 @@
 {
   "product": "MoonWaker Host",
   "version": "0.7.133",
-  "build": "2026.10.12-control-v2",
+  "build": "2026.10.13-host-close",
   "protocol_version": 7
 }

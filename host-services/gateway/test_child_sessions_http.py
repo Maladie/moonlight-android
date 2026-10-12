@@ -401,6 +401,29 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("permitted", next_play["state"])
 
+    def test_client_cannot_name_an_operation_the_gateway_holds_itself(self):
+        for prefix in wakeplay_gateway.HOST_OPERATION_ID_PREFIXES:
+            operation_id = prefix + "0123456789abcdef0123456789abcdef"
+            for action, body in (
+                    ("acquire", {"operation_id": operation_id, "intent": "launch",
+                                 "stream_session_id": "stream-http-1", "sunshine_app_id": 7,
+                                 "expected_generation": 0, "observed_sunshine_app_id": 0,
+                                 "child_session_id": ""}),
+                    ("complete", {"operation_id": operation_id, "generation": 1,
+                                  "actor_lease_epoch": 1, "succeeded": True}),
+                    ("abandon", {"operation_id": operation_id, "child_session_id": "",
+                                 "generation": 0}),
+                    ("reconcile", {"operation_id": operation_id,
+                                   "observed_sunshine_app_id": 0})):
+                with self.subTest(prefix=prefix, action=action):
+                    status, result = self.post(
+                        "/api/v1/control/operation/" + action, body,
+                        request_id=operation_id)
+                    self.assertEqual(400, status, result)
+        self.assertIsNone(self.state.control_state.get("active"))
+        self.assertEqual({}, self.state.control_state.get("completed") or {})
+        self.assertEqual(0, int(self.state.control_state.get("generation") or 0))
+
     # ---- abandon: a child hands back its own start only, and adopts nothing foreign ----
 
     def child_pending_launch(self, operation_id):

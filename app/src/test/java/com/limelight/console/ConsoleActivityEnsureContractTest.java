@@ -58,19 +58,6 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(method.contains("setScaleType("));
     }
 
-    @Test public void successfulEnsurePollsBeforeAnyRenderOfTheOldAppList() throws IOException {
-        String method = consoleActivitySource();
-        method = method.substring(method.indexOf("private void ensureVibepolloAfterInstall"),
-                method.indexOf("private static String playniteInstallNotificationKey"));
-
-        assertTrue(method.contains("if (\"playnite\".equals(game.provider)) {\n"
-                + "                    result = hostGatewayClient.ensureVibepolloPlayniteApp("));
-        assertTrue(method.contains("if (ensured != null) {\n"
-                + "                    if (appListPoller != null) appListPoller.pollNow();\n"
-                + "                    return;\n"
-                + "                }"));
-    }
-
     @Test public void dashboardTerminationUsesRetainedOwnerOrExactControlPlane() throws IOException {
         String source = consoleActivitySource();
         String method = source.substring(source.indexOf(
@@ -317,7 +304,7 @@ public class ConsoleActivityEnsureContractTest {
                                 + "switchRetainedProviderGame(")));
         String completedInstall = source.substring(source.indexOf(
                         "private void completePlayniteInstallation("),
-                source.indexOf("private void ensureVibepolloAfterInstall("));
+                source.indexOf("private static String playniteInstallNotificationKey("));
 
         assertTrue(activity.contains(
                 "PlayHistory.gameKey(hostUuid, item.stableId())"));

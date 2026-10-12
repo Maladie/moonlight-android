@@ -63,11 +63,15 @@ public class S05ControlPlaneContractTest {
         String connection = source("com/limelight/nvstream/NvConnection.java");
         String start = between(connection, "private boolean startApp(",
                 "private boolean startAppEffect(");
-        int semantic = start.indexOf("catch (GatewayTransport.GatewayException");
+        // The host's refusal of the acquire (4xx) is rethrown before any reconcile; a 5xx,
+        // an unreadable answer and a lost transport may follow a granted permit.
         int transport = start.indexOf("catch (IOException unavailable)");
+        int semantic = start.indexOf("if (refusedStatus >= 400 && refusedStatus < 500) {");
+        int rethrown = start.indexOf("throw unavailable;", semantic);
         int reconcile = start.indexOf("controlBinding.client.reconcile(");
-        assertTrue(semantic >= 0 && semantic < transport && transport < reconcile);
-        assertFalse(start.substring(semantic, transport).contains(".reconcile("));
+        assertTrue(transport >= 0 && transport < semantic && semantic < rethrown
+                && rethrown < reconcile);
+        assertFalse(start.substring(transport, rethrown).contains(".reconcile("));
         int complete = start.indexOf("controlBinding.client.complete(", reconcile);
         int completeSemantic = start.indexOf(
                 "catch (GatewayTransport.GatewayException", complete);

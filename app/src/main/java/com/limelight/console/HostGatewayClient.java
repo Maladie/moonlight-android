@@ -318,7 +318,6 @@ class HostGatewayClient {
         final String operationState;
         final int operationProgress;
         final boolean uninstalling;
-        final String vibepolloState;
         final long playtimeSeconds;
         /** Compatibility view for older console code. New code uses seconds. */
         final long playtimeMinutes;
@@ -394,22 +393,7 @@ class HostGatewayClient {
                     lastPlayed, description, playCount, source, genres, artworkVersion,
                     playtimeSeconds, installRequiresAttention, installAttentionReason,
                     installWindowTitle, installLauncher, operationState, operationProgress,
-                    uninstalling, "");
-        }
-
-        PlayniteGame(String id, String name, boolean installed, boolean installing,
-                     boolean hidden, boolean favorite, String cover, String background,
-                     String lastPlayed, String description, int playCount, String source,
-                     String genres, String artworkVersion, long playtimeSeconds,
-                     boolean installRequiresAttention, String installAttentionReason,
-                     String installWindowTitle, String installLauncher,
-                     String operationState, int operationProgress, boolean uninstalling,
-                     String vibepolloState) {
-            this(id, name, installed, installing, hidden, favorite, cover, background,
-                    lastPlayed, description, playCount, source, genres, artworkVersion,
-                    playtimeSeconds, installRequiresAttention, installAttentionReason,
-                    installWindowTitle, installLauncher, operationState, operationProgress,
-                    uninstalling, vibepolloState, providerFrom(source), "",
+                    uninstalling, providerFrom(source), "",
                     isGuid(id) ? id : "", sourceKey(source),
                     source == null || source.trim().isEmpty() ? "Playnite" : source,
                     true, true, true, isGuid(id), false);
@@ -422,7 +406,7 @@ class HostGatewayClient {
                      boolean installRequiresAttention, String installAttentionReason,
                      String installWindowTitle, String installLauncher,
                      String operationState, int operationProgress, boolean uninstalling,
-                     String vibepolloState, String provider, String providerGameId,
+                     String provider, String providerGameId,
                      String playniteGameId, String libraryKey, String libraryName,
                      boolean canLaunch, boolean canInstall, boolean canUninstall,
                      boolean requiresConnector, boolean startBeforeStream) {
@@ -430,7 +414,7 @@ class HostGatewayClient {
                     "", lastPlayed, description, playCount, source, genres,
                     artworkVersion, playtimeSeconds, installRequiresAttention,
                     installAttentionReason, installWindowTitle, installLauncher,
-                    operationState, operationProgress, uninstalling, vibepolloState,
+                    operationState, operationProgress, uninstalling,
                     provider, providerGameId, playniteGameId, libraryKey, libraryName,
                     canLaunch, canInstall, canUninstall, requiresConnector,
                     startBeforeStream);
@@ -443,7 +427,7 @@ class HostGatewayClient {
                      long playtimeSeconds, boolean installRequiresAttention,
                      String installAttentionReason, String installWindowTitle,
                      String installLauncher, String operationState, int operationProgress,
-                     boolean uninstalling, String vibepolloState, String provider,
+                     boolean uninstalling, String provider,
                      String providerGameId, String playniteGameId, String libraryKey,
                      String libraryName, boolean canLaunch, boolean canInstall,
                      boolean canUninstall, boolean requiresConnector,
@@ -480,7 +464,6 @@ class HostGatewayClient {
             this.operationState = operationState == null ? "" : operationState;
             this.operationProgress = operationProgress;
             this.uninstalling = uninstalling;
-            this.vibepolloState = vibepolloState == null ? "" : vibepolloState;
             this.playtimeSeconds = Math.max(0L, playtimeSeconds);
             this.playtimeMinutes = this.playtimeSeconds / 60L;
         }
@@ -1761,33 +1744,6 @@ class HostGatewayClient {
                 "export-logs".equals(action) ? 25_000 : 8_000);
     }
 
-    JSONObject ensureVibepolloPlayniteApp(GatewayConnection connection, String gameId, String name)
-            throws IOException {
-        if (!isPlayniteId(gameId)) {
-            throw new IllegalArgumentException("Invalid Playnite game ID");
-        }
-        String normalizedName = name == null ? "" : name.trim();
-        if (normalizedName.isEmpty() || normalizedName.length() > 200 ||
-                normalizedName.matches(".*[\\x00-\\x1f\\x7f].*")) {
-            throw new IllegalArgumentException("Invalid application name");
-        }
-        JSONObject body = new JSONObject();
-        try {
-            body.put("playnite_game_id", requestGameId(gameId));
-            body.put("name", normalizedName);
-        } catch (JSONException impossible) {
-            throw new IOException(impossible);
-        }
-        JSONObject response = request(connection,
-                "/api/v1/vibepollo/apps/ensure", "POST", body, 15_000);
-        if (!response.optBoolean("ok", false)) {
-            throw new GatewayException(response.optString("error",
-                    "Vibepollo application was not created."), 0);
-        }
-        return response.optJSONObject("app") != null
-                ? response.optJSONObject("app") : new JSONObject();
-    }
-
     JSONObject sleepHost(GatewayConnection connection) throws IOException {
         return request(connection, "/api/v1/system/sleep", "POST",
                 new JSONObject(), READ_TIMEOUT_MS);
@@ -2358,7 +2314,6 @@ class HostGatewayClient {
                         value.isNull("operationProgress") ? -1
                                 : value.optInt("operationProgress", -1),
                         value.optBoolean("uninstalling", false),
-                        firstText(value, "vibepollo_state", "vibepolloState"),
                         provider,
                         providerGameId,
                         metadataPlayniteId,

@@ -400,12 +400,15 @@ public class NvConnection implements StreamInput {
                     intent, controlBinding.streamSessionId, app.getAppId(),
                     controlBinding.expectedGeneration, currentAppId,
                     controlBinding.childSessionId);
-        } catch (GatewayTransport.GatewayException rejected) {
-            // A received Gateway rejection is authoritative. Reconciliation is
-            // only for an unknown outcome after transport loss.
-            startRefused = true;
-            throw rejected;
         } catch (IOException unavailable) {
+            int refusedStatus = unavailable instanceof GatewayTransport.GatewayException
+                    ? ((GatewayTransport.GatewayException) unavailable).statusCode() : 0;
+            if (refusedStatus >= 400 && refusedStatus < 500) {
+                // Only a 4xx is the host's refusal: nothing was permitted. A 5xx or an
+                // unreadable answer may follow a granted permit, like a lost transport.
+                startRefused = true;
+                throw unavailable;
+            }
             ControlOperationClient.Result reconciled = null;
             IOException unresolved = unavailable;
             try {
@@ -591,9 +594,12 @@ public class NvConnection implements StreamInput {
                     e.printStackTrace();
                     if (e instanceof GatewayTransport.GatewayException && (startRefused
                             || ((GatewayTransport.GatewayException) e).statusCode() == 409)) {
+                        int status = ((GatewayTransport.GatewayException) e).statusCode();
                         String reason = ((GatewayTransport.GatewayException) e).reason();
-                        context.connListener.controlRejected(
-                                appName, reason == null ? "" : reason, startRefused);
+                        // A pairing or grant refusal carries no reason; its status names it.
+                        if (reason == null) reason = status == 401 ? "unauthorized"
+                                : status == 403 ? "forbidden" : "";
+                        context.connListener.controlRejected(appName, reason, startRefused);
                         return;
                     }
                     context.connListener.displayMessage(e.getMessage());

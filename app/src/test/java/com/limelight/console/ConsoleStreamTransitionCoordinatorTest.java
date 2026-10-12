@@ -768,7 +768,6 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(Collections.singletonList("cancelled"), harness.callbacks.cancelled);
         assertEquals(Collections.singletonList("failed"), harness.callbacks.failed);
         assertTrue(harness.callbacks.attention.isEmpty());
-        assertEquals(1, gateway.ensureTargetCalls);
     }
 
     @Test
@@ -2620,7 +2619,6 @@ public class ConsoleStreamTransitionCoordinatorTest {
         int fullscreenCalls;
         int focusGameCalls;
         int focusInstallationCalls;
-        int ensureTargetCalls;
         int startGameCalls;
         int stopGameCalls;
         String startedGameId = "";
@@ -2688,10 +2686,6 @@ public class ConsoleStreamTransitionCoordinatorTest {
         @Override public boolean verifyInstallation(String gameId) throws IOException {
             if (verifyError != null) throw verifyError;
             return verifyResult;
-        }
-
-        @Override public void ensureInstalledGameTarget(String gameId, String gameName) {
-            ensureTargetCalls++;
         }
 
         @Override public void startGame(String gameId) throws IOException {

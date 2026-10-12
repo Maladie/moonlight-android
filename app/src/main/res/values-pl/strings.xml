@@ -1015,7 +1015,6 @@
     <string name="playnite_game_details">Szczegóły gry</string>
     <string name="playnite_metadata_unknown">Brak danych</string>
     <string name="playnite_game_details_body">Status: %1$s\nOstatnio grana: %2$s\nCzas w grze: %3$s\nBiblioteka: %4$s\nGatunki: %5$s\n\n%6$s</string>
-    <string name="playnite_preparing_short">Przygotowanie…</string>
     <string name="playnite_ready_short">Gotowa</string>
     <string name="playnite_configuration_short">Konfiguracja</string>
     <string name="playnite_install_starting">Rozpoczynam instalację „%1$s”…</string>
@@ -1053,7 +1052,6 @@
     <string name="playnite_legend_back">Wróć</string>
     <string name="playnite_no_installed_games">Biblioteka gier nie zawiera zainstalowanych gier.</string>
     <string name="playnite_launch_not_configured">Uruchamianie nieskonfigurowane</string>
-    <string name="playnite_creating_vibepollo_app">Przygotowywanie gry w Vibepollo…</string>
     <string name="playnite_target_saved">Zapisano cel uruchamiania Sunshine dla %1$s</string>
     <string name="playnite_change_target">Zmień cel uruchamiania Sunshine</string>
     <string name="playnite_clear_target">Wyczyść cel uruchamiania</string>

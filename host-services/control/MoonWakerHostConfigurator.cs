@@ -19,7 +19,7 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyVersion("0.7.133.0")]
 [assembly: System.Reflection.AssemblyFileVersion("0.7.133.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.7.133+2026.10.12-control-v2")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.7.133+2026.10.13-host-close")]
 
 namespace MoonWaker.HostConfigurator
 {

@@ -814,8 +814,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String libraryTransitionGameId = "";
     private boolean pendingExpandedLibraryRestore;
     private final List<LibraryTransitionGhost> libraryTransitionGhosts = new ArrayList<>();
-    private final Set<String> vibepolloEnsureInFlight =
-            Collections.synchronizedSet(new HashSet<>());
     private final Set<String> completedPlayniteInstallAnimations = new HashSet<>();
     private volatile List<NvApp> currentSunshineApps = Collections.emptyList();
     private volatile ResolvedTargets resolvedTargets;
@@ -8041,7 +8039,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void completePlayniteInstallation(ComputerDetails host, PlayniteLibraryGame game,
                                                String gameId, String gameName) {
-        ensureVibepolloAfterInstall(host, game);
         boolean alreadyShownInStream = preferences.getLong(
                 playniteInstallNotificationKey(host.uuid, gameId), 0L) > 0L;
         if (!alreadyShownInStream) {
@@ -8057,44 +8054,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 .remove(playniteInstallNotificationKey(host.uuid, gameId))
                 .remove(playniteInstallPendingKey(host.uuid, gameId)).apply();
         completedPlayniteInstallAnimations.add(playniteInstallKey(host.uuid, gameId));
-    }
-
-    private void ensureVibepolloAfterInstall(ComputerDetails host,
-                                             PlayniteLibraryGame game) {
-        String address = host.activeAddress != null ? host.activeAddress.address : null;
-        GatewayConnection connection =
-                hostGatewayStore.loadForHost(host.uuid, address);
-        if (connection == null) return;
-        String key = host.uuid + ":" + game.playniteGameId;
-        if (!vibepolloEnsureInFlight.add(key)) return;
-        executor.execute(() -> {
-            JSONObject result = null;
-            try {
-                if ("playnite".equals(game.provider)) {
-                    result = hostGatewayClient.ensureVibepolloPlayniteApp(
-                            connection, game.playniteGameId, game.name);
-                }
-            } catch (IOException | RuntimeException ignored) { }
-            PlayniteArtworkSpec artworkSpec = PlayniteArtworkSpec.forBackdrop(game);
-            if (artworkSpec.available()) {
-                try {
-                    playniteArtworkCache.fetch(hostGatewayClient, connection, host.uuid,
-                            game.playniteGameId, artworkSpec.kind, artworkSpec.version);
-                } catch (IOException ignored) { }
-            }
-            JSONObject ensured = result;
-            mainHandler.post(() -> {
-                vibepolloEnsureInFlight.remove(key);
-                if (ensured != null) {
-                    if (appListPoller != null) appListPoller.pollNow();
-                    return;
-                }
-                ComputerDetails current = currentHost(host.uuid);
-                if (current != null && host.uuid.equals(selectedHostUuid)) {
-                    renderPlayniteLibrary(current, currentSunshineApps);
-                }
-            });
-        });
     }
 
     private static String playniteInstallNotificationKey(String hostUuid, String gameId) {
@@ -9003,8 +8962,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
                     @Override public int changePayload(PlayniteDashboardItem previous,
                                                        PlayniteDashboardItem next) {
-                        boolean live = isVibepolloEnsureInFlight(selectedHostUuid, next)
-                                || isPlayniteInstalling(selectedHostUuid, next);
+                        boolean live = isPlayniteInstalling(selectedHostUuid, next);
                         return previous.equals(next) && !live
                                 ? -1 : playnitePayload(previous, next);
                     }
@@ -9347,7 +9305,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     || resumeStateChanged
                     || suspendedStateChanged
                     || sessionPresentationChanged
-                    || isVibepolloEnsureInFlight(host.uuid, item)
                     || isPlayniteInstalling(host.uuid, item)) {
                 int payload = !item.equals(old) ? playnitePayload(old, item)
                         : PlayniteLibraryDiff.TEXT;
@@ -10320,10 +10277,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ? label + " " + operation.progress + "%" : label;
         }
         if (!item.game.installed) return getString(R.string.playnite_not_installed);
-        if (isVibepolloEnsureInFlight(hostUuid, item)
-                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) {
-            return getString(R.string.playnite_creating_vibepollo_app);
-        }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             return getString(R.string.playnite_game_installed);
         }
@@ -10339,8 +10292,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (operation.uninstallActive) return "↓";
         if (operation.installActive) return "↓";
         if (!item.game.installed) return "↓";
-        if (isVibepolloEnsureInFlight(hostUuid, item)
-                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) return "…";
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) return "✓";
         return "!";
     }
@@ -10364,10 +10315,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (!item.game.installed) return CONSOLE_UI_V2 ? ""
                 : getString(R.string.playnite_install_action_short);
-        if (isVibepolloEnsureInFlight(hostUuid, item)
-                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) {
-            return getString(R.string.playnite_preparing_short);
-        }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             return CONSOLE_UI_V2 ? "" : getString(R.string.playnite_ready_short);
         }
@@ -10392,8 +10339,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 gameOperationsController.presentation(hostUuid, item.game);
         boolean installing = operation.installActive || operation.uninstallActive;
         boolean unavailable = item.game.installed
-                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED
-                && !isVibepolloEnsureInFlight(hostUuid, item);
+                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED;
         int textColor;
         int fill;
         int stroke;
@@ -10407,8 +10353,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             textColor = 0xFFE6EBEF; fill = 0xE0181E23; stroke = 0xFF9AA5AD;
         } else if (unavailable) {
             textColor = 0xFFFFC4BE; fill = 0xE0371B1A; stroke = 0xFFE16D63;
-        } else if (isVibepolloEnsureInFlight(hostUuid, item)) {
-            textColor = 0xFFFFE2A8; fill = 0xE03D2B0A; stroke = 0xFFE4B34B;
         } else {
             textColor = 0xFF8EF1AE; fill = 0xE014241B; stroke = 0xFF62C985;
         }
@@ -10436,12 +10380,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         background.setColor(fill);
         background.setStroke(dp(1), stroke);
-    }
-
-    private boolean isVibepolloEnsureInFlight(String hostUuid, PlayniteDashboardItem item) {
-        // The Set above prevents duplicate requests only. The visible state comes
-        // from the Gateway-enriched library so it survives an Android process restart.
-        return "preparing".equals(item.game.vibepolloState);
     }
 
     private String playniteInstallKey(String hostUuid, PlayniteDashboardItem item) {
