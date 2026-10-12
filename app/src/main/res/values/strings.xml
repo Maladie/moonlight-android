@@ -389,6 +389,7 @@
     <string name="console_status_checking">Checking…</string>
     <string name="console_status_active_session">Active session</string>
     <string name="console_status_active_app">Stream · %1$s</string>
+    <string name="console_status_paused_stream">Paused stream</string>
     <string name="console_refresh_library">Refresh library</string>
     <string name="console_change_host">Change host</string>
     <string name="console_return_to_stream">Return to stream</string>

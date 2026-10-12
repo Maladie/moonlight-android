@@ -1,9 +1,11 @@
 package com.limelight.console;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 import com.limelight.nvstream.http.ComputerDetails;
 
@@ -12,6 +14,7 @@ import org.junit.Test;
 import java.security.KeyStore;
 import java.security.cert.X509Certificate;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
 import javax.net.ssl.TrustManager;
@@ -82,6 +85,52 @@ public class HostReadinessTest {
                 ignored -> sends.incrementAndGet());
 
         assertEquals(0, sends.get());
+    }
+
+    @Test public void awaitDownReturnsOnceThePortStopsAnswering() {
+        ComputerDetails host = onlineHost();
+        AtomicInteger probes = new AtomicInteger();
+        AtomicLong clock = new AtomicLong();
+
+        assertTrue(HostReadiness.awaitDown(() -> host, () -> false,
+                ignored -> probes.incrementAndGet() < 3, clock::get,
+                () -> clock.addAndGet(1_200L) > 0L));
+
+        assertEquals(3, probes.get());
+        assertEquals(2_400L, clock.get());
+    }
+
+    @Test public void awaitDownReturnsOnceThePollLeavesOnline() {
+        ComputerDetails host = onlineHost();
+        host.state = ComputerDetails.State.OFFLINE;
+
+        assertTrue(HostReadiness.awaitDown(() -> host, () -> false,
+                ignored -> true, () -> 0L, () -> true));
+    }
+
+    @Test public void awaitDownStopsWhenCancelled() {
+        AtomicInteger probes = new AtomicInteger();
+
+        assertFalse(HostReadiness.awaitDown(HostReadinessTest::onlineHost, cancelAfterEntry(),
+                ignored -> probes.incrementAndGet() > 0, () -> 0L, () -> true));
+
+        assertEquals(1, probes.get());
+    }
+
+    @Test public void awaitDownGivesUpAtItsLimitWhenTheHostStaysUp() {
+        AtomicLong clock = new AtomicLong();
+
+        assertFalse(HostReadiness.awaitDown(HostReadinessTest::onlineHost, () -> false,
+                ignored -> true, clock::get, () -> clock.addAndGet(1_200L) > 0L));
+
+        assertEquals(30_000L, clock.get());
+    }
+
+    private static ComputerDetails onlineHost() {
+        ComputerDetails host = new ComputerDetails();
+        host.state = ComputerDetails.State.ONLINE;
+        host.activeAddress = new ComputerDetails.AddressTuple("192.168.1.14", 47989);
+        return host;
     }
 
     private static BooleanSupplier cancelAfterEntry() {

@@ -24,6 +24,7 @@ import com.limelight.console.SessionOrchestrator;
 import com.limelight.console.DiscordOverlayController;
 import com.limelight.console.DiscordDmNotificationCoordinator;
 import com.limelight.console.DiscordDmToastView;
+import com.limelight.console.PlayHistory;
 import com.limelight.console.PlayniteTargetResolver;
 import com.limelight.console.PlayniteTransitionGateway;
 import com.limelight.console.PlayniteIdentityResolutionPolicy;
@@ -220,6 +221,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private String lastTransitionNotice = "";
     private String providerStartRejectedTransitionId = "";
     private String retryTransitionId = "";
+    /** The failed start whose cleanup must finish before its game starts again on this stream. */
+    private String gameRestartTransitionId = "";
+    private String gamePlayedTransitionId = "";
     private final WholeSessionTermination.Owner wholeSessionTermination =
             new WholeSessionTermination.Owner();
     private final AtomicBoolean freshOwnedFailureCleanupInFlight = new AtomicBoolean();
@@ -569,7 +573,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             }
                             return;
                         }
-                        retryTransition();
+                        runStreamIntent(SessionOrchestrator.UserIntent.RETRY);
                     }
 
                     @Override public void onShowStreamAnyway() {
@@ -3657,8 +3661,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void settleStartFailedSwitch(RetainedSwitch operation) {
+        // A manual reveal during the cleanup wins over the pending Retry: no new attempt, no cover.
+        boolean revealed = transitionController.snapshot().manuallyRevealed;
         settleNeutralRetainedStream(operation);
-        if (operation.retryRequested) {
+        if (operation.retryRequested && !revealed) {
             operation.cancelRequested = false;
             operation.retryRequested = false;
             operation.startFailedCleanupPending = false;
@@ -3954,7 +3960,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         operation.authorizationRetryOffered = true;
         transitionController.error(transitionSpec.id,
                 getString(R.string.transition_switch_authorization_pending));
-        // The console stops waiting; this stream carries the choice.
+        // The console stops waiting; this stream carries the choice. No game started.
         signalRetainedSwitchReuse(operation);
     }
 
@@ -4464,6 +4470,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
+    /**
+     * Tells the waiting console this stream is used again and carries the request from here.
+     * It says nothing about the game: "recently played" waits for {@link #recordGamePlayed}.
+     */
     private void signalRetainedSwitchReuse(RetainedSwitch operation) {
         if (operation.consoleSignalled.compareAndSet(false, true)) {
             operation.completion.complete(
@@ -5572,6 +5582,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 terminateWholeSessionVerified(null);
                                 return;
                             }
+                            if (transitionId.equals(gameRestartTransitionId)) {
+                                gameRestartTransitionId = "";
+                                continueGameRetry(transitionId, success);
+                                return;
+                            }
                             RetainedSwitch operation = retainedSwitch;
                             if (operation == null || operation.newSpec == null
                                     || !operation.newSpec.id.equals(transitionId)
@@ -5704,6 +5719,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (snapshot.state == LaunchTransitionState.GAME_READY) {
             autopilotGameReadySeen = true;
         }
+        recordGamePlayed(snapshot);
         if (controllerHandler != null) {
             updateGuidePolicyTransition();
             controllerHandler.setInputSuppressed(
@@ -5810,6 +5826,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         lastTransitionOverlayVisible = snapshot.overlayVisible;
         lastTransitionRevealAuthorized = snapshot.revealAuthorized;
         maybeArmStreamingAutopilotCalibration();
+    }
+
+    /**
+     * The one writer of a game's "recently played": the host confirmed this transition's game
+     * ready, or the user revealed its stream by hand. An offered retry, a refused start or a
+     * merely accepted request writes nothing.
+     */
+    private void recordGamePlayed(LaunchTransitionSnapshot snapshot) {
+        if (!PlayHistory.recordsNow(gamePlayedTransitionId, snapshot.spec.id,
+                PlayHistory.gamePlayed(snapshot.state, snapshot.manuallyRevealed,
+                        snapshot.spec.playniteGameId, isOwnedHiddenAutoWarmUp()))) return;
+        gamePlayedTransitionId = snapshot.spec.id;
+        PlayHistory.recordGame(getSharedPreferences("console_dashboard", MODE_PRIVATE),
+                snapshot.spec.hostId, snapshot.spec.sunshineAppId,
+                snapshot.spec.playniteGameId, System.currentTimeMillis());
     }
 
     private static boolean usesClosingPresentation(LaunchTransitionSnapshot snapshot) {
@@ -6067,6 +6098,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && presented.state == LaunchTransitionState.RETURNING_TO_DASHBOARD;
         state.gameReadyConfirmed = transitionController != null
                 && transitionController.gameReadyConfirmed();
+        state.manuallyRevealed = presented != null && presented.manuallyRevealed;
+        state.failedStartCleanup = transitionCoordinator != null
+                && transitionCoordinator.providerCleanupRequested();
         // One read decides: a generation granted after it is the stopped runtime's to settle.
         state.controlGranted = bindControlGeneration() > 0L;
         state.authorizationRetryOffered = retainedSwitch != null
@@ -6075,6 +6109,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         state.failedStartObservation = isFailedStartObservation(failedStartObservationId,
                 transitionSpec == null ? "" : transitionSpec.id);
         state.retainedSwitch = retainedSwitch != null;
+        state.retainedSwitchAttempted = retainedSwitch != null && retainedSwitch.newSpec != null;
+        state.retryStarted = transitionSpec != null
+                && transitionSpec.id.equals(retryTransitionId);
         state.retainedHomeLive = transitionSpec != null
                 && sessionModel.snapshot().state == SessionModel.State.HOME_LIVE
                 && sessionModel.ownsLiveOrParkedSession(
@@ -6083,14 +6120,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return state;
     }
 
+    private static final java.util.EnumSet<SessionOrchestrator.ActionKind> RETRY_ACTIONS =
+            java.util.EnumSet.of(SessionOrchestrator.ActionKind.ACCEPT_AUTHORIZATION_RETRY,
+                    SessionOrchestrator.ActionKind.RETRY_RETAINED_SWITCH,
+                    SessionOrchestrator.ActionKind.RETRY_GAME_START,
+                    SessionOrchestrator.ActionKind.RETRY_OBSERVATION,
+                    SessionOrchestrator.ActionKind.RESTART_STREAM);
+
     /**
-     * Back or Cancel on the stream screen: SessionOrchestrator decides from the presented
-     * transition, this only executes. Returns the decision; CANCEL_ON_COVER and LEAVE_SCREEN
-     * are left to the caller's own key path.
+     * Back, Cancel or Retry on the stream screen: SessionOrchestrator decides from the
+     * presented transition, this only executes. Returns the decision; CANCEL_ON_COVER and
+     * LEAVE_SCREEN are left to the caller's own key path.
      */
     private SessionOrchestrator.ActionKind runStreamIntent(SessionOrchestrator.UserIntent intent) {
         SessionOrchestrator.ActionKind decided =
                 SessionOrchestrator.transition(transitionState(), intent).kind;
+        if (RETRY_ACTIONS.contains(decided)) {
+            retryTransitionId = transitionSpec.id;
+            getIntent().putExtra(STATE_RETRY_TRANSITION_ID, retryTransitionId);
+        }
         if (intent == SessionOrchestrator.UserIntent.CANCEL
                 && decided != SessionOrchestrator.ActionKind.IGNORE) {
             retryTransitionId = "";
@@ -6110,6 +6158,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // A user Cancel overrides a retry-triggered retained cleanup.
                 retainedSwitch.retryRequested = false;
                 requestRetainedSwitchCancellation(retainedSwitch);
+                break;
+            case ACCEPT_AUTHORIZATION_RETRY:
+                settleOfferedAuthorizationRetry(true);
+                break;
+            case RETRY_RETAINED_SWITCH:
+                // Its cleanup settles through the start-failed path, which starts again.
+                retainedSwitch.retryRequested = true;
+                requestRetainedSwitchCancellation(retainedSwitch);
+                break;
+            case RETRY_GAME_START:
+                retryGameStart();
+                break;
+            case RETRY_OBSERVATION:
+                retryLiveObservation();
+                break;
+            case RESTART_STREAM:
+                restartStreamForRetry();
                 break;
             case CLOSE_HOST_SESSION:
             case CLOSE_STARTED_SESSION:
@@ -6246,35 +6311,29 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }));
     }
 
-    private void retryTransition() {
-        if (transitionSpec == null) return;
-        if (transitionSpec.id.equals(retryTransitionId)) {
-            MoonWakerDiagnostics.record("WARN", "android.launch-transition",
-                    "launch_transition.retry_ignored",
-                    "transition_id", transitionSpec.id,
-                    "reason", "retry_already_started");
-            cancelTransition();
-            return;
-        }
+    /**
+     * A game the host confirmed ready and whose launch was committed keeps running without its
+     * transport: the restart connects to it again and never starts it a second time.
+     */
+    static LaunchTransitionType restartType(LaunchTransitionType type,
+                                            boolean gameReadyConfirmed,
+                                            boolean launchCommitted) {
+        return type == LaunchTransitionType.GAME && gameReadyConfirmed && launchCommitted
+                ? LaunchTransitionType.GAME_CONNECTION : type;
+    }
+
+    /** The transport is gone: the same target starts again as a new request, made now. */
+    private void restartStreamForRetry() {
         String retryId = transitionSpec.id;
-        retryTransitionId = retryId;
-        getIntent().putExtra(STATE_RETRY_TRANSITION_ID, retryId);
-        if (settleOfferedAuthorizationRetry(true)) return;
-        if (retainedSwitch != null && retainedSwitch.newSpec != null) {
-            retainedSwitch.retryRequested = true;
-            requestRetainedSwitchCancellation(retainedSwitch);
-            return;
-        }
-        if ((transitionSpec.type == LaunchTransitionType.GAME
-                || transitionSpec.type == LaunchTransitionType.GAME_CONNECTION)
-                && hasLiveRetainedTransport() && isTransportConnected()) {
-            retryRetainedObservation();
-            return;
-        }
+        LaunchTransitionType type = restartType(transitionSpec.type,
+                transitionController.gameReadyConfirmed(), transitionCoordinator != null
+                        && transitionCoordinator.providerLaunchCommitted());
         if (transitionCoordinator != null) transitionCoordinator.onStreamFailed();
         Intent retry = new Intent(getIntent());
+        // A user's new request is never the dead transport's hidden warm-up.
+        removeAutoWarmUpExtras(retry);
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
-                transitionSpec.hostId, transitionSpec.profileId, transitionSpec.type,
+                transitionSpec.hostId, transitionSpec.profileId, type,
                 transitionSpec.sunshineAppId,
                 transitionSpec.playniteGameId, System.currentTimeMillis(),
                 transitionSpec.startProviderBeforeStream);
@@ -6285,6 +6344,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         retry.putExtra(EXTRA_TRANSITION_CREATED_AT, next.createdAtMillis);
         retry.putExtra(EXTRA_TRANSITION_START_BEFORE_STREAM,
                 next.startProviderBeforeStream);
+        // The new attempt is its own request: it never carries the failed one's start time.
+        retry.putExtra(EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.uptimeMillis());
         retry.removeExtra(STATE_RETRY_TRANSITION_ID);
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> {
@@ -6315,19 +6376,71 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && !finishing && !destroyed;
     }
 
-    private void retryRetainedObservation() {
-        retryLiveObservation();
+    /**
+     * Retry of a failed game start on the live stream: the failed attempt's cleanup first, then
+     * the same game again. The stream is not closed.
+     */
+    private void retryGameStart() {
+        // The host reported the start failed, so its cleanup is already ordered.
+        Boolean cleaned = transitionCoordinator.providerCleanupResult();
+        if (cleaned == null) {
+            gameRestartTransitionId = transitionSpec.id;
+            return;
+        }
+        continueGameRetry(transitionSpec.id, cleaned);
     }
 
+    enum RetryStep { NONE, START_GAME, OBSERVE }
+
+    /**
+     * What follows a retried start's cleanup. A Cancel, a newer transition or the user's manual
+     * reveal meanwhile wins: nothing starts and nothing covers the stream again. A failed
+     * attempt's game that could not be stopped is observed, never started a second time.
+     */
+    static RetryStep afterRetryCleanup(String cleanedTransitionId, String currentTransitionId,
+                                       boolean cancelInFlight, boolean manuallyRevealed,
+                                       boolean cleaned) {
+        if (cleanedTransitionId == null || !cleanedTransitionId.equals(currentTransitionId)
+                || cancelInFlight || manuallyRevealed) return RetryStep.NONE;
+        return cleaned ? RetryStep.START_GAME : RetryStep.OBSERVE;
+    }
+
+    private void continueGameRetry(String transitionId, boolean cleaned) {
+        switch (afterRetryCleanup(transitionId, transitionSpec == null ? "" : transitionSpec.id,
+                transitionCancelInFlight, transitionController.snapshot().manuallyRevealed,
+                cleaned)) {
+            case START_GAME:
+                startGameAgainOnStream();
+                break;
+            case OBSERVE:
+                retryLiveObservation();
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void startGameAgainOnStream() {
+        LaunchTransitionSpec next = LaunchTransitionSpec.create(
+                transitionSpec.hostId, transitionSpec.profileId, LaunchTransitionType.GAME,
+                transitionSpec.sunshineAppId, transitionSpec.playniteGameId,
+                System.currentTimeMillis(), transitionSpec.startProviderBeforeStream);
+        if (transitionCoordinator != null) transitionCoordinator.close();
+        providerStartRejectedTransitionId = "";
+        transitionSpec = next;
+        getIntent().putExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID, next.playniteGameId);
+        presentRetryAttempt(next, createTransitionCoordinator());
+    }
+
+    /** Connects the observation again on the live stream; no game is started. */
     private void retryLiveObservation() {
         ConsoleStreamTransitionCoordinator previousCoordinator = transitionCoordinator;
         LaunchTransitionSpec previousSpec = transitionSpec;
-        cancelPendingAutomaticReveal();
-        manualRevealRequested = false;
-        transitionCancelInFlight = false;
+        // A game is only observed here; every other target keeps its type.
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
                 transitionSpec.hostId, transitionSpec.profileId,
-                LaunchTransitionType.GAME_CONNECTION,
+                transitionSpec.type == LaunchTransitionType.GAME
+                        ? LaunchTransitionType.GAME_CONNECTION : transitionSpec.type,
                 transitionSpec.sunshineAppId, transitionSpec.playniteGameId,
                 System.currentTimeMillis());
         transitionSpec = next;
@@ -6338,18 +6451,33 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!ownershipReady) {
             replacement.close();
             transitionSpec = previousSpec;
+            // Nothing was retried: the offered Retry of this transition stays usable.
+            retryTransitionId = "";
+            getIntent().removeExtra(STATE_RETRY_TRANSITION_ID);
             transitionController.error(previousSpec.id,
                     getString(R.string.transition_readiness_unconfirmed));
             return;
         }
         if (previousCoordinator != null) previousCoordinator.close();
+        presentRetryAttempt(next, replacement);
+    }
+
+    /**
+     * Presents a retry's new attempt on the live stream. The transport is not touched, and
+     * Retry is pressed on the cover, so beginning the attempt covers nothing the user revealed.
+     */
+    private void presentRetryAttempt(LaunchTransitionSpec next,
+                                     ConsoleStreamTransitionCoordinator coordinator) {
+        cancelPendingAutomaticReveal();
+        manualRevealRequested = false;
+        transitionCancelInFlight = false;
         getIntent().putExtra(EXTRA_TRANSITION_ID, next.id);
         getIntent().putExtra(EXTRA_TRANSITION_TYPE, next.type.name());
         getIntent().putExtra(EXTRA_TRANSITION_CREATED_AT, next.createdAtMillis);
         saveReconnect(false);
         consoleLoadingView.showFullTransitionAppearance();
         transitionController.begin(next);
-        transitionCoordinator = replacement;
+        transitionCoordinator = coordinator;
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> {
             if (transitionSpec != next || isFinishing() || isDestroyed()) return;
@@ -6360,6 +6488,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
             if (controllerHandler != null) transitionController.inputPipelineReady(next.id);
             if (isTransportConnected()) {
+                armNextVideoFrameForTransition(next.id, "retry");
                 transitionController.streamConnected(next.id);
                 transitionCoordinator.start();
                 transitionCoordinator.onStreamConnected();
@@ -7284,7 +7413,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             || !providerEndGameInFlight || transitionSpec != expected) return;
                     providerEndGameInFlight = false;
                     if (prepareChildSession() && !childSessionId.isEmpty()) startChildMonitoring();
-                    retryRetainedObservation();
+                    retryLiveObservation();
                     new android.app.AlertDialog.Builder(Game.this)
                             .setTitle(R.string.overlay_menu_end_game_failed_title)
                             .setMessage(R.string.overlay_menu_end_game_failed)
@@ -7579,15 +7708,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && retained.state != SessionModel.State.TERMINATING;
     }
 
-    private boolean hasLiveRetainedTransport() {
-        SessionModel.Snapshot retained =
-                sessionModel.snapshot();
-        return streamSessionId.equals(retained.streamSessionId)
-                && (retained.state == SessionModel.State.HOME_LIVE
-                || retained.state == SessionModel.State.PARKED_LIVE)
-                && sessionModel.canResumeInstantly();
-    }
-
     private boolean hasAutoWarmUpTransportIdentity() {
         return autoWarmUpAttempt > 0L && transitionSpec != null;
     }
@@ -7596,7 +7716,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         autoWarmUpAttempt = 0L;
         autoWarmUpConvertedToGame = false;
         autoWarmUpRetained = false;
-        Intent intent = getIntent();
+        removeAutoWarmUpExtras(getIntent());
+    }
+
+    private static void removeAutoWarmUpExtras(Intent intent) {
         intent.removeExtra(EXTRA_AUTO_WARM_UP_ATTEMPT);
         intent.removeExtra(EXTRA_AUTO_WARM_UP_CONVERTED);
         intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_ATTEMPT);

@@ -15,6 +15,8 @@ public final class LaunchTransitionSnapshot {
     public final boolean manualRevealAvailable;
     /** The failure is likely a launcher or off-screen window: "Reveal now" is the default focus. */
     public final boolean revealPreferred;
+    /** The user chose "Reveal now" in this attempt; the cover does not return within it. */
+    public final boolean manuallyRevealed;
     /** A readiness failure after a manual reveal, shown without covering the stream. */
     public final String notice;
     public final boolean uncertain;
@@ -27,7 +29,7 @@ public final class LaunchTransitionSnapshot {
                              boolean operationAuthorized, boolean revealAuthorized,
                              boolean manualRevealAvailable, boolean uncertain, String detail,
                              boolean startTakingLonger, boolean revealPreferred,
-                             String notice) {
+                             String notice, boolean manuallyRevealed) {
         this.spec = spec;
         this.state = state;
         this.step = step;
@@ -41,5 +43,6 @@ public final class LaunchTransitionSnapshot {
         this.startTakingLonger = startTakingLonger;
         this.revealPreferred = revealPreferred;
         this.notice = notice == null ? "" : notice;
+        this.manuallyRevealed = manuallyRevealed;
     }
 }
