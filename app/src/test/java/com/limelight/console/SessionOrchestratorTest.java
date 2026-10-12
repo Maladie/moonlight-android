@@ -39,17 +39,75 @@ public class SessionOrchestratorTest {
         }
     }
 
-    @Test public void savedPairAllowsOnePreparationButNotOrdinaryPlay() {
-        Fake effects = new Fake();
-        effects.paired = false;
-        effects.knownPreparationPair = true;
-        SessionOrchestrator orchestrator = orchestrator(effects);
+    @Test public void onePairingRuleDecidesPreparationAndPlay() {
+        // Remembered as paired: the warm-up starts and Play wakes the sleeping host.
+        Fake remembered = new Fake();
+        remembered.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        remembered.hostOnline = false;
+        remembered.onRefresh = () -> remembered.snapshot =
+                snapshot(SessionSnapshot.State.NONE, 0, "");
+        SessionOrchestrator orchestrator = orchestrator(remembered);
         assertTrue(orchestrator.prepareHost("host") > 0L);
-        assertEquals(1, effects.prepareCalls);
-        assertEquals(1, effects.preparedLaunches);
+        assertEquals(1, remembered.prepareCalls);
         orchestrator.play(game());
+        assertNull(remembered.rejection);
+        assertEquals(1, remembered.wakes);
+        assertEquals(1, remembered.launches);
+
+        // No saved certificate, or a poll that reported it unpaired: neither starts.
+        Fake unpaired = new Fake();
+        unpaired.paired = false;
+        unpaired.hostOnline = false;
+        orchestrator = orchestrator(unpaired);
+        assertEquals(0L, orchestrator.prepareHost("host"));
+        orchestrator.play(game());
+        assertEquals(SessionOrchestrator.Rejection.UNPAIRED, unpaired.rejection);
+        assertEquals(0, unpaired.loadings);
+        assertEquals(0, unpaired.wakes);
+        assertEquals(0, unpaired.readiness);
+        assertEquals(0, unpaired.launches);
+    }
+
+    @Test public void hostFoundUnpairedAfterTheWakeIsRefusedWithoutAnyStart() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        effects.hostOnline = false;
+        // The woken host answers its poll: the remembered pairing gives way to the real one.
+        effects.onWake = () -> effects.paired = false;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.wakes);
         assertEquals(SessionOrchestrator.Rejection.UNPAIRED, effects.rejection);
+        assertEquals(1, effects.loadings);
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.readiness);
+        assertEquals(0, effects.closes);
         assertEquals(0, effects.launches);
+        assertEquals(0, effects.reconnects);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void hostThisClientPutToSleepIsWokenAtOnceWithoutAFailedRefresh() {
+        for (SessionSnapshot.State state : new SessionSnapshot.State[] {
+                SessionSnapshot.State.NONE, SessionSnapshot.State.UNCERTAIN}) {
+            Fake effects = new Fake();
+            // The polls still call the host online; only the sleep record says otherwise.
+            effects.snapshot = asleep(state);
+            effects.onWake = () -> effects.snapshot = snapshot(state, 0, "");
+            effects.onRefresh = () -> effects.snapshot =
+                    snapshot(SessionSnapshot.State.NONE, 0, "");
+
+            orchestrator(effects).play(game());
+
+            assertEquals(1, effects.loadings);
+            assertEquals(1, effects.wakes);
+            assertEquals(0, effects.refreshesBeforeWake);
+            assertEquals(0, effects.readinessBeforeWake);
+            assertEquals(1, effects.readiness);
+            assertEquals(1, effects.launches);
+            assertTrue(effects.failures.isEmpty());
+        }
     }
 
     @Test public void warmUpGameClickHandsOffBeforeWorkerCompletes() {
@@ -824,16 +882,20 @@ public class SessionOrchestratorTest {
     }
 
     @Test public void verifiedCloseLaunchesBeforeAFreshHostObservationArrives() {
-        // UNCERTAIN is what the projection publishes until a poll after the close is accepted.
-        Fake effects = competing();
-        effects.afterClose = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
-        orchestrator(effects).play(game());
+        // Until a poll after the close is accepted the projection publishes TERMINATING
+        // (closing confirmation window) or UNCERTAIN.
+        for (SessionSnapshot.State state : new SessionSnapshot.State[] {
+                SessionSnapshot.State.TERMINATING, SessionSnapshot.State.UNCERTAIN}) {
+            Fake effects = competing();
+            effects.afterClose = snapshot(state, 0, "");
+            orchestrator(effects).play(game());
 
-        effects.confirmation.run();
+            effects.confirmation.run();
 
-        assertEquals(1, effects.closes);
-        assertEquals(1, effects.launches);
-        assertTrue(effects.failures.isEmpty());
+            assertEquals(1, effects.closes);
+            assertEquals(1, effects.launches);
+            assertTrue(effects.failures.isEmpty());
+        }
     }
 
     @Test public void closedButLocallyNotIdleSnapshotReportsItsOwnCode() {
@@ -919,7 +981,7 @@ public class SessionOrchestratorTest {
     @Test public void refusedRefreshOfStaleRecoveryFailsVisiblyUnderLoadingLayer() {
         Fake effects = new Fake();
         effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
-        // What the host poll answers when it cannot run at all (host offline, poll busy).
+        // What the host poll answers when it cannot run at all (Gateway silent, poll busy).
         effects.refreshSuccess = false;
 
         orchestrator(effects).play(game());
@@ -1079,7 +1141,7 @@ public class SessionOrchestratorTest {
         Fake effects = new Fake();
         effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
         effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
-        for (int pass = 2; pass <= 8; pass++) {
+        for (int pass = 2; pass <= 10; pass++) {
             effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
             effects.snapshots.add(snapshot(SessionSnapshot.State.ACTIVE, 7, "other"));
         }
@@ -1289,6 +1351,146 @@ public class SessionOrchestratorTest {
         assertEquals(sourceSuspendId, effects.launchedSourceSuspendId);
     }
 
+    @Test public void hostThatDoesNotAnswerIsWokenThenRefreshedThenDecidedByTheTable() {
+        // Nothing left on the woken host: a start from scratch.
+        Fake fresh = new Fake();
+        fresh.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        fresh.hostOnline = false;
+        fresh.onRefresh = () -> fresh.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+
+        orchestrator(fresh).play(game());
+
+        assertEquals(1, fresh.loadings);
+        assertEquals(1, fresh.wakes);
+        assertEquals(0, fresh.refreshesBeforeWake);
+        assertEquals(1, fresh.refreshes);
+        assertEquals(HostLaunchPreflight.Action.LAUNCH, fresh.preflightAction);
+        assertEquals(1, fresh.launches);
+        assertEquals(0, fresh.closes);
+        assertTrue(fresh.failures.isEmpty());
+
+        // The woken host still holds this game's session: it is reconnected, not restarted.
+        Fake kept = new Fake();
+        kept.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        kept.hostOnline = false;
+        kept.onRefresh = () -> kept.snapshot =
+                snapshot(SessionSnapshot.State.RECONNECT_REQUIRED, 42, "game");
+
+        orchestrator(kept).play(game());
+
+        assertEquals(1, kept.wakes);
+        assertEquals(1, kept.refreshes);
+        assertEquals(HostLaunchPreflight.Action.RECONNECT, kept.preflightAction);
+        assertEquals(1, kept.reconnects);
+        assertEquals(0, kept.launches);
+        assertEquals(0, kept.closes);
+        assertTrue(kept.failures.isEmpty());
+    }
+
+    @Test public void hostThatNeverAnswersTheWakeFailsAsAnUnavailableHost() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        effects.hostOnline = false;
+        effects.wakeAnswers = false;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.wakes);
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.HOST_WAKE_TIMEOUT), effects.failures);
+        assertEquals(java.util.Collections.singletonList(1), effects.loadingsAtFailure);
+        assertEquals(com.limelight.R.string.console_host_not_ready,
+                SessionFailure.HOST_WAKE_TIMEOUT.title);
+        assertEquals(com.limelight.R.string.console_host_timeout,
+                SessionFailure.HOST_WAKE_TIMEOUT.details);
+        assertEquals(com.limelight.R.string.transition_gateway_unavailable,
+                SessionFailure.HOST_GATEWAY_TIMEOUT.details);
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.readiness);
+        assertEquals(0, effects.launches);
+        assertEquals(0, effects.closes);
+    }
+
+    @Test public void hostThatFellAsleepUnnoticedIsWokenAfterItsRefreshFails() {
+        for (SessionSnapshot stale : new SessionSnapshot[] {
+                snapshot(SessionSnapshot.State.UNCERTAIN, 0, ""),
+                recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false)}) {
+            Fake effects = new Fake();
+            effects.snapshot = stale;
+            // The polls still call the host online; only the refused refresh shows it is not.
+            effects.refreshSuccess = false;
+            effects.onRefresh = () -> {
+                if (effects.wakes == 0) effects.hostOnline = false;
+                else effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+            };
+            effects.onWake = () -> effects.refreshSuccess = true;
+
+            orchestrator(effects).play(game());
+
+            assertEquals(1, effects.wakes);
+            assertEquals(1, effects.refreshesBeforeWake);
+            assertEquals(2, effects.refreshes);
+            assertEquals(1, effects.launches);
+            assertEquals(0, effects.closes);
+            assertTrue(effects.failures.isEmpty());
+        }
+    }
+
+    @Test public void hostThatKeepsFallingAsleepEndsAtThePassLimit() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        effects.refreshSuccess = false;
+        effects.onRefresh = () -> effects.hostOnline = false;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.ORCHESTRATION_PASS_LIMIT), effects.failures);
+        assertEquals(5, effects.wakes);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void cancelDuringTheWakeStopsWaitingAndClosesNothing() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        effects.hostOnline = false;
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        effects.onWake = orchestrator::cancel;
+
+        orchestrator.play(game());
+
+        assertEquals(1, effects.wakes);
+        assertTrue(effects.wakeCancelled.getAsBoolean());
+        assertTrue(effects.failures.isEmpty());
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.readiness);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+        assertEquals(0, effects.reconnects);
+        assertEquals(0, effects.returned);
+    }
+
+    @Test public void wakeAnsweredForASupersededPlayIsDropped() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        effects.hostOnline = false;
+        effects.deferDispatch = true;
+        SessionOrchestrator orchestrator = orchestrator(effects);
+
+        orchestrator.play(game());
+        assertEquals(1, effects.wakes);
+        // A newer Play decides on its own facts before the first wake reports back.
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.play(game());
+        effects.flushDispatch();
+
+        assertEquals(1, effects.wakes);
+        assertEquals(0, effects.refreshes);
+        assertEquals(1, effects.readiness);
+        assertEquals(1, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
     private static Fake competing() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 7, "other");
@@ -1332,6 +1534,15 @@ public class SessionOrchestratorTest {
                                             String gameId,
                                             SessionSnapshot.ObservationState observation) {
         return snapshot(state, appId, gameId, false, "", false, observation);
+    }
+
+    /** An empty session of a host whose sleep this client requested. */
+    private static SessionSnapshot asleep(SessionSnapshot.State state) {
+        return new SessionSnapshot("host", "default", "default", state, 0, "",
+                false, false, false, true, false, "", false,
+                SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
     private static SessionSnapshot recovery(SessionSnapshot.State state, String gameId,
@@ -1381,7 +1592,6 @@ public class SessionOrchestratorTest {
 
         boolean available = true;
         boolean paired = true;
-        boolean knownPreparationPair;
         SessionSnapshot snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
         final Queue<SessionSnapshot> snapshots = new ArrayDeque<>();
         SessionSnapshot afterClose = snapshot(SessionSnapshot.State.NONE, 0, "");
@@ -1398,6 +1608,13 @@ public class SessionOrchestratorTest {
         HostLaunchPreflight.Action preflightAction;
         boolean canSwitch;
         boolean refreshSuccess = true;
+        boolean hostOnline = true;
+        boolean wakeAnswers = true;
+        int wakes;
+        int refreshesBeforeWake;
+        int readinessBeforeWake;
+        Runnable onWake;
+        BooleanSupplier wakeCancelled;
         boolean deferRefresh;
         Runnable onRefresh;
         Consumer<Boolean> deferredRefresh;
@@ -1433,11 +1650,19 @@ public class SessionOrchestratorTest {
 
         @Override public boolean isAvailable() { return available; }
         @Override public boolean isPaired(String hostId) { return paired; }
-        @Override public boolean canPrepareHost(String hostId) {
-            return paired || knownPreparationPair;
-        }
         @Override public SessionSnapshot resolve(String hostId) {
             return snapshots.isEmpty() ? snapshot : snapshots.remove();
+        }
+        @Override public boolean isHostOnline(String hostId) { return hostOnline; }
+        @Override public SessionFailure awaitHost(PlayIntent intent, BooleanSupplier cancelled) {
+            wakes++;
+            refreshesBeforeWake = refreshes;
+            readinessBeforeWake = readiness;
+            wakeCancelled = cancelled;
+            if (onWake != null) onWake.run();
+            if (!wakeAnswers || cancelled.getAsBoolean()) return SessionFailure.HOST_WAKE_TIMEOUT;
+            hostOnline = true;
+            return null;
         }
         @Override public void returnToRetainedStream() { returned++; }
         @Override public void attachPresentationForSwitch(

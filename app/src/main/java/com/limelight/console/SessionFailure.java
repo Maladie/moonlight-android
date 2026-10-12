@@ -78,6 +78,13 @@ public enum SessionFailure {
     UNCERTAIN_TERMINATING("uncertain.terminating",
             R.string.console_status_closing_session, R.string.console_session_uncertain_details),
 
+    // SessionOrchestrator awaitHost: the woken host never answered within the wake bound.
+    HOST_WAKE_TIMEOUT("host.wake_timeout",
+            R.string.console_host_not_ready, R.string.console_host_timeout),
+    // SessionOrchestrator awaitHost: the host answered, its Gateway did not within its bound.
+    HOST_GATEWAY_TIMEOUT("host.gateway_timeout",
+            R.string.console_host_not_ready, R.string.transition_gateway_unavailable),
+
     ORCHESTRATION_PASS_LIMIT("orchestration.pass_limit",
             R.string.console_host_not_ready, R.string.console_host_timeout),
     ORCHESTRATION_EXECUTOR_REJECTED("orchestration.executor_rejected",
