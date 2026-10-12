@@ -14,7 +14,7 @@ import java.util.function.Consumer;
 /**
  * Routes a user target from one fresh canonical session snapshot, and owns the one decision
  * table "session state x user intent -> action" ({@link #transition}). The stream screen asks
- * it what Back and Cancel mean; it only executes the answer.
+ * it what Back, Cancel and Retry mean; it only executes the answer.
  */
 public final class SessionOrchestrator implements AutoCloseable {
     enum Rejection { INITIALIZING, UNPAIRED, TERMINATING }
@@ -274,14 +274,16 @@ public final class SessionOrchestrator implements AutoCloseable {
                 && generation.get() == pending.request;
     }
 
-    /** What the user asked for. A later intent (Retry) adds a kind and its rows. */
+    /** What the user asked for. */
     public static final class UserIntent {
-        public enum Kind { PLAY, BACK, CANCEL }
+        public enum Kind { PLAY, BACK, CANCEL, RETRY }
 
         /** The physical Back / B button on the stream screen. */
         public static final UserIntent BACK = new UserIntent(Kind.BACK, null);
         /** The Cancel control of the transition cover. */
         public static final UserIntent CANCEL = new UserIntent(Kind.CANCEL, null);
+        /** The Retry control of the transition cover after a failure. */
+        public static final UserIntent RETRY = new UserIntent(Kind.RETRY, null);
 
         public final Kind kind;
         final PlayIntent target;
@@ -299,8 +301,8 @@ public final class SessionOrchestrator implements AutoCloseable {
     /**
      * The facts one decision reads; plain data, filled by whoever asks. The console asks about
      * Play with the host's session projection and how far that request got; the stream screen
-     * asks about Back and Cancel with the transition it presents. Cover, readiness and input
-     * facts are copied from their owner, {@code LaunchTransitionController}.
+     * asks about Back, Cancel and Retry with the transition it presents. Cover, readiness and
+     * input facts are copied from their owner, {@code LaunchTransitionController}.
      */
     public static final class State {
         // ---- console: the host's session and this Play request's progress ----
@@ -335,11 +337,19 @@ public final class SessionOrchestrator implements AutoCloseable {
          */
         public boolean returningToDashboard;
         public boolean gameReadyConfirmed;
+        /** The user chose to see this transition's stream; nothing covers it again. */
+        public boolean manuallyRevealed;
+        /** The host reported this start failed: its cleanup was ordered. */
+        public boolean failedStartCleanup;
         /** The host granted this transport a control generation. */
         public boolean controlGranted;
         public boolean authorizationRetryOffered;
         public boolean failedStartObservation;
         public boolean retainedSwitch;
+        /** The retained switch already presents its new game's attempt. */
+        public boolean retainedSwitchAttempted;
+        /** A Retry of this very transition is already running. */
+        public boolean retryStarted;
         /** The session model holds exactly this stream as HOME_LIVE. */
         public boolean retainedHomeLive;
 
@@ -400,7 +410,18 @@ public final class SessionOrchestrator implements AutoCloseable {
         /** The local transport stops and the host stream its launch opened is closed. */
         STOP_TRANSPORT_CLOSE_HOST_STREAM,
         /** Only the local transport stops and the session records are cleared. */
-        STOP_TRANSPORT
+        STOP_TRANSPORT,
+        // ---- Retry on the stream screen ----
+        /** Accepts the offered authorization retry: the chosen game starts on this stream. */
+        ACCEPT_AUTHORIZATION_RETRY,
+        /** The retained switch cleans its failed attempt up and starts its game again. */
+        RETRY_RETAINED_SWITCH,
+        /** This start's cleanup first, then the same game again; the stream stays open. */
+        RETRY_GAME_START,
+        /** Connects the observation again; the stream stays open and no game is started. */
+        RETRY_OBSERVATION,
+        /** The transport is gone: a new start of this target with a new request time. */
+        RESTART_STREAM
     }
 
     /** One decided step; the Play parameters are set only for the kinds that use them. */
@@ -459,6 +480,7 @@ public final class SessionOrchestrator implements AutoCloseable {
         switch (intent.kind) {
             case PLAY: return play(state, intent.target);
             case BACK: return back(state);
+            case RETRY: return retry(state);
             default: return cancel(state);
         }
     }
@@ -646,6 +668,30 @@ public final class SessionOrchestrator implements AutoCloseable {
         // generation granted after this cancel is closed by the stopped transport.
         if (!s.revealed) return Action.of(ActionKind.STOP_TRANSPORT_CLOSE_HOST_STREAM);
         return Action.of(ActionKind.STOP_TRANSPORT);
+    }
+
+    private static Action retry(State s) {
+        if (!s.transitionActive) return Action.of(ActionKind.IGNORE);
+        // A transition whose retry already runs has nothing more to retry.
+        if (s.retryStarted) return Action.of(ActionKind.IGNORE);
+        // Retry lives on the cover. A stream the user revealed is never covered again by it.
+        if (!s.covered || s.manuallyRevealed) return Action.of(ActionKind.IGNORE);
+        if (!s.connected) return Action.of(ActionKind.RESTART_STREAM);
+        // From here the transport is alive: every retry stays on this stream.
+        if (s.authorizationRetryOffered) {
+            return Action.of(ActionKind.ACCEPT_AUTHORIZATION_RETRY);
+        }
+        if (s.retainedSwitch) {
+            // Before its new attempt the switch is still settling and decides by itself.
+            return Action.of(s.retainedSwitchAttempted
+                    ? ActionKind.RETRY_RETAINED_SWITCH : ActionKind.IGNORE);
+        }
+        // Only a start the host reported failed is started again. A game that may run (ready
+        // once, or a readiness that merely timed out) is never stopped: it is observed again.
+        boolean failedStart = s.type == LaunchTransitionType.GAME && s.hasGame
+                && !s.gameReadyConfirmed && s.failedStartCleanup;
+        return Action.of(failedStart
+                ? ActionKind.RETRY_GAME_START : ActionKind.RETRY_OBSERVATION);
     }
 
     /** A live retained stream observing its game in the foreground: nothing to cancel. */

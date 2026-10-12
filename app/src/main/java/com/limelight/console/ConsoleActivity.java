@@ -8280,7 +8280,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private long playActivityEpoch(String hostUuid, PlayniteDashboardItem item) {
         long playActivity = item.game.activityEpoch;
         long localLaunchActivity = preferences.getLong(
-                playniteGameHistoryKey(hostUuid, item.stableId()), 0L);
+                PlayHistory.gameKey(hostUuid, item.stableId()), 0L);
         return Math.max(playActivity, localLaunchActivity);
     }
 
@@ -11250,7 +11250,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         updateCarouselMarquee(name, false);
         copy.addView(name, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        long playedAt = preferences.getLong(appHistoryKey(host.uuid, app.getAppId()), 0L);
+        long playedAt = preferences.getLong(
+                PlayHistory.appKey(host.uuid, app.getAppId()), 0L);
         boolean running = runningAppId == app.getAppId();
         boolean hostReady = ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host);
@@ -11353,7 +11354,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             String appKey = host.uuid + ":" + app.getAppId();
             value.append(';').append(app.getAppId()).append(':').append(app.getAppName())
                     .append(':').append(isQuickLaunch(host.uuid, app.getAppId()))
-                    .append(':').append(preferences.getLong(appHistoryKey(
+                    .append(':').append(preferences.getLong(PlayHistory.appKey(
                             host.uuid, app.getAppId()), 0L))
                     .append(':').append(AppPreferences.getAppSettings(appSettings, appKey)
                             .useGlobalSettings);
@@ -12886,17 +12887,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                       PlayIntent pendingWarmUpGame,
                                       boolean recordHistory,
                                       PlayIntent playIntent) {
-        long playedAt = System.currentTimeMillis();
-        if (recordHistory) {
-            SharedPreferences.Editor history = preferences.edit()
-                    .putLong(appHistoryKey(host.uuid, app.getAppId()), playedAt)
-                    .putLong("host_played." + host.uuid, playedAt);
-            if (transition.type == LaunchTransitionType.GAME
-                    || transition.type == LaunchTransitionType.GAME_CONNECTION) {
-                history.putLong(playniteGameHistoryKey(
-                        host.uuid, transition.playniteGameId), playedAt);
-            }
-            history.apply();
+        // A game is not played by launching its stream: the stream screen records it once
+        // the host confirmed the game ready.
+        if (recordHistory && transition.type != LaunchTransitionType.GAME
+                && transition.type != LaunchTransitionType.GAME_CONNECTION) {
+            PlayHistory.recordApp(preferences, host.uuid, app.getAppId(),
+                    System.currentTimeMillis());
         }
         String openingStatus = getString(R.string.console_opening_stream);
         if (streamLoadingView != null) streamLoadingView.setStep(2, openingStatus);
@@ -13280,14 +13276,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             throw SessionFailure.SWITCH_INTERRUPTED.raise();
         }
         SessionModel.SwitchOutcome result = outcome.get();
+        // REUSED only says the stream carries the request from here, not that a game started.
         if (result == SessionModel.SwitchOutcome.REUSED) {
-            long playedAt = System.currentTimeMillis();
-            preferences.edit()
-                    .putLong(appHistoryKey(intent.hostId, target.getAppId()), playedAt)
-                    .putLong(playniteGameHistoryKey(
-                            intent.hostId, intent.playniteGameId), playedAt)
-                    .putLong("host_played." + intent.hostId, playedAt)
-                    .apply();
             return SessionOrchestrator.CloseResult.REUSED;
         }
         if (result == SessionModel.SwitchOutcome.CANCELLED) {
@@ -15351,14 +15341,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static String compactControllerName(String name) {
         if (name == null) return "Controller";
         return name.toLowerCase(Locale.ROOT).contains("dualsense") ? "DualSense" : name;
-    }
-
-    private static String appHistoryKey(String hostUuid, int appId) {
-        return "played_at.app." + hostUuid + "." + appId;
-    }
-
-    private static String playniteGameHistoryKey(String hostUuid, String gameId) {
-        return "played_at.game." + hostUuid + "." + gameId;
     }
 
     private String formatRelative(long milliseconds) {

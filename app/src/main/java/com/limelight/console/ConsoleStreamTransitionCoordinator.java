@@ -253,6 +253,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         providerCleanupArmed = false;
     }
 
+    /** No cleanup of this attempt stops a game: its launch was committed or it starts none. */
+    public synchronized boolean providerLaunchCommitted() {
+        return !providerCleanupArmed;
+    }
+
     /**
      * Activity recreation with a surviving transport: stop observing, keep the exact provider
      * owner (STARTING or STARTED, cleanup not claimed) without a holder for the next presentation.
@@ -799,6 +804,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
      * remains or its exact process was stopped), null while none has completed. A cancel after a
      * host-reported failure reads it, because that cleanup already ran.
      */
+    /** This attempt's provider cleanup was ordered: its start failed or was abandoned. */
+    public synchronized boolean providerCleanupRequested() {
+        return providerCleanupRequested;
+    }
+
     public synchronized Boolean providerCleanupResult() {
         return providerCleanupCompleted ? providerCleanupSucceeded : null;
     }

@@ -396,7 +396,7 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private void pollRetainedSwitchCancellation("));
         String arm = text.substring(text.indexOf(
                         "private void armNextVideoFrameForTransition("),
-                text.indexOf("private void retryTransition()"));
+                text.indexOf("private void restartStreamForRetry()"));
         String snapshot = text.substring(text.indexOf(
                         "private void applyTransitionSnapshot("),
                 text.indexOf("private void scheduleAutomaticReveal()"));
@@ -674,20 +674,40 @@ public class GameTransitionCancelContractTest {
             throws IOException {
         String text = source();
         String cancel = text.substring(text.indexOf("private void cancelTransition()"),
-                text.indexOf("private void retryTransition()"));
-        String retry = text.substring(text.indexOf("private void retryTransition()"),
-                text.indexOf("private void retryRetainedObservation()"));
+                text.indexOf("private void restartStreamForRetry()"));
+        String executed = text.substring(
+                text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("),
+                text.indexOf("private void endCancelledTransition("));
+        // Only the retry decided for a dead transport stops it and starts the stream again.
+        String restart = text.substring(text.indexOf("private void restartStreamForRetry()"),
+                text.indexOf("private boolean retryStillCurrent("));
+        String onStream = text.substring(text.indexOf("private void retryGameStart()"),
+                text.indexOf("public void displayMessage", text.indexOf(
+                        "private void retryGameStart()")));
 
         assertTrue(cancel.indexOf("retainedSwitch != null")
                 < cancel.indexOf("stopConnection(finishOnce)"));
         assertTrue(cancel.contains("requestRetainedSwitchCancellation(retainedSwitch)"));
-        assertTrue(retry.indexOf("retainedSwitch != null")
-                < retry.indexOf("stopConnection("));
-        assertTrue(retry.contains("requestRetainedSwitchCancellation(retainedSwitch)"));
+        int switchRetry = executed.indexOf("case RETRY_RETAINED_SWITCH:");
+        assertTrue(switchRetry >= 0);
+        assertTrue(executed.indexOf("retainedSwitch.retryRequested = true;", switchRetry)
+                < executed.indexOf("requestRetainedSwitchCancellation(retainedSwitch)",
+                switchRetry));
+        assertFalse(executed.contains("stopConnection("));
+        assertTrue(restart.contains("stopConnection("));
+        assertTrue(restart.contains(
+                "retry.putExtra(EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.uptimeMillis())"));
+        assertFalse(onStream.contains("stopConnection"));
+        assertFalse(onStream.contains("startActivity("));
+        assertTrue(onStream.contains("LaunchTransitionType.GAME,"));
+        // The failed start's cleanup is already ordered: Retry orders no stop by itself.
+        assertFalse(onStream.contains("transitionCoordinator.cancel()"));
+        assertTrue(text.contains("gameRestartTransitionId = \"\";\n"
+                + "                                continueGameRetry(transitionId, success);"));
         String observationRetry = text.substring(text.indexOf(
-                        "private void retryRetainedObservation()"),
+                        "private void retryLiveObservation()"),
                 text.indexOf("public void displayMessage", text.indexOf(
-                        "private void retryRetainedObservation()")));
+                        "private void retryLiveObservation()")));
         assertTrue(observationRetry.contains("transferProviderOwnershipTo(replacement)"));
         assertFalse(observationRetry.contains("conn.start"));
         assertFalse(observationRetry.contains("conn.stop"));
@@ -768,7 +788,7 @@ public class GameTransitionCancelContractTest {
                 < stop.indexOf("retainNeutralStreamAfterNaturalGameStop("));
         assertTrue(stop.contains("providerEndGameInFlight = true"));
         assertTrue(stop.split("isFinishing\\(\\) \\|\\| isDestroyed\\(\\)", -1).length - 1 >= 2);
-        assertTrue(stop.contains("retryRetainedObservation()"));
+        assertTrue(stop.contains("retryLiveObservation()"));
         assertFalse(stop.contains("conn.start"));
         assertFalse(stop.contains("conn.stop"));
         assertFalse(stop.contains("quitApp"));
@@ -1034,16 +1054,14 @@ public class GameTransitionCancelContractTest {
         String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String reveal = game.substring(game.indexOf("private void revealTransitionNow()"),
                 game.indexOf("private void cancelPendingAutomaticReveal()"));
-        String retry = game.substring(game.indexOf("private void retryTransition()"),
+        String retainedRetry = game.substring(
+                game.indexOf("private void retryLiveObservation()"),
                 game.indexOf("public void displayMessage"));
 
         assertTrue(reveal.indexOf("streamEverRevealed = true")
                 < reveal.indexOf("persistRevealedTransitionForRecovery()"));
         assertTrue(reveal.indexOf("persistRevealedTransitionForRecovery()")
                 < reveal.indexOf("transitionController.revealCompleted"));
-        assertTrue(retry.contains("retryRetainedObservation()"));
-        String retainedRetry = retry.substring(retry.indexOf(
-                "private void retryRetainedObservation()"));
         assertTrue(retainedRetry.contains("LaunchTransitionType.GAME_CONNECTION"));
         assertTrue(retainedRetry.contains("transitionCoordinator.start()"));
         assertTrue(retainedRetry.contains("transitionCoordinator.onStreamConnected()"));
@@ -1190,8 +1208,6 @@ public class GameTransitionCancelContractTest {
         String cancel = text.substring(
                 text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("),
                 text.indexOf("private void endCancelledTransition("));
-        String retry = text.substring(text.indexOf("private void retryTransition()"),
-                text.indexOf("private void retryRetainedObservation()"));
         String settle = text.substring(
                 text.indexOf("private boolean settleOfferedAuthorizationRetry("),
                 text.indexOf("ProviderProcessIdentity\n            resolveRetainedProviderIdentity("));
@@ -1201,8 +1217,10 @@ public class GameTransitionCancelContractTest {
         assertTrue(handoff.contains("offerRetainedAuthorizationRetry(operation)"));
         assertTrue(cancel.indexOf("case DECLINE_AUTHORIZATION_RETRY:")
                 < cancel.indexOf("settleOfferedAuthorizationRetry(false)"));
-        assertTrue(retry.indexOf("settleOfferedAuthorizationRetry(true)")
-                < retry.indexOf("retainedSwitch.retryRequested = true"));
+        assertTrue(cancel.indexOf("case ACCEPT_AUTHORIZATION_RETRY:")
+                < cancel.indexOf("settleOfferedAuthorizationRetry(true)"));
+        assertTrue(cancel.indexOf("settleOfferedAuthorizationRetry(true)")
+                < cancel.indexOf("case RETRY_RETAINED_SWITCH:"));
         assertTrue(settle.contains("settleStartFailedSwitch(operation)"));
         assertTrue(Game.retriesRetainedAuthorization(false, 0));
         assertFalse("exactly one quiet retry", Game.retriesRetainedAuthorization(false, 1));
@@ -1246,6 +1264,48 @@ public class GameTransitionCancelContractTest {
                 + "                    STATE_FAILED_START_OBSERVATION_ID"));
     }
 
+    @Test public void retriedStartContinuesOnlyWhileItsCoverAndTransitionStand() {
+        assertEquals(Game.RetryStep.START_GAME,
+                Game.afterRetryCleanup("t1", "t1", false, false, true));
+        // The failed attempt's game could not be stopped: only observed, never started again.
+        assertEquals(Game.RetryStep.OBSERVE,
+                Game.afterRetryCleanup("t1", "t1", false, false, false));
+        for (boolean cleaned : new boolean[] {true, false}) {
+            assertEquals("cancel", Game.RetryStep.NONE,
+                    Game.afterRetryCleanup("t1", "t1", true, false, cleaned));
+            assertEquals("newer transition", Game.RetryStep.NONE,
+                    Game.afterRetryCleanup("t1", "t2", false, false, cleaned));
+            assertEquals("no transition", Game.RetryStep.NONE,
+                    Game.afterRetryCleanup("t1", "", false, false, cleaned));
+            assertEquals("revealed by hand during the cleanup", Game.RetryStep.NONE,
+                    Game.afterRetryCleanup("t1", "t1", false, true, cleaned));
+        }
+    }
+
+    @Test public void restartAfterADeadTransportNeverStartsARunningGameTwice()
+            throws IOException {
+        assertEquals(LaunchTransitionType.GAME_CONNECTION,
+                Game.restartType(LaunchTransitionType.GAME, true, true));
+        // Not confirmed ready, or an uncommitted launch the dead transport cleans up.
+        assertEquals(LaunchTransitionType.GAME,
+                Game.restartType(LaunchTransitionType.GAME, false, true));
+        assertEquals(LaunchTransitionType.GAME,
+                Game.restartType(LaunchTransitionType.GAME, true, false));
+        for (LaunchTransitionType type : LaunchTransitionType.values()) {
+            if (type != LaunchTransitionType.GAME) {
+                assertEquals(type, Game.restartType(type, true, true));
+            }
+        }
+        String game = source();
+        String restart = game.substring(game.indexOf("private void restartStreamForRetry()"),
+                game.indexOf("private boolean retryStillCurrent("));
+        // Decided before the dead transport's cleanup is ordered; no warm-up identity rides on.
+        assertTrue(restart.indexOf("restartType(transitionSpec.type,")
+                < restart.indexOf("transitionCoordinator.onStreamFailed()"));
+        assertTrue(restart.contains("removeAutoWarmUpExtras(retry);"));
+        assertFalse(restart.contains("transitionSpec.type,\n                transitionSpec.sun"));
+    }
+
     @Test public void retryFenceSurvivesRecreationAndUnownedTransportIsStopped()
             throws IOException {
         String game = source();
@@ -1254,8 +1314,8 @@ public class GameTransitionCancelContractTest {
         String save = game.substring(game.indexOf("protected void onSaveInstanceState("),
                 game.indexOf("if (transitionCoordinator != null)",
                         game.indexOf("protected void onSaveInstanceState(")));
-        String retry = game.substring(game.indexOf("private void retryTransition()"),
-                game.indexOf("private void retryRetainedObservation()"));
+        String retry = game.substring(game.indexOf("private void restartStreamForRetry()"),
+                game.indexOf("private void retryGameStart()"));
         String destroy = game.substring(game.indexOf("protected void onDestroy()"),
                 game.indexOf("if (transitionCoordinator != null)",
                         game.indexOf("protected void onDestroy()")));
@@ -1263,10 +1323,19 @@ public class GameTransitionCancelContractTest {
         assertTrue(create.contains("savedInstanceState.getString(STATE_RETRY_TRANSITION_ID"));
         assertTrue(save.contains("outState.putString(STATE_RETRY_TRANSITION_ID"));
         assertTrue(retry.contains("if (!retryStillCurrent(retryId)) return;"));
-        assertTrue(retry.contains("cancelTransition();"));
         String cancel = game.substring(
                 game.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("),
                 game.indexOf("private void endCancelledTransition("));
+        // A repeated Retry of the same transition is decided by the table alone.
+        assertTrue(game.contains("state.retryStarted = transitionSpec != null\n"
+                + "                && transitionSpec.id.equals(retryTransitionId);"));
+        assertTrue(cancel.contains("retryTransitionId = transitionSpec.id;"));
+        assertFalse(cancel.contains("UserIntent.CANCEL;"));
+        // An observation retry that could not begin leaves the offered Retry usable.
+        String observe = game.substring(game.indexOf("private void retryLiveObservation()"),
+                game.indexOf("private void presentRetryAttempt("));
+        assertTrue(observe.indexOf("retryTransitionId = \"\";")
+                < observe.indexOf("transitionController.error(previousSpec.id,"));
         assertTrue(cancel.indexOf("retryTransitionId = \"\"")
                 < cancel.indexOf("switch (decided)"));
         assertTrue(cancel.contains("retainedSwitch.retryRequested = false;"));

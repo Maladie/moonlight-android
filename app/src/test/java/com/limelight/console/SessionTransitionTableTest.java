@@ -192,6 +192,154 @@ public class SessionTransitionTableTest {
         assertEquals(ActionKind.LEAVE_SCREEN, back(underHome));
     }
 
+    // ---------------------------------------------------------------- Retry
+
+    @Test public void retryWithoutAPresentedTransitionOrDuringACancelIsIgnored() {
+        State state = failedStart();
+        state.transitionActive = false;
+        assertEquals(ActionKind.IGNORE, retry(state));
+    }
+
+    @Test public void repeatedRetryOfTheSameTransitionIsIgnored() {
+        State start = failedStart();
+        start.controlGranted = true;
+        start.retryStarted = true;
+        assertEquals(ActionKind.IGNORE, retry(start));
+
+        State gone = failedStart();
+        gone.connected = false;
+        gone.retryStarted = true;
+        assertEquals(ActionKind.IGNORE, retry(gone));
+    }
+
+    @Test public void retryNeverCoversAStreamTheUserRevealed() {
+        for (LaunchTransitionType type : LaunchTransitionType.values()) {
+            State state = covered(type, true);
+            state.connected = true;
+            state.covered = false;
+            state.revealed = true;
+            assertEquals(ActionKind.IGNORE, retry(state));
+        }
+        // "Reveal now" was chosen and its reveal still runs: the cover is already given up.
+        State revealing = failedStart();
+        revealing.manuallyRevealed = true;
+        assertEquals(ActionKind.IGNORE, retry(revealing));
+        revealing.connected = false;
+        assertEquals(ActionKind.IGNORE, retry(revealing));
+    }
+
+    @Test public void retryWithoutALiveTransportStartsTheStreamAgain() {
+        for (LaunchTransitionType type : LaunchTransitionType.values()) {
+            State state = covered(type, type != LaunchTransitionType.GENERIC);
+            assertEquals(type.name(), ActionKind.RESTART_STREAM, retry(state));
+        }
+        // Whatever a retained switch recorded: nothing lives to retry on.
+        State offered = failedStart();
+        offered.connected = false;
+        offered.retainedSwitch = true;
+        offered.retainedSwitchAttempted = true;
+        offered.authorizationRetryOffered = true;
+        assertEquals(ActionKind.RESTART_STREAM, retry(offered));
+    }
+
+    @Test public void retryOfAFailedGameStartStartsTheGameAgainOnTheLiveStream() {
+        State state = failedStart();
+        assertEquals(ActionKind.RETRY_GAME_START, retry(state));
+        // Granted or not, retained as home-live or not: the stream stays.
+        state.controlGranted = true;
+        state.retainedHomeLive = true;
+        assertEquals(ActionKind.RETRY_GAME_START, retry(state));
+    }
+
+    @Test public void retryAfterTheGameWasConfirmedReadyOnlyObservesAgain() {
+        State state = failedStart();
+        state.gameReadyConfirmed = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(state));
+    }
+
+    @Test public void retryNeverStopsAGameWhoseStartTheHostDidNotReportFailed() {
+        // Readiness timed out while the game runs (its window is not in the foreground):
+        // no cleanup was ordered, so the running game is only observed again.
+        State running = failedStart();
+        running.failedStartCleanup = false;
+        running.timedOut = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(running));
+        running.controlGranted = true;
+        running.retainedHomeLive = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(running));
+        // A refused start (launcher interaction, locked host) ordered no cleanup either.
+        State refused = failedStart();
+        refused.failedStartCleanup = false;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(refused));
+
+        // A timeout whose cleanup was ordered (the stream never set up) is a failed start.
+        State failed = failedStart();
+        failed.timedOut = true;
+        assertEquals(ActionKind.RETRY_GAME_START, retry(failed));
+    }
+
+    @Test public void retryOfAFailedConnectionOrObservationObservesAgainOnTheLiveStream() {
+        for (LaunchTransitionType type : new LaunchTransitionType[] {
+                LaunchTransitionType.GAME_CONNECTION, LaunchTransitionType.PLAYNITE,
+                LaunchTransitionType.GENERIC}) {
+            State state = covered(type, type == LaunchTransitionType.GAME_CONNECTION);
+            state.connected = true;
+            assertEquals(type.name(), ActionKind.RETRY_OBSERVATION, retry(state));
+        }
+        // The observation kept after a failed start whose game could not be stopped.
+        State kept = reconnectToGame();
+        kept.connected = true;
+        kept.failedStartObservation = true;
+        kept.retainedHomeLive = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(kept));
+        // A GAME transition without a game has no start to repeat.
+        State noGame = covered(LaunchTransitionType.GAME, false);
+        noGame.connected = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(noGame));
+    }
+
+    @Test public void retryOnAnOfferedAuthorizationRetryAcceptsIt() {
+        State state = reconnectToGame();
+        state.connected = true;
+        state.retainedSwitch = true;
+        state.authorizationRetryOffered = true;
+        assertEquals(ActionKind.ACCEPT_AUTHORIZATION_RETRY, retry(state));
+    }
+
+    @Test public void retryDuringARetainedSwitchRestartsItsAttemptOrWaitsForIt() {
+        State state = failedStart();
+        state.retainedSwitch = true;
+        state.retainedSwitchAttempted = true;
+        assertEquals(ActionKind.RETRY_RETAINED_SWITCH, retry(state));
+        // Also when the attempt only observes: the switch owns its start.
+        state.type = LaunchTransitionType.GAME_CONNECTION;
+        assertEquals(ActionKind.RETRY_RETAINED_SWITCH, retry(state));
+
+        state.retainedSwitchAttempted = false;
+        assertEquals(ActionKind.IGNORE, retry(state));
+    }
+
+    @Test public void noRetryOnALiveTransportStopsOrRestartsTheStream() {
+        for (LaunchTransitionType type : LaunchTransitionType.values()) {
+            for (int facts = 0; facts < 64; facts++) {
+                State state = covered(type, (facts & 1) != 0);
+                state.connected = true;
+                state.gameReadyConfirmed = (facts & 2) != 0;
+                state.retainedSwitch = (facts & 4) != 0;
+                state.retainedSwitchAttempted = state.retainedSwitch && (facts & 8) != 0;
+                state.authorizationRetryOffered = state.retainedSwitch && (facts & 16) != 0;
+                state.failedStartCleanup = (facts & 32) != 0;
+                ActionKind decided = retry(state);
+                assertTrue(type + " facts=" + facts + " -> " + decided,
+                        decided == ActionKind.IGNORE
+                                || decided == ActionKind.ACCEPT_AUTHORIZATION_RETRY
+                                || decided == ActionKind.RETRY_RETAINED_SWITCH
+                                || decided == ActionKind.RETRY_GAME_START
+                                || decided == ActionKind.RETRY_OBSERVATION);
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- Play
 
     @Test public void playWhileASessionClosesIsRefused() {
@@ -349,6 +497,18 @@ public class SessionTransitionTableTest {
 
     private static ActionKind back(State state) {
         return SessionOrchestrator.transition(state, UserIntent.BACK).kind;
+    }
+
+    private static ActionKind retry(State state) {
+        return SessionOrchestrator.transition(state, UserIntent.RETRY).kind;
+    }
+
+    /** A covered game start the host reported failed while its stream stays connected. */
+    private static State failedStart() {
+        State state = covered(LaunchTransitionType.GAME, true);
+        state.connected = true;
+        state.failedStartCleanup = true;
+        return state;
     }
 
     /** A covered, unrevealed transition before the host granted anything. */

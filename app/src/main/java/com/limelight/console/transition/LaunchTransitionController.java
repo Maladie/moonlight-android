@@ -620,7 +620,8 @@ public final class LaunchTransitionController {
         return new LaunchTransitionSnapshot(spec, state, activeStep,
                 overlayVisible, inputBlocked, operationAuthorized, revealAuthorized,
                 manualRevealAvailable, uncertain, detail,
-                startTakingLonger && isGameStartPending(state), revealPreferred, notice);
+                startTakingLonger && isGameStartPending(state), revealPreferred, notice,
+                manualRevealOverride);
     }
 
     static int stepForState(LaunchTransitionState state) {

@@ -320,18 +320,21 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("private void ensureVibepolloAfterInstall("));
 
         assertTrue(activity.contains(
-                "playniteGameHistoryKey(hostUuid, item.stableId())"));
-        assertFalse(activity.contains("appHistoryKey("));
-        assertTrue(launch.contains("transition.type == LaunchTransitionType.GAME"));
-        assertTrue(launch.contains("LaunchTransitionType.GAME_CONNECTION"));
-        assertTrue(launch.contains("playniteGameHistoryKey("));
+                "PlayHistory.gameKey(hostUuid, item.stableId())"));
+        assertFalse(activity.contains("PlayHistory.appKey("));
+        // Launching a game's stream, or reusing one, is not playing the game: the stream
+        // screen records it once the host confirmed the game ready.
+        assertTrue(launch.contains("transition.type != LaunchTransitionType.GAME"));
+        assertTrue(launch.contains("transition.type != LaunchTransitionType.GAME_CONNECTION"));
+        assertFalse(launch.contains("PlayHistory.gameKey("));
+        assertFalse(source.contains("PlayHistory.recordGame("));
         int reused = retainedSwitch.indexOf(
                 "result == SessionModel.SwitchOutcome.REUSED");
         int cancelled = retainedSwitch.indexOf(
                 "result == SessionModel.SwitchOutcome.CANCELLED");
         assertTrue(reused >= 0 && cancelled > reused);
-        assertTrue(retainedSwitch.substring(reused, cancelled).contains(
-                "playniteGameHistoryKey("));
+        assertFalse(retainedSwitch.contains("PlayHistory."));
+        assertFalse(retainedSwitch.contains("preferences.edit()"));
         assertTrue(launch.contains("Game.EXTRA_STREAM_TARGET_NAME"));
         assertTrue(launch.contains("Game.EXTRA_NEUTRAL_STREAM_TARGET"));
         assertTrue(launch.contains("PlayniteTargetResolver.isNeutralStream(app)"));
