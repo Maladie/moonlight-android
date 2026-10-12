@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
@@ -116,6 +117,8 @@ final class ConsoleIntroView extends FrameLayout {
     static final long EXIT_ZOOM_MS = 600L;
     /** After the intro ends unready, readiness is still watched this long for the record. */
     static final long READY_WATCH_MS = 30_000L;
+    /** The PIN screen opens in 240 ms; the intro is built for its profile once that is over. */
+    static final long PREPARE_AFTER_MS = 320L;
 
     private static Bitmap bandCache;
     private static Bitmap markCache;
@@ -128,10 +131,21 @@ final class ConsoleIntroView extends FrameLayout {
     private final ViewGroup carousel;
     private final BooleanSupplier reducedMotion;
     private final BooleanSupplier homeData;
+    private BooleanSupplier cardsPending = () -> false;
+    private Runnable buildCard = () -> { };
     private final Set<String> loadingPosters;
     private final Predicate<Object> artworkShown;
     private final TimeAnimator clock = new TimeAnimator();
     private final List<Runnable> untilShown = new ArrayList<>();
+    private final List<Runnable> untilEntered = new ArrayList<>();
+    private final Runnable prepareStep = this::prebuild;
+    private HostGatewayClient.IntegrationProfile awaited;
+    /** The views for {@link #awaited} are built and laid out, invisible, for the next start. */
+    private boolean prebuilt;
+    private boolean entered;
+    /** The clock's time at which the intro's own time started; negative while it stands still. */
+    private long movingSince = -1L;
+    private int stillFrames;
     private boolean drawn;
     private boolean shown;
     private final Set<Integer> swallowed = new HashSet<>();
@@ -164,7 +178,8 @@ final class ConsoleIntroView extends FrameLayout {
     private TextView greeting;
 
     /**
-     * {@code homeData}: the home screen shows its local data; {@code loadingPosters}: artwork
+     * {@code homeData}: the home screen has its local data, rendered or as a waiting step
+     * ({@link #afterEntrance}); {@code loadingPosters}: artwork
      * tags whose poster is still being fetched or decoded; {@code artworkShown}: for a focused
      * poster's tag, no backdrop is pending and its art is at rest or its request ended without
      * art. The posters on screen are checked here.
@@ -186,8 +201,7 @@ final class ConsoleIntroView extends FrameLayout {
         this.artworkShown = artworkShown;
         setVisibility(GONE);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-        clock.setTimeListener((animation, total, delta) ->
-                frame(total / ConsoleIntroTiming.TIME_SCALE));
+        clock.setTimeListener((animation, total, delta) -> tick(total));
         float scale = scale();
         Thread prepare = new Thread(() -> {
             bandBitmap();
@@ -206,12 +220,18 @@ final class ConsoleIntroView extends FrameLayout {
      * is ever copied, as its FLAG_SECURE goes as soon as the shell hides.
      */
     void start(HostGatewayClient.IntegrationProfile profile, String hostId, Entry entry) {
-        end();
+        boolean reduce = reducedMotion.getAsBoolean();
+        boolean reuse = prebuilt && entry == Entry.PIN && reduce == reduced
+                && sameLook(awaited, profile);
+        if (reuse) prebuilt = false;
+        else end();
+        awaited = null;
         boolean hostChange = lastHostId != null && !lastHostId.equals(hostId);
         lastHostId = hostId;
         this.hostId = hostId;
         profileId = profile.id;
-        reduced = reducedMotion.getAsBoolean();
+        reduced = reduce;
+        entered = reduced;
         View from = entry == Entry.PIN ? pinEntry.avatar()
                 : entry == Entry.PROFILE ? profiles.avatarOf(profile.id) : null;
         minimumMs = hostChange ? ConsoleIntroTiming.HOST_CHANGE_MS : ConsoleIntroTiming.MINIMUM_MS;
@@ -226,8 +246,12 @@ final class ConsoleIntroView extends FrameLayout {
                 "kind", entry.name().toLowerCase(Locale.ROOT),
                 "detail", reduced ? "reduced" : hostChange ? "host_change" : "full");
         s = scale();
-        build(profile, from, entry == Entry.PROFILE && shell.getWidth() > 0);
+        if (!reuse) build(profile, entry == Entry.PROFILE && shell.getWidth() > 0);
+        // Where the avatar is now: it depends on the layout of the screen being left.
+        avatarFrom = from == null ? null : rectIn(from);
         running = true;
+        movingSince = -1L;
+        stillFrames = 0;
         setAlpha(1f);
         setVisibility(VISIBLE);
         frame(0f);
@@ -241,6 +265,63 @@ final class ConsoleIntroView extends FrameLayout {
     static void shown(ConsoleIntroView intro, Runnable action) {
         if (intro == null || !intro.running || intro.shown) action.run();
         else intro.untilShown.add(action);
+    }
+
+    /**
+     * Builds the intro for {@code profile} while its PIN is typed, once the PIN screen has
+     * opened: invisible and still, so that {@link #start} after the PIN only sets it moving.
+     * {@link #discard} or {@link #end} releases it; a start for anything else builds afresh.
+     */
+    void prepare(HostGatewayClient.IntegrationProfile profile) {
+        discard();
+        awaited = profile;
+        postDelayed(prepareStep, PREPARE_AFTER_MS);
+    }
+
+    /** Drops what {@link #prepare} built or was about to; a running intro is left alone. */
+    void discard() {
+        if (running) removeCallbacks(prepareStep);
+        else end();
+    }
+
+    private void prebuild() {
+        if (running || awaited == null) return;
+        reduced = reducedMotion.getAsBoolean();
+        s = scale();
+        build(awaited, false);
+        prebuilt = true;
+        // Measured and laid out with the PIN screen above it, but never drawn.
+        setVisibility(INVISIBLE);
+    }
+
+    /** Whether both profiles give the intro the same avatar and greeting. */
+    private static boolean sameLook(HostGatewayClient.IntegrationProfile first,
+                                    HostGatewayClient.IntegrationProfile second) {
+        return first.id.equals(second.id) && Objects.equals(first.name, second.name)
+                && Objects.equals(first.kind, second.kind)
+                && Objects.equals(first.avatarId, second.avatarId);
+    }
+
+    /**
+     * Runs {@code step} as a step of a running intro, else now. Home's own UI work waits here
+     * so the entrance keeps its frames: the steps run in order, one per frame, while the
+     * opening frame stands still ({@link #tick}) and again once the entrance is over
+     * ({@link ConsoleIntroTiming#ENTRANCE_MS}), never in between; the exit does not begin
+     * before the last of them has run.
+     */
+    static void afterEntrance(ConsoleIntroView intro, Runnable step) {
+        if (intro == null || !intro.entering()) step.run();
+        else intro.untilEntered.add(step);
+    }
+
+    /** Whether the entrance is still on, or steps that waited for its end still are. */
+    boolean entering() {
+        return running && !entered;
+    }
+
+    private void runEntered() {
+        entered = true;
+        while (!untilEntered.isEmpty()) untilEntered.remove(0).run();
     }
 
     /** Whether the intro still covers home, before its exit. */
@@ -297,8 +378,7 @@ final class ConsoleIntroView extends FrameLayout {
         return getResources().getDisplayMetrics().widthPixels / 1920f;
     }
 
-    private void build(HostGatewayClient.IntegrationProfile profile, View from,
-                       boolean snapshotShell) {
+    private void build(HostGatewayClient.IntegrationProfile profile, boolean snapshotShell) {
         if (snapshotShell) {
             // Mockup: the intro blends in from the profile row, which home hides at once.
             shot = Bitmap.createBitmap(shell.getWidth() / 2, shell.getHeight() / 2,
@@ -331,7 +411,6 @@ final class ConsoleIntroView extends FrameLayout {
                 new int[]{VIOLET}));
         if (!reduced) {
             avatar = avatar(layers, profile);
-            avatarFrom = from == null ? null : rectIn(from);
             orb = add(layers, new Spots(getContext(), new float[]{
                     CENTRE_X, ORB_Y, 300f, 120f, CENTRE_X, ORB_Y, 135f, 160f,
                     CENTRE_X, ORB_Y, 56f, 255f},
@@ -370,12 +449,45 @@ final class ConsoleIntroView extends FrameLayout {
                 new int[]{ConsoleEntryShell.BASE_TOP, ConsoleEntryShell.BASE_BOTTOM});
     }
 
+    /** The carousel's cards still to be built, for the opening frame to build one a frame. */
+    void carouselCards(BooleanSupplier pending, Runnable buildOne) {
+        cardsPending = pending;
+        buildCard = buildOne;
+    }
+
+    /**
+     * A clock tick. The intro first stands still on its opening frame while home lays out,
+     * its local data arrives and the steps that render it run, one per frame; its time starts
+     * once they are done ({@link ConsoleIntroTiming#standsStill}), so the entrance plays on a
+     * free main thread. What comes later waits for the entrance's end.
+     */
+    private void tick(long total) {
+        if (!running) return;
+        if (movingSince < 0L) {
+            boolean steps = !untilEntered.isEmpty();
+            boolean still = !reduced && ConsoleIntroTiming.standsStill(total, stillFrames,
+                    steps || cardsPending.getAsBoolean(), homeData.getAsBoolean());
+            if (still) {
+                stillFrames++;
+                // One step a frame, then one carousel card a frame: none is left for the motion.
+                if (stillFrames > 1 && steps) untilEntered.remove(0).run();
+                else if (stillFrames > 1) buildCard.run();
+                return;
+            }
+            movingSince = total;
+        }
+        frame((total - movingSince) / ConsoleIntroTiming.TIME_SCALE);
+    }
+
     /** One frame at {@code ms} on the intro's clock. */
     private void frame(float ms) {
         if (!running) return;
         nowMs = ms;
-        boolean ready = ready();
+        boolean ready = entered && ready();
         if (exitAtMs < 0L && ConsoleIntroTiming.leave((long) ms, minimumMs, ready, keyAtMs)) {
+            // Past the limit with steps still waiting: none is left for after the reveal.
+            runEntered();
+            if (!running) return;
             beginExit((long) ms);
         }
         if (reduced) {
@@ -384,6 +496,11 @@ final class ConsoleIntroView extends FrameLayout {
             phase(ms * speed);
         }
         if (exitAtMs >= 0L) exit(ms - exitAtMs);
+        // Last, as a step may end or restart the intro: one waiting step per frame.
+        if (running && !entered && ConsoleIntroTiming.entered(ms * speed)) {
+            if (untilEntered.isEmpty()) entered = true;
+            else untilEntered.remove(0).run();
+        }
     }
 
     /** make_flow_video.py, step 5, at {@code t} ms into the intro. */
@@ -459,8 +576,14 @@ final class ConsoleIntroView extends FrameLayout {
                 EXIT_FADE_MS + COVER_STAGGER_MS * Math.max(0, covers.size() - 1))) end();
     }
 
-    /** Stops at once, leaving home at rest; the per-entry snapshot is released. */
+    /**
+     * Stops at once, leaving home at rest; the per-entry snapshot and anything prepared are
+     * released, and the steps still waiting for the entrance run.
+     */
     void end() {
+        removeCallbacks(prepareStep);
+        awaited = null;
+        prebuilt = false;
         clock.end();
         if (running) {
             home.setScaleX(1f);
@@ -484,6 +607,8 @@ final class ConsoleIntroView extends FrameLayout {
         greeting = null;
         if (shot != null) shot.recycle();
         shot = null;
+        // Last, as in frame(): what waited for the entrance runs now.
+        runEntered();
     }
 
     /**

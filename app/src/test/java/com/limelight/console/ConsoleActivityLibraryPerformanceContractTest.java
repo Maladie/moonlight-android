@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -17,7 +18,8 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         String loading = source.substring(source.indexOf("private boolean restoreInitialLocalPresentationData("),
                 source.indexOf("private void settleInitialLocalPresentation("));
         assertFalse(loading.contains("selectedProfileIsChild"));
-        assertTrue(loading.contains("playniteLibraryRepository.cached(requestKey)"));
+        assertTrue(loading.contains("readCachedLibrary(host, requestKey, sortLocale)"));
+        assertTrue(loading.contains("playniteLibraryRepository.cached(key)"));
         String frame = source.substring(source.indexOf("protected final void completeInitialCarouselFrame()"),
                 source.indexOf("static boolean initialLocalPresentationReady("));
         assertTrue(frame.contains("requestPlayniteRefresh(currentHost(selectedHostUuid), false)"));
@@ -115,7 +117,16 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         assertTrue(library.contains("resolvePlayniteTarget(targets, game)"));
         assertFalse(library.contains("PlayniteTargetResolver.resolve("));
         assertTrue(source.contains(
-                "if (cached != null) prepareResolvedTargets(host, cached.games, currentSunshineApps);"));
+                "if (cached != null) prepareResolvedTargets(host, cached.games, loadApps(host));"));
+        // An unchanged refresh keeps the list the targets are keyed by; a changed one is
+        // resolved on the worker, and the PIN gate reads and resolves in memory only.
+        assertTrue(source.contains(
+                "if (libraryChanged) currentPlayniteGames = result.entry.games;"));
+        assertTrue(source.contains(
+                "prepareResolvedTargets(host, result.entry.games, currentSunshineApps);"));
+        assertTrue(source.substring(source.indexOf("private void showPinEntry("),
+                source.indexOf("private void submitProfilePin()")).contains(
+                "playniteExecutor.execute(() -> readCachedLibrary(host, gatedLibraryKey, sortLocale));"));
         assertTrue(grid.contains("callbacks.releaseCard(holder.itemView)"));
         String applyPrefetched = source.substring(source.indexOf(
                         "private void applyPrefetchedPlayniteArtwork("),
@@ -143,6 +154,52 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         String cache = source("PlayniteLibraryCache.java");
         assertTrue(cache.contains("private static final Map<String, Entry> MEMORY"));
         assertTrue(cache.contains("MEMORY.get(cacheKey)"));
+    }
+
+    @Test public void carouselBuildsManyMissingCardsAcrossFrames() throws IOException {
+        String source = consoleActivitySource();
+        String diff = source.substring(source.indexOf("private void applyPlayniteDiff("),
+                source.indexOf("private List<PlayniteDashboardItem> preserveOrderDuringFocus("));
+        // The render decides per position; a prepared returning frame is built whole.
+        assertTrue(diff.contains("if (card == null && !suppressInitialCarouselMotion && (introSteps\n"
+                + "                    || !PlayniteLibraryDiff.buildsInRender(index, missingCards))) {"));
+        assertTrue(diff.contains("carouselGhost(PENDING_CARD_TAG + item.stableId(), .28f)"));
+        // Every render reconciles the placeholders and restarts the single frame step.
+        assertTrue(diff.contains("placeholders.put(pendingId, child);"));
+        assertTrue(diff.contains("appRow.removeCallbacks(carouselCardBuildStep);\n"
+                + "        if (placeholdersLeft) {"));
+        assertTrue(diff.contains("            }\n"
+                + "            appRow.postOnAnimation(carouselCardBuildStep);"));
+        assertTrue(diff.contains("View target = carouselCard(selection);"));
+        // Placeholders are not cards: nothing addressed to \"playnite:\" tags reaches them.
+        assertTrue(source.contains(
+                "private static final String PENDING_CARD_TAG = \"playnite.pending:\";"));
+
+        String step = source.substring(source.indexOf(
+                        "private void buildNextPendingCarouselCard()"),
+                source.indexOf("private View buildPendingCarouselCard("));
+        // One card at a time with a gap, none while the row animates, no list captured by the step.
+        assertTrue(step.contains("transition.isChangingLayout()"));
+        assertTrue(step.contains("} else if (buildPendingCarouselCard(child) != null) {"));
+        assertTrue(step.contains(
+                "appRow.postDelayed(carouselCardBuildStep, CAROUSEL_CARD_BUILD_GAP_MS);"));
+        String build = source.substring(source.indexOf("private View buildPendingCarouselCard("),
+                source.indexOf("private void releaseExpandedGrid()"));
+        assertTrue(build.contains("for (PlayniteDashboardItem rendered : renderedPlayniteItems)"));
+        assertTrue(build.contains("currentHost(selectedHostUuid)"));
+        assertTrue(build.contains("appRow.removeViewAt(index);\n"
+                + "        appRow.addView(card, index, playniteCardSpacing());"));
+        assertTrue(build.contains("card.layout(placeholder.getLeft(), placeholder.getTop(),"));
+
+        // Navigation and the return from the grid get a real card at a pending position.
+        String navigation = source.substring(source.indexOf(
+                        "private boolean handleCarouselNavigation("),
+                source.indexOf("private void handleConsoleAudioKey("));
+        assertTrue(navigation.contains("candidate = buildPendingCarouselCard(candidate);"));
+        String reveal = source.substring(source.indexOf(
+                        "private void revealNormalLibraryAfterTransition()"),
+                source.indexOf("private void createCarouselToGridGhosts()"));
+        assertEquals(2, reveal.split("carouselCard\\(libraryTransitionGameId\\)", -1).length - 1);
     }
 
     private static String consoleActivitySource() throws IOException {

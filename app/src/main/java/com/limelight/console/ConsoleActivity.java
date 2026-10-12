@@ -129,6 +129,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.net.UnknownHostException;
+import java.text.Collator;
 import java.text.DateFormat;
 import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
@@ -825,6 +826,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final Set<String> initialCarouselArtworkLoads = new HashSet<>();
     private int initialCarouselArtworkGeneration;
     private boolean suppressInitialCarouselMotion;
+    /** Tag prefix of a carousel position whose card a later frame builds. */
+    private static final String PENDING_CARD_TAG = "playnite.pending:";
+    private static final long CAROUSEL_CARD_BUILD_GAP_MS = 100L;
+    private final Runnable carouselCardBuildStep = this::buildNextPendingCarouselCard;
     private boolean deferInitialPlayniteRefresh;
     private boolean deferInitialHostProfileRefresh;
     private PlayniteLibraryRepository.ErrorKind playniteLibraryError;
@@ -1615,7 +1620,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         int target = current + step;
         while (target >= 0 && target < appRow.getChildCount()) {
             View candidate = appRow.getChildAt(target);
-            if (candidate.getVisibility() == View.VISIBLE && candidate.isFocusable()) {
+            // A position whose card a later frame would build gets it now.
+            if (pendingCarouselGameId(candidate) != null) {
+                candidate = buildPendingCarouselCard(candidate);
+            }
+            if (candidate != null && candidate.getVisibility() == View.VISIBLE
+                    && candidate.isFocusable()) {
                 candidate.requestFocus();
                 return true;
             }
@@ -1941,6 +1951,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (serviceBound) unbindService(serviceConnection);
         cancelPlayniteRequest();
         cancelPlayniteArtworkPrefetch();
+        if (appRow != null) appRow.removeCallbacks(carouselCardBuildStep);
         if (sessionOrchestrator != null) sessionOrchestrator.close();
         if (gameOperationsController != null) gameOperationsController.close();
         playniteExecutor.shutdown();
@@ -2345,6 +2356,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 initialLocalLibraryHostId), loadingPosterTags, tag -> pendingArtworkKey == null
                 && loadingArtworkKey == null
                 && (displayedArtworkKey != null || settledBackdropTag.equals(tag))), match());
+        if (introView != null) {
+            introView.carouselCards(() -> firstPendingCarouselCard() != null, () -> {
+                View pending = firstPendingCarouselCard();
+                if (pending == null) return;
+                buildPendingCarouselCard(pending);
+                requestPendingInitialGameFocus(currentHost(selectedHostUuid));
+            });
+        }
         buildSidePanel();
         buildLoadingLayer(container);
         buildScreenSaverLayer(container);
@@ -3398,6 +3417,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         pinFocusApps = focusApps;
         pinPrepareHost = prepareHost;
         pinCompleteHostEntry = completeHostEntry;
+        // Reads this profile's library into memory and resolves its targets while the PIN is
+        // typed. Nothing is rendered or handed to the UI here; home reads the same after the PIN.
+        HostProfileKey gatedLibraryKey = new HostProfileKey(host.uuid, profile.id);
+        Locale sortLocale = getResources().getConfiguration().getLocales().get(0);
+        playniteExecutor.execute(() -> readCachedLibrary(host, gatedLibraryKey, sortLocale));
         if ((getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) == 0) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
             pinSecureFlagAdded = true;
@@ -3415,6 +3439,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (action == ConsolePinEntry.Action.SUBMIT) submitProfilePin();
         });
         renderPinEntry("");
+        // The entry intro this PIN leads to is built while it is typed.
+        if (introView != null && completeHostEntry) introView.prepare(profile);
     }
 
     private void submitProfilePin() {
@@ -3647,6 +3673,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         pinSubmitting = false;
         pinCooldownUntil = 0L;
         pinCompleteHostEntry = false;
+        if (introView != null) introView.discard();
         // FLAG_SECURE stays until the PIN page has faded out and a starting entry intro has
         // covered its last frame on screen, unless a PIN screen reopened.
         if (pinEntryView != null) pinEntryView.hide(() -> ConsoleIntroView.shown(introView, () -> {
@@ -4286,6 +4313,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         currentSunshineApps = loadApps(host);
+        initialLocalAppsHostId = host.uuid;
         updateHostSelector();
         refreshHostProfiles(host);
         refreshDiscordIndicator();
@@ -4362,7 +4390,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 // The profile data remains usable; child controls stay hidden until capability is known.
             }
             HostGatewayClient.Capabilities capabilityResult = capabilities;
-            mainHandler.post(() -> {
+            mainHandler.post(() -> ConsoleIntroView.afterEntrance(introView, () -> {
                 if (token != profileGeneration.get() || !hostId.equals(selectedHostUuid)) return;
                 String previous = selectedProfileId(hostId);
                 HostGatewayClient.IntegrationProfiles cachedBefore =
@@ -4406,7 +4434,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     updateHostStatus();
                     updateHostSelectionTile(currentHost(hostId));
                 }
-            });
+            }));
         });
     }
 
@@ -7601,7 +7629,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         updateHostSelector();
         if (requiresPreparedInitialCarouselFrame()) deferInitialHostProfileRefresh = true;
         else refreshHostProfiles(host);
-        refreshDiscordIndicator();
+        ConsoleIntroView.afterEntrance(introView, this::refreshDiscordIndicator);
         startAppListPoller(host);
         if (restoredInitialPresentation) settleInitialLocalPresentation(host);
         renderAppsAsync(host, focusApps);
@@ -7669,7 +7697,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 appsSignature.append(app.getAppId()).append(':').append(app.getAppName())
                         .append(';');
             }
-            mainHandler.post(() -> runLibraryUpdateWhenNavigationIdle(() -> {
+            mainHandler.post(() -> ConsoleIntroView.afterEntrance(introView,
+                    () -> runLibraryUpdateWhenNavigationIdle(() -> {
                 if (generation != appListRenderGeneration.get()) return;
                 // Under the profile gate nothing renders: entering the host renders afresh.
                 if (profileGateHostUuid != null) return;
@@ -7693,13 +7722,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             + ConsoleActionCatalog.isOnline(latestHost) + '|' + appsSignature;
                     if (focusApps || !appsKey.equals(renderedSunshineAppsKey)) {
                         renderedSunshineAppsKey = appsKey;
+                        // An empty library still loading has nothing to render: its loading
+                        // cards stay until the cache or the host answers, and that renders
+                        // with this app list.
+                        if (playniteInitialLoadPending && currentPlayniteGames.isEmpty()) return;
                         renderPlayniteLibrary(latestHost, apps);
                     }
                 } else {
                     renderApps(latestHost, apps);
                 }
                 if (!playniteAvailable) requestPendingInitialGameFocus(latestHost);
-            }));
+            })));
         });
     }
 
@@ -7773,11 +7806,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         unfilteredPlayniteItems = Collections.emptyList();
         playniteLibraryError = null;
         playniteInitialLoadPending = true;
-        if (!requiresPreparedInitialCarouselFrame()) showCarouselLoadingGhosts();
+        // Nothing of this library is rendered: the next app list result renders it.
+        renderedSunshineAppsKey = "";
+        if (!requiresPreparedInitialCarouselFrame()) {
+            // The row empties now; under an entry intro its loading cards wait for the
+            // entrance, and are not built at all once the load has ended or brought games.
+            if (appRow != null) appRow.removeAllViews();
+            ConsoleIntroView.afterEntrance(introView, () -> {
+                if (playniteInitialLoadPending && currentPlayniteGames.isEmpty()) {
+                    showCarouselLoadingGhosts();
+                }
+            });
+        }
         updatePlayniteLibraryStatus(host);
+        Locale sortLocale = getResources().getConfiguration().getLocales().get(0);
         playniteRequest = playniteExecutor.submit(() -> {
-            PlayniteLibraryCache.Entry cached = playniteLibraryRepository.cached(requestKey);
-            if (cached != null) prepareResolvedTargets(host, cached.games, currentSunshineApps);
+            PlayniteLibraryCache.Entry cached = readCachedLibrary(host, requestKey, sortLocale);
             mainHandler.post(() -> {
                 if (token != playniteGeneration.get() ||
                         !host.uuid.equals(selectedHostUuid)
@@ -7791,13 +7835,36 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (requiresPreparedInitialCarouselFrame()) {
                     settleInitialLocalPresentation(latestHost);
                     deferInitialPlayniteRefresh = true;
-                } else if (cached != null) {
-                    renderPlayniteLibrary(latestHost, currentSunshineApps);
+                } else if (cached != null && host.uuid.equals(initialLocalAppsHostId)) {
+                    // Without this host's app list yet, its result renders the library: once.
+                    renderLibraryAfterIntroEntrance(host.uuid);
                 }
                 if (!deferInitialPlayniteRefresh) {
                     requestPlayniteRefresh(latestHost, false);
                 }
             });
+        });
+    }
+
+    /** Worker thread: a profile's cached library, its launch targets resolved for the render. */
+    private PlayniteLibraryCache.Entry readCachedLibrary(ComputerDetails host, HostProfileKey key,
+                                                         Locale sortLocale) {
+        // The first collator of a process loads its data: here, not in the first render.
+        Collator.getInstance(sortLocale);
+        PlayniteLibraryCache.Entry cached = playniteLibraryRepository.cached(key);
+        // The app list is read here: the main thread may not have published its own yet.
+        if (cached != null) prepareResolvedTargets(host, cached.games, loadApps(host));
+        return cached;
+    }
+
+    /**
+     * Renders the library as it then is; under a starting entry intro, as one of its steps.
+     * The state the render reads is set by the caller at once.
+     */
+    private void renderLibraryAfterIntroEntrance(String hostUuid) {
+        ConsoleIntroView.afterEntrance(introView, () -> {
+            ComputerDetails host = currentHost(hostUuid);
+            if (host != null) renderPlayniteLibrary(host, currentSunshineApps);
         });
     }
 
@@ -7875,25 +7942,35 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             PlayniteLibraryRepository.Result result = playniteLibraryRepository.refresh(
                     requestKey, connection, () -> token != playniteGeneration.get() ||
                             Thread.currentThread().isInterrupted(), manual);
+            if (result.entry != null && !result.entry.games.equals(currentPlayniteGames)) {
+                prepareResolvedTargets(host, result.entry.games, currentSunshineApps);
+            }
             mainHandler.post(() -> {
                 if (token != playniteGeneration.get() || !active ||
                         !host.uuid.equals(selectedHostUuid)
                         || !requestKey.equals(selectedProfileKey(host.uuid))) return;
                 playniteLibraryRefreshing = false;
+                boolean initialLoad = playniteInitialLoadPending;
                 playniteInitialLoadPending = false;
                 ComputerDetails latestHost = currentHost(host.uuid);
                 if (latestHost == null) return;
                 if (result.entry != null) {
                     boolean libraryChanged = !result.entry.games.equals(currentPlayniteGames);
                     currentPlayniteProfileKey = requestKey;
-                    currentPlayniteGames = result.entry.games;
+                    // An unchanged library keeps its list, and with it the resolved targets.
+                    if (libraryChanged) currentPlayniteGames = result.entry.games;
                     playniteLibraryError = null;
                     reconcilePlayniteInstallations(latestHost, currentPlayniteGames);
-                    if (libraryChanged) renderPlayniteLibrary(latestHost, currentSunshineApps);
+                    if (libraryChanged) renderLibraryAfterIntroEntrance(host.uuid);
                     else updatePlayniteLibraryStatus(latestHost);
                 } else {
                     playniteLibraryError = result.error;
                     updatePlayniteLibraryStatus(latestHost);
+                }
+                // An initial load that ends without games (no cache and an error, or an
+                // empty library): its loading cards give way to the empty row and message.
+                if (initialLoad && currentPlayniteGames.isEmpty()) {
+                    renderLibraryAfterIntroEntrance(host.uuid);
                 }
                 mainHandler.removeCallbacks(playniteRefreshCycle);
                 scheduleNextPlayniteRefresh();
@@ -8170,14 +8247,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         List<PlayniteLibraryGame> ordered = PlayniteLibraryOrdering.order(
                 sourceFiltered, hostGatewayStore.playniteLibraryFilter(host.uuid),
                 getResources().getConfiguration().getLocales().get(0), localActivity);
-        ordered = promoteInstallingGames(host, ordered, sourceFiltered);
+        // The game operations are read once for the whole render.
+        Set<String> installing = new HashSet<>();
+        for (PlayniteLibraryGame game : visibleLibraryGames) {
+            if (isPlayniteInstalling(host.uuid, game)) installing.add(game.playniteGameId);
+        }
+        ordered = promoteInstallingGames(installing, ordered, sourceFiltered);
         List<PlayniteDashboardItem> items = new ArrayList<>();
         for (PlayniteLibraryGame game : ordered) {
             PlayniteDashboardItem item = resolvedById.get(game.playniteGameId);
             if (item != null) items.add(item);
         }
         if (CONSOLE_UI_V2) {
-            items = putInstallingItemsFirst(host, items);
+            items = putInstallingItemsFirst(installing, items);
             items = putSelectedSessionFirst(items);
         } else {
             resumePlayniteGameId = "";
@@ -8189,7 +8271,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         List<PlayniteDashboardItem> carouselSource = CONSOLE_UI_V2
                 ? putSelectedSessionFirst(unfilteredItems) : unfilteredItems;
         List<PlayniteDashboardItem> dashboardItems = carouselPlayniteItems(
-                host, carouselSource, maxCarouselGameCount());
+                host, carouselSource, maxCarouselGameCount(), installing);
         String sessionSignature = playniteSessionProjection.signature();
         boolean libraryTileFocused = getCurrentFocus() != null
                 && "playnite:__library__".equals(getCurrentFocus().getTag());
@@ -8232,6 +8314,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void requestPendingInitialGameFocus(ComputerDetails host) {
         if (!pendingInitialGameFocus || hostSelectionVisible || host == null || appRow == null
                 || !host.uuid.equals(selectedHostUuid)) return;
+        // The first game's card is still to be built: its build asks again.
+        if (appRow.getChildCount() > 0 && pendingCarouselGameId(appRow.getChildAt(0)) != null) {
+            return;
+        }
         View target = firstFocusableChild(appRow);
         if (target == null) return;
         pendingInitialGameFocus = false;
@@ -8297,7 +8383,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private List<PlayniteDashboardItem> carouselPlayniteItems(ComputerDetails host,
-            List<PlayniteDashboardItem> items, int limit) {
+            List<PlayniteDashboardItem> items, int limit, Set<String> installingIds) {
         if (host == null || items.isEmpty() || limit <= 0) return Collections.emptyList();
         Comparator<PlayniteDashboardItem> recentFirst = Comparator
                 .<PlayniteDashboardItem>comparingLong(item ->
@@ -8306,7 +8392,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         List<PlayniteDashboardItem> installing = new ArrayList<>();
         List<PlayniteDashboardItem> recent = new ArrayList<>();
         for (PlayniteDashboardItem item : items) {
-            if (isPlayniteInstalling(host.uuid, item)) {
+            if (installingIds.contains(item.game.playniteGameId)) {
                 String activityKey = playniteCarouselInstallActivityKey(
                         host.uuid, item.stableId());
                 if (preferences.getLong(activityKey, 0L) == 0L) {
@@ -8363,7 +8449,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         final String hostUuid;
         final List<NvApp> apps;
         final boolean authoritative;
-        final Map<PlayniteLibraryGame, PlayniteDashboardItem> items = new IdentityHashMap<>();
+        /** Read by a worker preparing the next instance while the main thread fills this one. */
+        final Map<PlayniteLibraryGame, PlayniteDashboardItem> items =
+                Collections.synchronizedMap(new IdentityHashMap<>());
 
         ResolvedTargets(String hostUuid, List<NvApp> apps, boolean authoritative) {
             this.hostUuid = hostUuid;
@@ -8372,8 +8460,24 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
 
         boolean matches(String hostUuid, List<NvApp> apps, boolean authoritative) {
-            return this.hostUuid.equals(hostUuid) && this.apps == apps
-                    && this.authoritative == authoritative;
+            return this.hostUuid.equals(hostUuid) && this.authoritative == authoritative
+                    && (this.apps == apps || sameApps(this.apps, apps));
+        }
+
+        /** Two reads of one app list resolve alike: these are the fields a target reads. */
+        private static boolean sameApps(List<NvApp> first, List<NvApp> second) {
+            if (first.size() != second.size()) return false;
+            for (int index = 0; index < first.size(); index++) {
+                NvApp one = first.get(index);
+                NvApp other = second.get(index);
+                if (one.getAppId() != other.getAppId()
+                        || !Objects.equals(one.getAppName(), other.getAppName())
+                        || !Objects.equals(one.getAppUuid(), other.getAppUuid())
+                        || !Objects.equals(one.getArtVersion(), other.getArtVersion())) {
+                    return false;
+                }
+            }
+            return true;
         }
     }
 
@@ -8392,6 +8496,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (host == null || games.isEmpty()) return;
         ResolvedTargets targets = new ResolvedTargets(host.uuid, apps,
                 ConsoleActionCatalog.isOnline(host));
+        // What is already resolved against the same app list (on the PIN screen, say) is kept.
+        ResolvedTargets known = resolvedTargets;
+        if (known != null && known.matches(host.uuid, apps, targets.authoritative)) {
+            for (PlayniteLibraryGame game : games) {
+                PlayniteDashboardItem item = known.items.get(game);
+                if (item != null) targets.items.put(game, item);
+            }
+        }
         for (PlayniteLibraryGame game : games) resolvePlayniteTarget(targets, game);
         resolvedTargets = targets;
     }
@@ -8611,7 +8723,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         setNormalLibraryVisibility(View.VISIBLE);
         resetNormalLibraryTransforms();
         View target = libraryTransitionGameId.isEmpty() ? null
-                : directChildWithTag(appRow, "playnite:" + libraryTransitionGameId);
+                : carouselCard(libraryTransitionGameId);
         if (target == null) target = directChildWithTag(appRow, "playnite:__library__");
         if (target == null) target = firstFocusableChild(appRow);
         if (target != null) target.post(target::requestFocus);
@@ -8620,7 +8732,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void prepareCarouselReturnPosition() {
         if (appScroll == null || appRow == null || libraryTransitionGameId.isEmpty()) return;
-        View target = directChildWithTag(appRow, "playnite:" + libraryTransitionGameId);
+        View target = carouselCard(libraryTransitionGameId);
         if (target == null) return;
         int viewport = appScroll.getWidth();
         int desired = Math.max(0, target.getLeft() - Math.max(0,
@@ -8951,12 +9063,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         appRow.removeAllViews();
         int count = Math.max(4, Math.min(8, maxCarouselGameCount()));
         for (int index = 0; index < count; index++) {
-            FrameLayout ghost = new FrameLayout(this);
-            ghost.setTag("playnite.loading." + index);
-            ghost.setFocusable(false);
-            ghost.setClickable(false);
-            ghost.setAlpha(index == 0 ? .42f : .28f);
-            ghost.setBackground(gradient(0xFF28343D, 0xFF151D23, 12));
+            FrameLayout ghost = carouselGhost("playnite.loading." + index,
+                    index == 0 ? .42f : .28f);
             if (index == 0) {
                 ProgressBar spinner = new ProgressBar(this);
                 ghost.addView(spinner, new FrameLayout.LayoutParams(
@@ -8966,6 +9074,120 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         renderedPlayniteItems = Collections.emptyList();
         wireHomeFocusNavigation();
+    }
+
+    private FrameLayout carouselGhost(String tag, float alpha) {
+        FrameLayout ghost = new FrameLayout(this);
+        ghost.setTag(tag);
+        ghost.setFocusable(false);
+        ghost.setClickable(false);
+        ghost.setAlpha(alpha);
+        ghost.setBackground(gradient(0xFF28343D, 0xFF151D23, 12));
+        return ghost;
+    }
+
+    /** The game a carousel placeholder stands for, or null for any other view. */
+    private static String pendingCarouselGameId(View view) {
+        Object tag = view.getTag();
+        return tag instanceof String && ((String) tag).startsWith(PENDING_CARD_TAG)
+                ? ((String) tag).substring(PENDING_CARD_TAG.length()) : null;
+    }
+
+    /**
+     * Frame step after a render that left placeholders: turns the first one into its card.
+     * It reads the row and the rendered list as they are now, so a newer render is never
+     * followed by a card of an older list. While the row animates a layout change it waits:
+     * the row lays nothing out until that ends.
+     */
+    private View firstPendingCarouselCard() {
+        for (int index = 0; appRow != null && index < appRow.getChildCount(); index++) {
+            View child = appRow.getChildAt(index);
+            if (pendingCarouselGameId(child) != null) return child;
+        }
+        return null;
+    }
+
+    private void buildNextPendingCarouselCard() {
+        if (appRow == null) return;
+        appRow.removeCallbacks(carouselCardBuildStep);
+        // Under an entry intro's entrance only its own steps build cards; the rest wait here.
+        if (introView != null && introView.entering()) {
+            appRow.postDelayed(carouselCardBuildStep, CAROUSEL_CARD_BUILD_GAP_MS);
+            return;
+        }
+        LayoutTransition transition = appRow.getLayoutTransition();
+        boolean rowAnimating = transition != null && transition.isChangingLayout();
+        for (int index = 0; index < appRow.getChildCount(); index++) {
+            View child = appRow.getChildAt(index);
+            if (pendingCarouselGameId(child) == null) continue;
+            if (rowAnimating) {
+                appRow.postOnAnimation(carouselCardBuildStep);
+            } else if (buildPendingCarouselCard(child) != null) {
+                // A card costs a few frames: smooth frames between cards read better than a run.
+                appRow.postDelayed(carouselCardBuildStep, CAROUSEL_CARD_BUILD_GAP_MS);
+            }
+            return;
+        }
+    }
+
+    /**
+     * Step of the entry intro: the first placeholder's card among the leading positions. A
+     * render under the intro's entrance leaves those to these steps, one per frame; a step
+     * that finds them built (a second render queued its own) does nothing.
+     */
+    private void buildLeadingCarouselCard() {
+        if (appRow == null) return;
+        int leading = Math.min(PlayniteLibraryDiff.IMMEDIATE_CARDS, appRow.getChildCount());
+        for (int index = 0; index < leading; index++) {
+            View child = appRow.getChildAt(index);
+            if (pendingCarouselGameId(child) == null) continue;
+            buildPendingCarouselCard(child);
+            requestPendingInitialGameFocus(currentHost(selectedHostUuid));
+            return;
+        }
+    }
+
+    /**
+     * Replaces a carousel placeholder with its card, bound to the current state. The card
+     * takes the placeholder's bounds at once: nothing in the row moves, and the card can be
+     * focused even while the row holds its layout back for a running animation.
+     */
+    private View buildPendingCarouselCard(View placeholder) {
+        String gameId = pendingCarouselGameId(placeholder);
+        ComputerDetails host = currentHost(selectedHostUuid);
+        PlayniteDashboardItem item = null;
+        for (PlayniteDashboardItem rendered : renderedPlayniteItems) {
+            if (rendered.stableId().equals(gameId)) item = rendered;
+        }
+        if (host == null || item == null) return null;
+        View card = playniteCard(false);
+        setCardBindBatch(true);
+        try {
+            bindPlayniteCard(card, host, item, currentSunshineApps, PlayniteLibraryDiff.TEXT
+                    | PlayniteLibraryDiff.ARTWORK | PlayniteLibraryDiff.LAUNCH);
+        } finally {
+            setCardBindBatch(false);
+        }
+        int index = appRow.indexOfChild(placeholder);
+        appRow.removeViewAt(index);
+        appRow.addView(card, index, playniteCardSpacing());
+        if (placeholder.isLaidOut()) {
+            card.measure(View.MeasureSpec.makeMeasureSpec(placeholder.getWidth(),
+                    View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(
+                    placeholder.getHeight(), View.MeasureSpec.EXACTLY));
+            card.layout(placeholder.getLeft(), placeholder.getTop(),
+                    placeholder.getRight(), placeholder.getBottom());
+        }
+        wireHomeFocusNavigation();
+        return card;
+    }
+
+    /** This game's carousel card, built now when its position still shows a placeholder. */
+    private View carouselCard(String gameId) {
+        View card = directChildWithTag(appRow, "playnite:" + gameId);
+        if (card != null) return card;
+        View placeholder = directChildWithTag(appRow, PENDING_CARD_TAG + gameId);
+        return placeholder == null ? null : buildPendingCarouselCard(placeholder);
     }
 
     private void releaseExpandedGrid() {
@@ -8996,13 +9218,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private List<PlayniteLibraryGame> promoteInstallingGames(
-            ComputerDetails host, List<PlayniteLibraryGame> ordered,
+            Set<String> installingIds, List<PlayniteLibraryGame> ordered,
             List<PlayniteLibraryGame> sourceFiltered) {
-        if (host == null || sourceFiltered.isEmpty()) return ordered;
+        if (installingIds.isEmpty()) return ordered;
         List<PlayniteLibraryGame> result = new ArrayList<>();
         Set<String> included = new HashSet<>();
         for (PlayniteLibraryGame game : sourceFiltered) {
-            if (isPlayniteInstalling(host.uuid, game)) {
+            if (installingIds.contains(game.playniteGameId)) {
                 result.add(game);
                 included.add(game.playniteGameId);
             }
@@ -9014,12 +9236,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private List<PlayniteDashboardItem> putInstallingItemsFirst(
-            ComputerDetails host, List<PlayniteDashboardItem> items) {
-        if (host == null || items.isEmpty()) return items;
+            Set<String> installingIds, List<PlayniteDashboardItem> items) {
+        if (installingIds.isEmpty()) return items;
         List<PlayniteDashboardItem> installing = new ArrayList<>();
         List<PlayniteDashboardItem> remaining = new ArrayList<>();
         for (PlayniteDashboardItem item : items) {
-            if (isPlayniteInstalling(host.uuid, item)) installing.add(item);
+            if (installingIds.contains(item.game.playniteGameId)) installing.add(item);
             else remaining.add(item);
         }
         if (installing.isEmpty()) return items;
@@ -9048,12 +9270,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             items = preserveOrderDuringFocus(requestedItems);
         }
         Map<String, View> existing = new LinkedHashMap<>();
+        Map<String, View> placeholders = new LinkedHashMap<>();
         boolean containsNonPlaynite = false;
         for (int index = 0; index < appRow.getChildCount(); index++) {
             View child = appRow.getChildAt(index);
             Object tag = child.getTag();
+            String pendingId = pendingCarouselGameId(child);
             if (tag instanceof String && ((String) tag).startsWith("playnite:")) {
                 existing.put(((String) tag).substring("playnite:".length()), child);
+            } else if (pendingId != null) {
+                placeholders.put(pendingId, child);
             } else {
                 containsNonPlaynite = true;
             }
@@ -9061,12 +9287,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (containsNonPlaynite) {
             appRow.removeAllViews();
             existing.clear();
+            placeholders.clear();
         }
         Map<String, PlayniteDashboardItem> previous = new LinkedHashMap<>();
         for (PlayniteDashboardItem item : renderedPlayniteItems) previous.put(item.stableId(), item);
         Set<String> wanted = new HashSet<>();
         for (PlayniteDashboardItem item : items) wanted.add(item.stableId());
         for (Map.Entry<String, View> entry : existing.entrySet()) {
+            if (!wanted.contains(entry.getKey())) appRow.removeView(entry.getValue());
+        }
+        for (Map.Entry<String, View> entry : placeholders.entrySet()) {
             if (!wanted.contains(entry.getKey())) appRow.removeView(entry.getValue());
         }
         if (items.isEmpty()) {
@@ -9086,15 +9316,30 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             wireHomeFocusNavigation();
             return;
         }
+        int missingCards = 0;
+        for (PlayniteDashboardItem item : items) {
+            if (!existing.containsKey(item.stableId())) missingCards++;
+        }
+        // Under an entry intro's entrance no card is built here: the intro runs their steps.
+        boolean introSteps = introView != null && introView.entering();
+        boolean placeholdersLeft = false;
         for (int index = 0; index < items.size(); index++) {
             PlayniteDashboardItem item = items.get(index);
             View card = existing.get(item.stableId());
+            View placeholder = placeholders.get(item.stableId());
             PlayniteDashboardItem old = previous.get(item.stableId());
             boolean resumeStateChanged = item.stableId().equals(previousResumeGameId)
                     != item.stableId().equals(resumePlayniteGameId);
             boolean suspendedStateChanged = item.stableId().equals(previousSuspendedGameId)
                     != item.stableId().equals(suspendedPlayniteGameId);
-            if (card == null || "playnite.empty".equals(card.getTag())) {
+            if (card == null && !suppressInitialCarouselMotion && (introSteps
+                    || !PlayniteLibraryDiff.buildsInRender(index, missingCards))) {
+                // A later frame builds this card; until then its position shows a placeholder.
+                card = placeholder != null ? placeholder
+                        : carouselGhost(PENDING_CARD_TAG + item.stableId(), .28f);
+                placeholdersLeft = true;
+            } else if (card == null) {
+                if (placeholder != null) appRow.removeView(placeholder);
                 card = playniteCard(false);
                 bindPlayniteCard(card, host, item, apps, PlayniteLibraryDiff.TEXT
                         | PlayniteLibraryDiff.ARTWORK | PlayniteLibraryDiff.LAUNCH);
@@ -9129,9 +9374,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         }
         renderedPlayniteItems = Collections.unmodifiableList(new ArrayList<>(items));
+        appRow.removeCallbacks(carouselCardBuildStep);
+        if (placeholdersLeft) {
+            // The leading cards one per frame, all before the intro leaves; then the rest.
+            for (int card = 0; introSteps && card < PlayniteLibraryDiff.IMMEDIATE_CARDS; card++) {
+                ConsoleIntroView.afterEntrance(introView, this::buildLeadingCarouselCard);
+            }
+            appRow.postOnAnimation(carouselCardBuildStep);
+        }
         String selection = PlayniteLibraryDiff.selectionAfter(focusedId, previousIndex, items);
         if (focusedId != null && selection != null) {
-            restoreTaggedFocus(appRow, "playnite:" + selection);
+            View target = carouselCard(selection);
+            if (target != null) target.post(target::requestFocus);
         }
         wireHomeFocusNavigation();
     }

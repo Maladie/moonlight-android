@@ -23,6 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /** Last-known-good Playnite library, isolated by host and Windows profile. */
 final class PlayniteLibraryCache {
     private static final Map<String, Entry> MEMORY = new ConcurrentHashMap<>();
+    private static final java.util.regex.Pattern GUID_SHAPED_ID =
+            java.util.regex.Pattern.compile("(?i)[0-9a-f-]{36}");
 
     static final class Entry {
         final List<PlayniteLibraryGame> games;
@@ -105,7 +107,7 @@ final class PlayniteLibraryCache {
                             provider,
                             providerGameId,
                             value.optString("playnite_game_id",
-                                    id.matches("(?i)[0-9a-f-]{36}") ? id : ""),
+                                    GUID_SHAPED_ID.matcher(id).matches() ? id : ""),
                             value.optString("library_key", legacyLibraryKey),
                             value.optString("library_name",
                                     source.isEmpty() ? "Playnite" : source),
