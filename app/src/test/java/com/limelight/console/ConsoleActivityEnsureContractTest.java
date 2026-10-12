@@ -63,7 +63,6 @@ public class ConsoleActivityEnsureContractTest {
         method = method.substring(method.indexOf("private void ensureVibepolloAfterInstall"),
                 method.indexOf("private static String playniteInstallNotificationKey"));
 
-        assertFalse(method.contains("setGameTarget("));
         assertTrue(method.contains("if (\"playnite\".equals(game.provider)) {\n"
                 + "                    result = hostGatewayClient.ensureVibepolloPlayniteApp("));
         assertTrue(method.contains("if (ensured != null) {\n"
@@ -354,7 +353,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(prepared.contains("ownsFreshSunshineSession"));
     }
 
-    @Test public void uncertainSessionUsesOpaqueRefreshWhileTargetAmbiguityKeepsPanel()
+    @Test public void uncertainSessionUsesOpaqueRefreshAndGamesStartOnlyOnTheNeutralStream()
             throws IOException {
         String source = consoleActivitySource();
         String orchestration = source.substring(source.indexOf(
@@ -384,7 +383,10 @@ public class ConsoleActivityEnsureContractTest {
                 + "\\(false\\);\\s+return;", -1).length - 1);
         assertTrue(resolver.contains(
                 "completion.accept(projected != null && sameRenderScope)"));
-        assertTrue(activation.contains("showUncertainSessionMessage()"));
+        assertTrue(activation.contains(
+                "playPlayniteGame(host, PlayniteTargetResolver.resolveNeutralStream(apps), item.game);"));
+        assertTrue(orchestration.contains(
+                "LaunchTransitionType transitionType = intent.transitionType(type);"));
         assertFalse(actions.contains("playnite_choose_launch_method"));
         assertFalse(source.contains("showPlayniteTargetPicker("));
     }

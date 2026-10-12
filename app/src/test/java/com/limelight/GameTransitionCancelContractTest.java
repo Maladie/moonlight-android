@@ -2,7 +2,6 @@ package com.limelight;
 
 import org.junit.Test;
 
-import com.limelight.console.transition.LaunchTransitionState;
 import com.limelight.console.transition.LaunchTransitionType;
 
 import java.io.IOException;
@@ -76,60 +75,52 @@ public class GameTransitionCancelContractTest {
     }
 
     @Test public void cancelDoesNotWaitForAnotherVideoFrame() throws IOException {
-        Path source = Paths.get("src/main/java/com/limelight/Game.java");
-        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
-        String method = text.substring(text.indexOf("private void cancelTransition()"),
-                text.indexOf("private boolean returnRetainedObservationToDashboard()"));
+        String text = source();
+        String method = text.substring(text.indexOf("private void endCancelledTransition("),
+                text.indexOf("static boolean offersPreviousGameStop("));
 
         assertFalse(method.contains("doAfterNextFrame"));
         assertTrue(method.contains("transitionCancelInFlight = true"));
         assertTrue(method.contains("transitionCoordinator.cancel()"));
         assertTrue(method.contains("new SessionEvent.ReconnectCleared(streamSessionId)"));
-        assertTrue(method.indexOf("stopProviderGame") < method.indexOf("stopConnection"));
         assertTrue(method.contains("stopConnection(finishOnce)"));
     }
 
     @Test public void cancelOfUnrevealedProviderLaunchClosesTheWholeHostSession()
             throws IOException {
         String text = source();
-        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
-                text.indexOf("private boolean returnRetainedObservationToDashboard()"));
-        String helper = text.substring(text.indexOf(
-                        "private boolean cancelUnrevealedProviderLaunchWithHostSession("),
-                text.indexOf("private void cancelPendingAutomaticReveal()"));
+        String facts = text.substring(
+                text.indexOf("private SessionOrchestrator.State transitionState()"),
+                text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("));
+        String cancel = text.substring(text.indexOf("private void endCancelledTransition("),
+                text.indexOf("static boolean offersPreviousGameStop("));
         String host = text.substring(text.indexOf("private void runWholeSessionTermination("),
                 text.indexOf("private void applyImmediateTerminalPrivacy("));
 
         // Cancel (and Back on the start error) never only drops the transport, which Sunshine
-        // would merely pause with its virtual display left on the host.
+        // would merely pause with its virtual display left on the host. Which close runs is
+        // SessionOrchestrator's row; this method only executes it.
         int whole = cancel.indexOf(
-                "if (cancelUnrevealedProviderLaunchWithHostSession(controlGeneration)) return;");
+                "if (decided == SessionOrchestrator.ActionKind.CLOSE_STARTED_SESSION) {");
         assertTrue(whole > cancel.indexOf("transitionController.cancel(transitionSpec.id)"));
-        assertTrue(whole < cancel.indexOf("transitionCoordinator.cancel()"));
         assertTrue(whole < cancel.indexOf("stopConnection(finishOnce)"));
-        assertTrue(helper.contains("shouldCloseSessionOnStartCancel("));
-        assertTrue(helper.contains("transitionController.gameReadyConfirmed()"));
+        assertTrue(facts.contains("transitionController.gameReadyConfirmed()"));
         // The live transport's generation, not only the one recorded at stage completion, read
         // once: a grant arriving after that read is the abandoned launch's, closed by its runtime
         // after the stop (so a grant racing the stop through the live path is closed too).
-        assertTrue(cancel.indexOf("long controlGeneration = bindControlGeneration();") < whole);
-        assertTrue(helper.contains("controlGeneration <= 0L"));
-        assertTrue(cancel.indexOf("stopConnection(finishOnce)") < cancel.indexOf(
-                "shouldAbandonLaunchOnCancel(controlGeneration, cancelledState,"));
-        // The cancelled state comes from the cancel itself, not from a separate earlier read.
-        assertTrue(cancel.contains("transitionController.cancel(transitionSpec.id).state"));
-        assertFalse(cancel.contains("transitionController.snapshot()"));
+        assertTrue(facts.contains("state.controlGranted = bindControlGeneration() > 0L;"));
+        assertTrue(cancel.indexOf("stopConnection(finishOnce)")
+                < cancel.indexOf("cancelled.abandonLaunch()"));
         String bind = text.substring(text.indexOf("private long bindControlGeneration()"),
                 text.indexOf("private void stopConnection()"));
         assertTrue(bind.contains("runtime.controlGeneration()"));
         // Claim first, then read: a host failure whose cleanup already ran still closes.
-        assertTrue(helper.indexOf("freshOwnedFailureCleanupInFlight.set(true)")
-                < helper.indexOf("transitionCoordinator.providerCleanupResult()"));
+        assertTrue(cancel.indexOf("freshOwnedFailureCleanupInFlight.set(true)")
+                < cancel.indexOf("transitionCoordinator.providerCleanupResult()"));
         // The close always verifies the permit's game itself, whatever the cleanup saw.
-        assertTrue(helper.contains("terminateWholeSessionVerified(null);"));
-        assertTrue(helper.contains("transitionCoordinator.cancel()"));
-        assertFalse(helper.contains("stopGame("));
+        assertTrue(cancel.contains("terminateWholeSessionVerified(null);"));
+        assertTrue(cancel.contains("transitionCoordinator.cancel()"));
+        assertFalse(cancel.contains("stopGame("));
         assertTrue(host.indexOf("HostSessionTermination.run(")
                 < host.indexOf("reportGameLeftOnHost(application, outcome, completion == null)"));
     }
@@ -141,15 +132,15 @@ public class GameTransitionCancelContractTest {
      */
     @Test public void cancelDuringRevealFadeInterruptsItBeforeProviderCleanup() throws IOException {
         String text = source();
-        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
+        String cancel = text.substring(text.indexOf("private void endCancelledTransition("),
                 text.indexOf("AtomicBoolean finished = new AtomicBoolean();",
-                        text.indexOf("private void cancelTransition()")));
+                        text.indexOf("private void endCancelledTransition(")));
         String apply = text.substring(text.indexOf("private void applyTransitionSnapshot("),
                 text.indexOf("private static boolean usesClosingPresentation("));
 
         assertTrue(text.contains("runOnUiThread(() -> applyTransitionSnapshot(snapshot))"));
         assertTrue(cancel.indexOf("transitionController.cancel(transitionSpec.id)")
-                < cancel.indexOf("cancelUnrevealedProviderLaunchWithHostSession("));
+                < cancel.indexOf("SessionOrchestrator.ActionKind.CLOSE_STARTED_SESSION"));
         assertTrue(Game.shouldShowTransitionOverlay(true, true, true, false));
         assertTrue(apply.indexOf("consoleLoadingView.showOpaque()")
                 < apply.indexOf("consoleLoadingView.showCancelling()"));
@@ -165,32 +156,6 @@ public class GameTransitionCancelContractTest {
         assertTrue(opaque.indexOf("revealGeneration++") < opaque.indexOf("animate().cancel()"));
         assertTrue(reveal.indexOf("generation != revealGeneration")
                 < reveal.indexOf("afterReveal.run()"));
-    }
-
-    @Test public void startCancelClosesTheSessionUntilTheHostConfirmedTheGameReady() {
-        // Unrevealed, or only manually revealed: the whole session closes.
-        assertTrue(Game.shouldCloseSessionOnStartCancel(true, false, false));
-        assertTrue(Game.shouldCloseSessionOnStartCancel(true, true, false));
-        assertTrue(Game.shouldCloseSessionOnStartCancel(true, false, true));
-        // A revealed, host-confirmed game keeps the ordinary cancel; observations never close.
-        assertFalse(Game.shouldCloseSessionOnStartCancel(true, true, true));
-        assertFalse(Game.shouldCloseSessionOnStartCancel(false, false, false));
-    }
-
-    @Test public void backOnALockedHostClosesTheStreamItsLaunchAcquired() {
-        // The acquire succeeded (a control generation) but the locked host showed nothing.
-        assertTrue(Game.shouldAbandonLaunchOnCancel(
-                3L, LaunchTransitionState.HOST_SESSION_LOCKED, false));
-        // No generation yet: a later grant is the abandoned launch's to close.
-        assertTrue(Game.shouldAbandonLaunchOnCancel(
-                0L, LaunchTransitionState.CONNECTING_STREAM, false));
-        assertFalse(Game.shouldAbandonLaunchOnCancel(
-                3L, LaunchTransitionState.CONNECTING_STREAM, false));
-    }
-
-    @Test public void backOnALockedHostKeepsARevealedStreamPaused() {
-        assertFalse(Game.shouldAbandonLaunchOnCancel(
-                3L, LaunchTransitionState.HOST_SESSION_LOCKED, true));
     }
 
     @Test public void modelMarkersCarryTheSessionsOwnGameNotTheNamedOne() throws IOException {
@@ -248,16 +213,20 @@ public class GameTransitionCancelContractTest {
                 < host.indexOf("if (!success) completion.transportUnsafe();"));
     }
 
-    @Test public void cancelStopsOnlyTheExactObservedProviderProcess() throws IOException {
+    @Test public void cancelNeverStopsAProviderGameItself() throws IOException {
         String text = source();
-        String stop = text.substring(text.indexOf("private void stopProviderGame("),
-                text.indexOf("private void terminateWholeSessionVerified("));
+        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
+                text.indexOf("static boolean offersPreviousGameStop("));
 
-        assertTrue(stop.contains("gateway.snapshot()"));
-        assertTrue(stop.contains("PlayniteIdentityResolutionPolicy.verifiedStopTarget("));
-        assertTrue(stop.contains("!current.hasVerifiedProcessFor(exactGame)"));
-        assertTrue(stop.contains("gateway.stopGame(exactGame, current.processToken)"));
-        assertFalse(stop.contains("gateway.stopGame(gameId)"));
+        // A cancelled reconnect leaves the running game alone; only a whole-session close
+        // stops a game, and only the one its permit verifies.
+        assertFalse(text.contains("stopProviderGame("));
+        assertFalse(cancel.contains("stopGame("));
+        assertTrue(cancel.contains("cancelled.keepLaunch()"));
+        int keep = cancel.indexOf("SessionOrchestrator.ActionKind.STOP_TRANSPORT_KEEP_SESSION) {");
+        int lost = cancel.indexOf("new SessionEvent.TransportLost(");
+        int clear = cancel.indexOf("new SessionEvent.Cleared(streamSessionId)");
+        assertTrue(keep >= 0 && lost > keep && lost < clear);
     }
 
     @Test public void retainedSessionStartsLocalStopWithoutWaitingForHostCleanup() throws IOException {
@@ -455,99 +424,55 @@ public class GameTransitionCancelContractTest {
     @Test public void exactRetainedObservationCancelReturnsHomeWithoutStoppingAnything()
             throws IOException {
         String text = source();
-        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
-                text.indexOf("private void retryTransition()"));
-        String retainedReturn = cancel.substring(cancel.indexOf(
-                        "private boolean returnRetainedObservationToDashboard()"),
-                cancel.indexOf("private void armNextVideoFrameForTransition("));
-        String eligibility = cancel.substring(cancel.indexOf(
-                        "private boolean isExactLiveRetainedObservation()"),
-                cancel.indexOf("private void armNextVideoFrameForTransition("));
+        String run = text.substring(
+                text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("),
+                text.indexOf("private void endCancelledTransition("));
+        String facts = text.substring(
+                text.indexOf("private SessionOrchestrator.State transitionState()"),
+                text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("));
+        String home = text.substring(text.indexOf("private void coverThenShowHome("),
+                text.indexOf("private static boolean isBackKeyDown("));
 
-        assertTrue(cancel.indexOf("returnRetainedObservationToDashboard()")
-                < cancel.indexOf("transitionController.cancel("));
-        assertTrue(retainedReturn.indexOf("showOpaque()")
-                < retainedReturn.indexOf("doAfterNextFrame("));
-        assertTrue(retainedReturn.contains("if (retainedDashboardReturnInFlight) return true"));
-        assertTrue(retainedReturn.contains("openConsoleHome()"));
-        assertFalse(retainedReturn.contains("cancelTransition()"));
-        assertFalse(retainedReturn.contains("stopConnection"));
-        assertFalse(retainedReturn.contains("stopGame"));
-        assertFalse(retainedReturn.contains("quitApp"));
-        assertTrue(eligibility.contains("LaunchTransitionType.GAME_CONNECTION"));
-        assertTrue(eligibility.contains("ownsLiveOrParkedSession("));
+        // Decided before anything is cancelled; the effect only covers and navigates.
+        assertTrue(run.indexOf("SessionOrchestrator.transition(transitionState(), intent)")
+                < run.indexOf("coverThenShowHome(intent)"));
+        assertFalse(run.contains("transitionController.cancel("));
+        assertTrue(home.indexOf("showOpaque()") < home.indexOf("doAfterNextFrame("));
+        assertTrue(home.contains("if (homeReturnInFlight) return;"));
+        assertTrue(home.contains("!transitionId.equals(transitionSpec.id)"));
+        assertTrue(home.indexOf("SessionOrchestrator.transition(transitionState(), intent)")
+                < home.indexOf("openConsoleHome()"));
+        assertFalse(home.contains("cancelTransition()"));
+        assertFalse(home.contains("stopConnection"));
+        assertFalse(home.contains("stopGame"));
+        assertFalse(home.contains("quitApp"));
+        assertTrue(facts.contains("SessionModel.State.HOME_LIVE"));
+        assertTrue(facts.contains("ownsLiveOrParkedSession("));
         String back = text.substring(text.indexOf("public void onBackPressed()"),
                 text.indexOf("public boolean handleKeyDown("));
-        assertTrue(back.contains("returnRetainedObservationToDashboard()"));
-    }
-
-    @Test public void retainedObservationDashboardReturnRequiresExactForegroundHomeLive() {
-        assertTrue(Game.isForegroundRetainedObservation(
-                true, false, false, LaunchTransitionType.GAME_CONNECTION, "game-a",
-                com.limelight.session.SessionModel.State.HOME_LIVE, true));
-        assertFalse(Game.isForegroundRetainedObservation(
-                true, false, false, LaunchTransitionType.GAME_CONNECTION, "game-a",
-                com.limelight.session.SessionModel.State.PARKED_LIVE, true));
-        assertFalse(Game.isForegroundRetainedObservation(
-                true, false, true, LaunchTransitionType.GAME_CONNECTION, "game-a",
-                com.limelight.session.SessionModel.State.HOME_LIVE, true));
-
-        assertTrue(Game.shouldOpenRetainedObservationDashboard(
-                "gc-a", "game-a", "gc-a", "game-a", true));
-        assertFalse(Game.shouldOpenRetainedObservationDashboard(
-                "gc-a", "game-a", "game-b", "game-b", true));
-        assertFalse(Game.shouldOpenRetainedObservationDashboard(
-                "gc-a", "game-a", "gc-b", "game-b", true));
-        assertFalse(Game.shouldOpenRetainedObservationDashboard(
-                "gc-a", "game-a", "gc-a", "game-a", false));
+        assertTrue(back.contains("runStreamIntent(SessionOrchestrator.UserIntent.BACK)"));
     }
 
     @Test public void backOnTimedOutRevealedStreamReturnsToDashboardWithoutStoppingProvider()
             throws IOException {
-        assertTrue(Game.shouldReturnTimedOutRevealedStreamToDashboard(
-                true, false, true, LaunchTransitionState.TIMED_OUT));
-        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
-                true, false, false, LaunchTransitionState.TIMED_OUT));
-        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
-                false, false, true, LaunchTransitionState.TIMED_OUT));
-        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
-                true, true, true, LaunchTransitionState.TIMED_OUT));
-        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
-                true, false, true, LaunchTransitionState.GAME_STOPPING));
-        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
-                true, false, true, null));
-
         String text = source();
         String keyDown = text.substring(text.indexOf("public boolean handleKeyDown("),
                 text.indexOf("if (isImeVisible", text.indexOf("public boolean handleKeyDown(")));
         // The loading view turns Back/B key-down into a Cancel click, so the decision must
         // precede its delegation; its key-up handling then consumes the matching release.
         int backDown = keyDown.indexOf("isBackKeyDown(event)");
-        int decision = keyDown.indexOf("returnTimedOutRevealedStreamToDashboard()");
+        int decision = keyDown.indexOf("runStreamIntent(SessionOrchestrator.UserIntent.BACK)");
         int delegation = keyDown.indexOf("consoleLoadingView.handleControllerKey(event)");
         assertTrue(backDown >= 0 && decision > backDown && delegation > decision);
-        String back = text.substring(text.indexOf("public void onBackPressed()"),
-                text.indexOf("public boolean handleKeyDown("));
-        assertTrue(back.indexOf("returnTimedOutRevealedStreamToDashboard()") >= 0
-                && back.indexOf("returnTimedOutRevealedStreamToDashboard()")
-                < back.indexOf("returnRetainedObservationToDashboard()"));
-        String helper = text.substring(text.indexOf("private boolean returnTimedOutRevealedStreamToDashboard()"),
-                text.indexOf("private boolean isTimedOutRevealedStreamForeground()"));
-        assertTrue(helper.contains("isTimedOutRevealedStreamForeground()"));
-        assertTrue(helper.contains("if (timedOutRevealedReturnInFlight) return true"));
+        assertTrue(keyDown.contains("!= SessionOrchestrator.ActionKind.CANCEL_ON_COVER"));
+        String helper = text.substring(text.indexOf("private void coverThenShowHome("),
+                text.indexOf("private static boolean isBackKeyDown("));
         // The timeout is published on the observer thread and covered on the UI thread later:
-        // cover first, navigate only after the frame, and recheck identity/state then.
+        // cover first, navigate only after the frame, and decide again then.
         int cover = helper.indexOf("consoleLoadingView.showOpaque()");
         int frame = helper.indexOf("consoleLoadingView.doAfterNextFrame(");
         int navigate = helper.indexOf("openConsoleHome();");
         assertTrue(cover >= 0 && frame > cover && navigate > frame);
-        assertTrue(helper.contains("shouldOpenTimedOutRevealedDashboard("));
-        assertFalse(helper.contains("cancelTransition()"));
-        assertFalse(helper.contains("stopProviderGame("));
-        assertTrue(Game.shouldOpenTimedOutRevealedDashboard("t-a", "t-a", true));
-        assertFalse(Game.shouldOpenTimedOutRevealedDashboard("t-a", "t-b", true));
-        assertFalse(Game.shouldOpenTimedOutRevealedDashboard("t-a", "t-a", false));
-        assertFalse(Game.shouldOpenTimedOutRevealedDashboard(null, "", true));
         assertFalse(keyDown.contains("cancelTransition()"));
         String keyUp = text.substring(text.indexOf("public boolean handleKeyUp("),
                 text.indexOf("if (isImeVisible", text.indexOf("public boolean handleKeyUp(")));
@@ -566,7 +491,6 @@ public class GameTransitionCancelContractTest {
         assertTrue(text.substring(onCancel, onCancel + 120).contains("cancelTransition();"));
         String home = text.substring(text.indexOf("private void openConsoleHome()"),
                 text.indexOf("private void openPreparingConsoleHome()"));
-        assertFalse(home.contains("stopProviderGame("));
         assertFalse(home.contains("stopConnection"));
         assertFalse(home.contains("revealStream"));
     }
@@ -1235,20 +1159,23 @@ public class GameTransitionCancelContractTest {
 
     @Test public void cancelOnFailedStartObservationClosesTheWholeSession() throws IOException {
         String text = source();
-        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
-                text.indexOf("private boolean closeFailedStartObservationSession()"));
-        String close = text.substring(
-                text.indexOf("private boolean closeFailedStartObservationSession()"),
-                text.indexOf("private boolean returnRetainedObservationToDashboard()"));
+        String facts = text.substring(
+                text.indexOf("private SessionOrchestrator.State transitionState()"),
+                text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("));
+        String cancel = text.substring(text.indexOf("private void endCancelledTransition("),
+                text.indexOf("static boolean offersPreviousGameStop("));
         String rearm = text.substring(
                 text.indexOf("private boolean rearmFailedNewGameObservation("),
                 text.indexOf("private void updateRetainedTransitionIntent("));
 
         assertTrue(rearm.contains("failedStartObservationId = observation.id;"));
-        assertTrue(cancel.indexOf("closeFailedStartObservationSession()")
-                < cancel.indexOf("returnRetainedObservationToDashboard()"));
+        assertTrue(facts.contains("isFailedStartObservation(failedStartObservationId,"));
+        String close = cancel.substring(cancel.indexOf(
+                "if (decided == SessionOrchestrator.ActionKind.CLOSE_HOST_SESSION) {"),
+                cancel.indexOf(
+                        "if (decided == SessionOrchestrator.ActionKind.CLOSE_STARTED_SESSION) {"));
         assertTrue(close.contains("terminateWholeSessionVerified(null)"));
-        assertFalse(close.contains("openConsoleHome()"));
+        assertFalse(cancel.contains("openConsoleHome()"));
         assertTrue(Game.isFailedStartObservation("observation-1", "observation-1"));
         assertFalse(Game.isFailedStartObservation("", ""));
         assertFalse("ordinary retained observation keeps its dashboard return",
@@ -1260,8 +1187,9 @@ public class GameTransitionCancelContractTest {
         String text = source();
         String handoff = text.substring(text.indexOf("private void runRetainedActorHandoff("),
                 text.indexOf("static final String RETAINED_AUTHORIZATION_UNCONFIRMED"));
-        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
-                text.indexOf("private boolean closeFailedStartObservationSession()"));
+        String cancel = text.substring(
+                text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("),
+                text.indexOf("private void endCancelledTransition("));
         String retry = text.substring(text.indexOf("private void retryTransition()"),
                 text.indexOf("private void retryRetainedObservation()"));
         String settle = text.substring(
@@ -1271,8 +1199,8 @@ public class GameTransitionCancelContractTest {
         assertTrue(handoff.contains("HttpURLConnection.HTTP_CONFLICT"));
         assertTrue(handoff.contains("SystemClock.sleep(RETAINED_AUTHORIZATION_RETRY_DELAY_MS)"));
         assertTrue(handoff.contains("offerRetainedAuthorizationRetry(operation)"));
-        assertTrue(cancel.indexOf("settleOfferedAuthorizationRetry(false)")
-                < cancel.indexOf("closeFailedStartObservationSession()"));
+        assertTrue(cancel.indexOf("case DECLINE_AUTHORIZATION_RETRY:")
+                < cancel.indexOf("settleOfferedAuthorizationRetry(false)"));
         assertTrue(retry.indexOf("settleOfferedAuthorizationRetry(true)")
                 < retry.indexOf("retainedSwitch.retryRequested = true"));
         assertTrue(settle.contains("settleStartFailedSwitch(operation)"));
@@ -1336,10 +1264,11 @@ public class GameTransitionCancelContractTest {
         assertTrue(save.contains("outState.putString(STATE_RETRY_TRANSITION_ID"));
         assertTrue(retry.contains("if (!retryStillCurrent(retryId)) return;"));
         assertTrue(retry.contains("cancelTransition();"));
-        String cancel = game.substring(game.indexOf("private void cancelTransition()"),
-                game.indexOf("private boolean returnRetainedObservationToDashboard()"));
+        String cancel = game.substring(
+                game.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("),
+                game.indexOf("private void endCancelledTransition("));
         assertTrue(cancel.indexOf("retryTransitionId = \"\"")
-                < cancel.indexOf("returnRetainedObservationToDashboard()"));
+                < cancel.indexOf("switch (decided)"));
         assertTrue(cancel.contains("retainedSwitch.retryRequested = false;"));
         assertTrue(cancel.indexOf("retainedSwitch.retryRequested = false;")
                 < cancel.indexOf("requestRetainedSwitchCancellation(retainedSwitch)"));

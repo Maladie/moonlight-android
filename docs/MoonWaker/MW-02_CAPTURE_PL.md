@@ -31,9 +31,6 @@ Komunikaty **bez kodu** też zapisuj, dosłownie. Kodu nie mają:
   sekundach) i „Nie udało się przygotować streamu”;
 - błędy pokazane już na ekranie gry po przełączeniu do streamu.
 
-Panel boczny „APLIKACJA — Stan sesji jest jeszcze sprawdzany” w bibliotece ma kod
-dopisany w ostatniej linii opisu (`launch.target_unresolved`).
-
 ## 2. Jak wyeksportować diagnostykę
 
 Aplikacja zapisuje zdarzenia lokalnie, w prywatnym katalogu (`no_backup/diagnostics`):
@@ -71,7 +68,7 @@ Każda linia pliku to jedno zdarzenie w formacie JSON. Dla jednej awarii:
 3. Dołącz linie `projection.published` (komponent `android.session`) oraz
    `retained_stream.state_changed` z około 30 sekund przed błędem i 30 sekund po nim.
    Pokazują, co aplikacja wiedziała o hoście i o streamie w tle.
-4. Kody `support.*` i `launch.target_unresolved` powstają poza orkiestratorem
+4. Kody `support.*` powstają poza orkiestratorem
    i mają `orchestration_id` równe 0. Dla nich wytnij zdarzenia po czasie.
 
 Pola w `session.failed`:
@@ -136,7 +133,6 @@ gotowości.” + „Żaden port streamingu nie odpowiedział w ciągu 90 sekund�
 | `uncertain.refresh_failed` | Stan sesji był niepewny, a odświeżenie z hosta się nie udało. | `SessionOrchestrator.awaitFreshSession` | C |
 | `uncertain.still_uncertain_after_refresh` | Odświeżenie się udało, ale stan nadal był niepewny. | `SessionOrchestrator.awaitFreshSession` | C |
 | `uncertain.terminating` | Poprzednia sesja zaczęła się zamykać już po podniesieniu ekranu ładowania dla tego Play. | `SessionOrchestrator.evaluate`, gałąź `TERMINATING` pod warstwą ładowania | C |
-| `launch.target_unresolved` | Dla wybranej gry nie dało się ustalić celu uruchomienia (aplikacji w Sunshine). | `ConsoleActivity.activatePlayniteItem`, panel boczny | C (panel) |
 | `orchestration.pass_limit` | Decyzja o uruchomieniu kręciła się w kółko i przerwano ją po dziewięciu przebiegach. | `SessionOrchestrator.evaluate` | D |
 | `orchestration.executor_rejected` | Nie dało się uruchomić zadania w tle. | `SessionOrchestrator.execute` | D |
 | `attach.resume_intent_missing` | Stream w tle nie miał ekranu gry, a nie było zapisanych danych, by go otworzyć. Nic nie zamknięto. | `ConsoleActivity.attachPresentationForSwitch` | E |

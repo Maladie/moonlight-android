@@ -68,9 +68,6 @@ public class ConsoleActivityLibraryPerformanceContractTest {
                 source.indexOf("private Drawable cloneDrawable("));
         assertTrue(heroDecode.contains("Bitmap.Config.RGB_565"));
 
-        String launchTargets = source("PlayniteLaunchTargetStore.java");
-        assertTrue(launchTargets.contains("preferences.getInt(key, 0) == appId"));
-
         String style = source.substring(source.indexOf("private void styleCard("),
                 source.indexOf("private void styleControllerPill("));
         assertTrue(style.contains("instanceof StateListDrawable"));

@@ -275,24 +275,6 @@ public class HostGatewayClientTest {
     }
 
     @Test
-    public void vibepolloNumericAppIdIsUsedAsExactLaunchTarget() throws Exception {
-        assertEquals(Integer.valueOf(1136869674),
-                HostGatewayClient.parseVibepolloAppId(
-                        new JSONObject("{\"app_id\":\"1136869674\"}")));
-        assertEquals(null, HostGatewayClient.parseVibepolloAppId(
-                new JSONObject("{\"app_id\":0}")));
-    }
-
-    @Test
-    public void vibepolloAppUuidIsNormalized() throws Exception {
-        assertEquals("11223344-5566-7788-99aa-bbccddeeff00",
-                HostGatewayClient.parseVibepolloAppUuid(new JSONObject()
-                        .put("uuid", "11223344-5566-7788-99AA-BBCCDDEEFF00")));
-        assertEquals("", HostGatewayClient.parseVibepolloAppUuid(
-                new JSONObject().put("uuid", "invalid")));
-    }
-
-    @Test
     public void playniteContractUsesSdkSecondsAndPreservesMetadata() throws Exception {
         JSONObject library = new JSONObject("{\"revision\":\"42\",\"api_version\":\"1\"," +
                 "\"games\":[{\"id\":\"steam:289070\"," +
@@ -329,7 +311,6 @@ public class HostGatewayClientTest {
         assertEquals("steam", parsed.games.get(0).libraryKey);
         assertFalse(parsed.games.get(0).canInstall);
         assertFalse(parsed.games.get(0).requiresConnector);
-        assertEquals("neutral", parsed.games.get(0).streamMode);
         assertTrue(parsed.games.get(0).startBeforeStream);
         assertEquals("Action, RPG", parsed.games.get(0).genres);
         assertEquals("Short overview", parsed.games.get(0).description);
@@ -373,7 +354,6 @@ public class HostGatewayClientTest {
         assertEquals("gog", game.provider);
         assertTrue(game.canLaunch);
         assertFalse(game.requiresConnector);
-        assertEquals("neutral", game.streamMode);
         assertTrue(game.startBeforeStream);
     }
 

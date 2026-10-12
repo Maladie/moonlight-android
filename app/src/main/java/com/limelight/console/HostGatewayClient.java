@@ -307,7 +307,6 @@ class HostGatewayClient {
         final boolean canInstall;
         final boolean canUninstall;
         final boolean requiresConnector;
-        final String streamMode;
         final boolean startBeforeStream;
         final String genres;
         final String artworkVersion;
@@ -412,8 +411,7 @@ class HostGatewayClient {
                     uninstalling, vibepolloState, providerFrom(source), "",
                     isGuid(id) ? id : "", sourceKey(source),
                     source == null || source.trim().isEmpty() ? "Playnite" : source,
-                    true, true, true, isGuid(id), isGuid(id) ? "managed" : "neutral",
-                    false);
+                    true, true, true, isGuid(id), false);
         }
 
         PlayniteGame(String id, String name, boolean installed, boolean installing,
@@ -426,15 +424,14 @@ class HostGatewayClient {
                      String vibepolloState, String provider, String providerGameId,
                      String playniteGameId, String libraryKey, String libraryName,
                      boolean canLaunch, boolean canInstall, boolean canUninstall,
-                     boolean requiresConnector, String streamMode,
-                     boolean startBeforeStream) {
+                     boolean requiresConnector, boolean startBeforeStream) {
             this(id, name, installed, installing, hidden, favorite, cover, background,
                     "", lastPlayed, description, playCount, source, genres,
                     artworkVersion, playtimeSeconds, installRequiresAttention,
                     installAttentionReason, installWindowTitle, installLauncher,
                     operationState, operationProgress, uninstalling, vibepolloState,
                     provider, providerGameId, playniteGameId, libraryKey, libraryName,
-                    canLaunch, canInstall, canUninstall, requiresConnector, streamMode,
+                    canLaunch, canInstall, canUninstall, requiresConnector,
                     startBeforeStream);
         }
 
@@ -448,7 +445,7 @@ class HostGatewayClient {
                      boolean uninstalling, String vibepolloState, String provider,
                      String providerGameId, String playniteGameId, String libraryKey,
                      String libraryName, boolean canLaunch, boolean canInstall,
-                     boolean canUninstall, boolean requiresConnector, String streamMode,
+                     boolean canUninstall, boolean requiresConnector,
                      boolean startBeforeStream) {
             this.id = id;
             this.name = name;
@@ -472,8 +469,6 @@ class HostGatewayClient {
             this.canInstall = canInstall;
             this.canUninstall = canUninstall;
             this.requiresConnector = requiresConnector;
-            this.streamMode = "neutral".equalsIgnoreCase(streamMode)
-                    ? "neutral" : "managed";
             this.startBeforeStream = startBeforeStream;
             this.genres = genres;
             this.artworkVersion = artworkVersion;
@@ -1786,19 +1781,6 @@ class HostGatewayClient {
                 ? response.optJSONObject("app") : new JSONObject();
     }
 
-    static Integer parseVibepolloAppId(JSONObject app) {
-        if (app == null) return null;
-        long value = app.optLong("app_id", 0L);
-        return value > 0L && value <= Integer.MAX_VALUE ? (int) value : null;
-    }
-
-    static String parseVibepolloAppUuid(JSONObject app) {
-        if (app == null) return "";
-        String value = app.optString("uuid", "").trim();
-        return value.matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-                ? value.toLowerCase(Locale.ROOT) : "";
-    }
-
     JSONObject sleepHost(GatewayConnection connection) throws IOException {
         return request(connection, "/api/v1/system/sleep", "POST",
                 new JSONObject(), READ_TIMEOUT_MS);
@@ -2329,9 +2311,6 @@ class HostGatewayClient {
                         ? !metadataPlayniteId.isEmpty()
                         : providerCapabilities.optBoolean("requiresConnector",
                         providerCapabilities.optBoolean("requires_connector", true));
-                String streamMode = providerCapabilities == null
-                        ? (requiresConnector ? "managed" : "neutral")
-                        : firstText(providerCapabilities, "streamMode", "stream_mode");
                 boolean startBeforeStream = providerCapabilities != null
                         && providerCapabilities.optBoolean("startBeforeStream",
                         providerCapabilities.optBoolean("start_before_stream", false));
@@ -2375,7 +2354,7 @@ class HostGatewayClient {
                         capability(value, "launch", exactIdentity),
                         capability(value, "install", exactIdentity),
                         capability(value, "uninstall", exactIdentity),
-                        requiresConnector, streamMode, startBeforeStream));
+                        requiresConnector, startBeforeStream));
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),

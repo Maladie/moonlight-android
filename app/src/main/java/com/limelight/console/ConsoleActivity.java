@@ -204,8 +204,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             "com.limelight.console.WARM_UP_PENDING_QUICK_LAUNCH";
     public static final String EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR =
             "com.limelight.console.WARM_UP_PENDING_REQUIRES_CONNECTOR";
-    public static final String EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM =
-            "com.limelight.console.WARM_UP_PENDING_NEUTRAL_STREAM";
     public static final String EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM =
             "com.limelight.console.WARM_UP_PENDING_START_BEFORE_STREAM";
     // The console UI is a product feature and must be identical in debug and release builds.
@@ -214,7 +212,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     /** Preference files whose per-host entries name the host UUID in their key or value. */
     private static final String[] HOST_KEYED_PREFERENCES = {PREFS,
             AppView.HIDDEN_APPS_PREF_FILENAME, AppPreferences.APP_PREFERENCES_FILE,
-            PlayniteLaunchTargetStore.PREFS, DiscordOverlayController.PREFS};
+            DiscordOverlayController.PREFS};
     private static final int REQUEST_BLUETOOTH_CONNECT = 2201;
     private static final int REQUEST_COMMUNITY_DICTATION = 2202;
     private static final long CONTROLLER_REFRESH_MS = 30_000L;
@@ -348,7 +346,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private HostGatewayStore hostGatewayStore;
     private PlayniteLibraryRepository playniteLibraryRepository;
     private PlayniteArtworkCache playniteArtworkCache;
-    private PlayniteLaunchTargetStore playniteLaunchTargetStore;
     private QuickLaunchManager quickLaunchManager;
     private ShortcutHelper shortcutHelper;
     private ComputerManagerService.ComputerManagerBinder managerBinder;
@@ -1046,7 +1043,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         playniteLibraryRepository = new PlayniteLibraryRepository(hostGatewayClient,
                 new PlayniteLibraryCache(this));
         playniteArtworkCache = new PlayniteArtworkCache(this);
-        playniteLaunchTargetStore = new PlayniteLaunchTargetStore(this);
         quickLaunchManager = QuickLaunchManager.getInstance(this);
         shortcutHelper = new ShortcutHelper(this);
         getWindow().setFormat(isStreamHome()
@@ -3692,24 +3688,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (gameId.isEmpty() || gameName == null || gameName.trim().isEmpty()) return;
         String artworkId = getIntent().getStringExtra(EXTRA_WARM_UP_PENDING_ARTWORK_ID);
         String quickLaunchId = getIntent().getStringExtra(EXTRA_WARM_UP_PENDING_QUICK_LAUNCH);
-        if (getIntent().hasExtra(EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR)
-                && getIntent().hasExtra(EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM)
-                && getIntent().hasExtra(EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM)) {
-            pendingWarmUpRelay = PlayIntent.playniteGame(
-                    launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID), launchedProfileId(),
-                    launchedAppId(), gameName, false, gameId,
-                    artworkId, quickLaunchId,
-                    getIntent().getBooleanExtra(
-                            EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR, true),
-                    getIntent().getBooleanExtra(EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM, false),
-                    getIntent().getBooleanExtra(
-                            EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM, false));
-        } else {
-            pendingWarmUpRelay = providerGameIntent(
-                    launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID), launchedProfileId(),
-                    launchedAppId(), gameName, false, gameId,
-                    artworkId, quickLaunchId);
-        }
+        pendingWarmUpRelay = PlayIntent.playniteGame(
+                launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID), launchedProfileId(),
+                launchedAppId(), gameName, false, gameId,
+                artworkId, quickLaunchId,
+                getIntent().getBooleanExtra(EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR, true),
+                getIntent().getBooleanExtra(
+                        EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM, false));
     }
 
     protected final void acceptPreparingHomeFrame() {
@@ -8251,17 +8236,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     /**
-     * Launch targets resolved against one Sunshine app list. Resolving matches every game with
-     * every app, so a game's result is reused while the app list, the host's authority over it
-     * and the game's stored target are unchanged. The main thread owns a published instance;
-     * background threads only publish fresh ones.
+     * Launch targets resolved against one Sunshine app list. A game's result is reused while
+     * the app list and the host's authority over it are unchanged. The main thread owns a
+     * published instance; background threads only publish fresh ones.
      */
     private static final class ResolvedTargets {
         final String hostUuid;
         final List<NvApp> apps;
         final boolean authoritative;
         final Map<PlayniteLibraryGame, PlayniteDashboardItem> items = new IdentityHashMap<>();
-        final Map<PlayniteLibraryGame, Integer> storedTargets = new IdentityHashMap<>();
 
         ResolvedTargets(String hostUuid, List<NvApp> apps, boolean authoritative) {
             this.hostUuid = hostUuid;
@@ -8277,15 +8260,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private PlayniteDashboardItem resolvePlayniteTarget(ResolvedTargets targets,
                                                         PlayniteLibraryGame game) {
-        Integer stored = playniteLaunchTargetStore.gameTarget(
-                targets.hostUuid, game.playniteGameId);
         PlayniteDashboardItem item = targets.items.get(game);
-        if (item != null && Objects.equals(stored, targets.storedTargets.get(game))) return item;
-        item = PlayniteTargetResolver.resolve(targets.hostUuid, game, targets.apps,
-                playniteLaunchTargetStore, targets.authoritative);
+        if (item != null) return item;
+        item = PlayniteTargetResolver.resolve(game, targets.apps, targets.authoritative);
         targets.items.put(game, item);
-        targets.storedTargets.put(game, playniteLaunchTargetStore.gameTarget(
-                targets.hostUuid, game.playniteGameId));
         return item;
     }
 
@@ -9976,9 +9954,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             return getString(R.string.playnite_game_installed);
         }
-        if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
-            return getString(R.string.playnite_launch_via_playnite);
-        }
         return getString(R.string.playnite_launch_not_configured);
     }
 
@@ -9994,9 +9969,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (isVibepolloEnsureInFlight(hostUuid, item)
                 && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) return "…";
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) return "✓";
-        if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
-            return "↗";
-        }
         return "!";
     }
 
@@ -10026,9 +9998,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             return CONSOLE_UI_V2 ? "" : getString(R.string.playnite_ready_short);
         }
-        if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
-            return CONSOLE_UI_V2 ? "" : getString(R.string.playnite_via_playnite_short);
-        }
         return getString(R.string.playnite_configuration_short);
     }
 
@@ -10051,7 +10020,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean installing = operation.installActive || operation.uninstallActive;
         boolean unavailable = item.game.installed
                 && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED
-                && item.mappingState != PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE
                 && !isVibepolloEnsureInFlight(hostUuid, item);
         int textColor;
         int fill;
@@ -11014,38 +10982,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     Toast.LENGTH_SHORT).show();
             return;
         }
-        if (isVibepolloEnsureInFlight(hostUuid, item)
-                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) {
-            ConsoleUiFeedback.makeText(this, R.string.playnite_creating_vibepollo_app,
-                    Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
-            NvApp target = PlayniteTargetResolver.launchTarget(item, apps,
-                    ConsoleActionCatalog.isOnline(host));
-            if (target != null) {
-                playPlayniteGame(host, target, item.game);
-                return;
-            }
-        }
-        if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
-            NvApp fallback = PlayniteTargetResolver.launchTarget(item, apps,
-                    ConsoleActionCatalog.isOnline(host));
-            if (fallback != null) {
-                playPlayniteGame(host, fallback, item.game);
-                return;
-            }
-        }
-        if (item.mappingState == PlayniteDashboardItem.MappingState.MISSING) {
-            playProviderGame(PlayIntent.providerGame(
-                    host.uuid, selectedProfileId(host.uuid), 0,
-                    item.game.name, false, item.game,
-                    playniteStreamSettingsKey(host.uuid, item.game.playniteGameId)));
-            return;
-        }
-        SessionFailure.LAUNCH_TARGET_UNRESOLVED.record(0L, host.uuid,
-                selectedProfileId(host.uuid), resolveSessionSnapshot(host), "");
-        showUncertainSessionMessage();
+        playPlayniteGame(host, PlayniteTargetResolver.resolveNeutralStream(apps), item.game);
     }
 
     private void startPlayniteInstallation(ComputerDetails host,
@@ -11155,7 +11092,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         NvApp streamTarget = PlayniteTargetResolver.resolveInstallationStream(
-                host.uuid, currentSunshineApps, playniteLaunchTargetStore);
+                currentSunshineApps);
         if (streamTarget == null) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_no_fullscreen_target,
                     Toast.LENGTH_LONG).show();
@@ -11432,12 +11369,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 uniquePlayniteGameIdForRunningApp(host, app)));
     }
 
-    private void playPlayniteGame(ComputerDetails host, NvApp app,
+    /** {@code stream} is the neutral stream this list knows, or null: preflight resolves it. */
+    private void playPlayniteGame(ComputerDetails host, NvApp stream,
                                   PlayniteLibraryGame game) {
-        if (host == null || app == null || game == null) return;
+        if (host == null || game == null) return;
         playProviderGame(PlayIntent.providerGame(host.uuid,
-                selectedProfileId(host.uuid), app.getAppId(),
-                game.name, app.isHdrSupported(), game,
+                selectedProfileId(host.uuid), stream == null ? 0 : stream.getAppId(),
+                game.name, stream != null && stream.isHdrSupported(), game,
                 playniteStreamSettingsKey(host.uuid, game.playniteGameId)));
     }
 
@@ -11455,7 +11393,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return PlayIntent.playniteGame(hostUuid, profileId,
                 appId, appName, hdrSupported,
                 game.playniteGameId, loadingArtworkGameId, streamSettingsKey,
-                game.requiresConnector, game.usesNeutralStream(), game.startBeforeStream);
+                game.requiresConnector, game.startBeforeStream);
     }
 
     private PlayniteLibraryGame providerGameMetadata(String hostUuid, String profileId,
@@ -11944,14 +11882,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 saveHostProfiles(hostId, profiles);
                 HostGatewayClient.IntegrationProfile profile = profiles.find(profileId);
                 if (profile == null) {
-                    return new HostLaunchPreflight.Profile(false, false,
-                            false, false);
+                    return new HostLaunchPreflight.Profile(false, false, false);
                 }
                 return new HostLaunchPreflight.Profile(profile.id,
                         profile.executionProfileId, profile.name, profile.useProfile,
                         profile.playniteBridgeOnline,
-                        profile.playniteConnectorConnected,
-                        profile.vibepolloBridgeOnline);
+                        profile.playniteConnectorConnected);
             }
 
             @Override public HostLaunchPreflight.Session ensureSession(
@@ -11978,22 +11914,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     hostGatewayClient.cancelWindowsSession(
                             connection, requestId, attemptId);
                 }
-            }
-
-            @Override public HostLaunchPreflight.EnsuredTarget ensureTarget(
-                    String hostId, String profileId, String gameId, String name)
-                    throws IOException {
-                ComputerDetails host = currentHost(hostId);
-                String address = host != null && host.activeAddress != null
-                        ? host.activeAddress.address : null;
-                GatewayConnection connection = hostGatewayStore.loadForHost(
-                        hostId, address, profileId);
-                if (connection == null) throw new IOException("Gateway unavailable");
-                JSONObject ensured = hostGatewayClient.ensureVibepolloPlayniteApp(
-                        connection, gameId, name);
-                return new HostLaunchPreflight.EnsuredTarget(
-                        HostGatewayClient.parseVibepolloAppId(ensured),
-                        HostGatewayClient.parseVibepolloAppUuid(ensured));
             }
 
             private GatewayConnection connection(String hostId, String profileId) {
@@ -12070,8 +11990,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return getString(R.string.preflight_starting_profile_services);
             case PLAYNITE_READY:
                 return getString(R.string.transition_checking_game_launch_service);
-            case VIBEPOLLO_READY:
-                return getString(R.string.playnite_creating_vibepollo_app);
             default:
                 // TARGET_READY: the stream target exists; nothing has started a game yet.
                 return getString(R.string.transition_preparing_session);
@@ -12118,10 +12036,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return getString(R.string.preflight_playnite_offline);
             case PLAYNITE_CONNECTOR_DISCONNECTED:
                 return getString(R.string.preflight_playnite_connector_disconnected);
-            case VIBEPOLLO_UNAVAILABLE:
-                return getString(R.string.preflight_vibepollo_unavailable);
-            case TARGET_PROPAGATION_TIMEOUT:
-                return getString(R.string.preflight_target_timeout);
+            case NEUTRAL_STREAM_UNAVAILABLE:
+                return getString(R.string.preflight_neutral_stream_unavailable);
             default:
                 return getString(R.string.playnite_launch_unavailable);
         }
@@ -12575,15 +12491,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             HostLaunchPreflight.FailureReason.NETWORK_UNAVAILABLE));
                     return;
                 }
-                if (intent.kind == PlayIntent.Kind.PLAYNITE_GAME) {
-                    playniteLaunchTargetStore.setGameTarget(intent.hostId,
-                            intent.playniteGameId, app.getAppId());
-                }
-                boolean legacySunshineLaunch = intent.kind == PlayIntent.Kind.PLAYNITE_GAME
-                        && !intent.neutralStream
-                        && !PlayniteTargetResolver.isNeutralStream(app);
-                LaunchTransitionType transitionType = legacySunshineLaunch
-                        ? LaunchTransitionType.GAME_CONNECTION : intent.transitionType(type);
+                LaunchTransitionType transitionType = intent.transitionType(type);
                 LaunchTransitionSpec transition = LaunchTransitionSpec.create(
                         intent.hostId, intent.profileId, transitionType, app.getAppId(),
                         intent.transitionGameId(), System.currentTimeMillis(),
@@ -12962,8 +12870,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     pendingGame.quickLaunchId);
             intent.putExtra(EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR,
                     pendingGame.requiresConnector);
-            intent.putExtra(EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM,
-                    pendingGame.neutralStream);
             intent.putExtra(EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM,
                     pendingGame.startBeforeStream);
         }
@@ -14250,7 +14156,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 List<PlayniteDashboardItem> cachedItems = new ArrayList<>();
                 if (cached != null) {
                     for (PlayniteLibraryGame game : cached.games) {
-                        cachedItems.add(new PlayniteDashboardItem(game, null, "",
+                        cachedItems.add(new PlayniteDashboardItem(game, null,
                                 PlayniteDashboardItem.MappingState.NOT_INSTALLED));
                     }
                 }
@@ -14568,14 +14474,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         discordSocialPanelController.restoreCommunityKeyboardAfterDictation(recipientId,
                 directMessageGeneration);
-    }
-
-    private void showUncertainSessionMessage() {
-        TextView close = consolePanel.action(getString(R.string.console_cancel));
-        close.setOnClickListener(view -> hideSidePanel());
-        SessionFailure reason = SessionFailure.LAUNCH_TARGET_UNRESOLVED;
-        showSidePanel(getString(R.string.console_apps_eyebrow), getString(reason.title),
-                getString(reason.details) + "\n" + reason.code, close);
     }
 
     private void showSidePanel(String eyebrow, String title, String details, View... actions) {

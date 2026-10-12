@@ -20,7 +20,6 @@ final class PlayIntent {
     final String quickLaunchId;
     final String loadingArtworkGameId;
     final boolean requiresConnector;
-    final boolean neutralStream;
     final boolean startBeforeStream;
     final String calibrationAppKey;
     final int runtimeWidth;
@@ -31,17 +30,16 @@ final class PlayIntent {
     private PlayIntent(String hostId, String profileId, Kind kind, int sunshineAppId, String appName,
                        boolean hdrSupported, String playniteGameId,
                        String quickLaunchId, String loadingArtworkGameId,
-                       boolean requiresConnector, boolean neutralStream,
-                       boolean startBeforeStream) {
+                       boolean requiresConnector, boolean startBeforeStream) {
         this(hostId, profileId, kind, sunshineAppId, appName, hdrSupported, playniteGameId,
-                quickLaunchId, loadingArtworkGameId, requiresConnector, neutralStream,
+                quickLaunchId, loadingArtworkGameId, requiresConnector,
                 startBeforeStream, "", 0, 0, 0, 0);
     }
 
     private PlayIntent(String hostId, String profileId, Kind kind, int sunshineAppId, String appName,
                        boolean hdrSupported, String playniteGameId,
                        String quickLaunchId, String loadingArtworkGameId,
-                       boolean requiresConnector, boolean neutralStream,
+                       boolean requiresConnector,
                        boolean startBeforeStream, String calibrationAppKey,
                        int runtimeWidth, int runtimeHeight, int runtimeFps,
                        int runtimeBitrateKbps) {
@@ -57,7 +55,6 @@ final class PlayIntent {
         this.loadingArtworkGameId = loadingArtworkGameId == null
                 ? "" : loadingArtworkGameId.trim();
         this.requiresConnector = requiresConnector;
-        this.neutralStream = neutralStream;
         this.startBeforeStream = startBeforeStream;
         this.calibrationAppKey = calibrationAppKey == null ? "" : calibrationAppKey.trim();
         this.runtimeWidth = runtimeWidth;
@@ -107,15 +104,14 @@ final class PlayIntent {
                                   String loadingArtworkGameId) {
         return new PlayIntent(hostId, profileId, Kind.SUNSHINE_APP, appId, appName,
                 hdrSupported, "", quickLaunchId, loadingArtworkGameId,
-                false, false, false);
+                false, false);
     }
 
     static PlayIntent playniteGame(String hostId, int appId, String appName,
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId) {
         return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
-                hdrSupported, gameId,
-                loadingArtworkGameId, "");
+                hdrSupported, gameId, loadingArtworkGameId, "");
     }
 
     static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
@@ -127,80 +123,34 @@ final class PlayIntent {
 
     static PlayIntent playniteGame(String hostId, int appId, String appName,
                                    boolean hdrSupported, String gameId,
-                                   String loadingArtworkGameId,
-                                   boolean requiresConnector, boolean neutralStream) {
-        return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
-                hdrSupported, gameId,
-                loadingArtworkGameId, "", requiresConnector, neutralStream);
-    }
-
-    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
-                                   boolean hdrSupported, String gameId,
-                                   String loadingArtworkGameId,
-                                   boolean requiresConnector, boolean neutralStream) {
-        return playniteGame(hostId, profileId, appId, appName, hdrSupported, gameId,
-                loadingArtworkGameId, "", requiresConnector, neutralStream);
-    }
-
-    static PlayIntent playniteGame(String hostId, int appId, String appName,
-                                   boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId, String streamSettingsKey) {
         return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
-                hdrSupported, gameId,
-                loadingArtworkGameId, streamSettingsKey, true, false);
-    }
-
-    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
-                                   boolean hdrSupported, String gameId,
-                                   String loadingArtworkGameId, String streamSettingsKey) {
-        return playniteGame(hostId, profileId, appId, appName, hdrSupported, gameId,
-                loadingArtworkGameId, streamSettingsKey, true, false);
+                hdrSupported, gameId, loadingArtworkGameId, streamSettingsKey);
     }
 
     static PlayIntent playniteGame(String hostId, int appId, String appName,
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId, String streamSettingsKey,
-                                   boolean requiresConnector, boolean neutralStream) {
-        return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
-                hdrSupported, gameId,
-                loadingArtworkGameId, streamSettingsKey, requiresConnector,
-                neutralStream, false);
-    }
-
-    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
-                                   boolean hdrSupported, String gameId,
-                                   String loadingArtworkGameId, String streamSettingsKey,
-                                   boolean requiresConnector, boolean neutralStream) {
-        return playniteGame(hostId, profileId, appId, appName, hdrSupported, gameId,
-                loadingArtworkGameId, streamSettingsKey, requiresConnector,
-                neutralStream, false);
-    }
-
-    static PlayIntent playniteGame(String hostId, int appId, String appName,
-                                   boolean hdrSupported, String gameId,
-                                   String loadingArtworkGameId, String streamSettingsKey,
-                                   boolean requiresConnector, boolean neutralStream,
-                                   boolean startBeforeStream) {
+                                   boolean requiresConnector, boolean startBeforeStream) {
         return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
                 hdrSupported, gameId, loadingArtworkGameId, streamSettingsKey,
-                requiresConnector, neutralStream, startBeforeStream);
+                requiresConnector, startBeforeStream);
+    }
+
+    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
+                                   boolean hdrSupported, String gameId,
+                                   String loadingArtworkGameId, String streamSettingsKey) {
+        return playniteGame(hostId, profileId, appId, appName, hdrSupported, gameId,
+                loadingArtworkGameId, streamSettingsKey, true, false);
     }
 
     static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId, String streamSettingsKey,
-                                   boolean requiresConnector, boolean neutralStream,
-                                   boolean startBeforeStream) {
+                                   boolean requiresConnector, boolean startBeforeStream) {
         return new PlayIntent(hostId, profileId, Kind.PLAYNITE_GAME, appId, appName,
                 hdrSupported, gameId, streamSettingsKey, loadingArtworkGameId,
-                requiresConnector, neutralStream, startBeforeStream);
-    }
-
-    static PlayIntent providerGame(String hostId, int appId, String appName,
-                                   boolean hdrSupported, PlayniteLibraryGame game,
-                                   String streamSettingsKey) {
-        return providerGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
-                hdrSupported, game, streamSettingsKey);
+                requiresConnector, startBeforeStream);
     }
 
     static PlayIntent providerGame(String hostId, String profileId, int appId, String appName,
@@ -209,7 +159,7 @@ final class PlayIntent {
         if (game == null) throw new IllegalArgumentException("Game metadata is required");
         return playniteGame(hostId, profileId, appId, appName, hdrSupported,
                 game.playniteGameId, game.playniteGameId, streamSettingsKey,
-                game.requiresConnector, game.usesNeutralStream(), game.startBeforeStream);
+                game.requiresConnector, game.startBeforeStream);
     }
 
     static PlayIntent playniteFullscreen(String hostId, int appId, String appName,
@@ -221,7 +171,7 @@ final class PlayIntent {
     static PlayIntent playniteFullscreen(String hostId, String profileId, int appId,
                                          String appName, boolean hdrSupported) {
         return new PlayIntent(hostId, profileId, Kind.PLAYNITE_FULLSCREEN, appId, appName,
-                hdrSupported, "", "", "", false, false, false);
+                hdrSupported, "", "", "", false, false);
     }
 
     static PlayIntent autoWarmUp(String hostId) {
@@ -231,7 +181,7 @@ final class PlayIntent {
     static PlayIntent autoWarmUp(String hostId, String profileId) {
         return new PlayIntent(hostId, profileId, Kind.AUTO_WARM_UP, 0,
                 PlayniteTargetResolver.MOONWAKER_STREAM_NAME,
-                false, "", "", "", false, true, false);
+                false, "", "", "", false, false);
     }
 
     PlayIntent withCalibration(String appKey, int width, int height, int fps,
@@ -241,7 +191,7 @@ final class PlayIntent {
         }
         return new PlayIntent(hostId, profileId, kind, sunshineAppId, appName, hdrSupported,
                 playniteGameId, quickLaunchId, loadingArtworkGameId, requiresConnector,
-                neutralStream, startBeforeStream, appKey, width, height, fps, bitrateKbps);
+                startBeforeStream, appKey, width, height, fps, bitrateKbps);
     }
 
     boolean isCalibration() {

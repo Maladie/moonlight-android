@@ -60,7 +60,7 @@ public class HostLaunchPreflightTest {
         fake.refreshAction = () -> { throw new IllegalStateException("app list blocked by startup"); };
         HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
                 PlayIntent.playniteGame("host", 77, "Game", false, "steam:1", "game",
-                        false, true),
+                        "", false, false),
                 HostLaunchPreflight.Action.SWITCH_RETAINED);
         assertEquals(HostLaunchPreflight.Status.READY, fake.run(request, new AtomicBoolean()).status);
         assertEquals(0, fake.refreshes);
@@ -69,7 +69,7 @@ public class HostLaunchPreflightTest {
         assertFailure(fake.run(request, new AtomicBoolean()), HostLaunchPreflight.Stage.GATEWAY_READY,
                 HostLaunchPreflight.FailureReason.GATEWAY_UNAVAILABLE);
         assertEquals(1, fake.retainedChecks);
-        fake.profile = profile(true, true, true, true);
+        fake.profile = profile(true, true, true);
         AtomicBoolean cancelled = new AtomicBoolean();
         fake.retainedAction = () -> cancelled.set(true);
         assertEquals(HostLaunchPreflight.Status.CANCELLED, fake.run(request, cancelled).status);
@@ -83,7 +83,7 @@ public class HostLaunchPreflightTest {
             fake.apps.add(Collections.singletonList(fake.retainedTarget));
             assertEquals(HostLaunchPreflight.Status.READY, fake.run(HostLaunchPreflight.Request.from(
                     PlayIntent.playniteGame("host", 77, "Game", false, "steam:1", "game",
-                            false, true), action),
+                            "", false, false), action),
                     new AtomicBoolean()).status);
             assertEquals(1, fake.refreshes);
             assertEquals(0, fake.retainedChecks);
@@ -100,7 +100,6 @@ public class HostLaunchPreflightTest {
         assertEquals(42, result.target.getAppId());
         assertEquals(1, fake.profileChecks);
         assertEquals(1, fake.sessionEnsureCalls);
-        assertEquals(0, fake.ensureCalls);
     }
 
     @Test public void retainedSwitchCarriesNoWakeActionThroughNetworkGate() {
@@ -130,11 +129,9 @@ public class HostLaunchPreflightTest {
 
         assertEquals(HostLaunchPreflight.Status.READY, result.status);
         assertEquals(77, result.target.getAppId());
-        assertEquals(HostLaunchPreflight.TargetResolution.EXISTING, result.resolution);
         assertEquals(HostLaunchPreflight.Action.WARM_UP, fake.networkActionSeen);
         assertEquals(1, fake.profileChecks);
         assertEquals(1, fake.sessionEnsureCalls);
-        assertEquals(0, fake.ensureCalls);
         assertEquals(1, fake.refreshes);
     }
 
@@ -146,10 +143,9 @@ public class HostLaunchPreflightTest {
 
         assertFailure(fake.run(warmUp(), new AtomicBoolean()),
                 HostLaunchPreflight.Stage.TARGET_READY,
-                HostLaunchPreflight.FailureReason.TARGET_UNAVAILABLE);
+                HostLaunchPreflight.FailureReason.NEUTRAL_STREAM_UNAVAILABLE);
         assertEquals(1, fake.profileChecks);
         assertEquals(1, fake.sessionEnsureCalls);
-        assertEquals(0, fake.ensureCalls);
         assertEquals(1, fake.refreshes);
     }
 
@@ -164,13 +160,13 @@ public class HostLaunchPreflightTest {
 
     @Test public void missingProfileIsDistinctFromOfflinePlayniteBridge() {
         Fake missing = new Fake();
-        missing.profile = profile(false, true, true, true);
+        missing.profile = profile(false, true, true);
         assertFailure(missing.run(game(42), new AtomicBoolean()),
                 HostLaunchPreflight.Stage.PROFILE_AUTHORIZED,
                 HostLaunchPreflight.FailureReason.SELECTED_PROFILE_UNAVAILABLE);
 
         Fake offline = new Fake();
-        offline.profile = profile(true, false, true, true);
+        offline.profile = profile(true, false, true);
         assertFailure(offline.run(game(42), new AtomicBoolean()),
                 HostLaunchPreflight.Stage.PLAYNITE_READY,
                 HostLaunchPreflight.FailureReason.PLAYNITE_BRIDGE_OFFLINE);
@@ -178,154 +174,93 @@ public class HostLaunchPreflightTest {
 
     @Test public void disconnectedPlayniteConnectorIsDetected() {
         Fake fake = new Fake();
-        fake.profile = profile(true, true, false, true);
+        fake.profile = profile(true, true, false);
 
         assertFailure(fake.run(game(42), new AtomicBoolean()),
                 HostLaunchPreflight.Stage.PLAYNITE_READY,
                 HostLaunchPreflight.FailureReason.PLAYNITE_CONNECTOR_DISCONNECTED);
     }
 
-    @Test public void directProviderRecordDoesNotRequirePlayniteConnector() {
+    @Test public void gameWithoutConnectorRequirementDoesNotNeedThePlayniteConnector() {
         Fake fake = new Fake();
-        fake.profile = profile(true, true, false, true);
-        fake.apps.add(Collections.singletonList(app("Desktop", 8, "desktop")));
-
-        HostLaunchPreflight.Result result = fake.run(providerGame(42), new AtomicBoolean());
-
-        assertEquals(HostLaunchPreflight.Status.READY, result.status);
-        assertEquals(8, result.target.getAppId());
-        assertEquals(0, fake.ensureCalls);
-    }
-
-    @Test public void managedGamePrefersNeutralStream() {
-        Fake fake = new Fake();
-        fake.apps.add(Arrays.asList(app("Game", 42, "exact"),
-                app("MoonWaker Stream", 77,
-                        PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
-
-        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
-
-        assertEquals(77, result.target.getAppId());
-        assertEquals(HostLaunchPreflight.TargetResolution.EXISTING, result.resolution);
-        assertEquals(0, fake.ensureCalls);
-    }
-
-    @Test public void olderNativeHostUsesExactLegacyTargetWithoutProviderStart() {
-        Fake fake = new Fake();
-        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
-
-        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
-
-        assertEquals(42, result.target.getAppId());
-        assertEquals(HostLaunchPreflight.TargetResolution.EXISTING, result.resolution);
-        assertEquals(0, fake.ensureCalls);
-    }
-
-    @Test public void directProviderIgnoresTransientPerGameTarget() {
-        Fake fake = new Fake();
-        fake.profile = profile(true, true, false, true);
-        fake.apps.add(Arrays.asList(app("Game", 42, "steam:289070"),
-                app("Desktop", 8, "desktop")));
-
-        HostLaunchPreflight.Result result = fake.run(providerGame(42), new AtomicBoolean());
-
-        assertEquals(HostLaunchPreflight.Status.READY, result.status);
-        assertEquals(8, result.target.getAppId());
-        assertEquals(0, fake.ensureCalls);
-    }
-
-    @Test public void directProviderWithoutDesktopFailsWithoutCreatingTransientTarget() {
-        Fake fake = new Fake();
-        fake.profile = profile(true, true, false, true);
-        fake.apps.add(Collections.emptyList());
-
-        assertFailure(fake.run(providerGame(42), new AtomicBoolean()),
-                HostLaunchPreflight.Stage.TARGET_READY,
-                HostLaunchPreflight.FailureReason.TARGET_UNAVAILABLE);
-        assertEquals(0, fake.ensureCalls);
-    }
-
-    @Test public void neutralProviderCapabilityDoesNotDependOnKnownProviderPrefix() {
-        Fake fake = new Fake();
-        fake.profile = profile(true, true, false, true);
+        fake.profile = profile(true, true, false);
         fake.apps.add(Collections.singletonList(app("MoonWaker Stream", 77,
                 PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
-        HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
-                PlayIntent.playniteGame("host", 0, "GOG Game", false,
-                        "gog:Some_Game", "gog:Some_Game", false, true),
-                HostLaunchPreflight.Action.LAUNCH);
 
-        HostLaunchPreflight.Result result = fake.run(request, new AtomicBoolean());
+        HostLaunchPreflight.Result result = fake.run(providerGame(42), new AtomicBoolean());
 
         assertEquals(HostLaunchPreflight.Status.READY, result.status);
         assertEquals(77, result.target.getAppId());
-        assertEquals(0, fake.ensureCalls);
     }
 
-    @Test public void existingExactTargetDoesNotRequireVibepollo() {
+    @Test public void gameUsesTheNeutralStreamEvenWhenItsOwnSunshineAppExists() {
         Fake fake = new Fake();
-        fake.profile = profile(true, true, true, false);
-        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+        fake.apps.add(Arrays.asList(app("Game", 42, "exact"), app("MoonWaker Stream", 77,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
 
         HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
 
-        assertEquals(HostLaunchPreflight.Status.READY, result.status);
-        assertEquals(HostLaunchPreflight.TargetResolution.EXISTING, result.resolution);
-        assertEquals(0, fake.ensureCalls);
+        assertEquals(77, result.target.getAppId());
     }
 
-    @Test public void missingTargetEnsuresAndWaitsForExactUuid() {
-        Fake fake = ensuringFake();
-        NvApp exact = app("Game", 77, "expected");
-        fake.apps.add(Collections.emptyList());
-        addStable(fake, Collections.singletonList(exact));
+    @Test public void gameWithoutASunshineAppOfItsOwnLaunchesThroughTheNeutralStream() {
+        for (HostLaunchPreflight.Request request : Arrays.asList(game(0), providerGame(0))) {
+            Fake fake = new Fake();
+            fake.apps.add(Arrays.asList(app("Desktop", 8, "desktop"),
+                    app("MoonWaker Stream", 77,
+                            PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
 
-        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
+            HostLaunchPreflight.Result result = fake.run(request, new AtomicBoolean());
+
+            assertEquals(HostLaunchPreflight.Status.READY, result.status);
+            assertEquals(77, result.target.getAppId());
+        }
+    }
+
+    @Test public void retainedSwitchToAGameWithoutAVerifiedTargetRefreshesTheAppList() {
+        Fake fake = new Fake();
+        fake.apps.add(Collections.singletonList(app("MoonWaker Stream", 77,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
+
+        HostLaunchPreflight.Result result = fake.run(HostLaunchPreflight.Request.from(
+                PlayIntent.playniteGame("host", 0, "Game", false, "steam:1", "game",
+                        "", false, false),
+                HostLaunchPreflight.Action.SWITCH_RETAINED), new AtomicBoolean());
 
         assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(1, fake.retainedChecks);
+        assertEquals(1, fake.refreshes);
         assertEquals(77, result.target.getAppId());
-        assertEquals(HostLaunchPreflight.TargetResolution.ENSURED, result.resolution);
-        assertEquals(1, fake.ensureCalls);
+    }
+
+    @Test public void gameWithoutTheNeutralStreamFailsInsteadOfUsingAnotherSunshineApp() {
+        for (HostLaunchPreflight.Request request : Arrays.asList(game(42), providerGame(42))) {
+            Fake fake = new Fake();
+            fake.profile = profile(true, true, true);
+            fake.apps.add(Arrays.asList(app("Game", 42, "exact"),
+                    app("Desktop", 8, "desktop"), app("MoonWaker Stream", 9, "manual")));
+
+            assertFailure(fake.run(request, new AtomicBoolean()),
+                    HostLaunchPreflight.Stage.TARGET_READY,
+                    HostLaunchPreflight.FailureReason.NEUTRAL_STREAM_UNAVAILABLE);
+            assertEquals(1, fake.refreshes);
+        }
     }
 
     @Test public void preflightPinsGatewayWorkToTheIntentProfile() {
-        Fake fake = ensuringFake();
-        fake.apps.add(Collections.emptyList());
-        addStable(fake, Collections.singletonList(app("Game", 77, "expected")));
+        Fake fake = new Fake();
+        fake.apps.add(Collections.singletonList(app("MoonWaker Stream", 77,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
         HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
                 PlayIntent.playniteGame("host", "Basia", 42, "Game", false,
                         "game", "game"), HostLaunchPreflight.Action.LAUNCH);
         fake.profile = new HostLaunchPreflight.Profile(
-                "Basia", "Basia", "Basia", true, true, true, true);
+                "Basia", "Basia", "Basia", true, true, true);
 
         assertEquals(HostLaunchPreflight.Status.READY,
                 fake.run(request, new AtomicBoolean()).status);
         assertEquals("Basia", fake.profileSeen);
         assertEquals("Basia", fake.sessionProfileSeen);
-        assertEquals("Basia", fake.ensureProfileSeen);
-    }
-
-    @Test public void similarlyNamedStaleAppDoesNotBeatEnsuredIdentity() {
-        Fake fake = ensuringFake();
-        NvApp stale = app("Game", 12, "stale");
-        NvApp exact = app("Game", 77, "expected");
-        fake.apps.add(Collections.singletonList(stale));
-        addStable(fake, Arrays.asList(stale, exact));
-
-        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
-
-        assertEquals(HostLaunchPreflight.Status.READY, result.status);
-        assertEquals(77, result.target.getAppId());
-    }
-
-    @Test public void targetPropagationTimeoutIsDeterministic() {
-        Fake fake = ensuringFake();
-        fake.apps.add(Collections.emptyList());
-        fake.waitStepMs = 300_000L;
-
-        assertFailure(fake.run(game(42), new AtomicBoolean()),
-                HostLaunchPreflight.Stage.TARGET_READY,
-                HostLaunchPreflight.FailureReason.TARGET_PROPAGATION_TIMEOUT);
     }
 
     @Test public void cancellationDuringNetworkWaitStopsAllLaterWork() {
@@ -351,43 +286,18 @@ public class HostLaunchPreflightTest {
         assertEquals(0, fake.refreshes);
     }
 
-    @Test public void cancellationDuringEnsureStopsPolling() {
-        Fake fake = ensuringFake();
-        fake.apps.add(Collections.emptyList());
-        AtomicBoolean cancelled = new AtomicBoolean();
-        fake.ensureAction = () -> cancelled.set(true);
-
-        HostLaunchPreflight.Result result = fake.run(game(42), cancelled);
-
-        assertEquals(HostLaunchPreflight.Status.CANCELLED, result.status);
-        assertEquals(1, fake.refreshes);
-    }
-
-    @Test public void cancellationDuringTargetPollingStopsFurtherPolls() {
-        Fake fake = ensuringFake();
-        fake.apps.add(Collections.emptyList());
-        AtomicBoolean cancelled = new AtomicBoolean();
-        fake.refreshAction = () -> {
-            if (fake.refreshes == 2) cancelled.set(true);
-        };
-
-        HostLaunchPreflight.Result result = fake.run(game(42), cancelled);
-
-        assertEquals(HostLaunchPreflight.Status.CANCELLED, result.status);
-        assertEquals(2, fake.refreshes);
-    }
-
     @Test public void signInAttemptIsPinnedAndPolledBeforeProfileBridgeReadiness() {
         Fake fake = new Fake();
         String attempt = "0123456789abcdef0123456789abcdef";
         fake.profile = new HostLaunchPreflight.Profile(
-                "Gry", "Gry", "Gry", true, true, true, true);
+                "Gry", "Gry", "Gry", true, true, true);
         fake.session = new HostLaunchPreflight.Session(
                 "pending", "none", attempt, 500);
         fake.sessionStatuses.add(new HostLaunchPreflight.Session(
                 "session_starting", "none", attempt, 500));
         fake.sessionStatuses.add(HostLaunchPreflight.Session.ready());
-        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+        fake.apps.add(Collections.singletonList(app("MoonWaker Stream", 77,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
         HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
                 PlayIntent.playniteGame("host", "Gry", 42, "Game", false,
                         "game", "game"), HostLaunchPreflight.Action.LAUNCH, 17L);
@@ -446,7 +356,7 @@ public class HostLaunchPreflightTest {
     @Test public void remoteSignInDenialCannotDispatchAStreamTarget() {
         Fake fake = new Fake();
         fake.profile = new HostLaunchPreflight.Profile(
-                "default", "default", "Gry", true, true, true, true);
+                "default", "default", "Gry", true, true, true);
         fake.session = new HostLaunchPreflight.Session(
                 "action_required", "remote_sign_in_not_granted", "", 1_000);
         HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
@@ -518,7 +428,7 @@ public class HostLaunchPreflightTest {
     @Test public void authenticatedProfileMustMatchTheRequestedActorAndExecutionIdentity() {
         Fake wrongActor = new Fake();
         wrongActor.profile = new HostLaunchPreflight.Profile(
-                "other", "other", "Other", true, true, true, true);
+                "other", "other", "Other", true, true, true);
         assertFailure(wrongActor.run(game(42), new AtomicBoolean()),
                 HostLaunchPreflight.Stage.PROFILE_AUTHORIZED,
                 HostLaunchPreflight.FailureReason.WINDOWS_IDENTITY_MISMATCH);
@@ -526,7 +436,7 @@ public class HostLaunchPreflightTest {
 
         Fake wrongExecution = new Fake();
         wrongExecution.profile = new HostLaunchPreflight.Profile(
-                "default", "parent", "Parent", true, true, true, true);
+                "default", "parent", "Parent", true, true, true);
         wrongExecution.session = new HostLaunchPreflight.Session(
                 "ready", "none", "", 1_000, "", "default", "other-parent");
         assertFailure(wrongExecution.run(game(42), new AtomicBoolean()),
@@ -566,7 +476,8 @@ public class HostLaunchPreflightTest {
 
     @Test public void gatewayAndPositiveIdentityProofAlwaysPrecedeStreamerRefresh() {
         Fake fake = new Fake();
-        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+        fake.apps.add(Collections.singletonList(app("MoonWaker Stream", 77,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
 
         assertEquals(HostLaunchPreflight.Status.READY,
                 fake.run(game(42), new AtomicBoolean()).status);
@@ -583,10 +494,11 @@ public class HostLaunchPreflightTest {
         fake.profile = null;
         fake.profileAction = () -> {
             if (fake.profileChecks == 2) {
-                fake.profile = profile(true, true, true, true);
+                fake.profile = profile(true, true, true);
             }
         };
-        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+        fake.apps.add(Collections.singletonList(app("MoonWaker Stream", 77,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
 
         assertEquals(HostLaunchPreflight.Status.READY,
                 fake.run(game(42), new AtomicBoolean()).status);
@@ -595,21 +507,10 @@ public class HostLaunchPreflightTest {
                 fake.events);
     }
 
-    private static Fake ensuringFake() {
-        Fake fake = new Fake();
-        fake.ensured = new HostLaunchPreflight.EnsuredTarget(77, "expected");
-        return fake;
-    }
-
-    private static void addStable(Fake fake, List<NvApp> apps) {
-        for (int i = 0; i < 5; i++) fake.apps.add(apps);
-    }
-
     private static HostLaunchPreflight.Profile profile(boolean selected,
                                                         boolean playnite,
-                                                        boolean connector,
-                                                        boolean vibepollo) {
-        return new HostLaunchPreflight.Profile(selected, playnite, connector, vibepollo);
+                                                        boolean connector) {
+        return new HostLaunchPreflight.Profile(selected, playnite, connector);
     }
 
     private static HostLaunchPreflight.Request sunshine() {
@@ -631,7 +532,7 @@ public class HostLaunchPreflightTest {
     private static HostLaunchPreflight.Request providerGame(int appId) {
         return HostLaunchPreflight.Request.from(PlayIntent.playniteGame(
                 "host", appId, "Game", false, "steam:289070", "steam:289070",
-                false, true),
+                "", false, false),
                 HostLaunchPreflight.Action.LAUNCH);
     }
 
@@ -656,14 +557,11 @@ public class HostLaunchPreflightTest {
         final Deque<List<NvApp>> apps = new ArrayDeque<>();
         final List<HostLaunchPreflight.Stage> stages = new ArrayList<>();
         HostLaunchPreflight.Profile profile = HostLaunchPreflightTest.profile(
-                true, true, true, true);
+                true, true, true);
         HostLaunchPreflight.Session session = HostLaunchPreflight.Session.ready();
         final Deque<HostLaunchPreflight.Session> sessionStatuses = new ArrayDeque<>();
-        HostLaunchPreflight.EnsuredTarget ensured =
-                new HostLaunchPreflight.EnsuredTarget(77, "expected");
         Runnable networkAction;
         Runnable profileAction;
-        Runnable ensureAction;
         Runnable refreshAction;
         Runnable retainedAction;
         Runnable waitAction;
@@ -676,13 +574,11 @@ public class HostLaunchPreflightTest {
         int sessionEnsureCalls;
         int sessionStatusCalls;
         int sessionCancelCalls;
-        int ensureCalls;
         int refreshes;
         String profileSeen;
         String sessionProfileSeen;
         String sessionRequestSeen;
         String sessionAttemptSeen;
-        String ensureProfileSeen;
         long now;
         long waitStepMs = 10_000L;
 
@@ -734,15 +630,6 @@ public class HostLaunchPreflightTest {
             sessionProfileSeen = profileId;
             sessionRequestSeen = requestId;
             sessionAttemptSeen = attemptId;
-        }
-
-        @Override public HostLaunchPreflight.EnsuredTarget ensureTarget(
-                String hostId, String profileId, String gameId, String name)
-                throws IOException {
-            ensureCalls++;
-            ensureProfileSeen = profileId;
-            if (ensureAction != null) ensureAction.run();
-            return ensured;
         }
 
         @Override public List<NvApp> refreshApps(String hostId) {

@@ -67,7 +67,7 @@ public class PlayniteLibraryQueryTest {
         PlayniteLibraryGame game = new PlayniteLibraryGame(id, name, true,
                 false, false, playtime, "", "", "", "", launches,
                 "Steam", "Action");
-        return new PlayniteDashboardItem(game, null, "",
+        return new PlayniteDashboardItem(game, null,
                 PlayniteDashboardItem.MappingState.MISSING);
     }
 }

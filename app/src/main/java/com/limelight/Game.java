@@ -20,6 +20,7 @@ import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.av.video.SwitchableVideoDecoderRenderer;
 import com.limelight.console.ConsoleStreamTransitionCoordinator;
 import com.limelight.console.SessionFailure;
+import com.limelight.console.SessionOrchestrator;
 import com.limelight.console.DiscordOverlayController;
 import com.limelight.console.DiscordDmNotificationCoordinator;
 import com.limelight.console.DiscordDmToastView;
@@ -213,8 +214,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean providerStopInFlight;
     private boolean providerStopConfirmed;
     private boolean providerEndGameInFlight;
-    private boolean timedOutRevealedReturnInFlight;
-    private boolean retainedDashboardReturnInFlight;
+    private boolean homeReturnInFlight;
     /** The observation kept on the retained transport after this game's start failed. */
     private String failedStartObservationId = "";
     private String lastTransitionNotice = "";
@@ -2311,13 +2311,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void onBackPressed() {
-        if (returnTimedOutRevealedStreamToDashboard()) return;
-        if (returnRetainedObservationToDashboard()) return;
-        if (isTransportConnected() && !streamHomeVisible && !isTransitionInputBlocked()) {
-            openConsoleHome();
-            return;
-        }
-        super.onBackPressed();
+        SessionOrchestrator.ActionKind decided =
+                runStreamIntent(SessionOrchestrator.UserIntent.BACK);
+        if (decided == SessionOrchestrator.ActionKind.CANCEL_ON_COVER) cancelTransition();
+        else if (decided == SessionOrchestrator.ActionKind.LEAVE_SCREEN) super.onBackPressed();
     }
 
     @Override
@@ -2326,7 +2323,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (isTransitionInputBlocked()) {
             // The loading view turns Back/B key-down into Cancel; decide first. Its key-up
             // consumption already swallows the matching release.
-            if (isBackKeyDown(event) && returnTimedOutRevealedStreamToDashboard()) return true;
+            if (isBackKeyDown(event) && runStreamIntent(SessionOrchestrator.UserIntent.BACK)
+                    != SessionOrchestrator.ActionKind.CANCEL_ON_COVER) return true;
             if (consoleLoadingView != null) {
                 consoleLoadingView.handleControllerKey(event);
             }
@@ -4517,50 +4515,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
-    private interface ProviderStopCallback {
-        void complete(boolean success);
-    }
-
     private boolean hasProviderGameTransition() {
         return transitionSpec != null && transitionSpec.playniteGameId != null
                 && !transitionSpec.playniteGameId.isEmpty()
                 && (transitionSpec.type == LaunchTransitionType.GAME
                 || transitionSpec.type == LaunchTransitionType.GAME_CONNECTION);
-    }
-
-    private void stopProviderGame(ProviderStopCallback completion) {
-        if (!hasProviderGameTransition()) {
-            completion.complete(true);
-            return;
-        }
-        String gameId = transitionSpec.playniteGameId;
-        String hostId = transitionSpec.hostId;
-        String activeHost = getIntent().getStringExtra(EXTRA_HOST);
-        PlayniteTransitionGateway.ActorContext actorContext = currentGatewayActorContext();
-        new Thread(() -> {
-            boolean success = false;
-            try {
-                PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        Game.this, hostId, activeHost, actorContext);
-                if (gateway == null) {
-                    LimeLog.warning("Unable to stop provider game: Gateway unavailable");
-                } else {
-                    PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
-                    String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
-                            gameId, current.gameState, current.gameId);
-                    if (exactGame == null || exactGame.isEmpty()
-                            || !current.hasVerifiedProcessFor(exactGame)) {
-                        throw new IOException("provider_process_not_exact");
-                    }
-                    gateway.stopGame(exactGame, current.processToken);
-                    success = true;
-                }
-            } catch (IOException | RuntimeException error) {
-                LimeLog.warning("Unable to stop provider game: " + error.getMessage());
-            }
-            boolean stopped = success;
-            runOnUiThread(() -> completion.complete(stopped));
-        }, "MoonWaker-StopProviderGame").start();
     }
 
     private String appDisplayName(String appName) {
@@ -6008,40 +5967,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && transitionSpec.playniteGameId.equalsIgnoreCase(gameId);
     }
 
-    /**
-     * Cancel of a provider launch whose game the host never confirmed ready (unrevealed, or only
-     * manually revealed; also leaving its start error) and whose stream holds a Gateway control
-     * generation: this attempt's cleanup runs first, then the whole host session closes (stream
-     * and virtual display), stopping a game only when the close's permit verifies it, never
-     * only the local transport, which Sunshine would merely pause. Otherwise only the transport
-     * closes here; cancelTransition decides (shouldAbandonLaunchOnCancel) whether the stopped
-     * StreamRuntime also closes the host stream its launch opened (StreamRuntime#abandonLaunch).
-     */
-    private boolean cancelUnrevealedProviderLaunchWithHostSession(long controlGeneration) {
-        if (transitionCoordinator == null
-                || !shouldCloseSessionOnStartCancel(transitionCoordinator.startsProviderGame(),
-                streamEverRevealed, transitionController.gameReadyConfirmed())
-                || controlGeneration <= 0L) return false;
-        cancelPendingAutomaticReveal();
-        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
-        // Claimed before reading the result: a cleanup completing meanwhile reaches the callback,
-        // and a host-reported failure whose cleanup already ran closes the session now.
-        freshOwnedFailureCleanupInFlight.set(true);
-        if (transitionCoordinator.providerCleanupResult() != null) {
-            terminateWholeSessionVerified(null);
-        } else {
-            transitionCoordinator.cancel();
-        }
-        return true;
-    }
-
-    /** Cancel before the host confirmed the game ready closes the session, even after a manual reveal. */
-    static boolean shouldCloseSessionOnStartCancel(boolean startsProviderGame,
-                                                   boolean streamEverRevealed,
-                                                   boolean gameReadyConfirmed) {
-        return startsProviderGame && (!streamEverRevealed || !gameReadyConfirmed);
-    }
-
     private void cancelPendingAutomaticReveal() {
         if (pendingAutomaticReveal == null) return;
         transitionUiHandler.removeCallbacks(pendingAutomaticReveal);
@@ -6120,80 +6045,138 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void cancelTransition() {
-        if (transitionController == null || transitionCancelInFlight) return;
-        retryTransitionId = "";
-        getIntent().removeExtra(STATE_RETRY_TRANSITION_ID);
-        if (settleOfferedAuthorizationRetry(false)) return;
-        if (closeFailedStartObservationSession()) return;
-        if (returnRetainedObservationToDashboard()) return;
-        if (retainedSwitch != null) {
-            // A user Cancel overrides a retry-triggered retained cleanup.
-            retainedSwitch.retryRequested = false;
-            requestRetainedSwitchCancellation(retainedSwitch);
+        runStreamIntent(SessionOrchestrator.UserIntent.CANCEL);
+    }
+
+    /** The presented transition's facts for the orchestrator's decision table. */
+    private SessionOrchestrator.State transitionState() {
+        SessionOrchestrator.State state = new SessionOrchestrator.State();
+        LaunchTransitionSnapshot presented =
+                transitionController == null ? null : transitionController.snapshot();
+        state.transitionActive = presented != null && !transitionCancelInFlight;
+        state.type = transitionSpec == null ? null : transitionSpec.type;
+        state.hasGame = transitionSpec != null && transitionSpec.playniteGameId != null
+                && !transitionSpec.playniteGameId.isEmpty();
+        state.connected = isTransportConnected();
+        state.homeVisible = streamHomeVisible;
+        state.parked = backgroundStreamParked;
+        state.covered = presented != null && presented.inputBlocked;
+        state.revealed = streamEverRevealed;
+        state.timedOut = presented != null && presented.state == LaunchTransitionState.TIMED_OUT;
+        state.returningToDashboard = presented != null
+                && presented.state == LaunchTransitionState.RETURNING_TO_DASHBOARD;
+        state.gameReadyConfirmed = transitionController != null
+                && transitionController.gameReadyConfirmed();
+        // One read decides: a generation granted after it is the stopped runtime's to settle.
+        state.controlGranted = bindControlGeneration() > 0L;
+        state.authorizationRetryOffered = retainedSwitch != null
+                && retainedSwitch.authorizationRetryOffered
+                && isCurrentRetainedSwitch(retainedSwitch);
+        state.failedStartObservation = isFailedStartObservation(failedStartObservationId,
+                transitionSpec == null ? "" : transitionSpec.id);
+        state.retainedSwitch = retainedSwitch != null;
+        state.retainedHomeLive = transitionSpec != null
+                && sessionModel.snapshot().state == SessionModel.State.HOME_LIVE
+                && sessionModel.ownsLiveOrParkedSession(
+                runtime, streamSessionId, transitionSpec.hostId,
+                transitionSpec.sunshineAppId, transitionSpec.playniteGameId);
+        return state;
+    }
+
+    /**
+     * Back or Cancel on the stream screen: SessionOrchestrator decides from the presented
+     * transition, this only executes. Returns the decision; CANCEL_ON_COVER and LEAVE_SCREEN
+     * are left to the caller's own key path.
+     */
+    private SessionOrchestrator.ActionKind runStreamIntent(SessionOrchestrator.UserIntent intent) {
+        SessionOrchestrator.ActionKind decided =
+                SessionOrchestrator.transition(transitionState(), intent).kind;
+        if (intent == SessionOrchestrator.UserIntent.CANCEL
+                && decided != SessionOrchestrator.ActionKind.IGNORE) {
+            retryTransitionId = "";
+            getIntent().removeExtra(STATE_RETRY_TRANSITION_ID);
+        }
+        switch (decided) {
+            case SHOW_HOME:
+                openConsoleHome();
+                break;
+            case COVER_AND_SHOW_HOME:
+                coverThenShowHome(intent);
+                break;
+            case DECLINE_AUTHORIZATION_RETRY:
+                settleOfferedAuthorizationRetry(false);
+                break;
+            case CANCEL_RETAINED_SWITCH:
+                // A user Cancel overrides a retry-triggered retained cleanup.
+                retainedSwitch.retryRequested = false;
+                requestRetainedSwitchCancellation(retainedSwitch);
+                break;
+            case CLOSE_HOST_SESSION:
+            case CLOSE_STARTED_SESSION:
+            case STOP_TRANSPORT_KEEP_SESSION:
+            case STOP_TRANSPORT_CLOSE_HOST_STREAM:
+            case STOP_TRANSPORT:
+                endCancelledTransition(decided);
+                break;
+            default:
+                break;
+        }
+        return decided;
+    }
+
+    /** Executes a decided Cancel that ends this presentation of the stream. */
+    private void endCancelledTransition(SessionOrchestrator.ActionKind decided) {
+        transitionCancelInFlight = true;
+        transitionController.cancel(transitionSpec.id);
+        cancelPendingAutomaticReveal();
+        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+        if (decided == SessionOrchestrator.ActionKind.CLOSE_HOST_SESSION) {
+            terminateWholeSessionVerified(null);
             return;
         }
-        transitionCancelInFlight = true;
-        LaunchTransitionState cancelledState =
-                transitionController.cancel(transitionSpec.id).state;
-        boolean revealedBeforeCancel = streamEverRevealed;
-        // One read decides: a generation granted after it is the abandoned launch's to close.
-        long controlGeneration = bindControlGeneration();
-        if (cancelUnrevealedProviderLaunchWithHostSession(controlGeneration)) return;
+        if (decided == SessionOrchestrator.ActionKind.CLOSE_STARTED_SESSION) {
+            // This attempt's cleanup runs first, then the whole host session closes (stream
+            // and virtual display), stopping a game only when the close's permit verifies it.
+            // Claimed before reading the result: a cleanup completing meanwhile reaches the
+            // callback, and a host-reported failure whose cleanup already ran closes now.
+            freshOwnedFailureCleanupInFlight.set(true);
+            // No coordinator (its recreated provider owner was not adopted): nothing to clean.
+            if (transitionCoordinator == null
+                    || transitionCoordinator.providerCleanupResult() != null) {
+                terminateWholeSessionVerified(null);
+            } else {
+                transitionCoordinator.cancel();
+            }
+            return;
+        }
         if (transitionCoordinator != null) transitionCoordinator.cancel();
-        cancelPendingAutomaticReveal();
         userInitiatedDisconnect = true;
         backgroundStreamParked = false;
         decoderDetachedBySurfaceLoss = false;
-        sessionModel.post(new SessionEvent.Cleared(streamSessionId));
-        sessionModel.post(new SessionEvent.ReconnectCleared(streamSessionId));
-        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
-        if (transitionCoordinator == null || !transitionCoordinator.startsProviderGame()) {
-            stopProviderGame(success -> {
-                if (!success) {
-                    LimeLog.warning("Provider game stop was not confirmed after transition cancel");
-                }
-            });
+        StreamRuntime cancelled = runtime;
+        if (decided == SessionOrchestrator.ActionKind.STOP_TRANSPORT_KEEP_SESSION) {
+            // The host stream (and a running game) stays: the session remains to be resumed.
+            // A host session this attempt reached is recorded, never to resume by itself; a
+            // later grant is the kept runtime's to record.
+            if (bindControlGeneration() > 0L) saveReconnect(false);
+            sessionModel.post(new SessionEvent.TransportLost(cancelled, streamSessionId));
+            if (cancelled != null) cancelled.keepLaunch();
+        } else {
+            sessionModel.post(new SessionEvent.Cleared(streamSessionId));
+            sessionModel.post(new SessionEvent.ReconnectCleared(streamSessionId));
         }
         AtomicBoolean finished = new AtomicBoolean();
         Runnable finishOnce = () -> {
             if (finished.compareAndSet(false, true)) finish();
         };
         transitionUiHandler.postDelayed(finishOnce, 5_000L);
-        StreamRuntime cancelled = runtime;
         stopConnection(finishOnce);
-        if (cancelled != null && shouldAbandonLaunchOnCancel(controlGeneration, cancelledState,
-                revealedBeforeCancel)) {
+        if (cancelled != null
+                && decided == SessionOrchestrator.ActionKind.STOP_TRANSPORT_CLOSE_HOST_STREAM) {
+            // After the stop: the runtime closes the host stream its launch opened, now or
+            // when a grant still in flight arrives.
             cancelled.abandonLaunch();
         }
-    }
-
-    /**
-     * The stopped runtime closes the host stream its launch opened when this cancel saw no
-     * control generation (a later grant is its to close), and when the host session was locked
-     * before the stream revealed anything: that stream showed nothing to keep, and left paused
-     * it would refuse the next launch. A revealed stream stays paused on a locked host.
-     */
-    static boolean shouldAbandonLaunchOnCancel(long controlGeneration,
-                                               LaunchTransitionState cancelledState,
-                                               boolean streamEverRevealed) {
-        return controlGeneration <= 0L
-                || cancelledState == LaunchTransitionState.HOST_SESSION_LOCKED
-                && !streamEverRevealed;
-    }
-
-    /**
-     * Cancel on the observation kept after a failed start abandons that start like any other
-     * start cancel: the whole host session closes instead of returning to the console.
-     */
-    private boolean closeFailedStartObservationSession() {
-        if (!isFailedStartObservation(failedStartObservationId,
-                transitionSpec == null ? "" : transitionSpec.id)) return false;
-        transitionCancelInFlight = true;
-        transitionController.cancel(transitionSpec.id);
-        cancelPendingAutomaticReveal();
-        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
-        terminateWholeSessionVerified(null);
-        return true;
     }
 
     /** Only a parent may end the stale earlier launch's game; a child reveals or cancels. */
@@ -6207,108 +6190,30 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && failedStartObservationId.equals(currentTransitionId);
     }
 
-    private boolean returnRetainedObservationToDashboard() {
-        if (retainedDashboardReturnInFlight) return true;
-        if (!isExactLiveRetainedObservation()) return false;
-        String transitionId = transitionSpec.id;
-        String gameId = transitionSpec.playniteGameId;
-        retainedDashboardReturnInFlight = true;
-        consoleLoadingView.showOpaque();
-        consoleLoadingView.doAfterNextFrame(() -> {
-            boolean exactForeground = isExactLiveRetainedObservation();
-            boolean openHome = shouldOpenRetainedObservationDashboard(
-                    transitionId, gameId,
-                    transitionSpec == null ? "" : transitionSpec.id,
-                    transitionSpec == null ? "" : transitionSpec.playniteGameId,
-                    exactForeground);
-            retainedDashboardReturnInFlight = false;
-            if (openHome) openConsoleHome();
-        });
-        return true;
-    }
-
-    private boolean isExactLiveRetainedObservation() {
-        SessionModel.Snapshot retained =
-                sessionModel.snapshot();
-        boolean exactOwner = transitionSpec != null
-                && sessionModel.ownsLiveOrParkedSession(
-                runtime, streamSessionId, transitionSpec.hostId,
-                transitionSpec.sunshineAppId, transitionSpec.playniteGameId);
-        return isForegroundRetainedObservation(
-                isTransportConnected(), streamHomeVisible, backgroundStreamParked,
-                transitionSpec == null ? null : transitionSpec.type,
-                transitionSpec == null ? "" : transitionSpec.playniteGameId,
-                retained.state, exactOwner);
-    }
-
     /**
-     * A live retained transport is not a launch to cancel. The timeout is published from the
-     * observer thread, so cover the stream before navigating and recheck at effect time.
+     * A live stream is not a launch to cancel. Its state is published from other threads, so
+     * cover the stream before navigating and decide again at effect time.
      */
-    private boolean returnTimedOutRevealedStreamToDashboard() {
-        if (timedOutRevealedReturnInFlight) return true;
-        if (!isTimedOutRevealedStreamForeground()) return false;
+    private void coverThenShowHome(SessionOrchestrator.UserIntent intent) {
+        if (homeReturnInFlight) return;
         String transitionId = transitionSpec.id;
-        timedOutRevealedReturnInFlight = true;
+        homeReturnInFlight = true;
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> {
-            timedOutRevealedReturnInFlight = false;
-            if (isFinishing() || isDestroyed()) return;
-            if (shouldOpenTimedOutRevealedDashboard(transitionId,
-                    transitionSpec == null ? "" : transitionSpec.id,
-                    isTimedOutRevealedStreamForeground())) {
+            homeReturnInFlight = false;
+            if (isFinishing() || isDestroyed() || transitionSpec == null
+                    || !transitionId.equals(transitionSpec.id)) return;
+            if (SessionOrchestrator.transition(transitionState(), intent).kind
+                    == SessionOrchestrator.ActionKind.COVER_AND_SHOW_HOME) {
                 openConsoleHome();
             }
         });
-        return true;
-    }
-
-    private boolean isTimedOutRevealedStreamForeground() {
-        return transitionSpec != null && consoleLoadingView != null
-                && shouldReturnTimedOutRevealedStreamToDashboard(
-                isTransportConnected(), streamHomeVisible, streamEverRevealed,
-                transitionController == null ? null : transitionController.snapshot().state);
-    }
-
-    static boolean shouldOpenTimedOutRevealedDashboard(
-            String scheduledTransitionId, String currentTransitionId, boolean stillEligible) {
-        return stillEligible && scheduledTransitionId != null
-                && scheduledTransitionId.equals(currentTransitionId);
     }
 
     private static boolean isBackKeyDown(KeyEvent event) {
         return event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
                 && (event.getKeyCode() == KeyEvent.KEYCODE_BACK
                 || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B);
-    }
-
-    static boolean shouldReturnTimedOutRevealedStreamToDashboard(
-            boolean connected, boolean streamHomeVisible, boolean streamEverRevealed,
-            LaunchTransitionState state) {
-        return connected && !streamHomeVisible && streamEverRevealed
-                && state == LaunchTransitionState.TIMED_OUT;
-    }
-
-    static boolean isForegroundRetainedObservation(
-            boolean connected, boolean streamHomeVisible, boolean backgroundStreamParked,
-            LaunchTransitionType type, String gameId,
-            SessionModel.State retainedState, boolean exactOwner) {
-        return connected && !streamHomeVisible
-                && !backgroundStreamParked
-                && type == LaunchTransitionType.GAME_CONNECTION
-                && gameId != null && !gameId.isEmpty()
-                && retainedState == SessionModel.State.HOME_LIVE
-                && exactOwner;
-    }
-
-    static boolean shouldOpenRetainedObservationDashboard(
-            String scheduledTransitionId, String scheduledGameId,
-            String currentTransitionId, String currentGameId,
-            boolean exactForeground) {
-        return exactForeground && scheduledTransitionId != null
-                && scheduledTransitionId.equals(currentTransitionId)
-                && scheduledGameId != null
-                && scheduledGameId.equalsIgnoreCase(currentGameId);
     }
 
     private void armNextVideoFrameForTransition(String transitionId, String reason) {
@@ -7237,9 +7142,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR,
                     getIntent().getBooleanExtra(
                             ConsoleActivity.EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR, true));
-            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM,
-                    getIntent().getBooleanExtra(
-                            ConsoleActivity.EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM, false));
             home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM,
                     getIntent().getBooleanExtra(
                             ConsoleActivity.EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM, false));

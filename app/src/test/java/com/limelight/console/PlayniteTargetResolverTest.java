@@ -6,6 +6,7 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Locale;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -18,76 +19,77 @@ public class PlayniteTargetResolverTest {
         assertNull(PlayniteTargetResolver.appDisplayName(null, "Pulpit"));
     }
 
-    @Test public void missingGameTargetRemainsUnconfiguredEvenWithPlayniteFallback() {
-        PlayniteLibraryGame game = game("My Game");
-
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", game,
-                Collections.singletonList(new NvApp("Playnite", 7, false)), null);
-
-        assertEquals(PlayniteDashboardItem.MappingState.MISSING,
-                item.mappingState);
-        assertNull(item.sunshineAppId);
-    }
-
-    @Test public void synchronizedGameAlwaysWinsOverPlayniteFallback() {
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", game("My Game"),
-                Arrays.asList(new NvApp("Playnite", 7, false),
-                        new NvApp("My Game", 9, false)), null);
-
-        assertEquals(PlayniteDashboardItem.MappingState.MAPPED, item.mappingState);
-        assertEquals(Integer.valueOf(9), item.sunshineAppId);
-    }
-
-    @Test public void duplicateExactNamesAreNotSelected() {
-        assertNull(PlayniteTargetResolver.findUniqueExactName(Arrays.asList(
-                new NvApp("My Game", 1, false), new NvApp(" my   game ", 2, false)),
-                "My Game"));
-    }
-
-    @Test public void directProviderNeverCorrelatesSunshineTargetByTitle() {
-        PlayniteLibraryGame providerGame = providerGame("steam:289070", "My Game", "steam");
-
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve(
-                "host", providerGame,
-                Collections.singletonList(new NvApp("My Game", 9, false)), null);
-
-        assertEquals(PlayniteDashboardItem.MappingState.MISSING, item.mappingState);
-        assertNull(item.sunshineAppId);
-    }
-
-    @Test public void directProviderPrefersMoonWakerStreamOverLegacyTargets() {
-        PlayniteLibraryGame providerGame = providerGame("epic:Salt", "Celeste", "epic");
-        NvApp stalePerGame = app("Celeste", 9, "epic:Salt", "sha256:cover");
-        NvApp desktop = app("Desktop", 8, "desktop", "default");
+    @Test public void everyInstalledGameMapsToTheNeutralStream() {
         NvApp neutral = app("MoonWaker Stream", 11,
                 PlayniteTargetResolver.MOONWAKER_STREAM_UUID, "default");
+        for (PlayniteLibraryGame game : Arrays.asList(game("Celeste"),
+                providerGame("epic:Salt", "Celeste", "epic"))) {
+            PlayniteDashboardItem item = PlayniteTargetResolver.resolve(game,
+                    Arrays.asList(app("Celeste", 9, game.playniteGameId, "sha256:cover"),
+                            app("Desktop", 8, "desktop", "default"), neutral), true);
 
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", providerGame,
-                Arrays.asList(stalePerGame, desktop, neutral), null);
+            assertEquals(PlayniteDashboardItem.MappingState.MAPPED, item.mappingState);
+            assertEquals(Integer.valueOf(11), item.sunshineAppId);
+        }
+    }
+
+    @Test public void noOtherSunshineAppIsAGameLaunchTarget() {
+        for (PlayniteLibraryGame game : Arrays.asList(game("My Game"),
+                providerGame("steam:289070", "My Game", "steam"))) {
+            PlayniteDashboardItem item = PlayniteTargetResolver.resolve(game,
+                    Arrays.asList(new NvApp("Playnite", 7, false),
+                            app("My Game", 9, game.playniteGameId, "sha256:cover"),
+                            app("Desktop", 8, "desktop", "default"),
+                            app("MoonWaker Stream", 12, "manual", "default")), true);
+
+            assertEquals(PlayniteDashboardItem.MappingState.MISSING, item.mappingState);
+            assertNull(item.sunshineAppId);
+        }
+    }
+
+    @Test public void offlineHostKeepsTheGameLaunchableForPreflight() {
+        PlayniteDashboardItem item = PlayniteTargetResolver.resolve(game("My Game"),
+                Collections.emptyList(), false);
 
         assertEquals(PlayniteDashboardItem.MappingState.MAPPED, item.mappingState);
-        assertEquals(Integer.valueOf(11), item.sunshineAppId);
-        assertEquals("MoonWaker Stream", item.sunshineAppName);
+        assertNull(item.sunshineAppId);
     }
 
-    @Test public void directProviderFallsBackToDesktopOnOlderHost() {
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host",
-                providerGame("steam:289070", "Civilization VI", "steam"),
-                Collections.singletonList(app("Desktop", 8, "desktop", "default")), null);
+    @Test public void notInstalledGameHasNoTarget() {
+        PlayniteLibraryGame game = new PlayniteLibraryGame(
+                "11223344-5566-7788-99aa-bbccddeeff00", "My Game",
+                false, false, 0, "", "", "", "Playnite");
 
-        assertEquals(Integer.valueOf(8), item.sunshineAppId);
-        assertEquals("Desktop", item.sunshineAppName);
+        PlayniteDashboardItem item = PlayniteTargetResolver.resolve(game,
+                Collections.singletonList(app("MoonWaker Stream", 11,
+                        PlayniteTargetResolver.MOONWAKER_STREAM_UUID, "default")), true);
+
+        assertEquals(PlayniteDashboardItem.MappingState.NOT_INSTALLED, item.mappingState);
+        assertNull(item.sunshineAppId);
     }
 
-    @Test public void nativePlayniteUsesNeutralTargetWithoutMatchingGameTitle() {
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", game("My Game"),
-                Arrays.asList(new NvApp("My Game", 9, false),
-                        app("MoonWaker Stream", 11,
-                                PlayniteTargetResolver.MOONWAKER_STREAM_UUID,
-                                "default")), null);
+    @Test public void duplicateNeutralStreamsWithTheSameUuidResolveToTheEnrichedOne() {
+        NvApp plain = app("MoonWaker Stream", 11,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID, "default");
+        NvApp enriched = app(" moonwaker   stream ", 12,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID.toUpperCase(Locale.ROOT),
+                "sha256:cover");
 
-        assertEquals(Integer.valueOf(11), item.sunshineAppId);
-        assertEquals("MoonWaker Stream", item.sunshineAppName);
+        assertEquals(12, PlayniteTargetResolver.resolveNeutralStream(
+                Arrays.asList(plain, enriched)).getAppId());
+        assertEquals(12, PlayniteTargetResolver.resolveNeutralStream(
+                Arrays.asList(enriched, plain)).getAppId());
+    }
+
+    @Test public void sameNamedStreamsWithDifferentUuidsAreNotANeutralTarget() {
+        NvApp neutral = app("MoonWaker Stream", 11,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID, "sha256:cover");
+        NvApp collision = app("MoonWaker Stream", 12, "manual", "default");
+
+        assertNull(PlayniteTargetResolver.resolveNeutralStream(
+                Arrays.asList(neutral, collision)));
+        assertNull(PlayniteTargetResolver.resolveNeutralStream(
+                Arrays.asList(collision, neutral)));
     }
 
     @Test public void manualNameCollisionIsNotAValidNeutralTarget() {
@@ -95,43 +97,6 @@ public class PlayniteTargetResolverTest {
 
         assertNull(PlayniteTargetResolver.resolveNeutralStream(
                 Collections.singletonList(collision)));
-    }
-
-    @Test public void directProviderLaunchRefreshesToCurrentDesktop() {
-        PlayniteLibraryGame providerGame = providerGame("steam:367520", "Hollow Knight",
-                "steam");
-        PlayniteDashboardItem item = new PlayniteDashboardItem(providerGame, 42,
-                "Desktop", PlayniteDashboardItem.MappingState.MAPPED);
-        NvApp current = app("Desktop", 8, "desktop", "default");
-
-        NvApp target = PlayniteTargetResolver.launchTarget(item,
-                Collections.singletonList(current), true);
-
-        assertNotNull(target);
-        assertEquals(8, target.getAppId());
-    }
-
-    @Test public void duplicateGamestreamRowsWithSameUuidAreOnePlayableTarget() {
-        NvApp transientRow = app("My Game", 1,
-                "11223344-5566-7788-99aa-bbccddeeff00", "default");
-        NvApp enrichedRow = app("My Game", 2,
-                "11223344-5566-7788-99aa-bbccddeeff00", "sha256:cover");
-
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", game("My Game"),
-                Arrays.asList(new NvApp("Playnite", 7, false), transientRow, enrichedRow), null);
-
-        assertEquals(PlayniteDashboardItem.MappingState.MAPPED, item.mappingState);
-        assertEquals(Integer.valueOf(2), item.sunshineAppId);
-    }
-
-    @Test public void authoritativeUuidWinsOverStaleGameStreamId() {
-        NvApp current = app("Carcassonne", 689122159,
-                "11223344-5566-7788-99aa-bbccddeeff00", "sha256:cover");
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", game("Carcassonne"),
-                Arrays.asList(new NvApp("Other", 1549796112, false), current), null);
-
-        assertEquals(Integer.valueOf(689122159), item.sunshineAppId);
-        assertEquals("Carcassonne", item.sunshineAppName);
     }
 
     @Test public void playniteUuidRemainsArtworkIdentityWithoutSessionGameId() {
@@ -147,72 +112,18 @@ public class PlayniteTargetResolverTest {
                 app("Desktop", 1, "not-a-playnite-id", "default")));
     }
 
-    @Test public void authoritativeUuidPrefersEnrichedDuplicate() {
-        NvApp transientRow = app("Carcassonne", 689122159,
-                "11223344-5566-7788-99aa-bbccddeeff00", "default");
-        NvApp enrichedRow = app("Carcassonne", 848566822,
-                "11223344-5566-7788-99aa-bbccddeeff00", "sha256:cover");
-
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", game("Carcassonne"),
-                Arrays.asList(transientRow, enrichedRow), null);
-
-        assertEquals(Integer.valueOf(848566822), item.sunshineAppId);
-    }
-
-    @Test public void launchTargetRefreshesStaleItemIdFromUuid() {
-        PlayniteDashboardItem item = new PlayniteDashboardItem(game("Carcassonne"), 1549796112,
-                "Carcassonne", PlayniteDashboardItem.MappingState.MAPPED);
-        NvApp current = app("Carcassonne", 689122159,
-                "11223344-5566-7788-99aa-bbccddeeff00", "sha256:cover");
-
-        NvApp target = PlayniteTargetResolver.launchTarget(item,
-                Arrays.asList(new NvApp("Other", 1549796112, false), current), true);
-
-        assertNotNull(target);
-        assertEquals(689122159, target.getAppId());
-    }
-
-    @Test public void differentUuidExactNamesRemainAmbiguous() {
-        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", game("My Game"),
-                Arrays.asList(app("My Game", 1, "a", "default"),
-                        app("My Game", 2, "b", "sha256:cover")), null);
-
-        assertEquals(PlayniteDashboardItem.MappingState.AMBIGUOUS, item.mappingState);
-        assertNull(item.sunshineAppId);
-    }
-
-    @Test public void offlineMappedGameCreatesLaunchTargetFromPersistedIdentity() {
-        PlayniteDashboardItem item = new PlayniteDashboardItem(game("My Game"), 42,
-                "My Game", PlayniteDashboardItem.MappingState.MAPPED);
-
-        NvApp target = PlayniteTargetResolver.launchTarget(item,
-                Collections.emptyList(), false);
-
-        assertNotNull(target);
-        assertEquals(42, target.getAppId());
-        assertEquals("My Game", target.getAppName());
-    }
-
-    @Test public void onlineMissingMappingDoesNotCreatePlaceholderTarget() {
-        PlayniteDashboardItem item = new PlayniteDashboardItem(game("My Game"), 42,
-                "My Game", PlayniteDashboardItem.MappingState.MAPPED);
-
-        assertNull(PlayniteTargetResolver.launchTarget(item,
-                Collections.emptyList(), true));
-    }
-
     @Test public void installationPrefersNeutralDesktopOverPlaynite() {
-        NvApp target = PlayniteTargetResolver.resolveInstallationStream("host",
+        NvApp target = PlayniteTargetResolver.resolveInstallationStream(
                 Arrays.asList(new NvApp("Playnite", 7, false),
-                        new NvApp("Desktop", 8, false)), null);
+                        new NvApp("Desktop", 8, false)));
 
         assertNotNull(target);
         assertEquals(8, target.getAppId());
     }
 
     @Test public void installationFallsBackToPlayniteWithoutDesktop() {
-        NvApp target = PlayniteTargetResolver.resolveInstallationStream("host",
-                Collections.singletonList(new NvApp("Playnite", 7, false)), null);
+        NvApp target = PlayniteTargetResolver.resolveInstallationStream(
+                Collections.singletonList(new NvApp("Playnite", 7, false)));
 
         assertNotNull(target);
         assertEquals(7, target.getAppId());
@@ -235,6 +146,6 @@ public class PlayniteTargetResolverTest {
         return new PlayniteLibraryGame(id, name, true, false, false, 0, "", "", "",
                 "", 0, provider, "", false, "", "", "", "", -1, false, "",
                 provider, providerGameId, "11223344-5566-7788-99aa-bbccddeeff00",
-                provider, provider, true, true, true, false, "neutral");
+                provider, provider, true, true, true, false);
     }
 }
