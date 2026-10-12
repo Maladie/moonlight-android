@@ -114,10 +114,6 @@ final class PlayniteLibraryCache {
                             exactIdentity && value.optBoolean("can_uninstall", true),
                             value.optBoolean("requires_connector",
                                     !value.optString("playnite_game_id", "").isEmpty()),
-                            value.optString("stream_mode",
-                                    value.optBoolean("requires_connector",
-                                            !value.optString("playnite_game_id", "").isEmpty())
-                                            ? "managed" : "neutral"),
                             value.optBoolean("start_before_stream", false)));
                 }
             }
@@ -171,7 +167,6 @@ final class PlayniteLibraryCache {
                 value.put("can_install", game.canInstall);
                 value.put("can_uninstall", game.canUninstall);
                 value.put("requires_connector", game.requiresConnector);
-                value.put("stream_mode", game.streamMode);
                 value.put("start_before_stream", game.startBeforeStream);
                 value.put("genres", game.genres);
                 value.put("install_requires_attention", game.installRequiresAttention);

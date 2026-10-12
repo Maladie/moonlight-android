@@ -42,7 +42,7 @@ public class PlayniteLibraryDiffTest {
         id = id.substring(id.length() - 8) + "-0000-0000-0000-000000000000";
         PlayniteLibraryGame game = new PlayniteLibraryGame(id, "Game " + suffix,
                 true, false, seconds, "", cover, "", "Steam");
-        return new PlayniteDashboardItem(game, 1, "Game " + suffix,
+        return new PlayniteDashboardItem(game, 1,
                 PlayniteDashboardItem.MappingState.MAPPED);
     }
 }

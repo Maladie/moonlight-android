@@ -341,7 +341,7 @@ public class ConsoleChildProfileUiContractTest {
         String id = ("00000000" + suffix);
         id = id.substring(id.length() - 8) + "-0000-0000-0000-000000000000";
         return new PlayniteDashboardItem(new PlayniteLibraryGame(id, "Game " + suffix,
-                true, false, 0, "", "", "", "Test"), null, "",
+                true, false, 0, "", "", "", "Test"), null,
                 PlayniteDashboardItem.MappingState.MAPPED);
     }
 

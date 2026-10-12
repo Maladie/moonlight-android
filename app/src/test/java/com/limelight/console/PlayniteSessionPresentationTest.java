@@ -192,7 +192,7 @@ public class PlayniteSessionPresentationTest {
     private static PlayniteDashboardItem item(String gameId, int appId) {
         PlayniteLibraryGame game = new PlayniteLibraryGame(gameId, gameId, true,
                 false, 0L, "", "", "", "Steam");
-        return new PlayniteDashboardItem(game, appId, "MoonWaker",
+        return new PlayniteDashboardItem(game, appId,
                 PlayniteDashboardItem.MappingState.MAPPED);
     }
 }

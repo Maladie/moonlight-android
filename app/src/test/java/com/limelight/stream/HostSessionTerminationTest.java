@@ -20,6 +20,18 @@ public class HostSessionTerminationTest {
     private static final String TOKEN =
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+    @Test public void abandonedLaunchTakenOverByANewerSessionReportsNothingLeft() {
+        // The host refuses the stale generation as a stream this session does not own.
+        assertEquals(HostSessionTermination.Outcome.OTHER_STREAM,
+                HostSessionTermination.failure("unmanaged_stream"));
+        assertFalse(AndroidStreamRuntime.reportsAbandonedLaunchClose(
+                HostSessionTermination.Outcome.OTHER_STREAM));
+        assertTrue(AndroidStreamRuntime.reportsAbandonedLaunchClose(
+                HostSessionTermination.Outcome.FAILED));
+        assertTrue(AndroidStreamRuntime.reportsAbandonedLaunchClose(
+                HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED));
+    }
+
     @Test public void knownRunningGameIsTheStopTarget() throws Exception {
         assertEquals(GAME, HostSessionTermination.stopTarget(GAME, "running", GAME));
         // run() stops exactly that verified target inside the permit before quitting Sunshine.

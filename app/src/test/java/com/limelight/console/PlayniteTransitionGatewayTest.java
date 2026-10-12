@@ -337,7 +337,7 @@ public class PlayniteTransitionGatewayTest {
         assertFalse(connect.contains("DEFAULT_PROFILE_ID"));
 
         String game = read(root.resolve("Game.java"));
-        assertEquals(8, occurrences(game, "PlayniteTransitionGateway.connect("));
+        assertEquals(7, occurrences(game, "PlayniteTransitionGateway.connect("));
         assertTrue(game.contains("currentGatewayActorContext()"));
         assertTrue(game.contains("operation.actorContext"));
         assertTrue(game.contains("ActorContext.child(\n"

@@ -1500,8 +1500,7 @@ public class SessionOrchestratorTest {
                     : HostLaunchPreflight.Result.ready(
                     new NvApp(intent.appName,
                             intent.sunshineAppId > 0 ? intent.sunshineAppId : 77,
-                            intent.hdrSupported),
-                    HostLaunchPreflight.TargetResolution.EXISTING);
+                            intent.hdrSupported));
         }
         @Override public SessionOrchestrator.CloseResult closePreviousSession(
                 PlayIntent intent, NvApp target, boolean allowDestructiveClose,

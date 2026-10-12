@@ -1102,7 +1102,6 @@
     <string name="playnite_game_details_body">Status: %1$s\nLast played: %2$s\nTime played: %3$s\nLibrary: %4$s\nGenres: %5$s\n\n%6$s</string>
     <string name="playnite_preparing_short">Preparing…</string>
     <string name="playnite_ready_short">Ready</string>
-    <string name="playnite_via_playnite_short">Via Playnite</string>
     <string name="playnite_configuration_short">Setup needed</string>
     <string name="playnite_install_starting">Starting installation of “%1$s”…</string>
     <string name="playnite_install_in_progress">“%1$s” is already being installed.</string>
@@ -1139,10 +1138,7 @@
     <string name="playnite_legend_back">Back</string>
     <string name="playnite_no_installed_games">The game library has no installed games.</string>
     <string name="playnite_launch_not_configured">Launch not configured</string>
-    <string name="playnite_launch_via_playnite">Launches through Playnite</string>
     <string name="playnite_creating_vibepollo_app">Preparing the game in Vibepollo…</string>
-    <string name="playnite_mapping_suggestion">Select to confirm the suggested Sunshine target</string>
-    <string name="playnite_select_target_details">Choose the existing Sunshine app that starts this game. MoonWaker will use its normal stream lifecycle.</string>
     <string name="playnite_target_saved">Sunshine launch target saved for %1$s</string>
     <string name="playnite_change_target">Change Sunshine launch target</string>
     <string name="playnite_clear_target">Clear launch target</string>
@@ -1240,8 +1236,7 @@
     <string name="preflight_windows_sign_in_timeout">Sign-in for profile %1$s took too long.</string>
     <string name="preflight_playnite_offline">The Game Provider Bridge is offline.</string>
     <string name="preflight_playnite_connector_disconnected">Playnite is not connected to its Bridge.</string>
-    <string name="preflight_vibepollo_unavailable">Vibepollo is unavailable for this profile.</string>
-    <string name="preflight_target_timeout">The Sunshine target did not finish propagating in time.</string>
+    <string name="preflight_neutral_stream_unavailable">The host does not provide the \"MoonWaker Stream\" stream. Add it in the host configuration.</string>
     <string name="transition_stream_disconnected">Stream disconnected</string>
     <string name="transition_readiness_unconfirmed">Readiness could not be confirmed</string>
     <string name="transition_launcher_interaction_required">The game launcher needs your attention. Reveal the stream to continue, or go back to end it.</string>

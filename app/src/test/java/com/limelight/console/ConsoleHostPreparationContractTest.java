@@ -90,7 +90,6 @@ public class ConsoleHostPreparationContractTest {
         String home = section(game, "private void launchConsoleHome(",
                 "private void showOverlayMenuWithBattery(");
         assertTrue(home.contains("EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR"));
-        assertTrue(home.contains("EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM"));
         assertTrue(home.contains("EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM"));
     }
 

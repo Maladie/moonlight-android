@@ -504,6 +504,33 @@ public class StreamRuntimeTest {
         assertEquals(Collections.singletonList("s2:p:4"), platform.abandonedCloses);
     }
 
+    @Test public void keptLaunchRecordsALateGrantAndNeverClosesTheHostStream() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        runtime.start();
+        // A cancelled reconnect to a running game: the model holds nothing for this session.
+        runtime.keepLaunch();
+        runtime.stop(r -> { });
+        transport.controlGeneration = 9L;
+        runtime.stageComplete("app");
+
+        assertTrue(platform.abandonedCloses.isEmpty());
+        assertEquals(Collections.singletonList("s1:9"), platform.generationsBound);
+    }
+
+    @Test public void abandonedLaunchIsNotSavedForReconnectWhileTheModelStillHoldsIt() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = connected("s1", transport);
+        m.enterHome(runtime, "s1", "host", "p", 7, "g");
+        StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
+        // The cancel's clear is still queued for the model when the Activity is destroyed.
+        runtime.stop(r -> { });
+        runtime.abandonLaunch();
+        runtime.presentationLost(attachment, true);
+
+        assertTrue(platform.reconnectSaved.isEmpty());
+    }
+
     @Test public void liveRuntimeIsNeverAbandoned() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
@@ -727,7 +754,10 @@ public class StreamRuntimeTest {
         @Override public int retentionMinutes() { return retention; }
         @Override public void saveReconnectRecord(String id) { reconnectSaved.add(id); }
         @Override public void clearReconnectRecord(String id) { reconnectCleared.add(id); }
-        @Override public void controlGenerationBound(String id, long generation) { }
+        final List<String> generationsBound = Collections.synchronizedList(new ArrayList<>());
+        @Override public void controlGenerationBound(String id, long generation) {
+            generationsBound.add(id + ":" + generation);
+        }
         @Override public void terminateHost(StreamRuntime runtime,
                                             SessionModel.Snapshot session, String gameId,
                                             SessionModel.TerminationCallback c) { }

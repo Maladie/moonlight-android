@@ -132,6 +132,7 @@ public final class StreamRuntime implements NvConnectionListener,
     private volatile long openInputSerial;
     // The presentation gave up its launch before the host granted it a control generation.
     private volatile boolean launchAbandoned;
+    private volatile boolean launchKept;
     private final AtomicBoolean abandonedLaunchClosed = new AtomicBoolean();
 
     // Held input recorded by the gate; mutated only under the input lock.
@@ -540,7 +541,9 @@ public final class StreamRuntime implements NvConnectionListener,
                     "stream_session_id", streamSessionId, "generation", generation());
             return;
         }
-        if (retainedByCoordinator()) {
+        // An abandoned launch is settled; a model that has not applied its cancel yet must not
+        // turn it back into a session to reconnect.
+        if (!launchAbandoned && retainedByCoordinator()) {
             stopUnprotected("presentation_lost");
         } else {
             stop(result -> { });
@@ -648,7 +651,11 @@ public final class StreamRuntime implements NvConnectionListener,
             platform.sessionModel().post(new SessionEvent.ControlGenerationBound(
                     this, streamSessionId, controlGeneration));
             platform.controlGenerationBound(streamSessionId, controlGeneration);
+        } else if (controlGeneration > 0L && launchKept) {
+            // Granted after the stop: the kept session's reconnect record needs it.
+            platform.controlGenerationBound(streamSessionId, controlGeneration);
         } else if (controlGeneration > 0L && (launchAbandoned || !retainedByCoordinator())) {
+            // Deliberate: stops outside Cancel (stage error, STOP_TRANSPORT) declare nothing.
             closeAbandonedLaunch(controlGeneration);
         }
         Presentation p = attached();
@@ -657,9 +664,9 @@ public final class StreamRuntime implements NvConnectionListener,
 
     /**
      * The presentation cancelled its launch, after stopping this runtime, and left the host
-     * stream that launch opened to this runtime: it saw no control generation yet, or the host
-     * session was locked before anything was revealed. A grant that already arrived (even through the live path, before the stop)
-     * closes now; a later one closes in {@link #stageComplete}, whatever the session model has
+     * stream that launch opened to this runtime: the stream revealed nothing, whether or not the
+     * host had granted it. A grant that already arrived (even through the live path, before the
+     * stop) closes now; a later one closes in {@link #stageComplete}, whatever the session model has
      * processed of the cancel by then.
      */
     public void abandonLaunch() {
@@ -667,6 +674,15 @@ public final class StreamRuntime implements NvConnectionListener,
         launchAbandoned = true;
         long controlGeneration = transport.controlGeneration();
         if (controlGeneration > 0L) closeAbandonedLaunch(controlGeneration);
+    }
+
+    /**
+     * The presentation cancelled a reconnect to a running game, or a used neutral stream
+     * settling to the dashboard, and is stopping this runtime: the host stream stays to be
+     * resumed, so a grant still in flight is recorded, never closed.
+     */
+    public void keepLaunch() {
+        launchKept = true;
     }
 
     /**

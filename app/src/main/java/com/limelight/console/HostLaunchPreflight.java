@@ -15,10 +15,6 @@ final class HostLaunchPreflight {
     private static final long SESSION_TIMEOUT_MS = 2 * 60_000L;
     private static final long PROFILE_TIMEOUT_MS = 90_000L;
     private static final long SESSION_POLL_MS = 1_000L;
-    private static final long TARGET_TIMEOUT_MS = 5 * 60_000L;
-    private static final long TARGET_POLL_MS = 1_000L;
-    private static final long TARGET_STABLE_MS = 30_000L;
-    private static final int TARGET_STABLE_POLLS = 5;
 
     enum Stage {
         NETWORK_READY,
@@ -27,7 +23,6 @@ final class HostLaunchPreflight {
         INTERACTIVE_SESSION_READY,
         PROFILE_READY,
         PLAYNITE_READY,
-        VIBEPOLLO_READY,
         TARGET_READY
     }
 
@@ -50,14 +45,12 @@ final class HostLaunchPreflight {
         WINDOWS_IDENTITY_MISMATCH,
         PLAYNITE_BRIDGE_OFFLINE,
         PLAYNITE_CONNECTOR_DISCONNECTED,
-        VIBEPOLLO_UNAVAILABLE,
         TARGET_UNAVAILABLE,
-        TARGET_PROPAGATION_TIMEOUT
+        /** The host's app list is readable and has no neutral MoonWaker stream. */
+        NEUTRAL_STREAM_UNAVAILABLE
     }
 
     enum Action { LAUNCH, RECONNECT, SWITCH_RETAINED, WARM_UP }
-
-    enum TargetResolution { EXISTING, ENSURED }
 
     interface Progress {
         void onStage(Stage stage);
@@ -75,9 +68,6 @@ final class HostLaunchPreflight {
                               String attemptId) throws IOException;
         void cancelSession(String hostId, String profileId, String requestId,
                            String attemptId) throws IOException;
-        EnsuredTarget ensureTarget(String hostId, String profileId,
-                                   String gameId, String name)
-                throws IOException;
     }
 
     interface Sunshine {
@@ -103,7 +93,6 @@ final class HostLaunchPreflight {
         final String appName;
         final String gameId;
         final boolean requiresConnector;
-        final boolean neutralStream;
         final Action action;
 
         private Request(PlayIntent intent, Action action, String requestId) {
@@ -116,7 +105,6 @@ final class HostLaunchPreflight {
             this.appName = intent.appName;
             this.gameId = intent.playniteGameId;
             this.requiresConnector = intent.requiresConnector;
-            this.neutralStream = intent.neutralStream;
             this.action = action;
         }
 
@@ -140,10 +128,6 @@ final class HostLaunchPreflight {
         boolean requiresPlayniteConnector() {
             return requiresPlaynite() && requiresConnector;
         }
-
-        boolean isDirectProvider() {
-            return requiresPlaynite() && neutralStream;
-        }
     }
 
     static final class Profile {
@@ -153,31 +137,28 @@ final class HostLaunchPreflight {
         final boolean selected;
         final boolean playniteBridgeOnline;
         final boolean playniteConnectorConnected;
-        final boolean vibepolloBridgeOnline;
 
         Profile(boolean selected, boolean playniteBridgeOnline,
-                boolean playniteConnectorConnected, boolean vibepolloBridgeOnline) {
+                boolean playniteConnectorConnected) {
             this("default", "default", "", selected, playniteBridgeOnline,
-                    playniteConnectorConnected,
-                    vibepolloBridgeOnline);
+                    playniteConnectorConnected);
         }
 
         Profile(String name, boolean selected, boolean playniteBridgeOnline,
-                boolean playniteConnectorConnected, boolean vibepolloBridgeOnline) {
+                boolean playniteConnectorConnected) {
             this(name, name, name, selected, playniteBridgeOnline,
-                    playniteConnectorConnected, vibepolloBridgeOnline);
+                    playniteConnectorConnected);
         }
 
         Profile(String actorProfileId, String executionProfileId, String name,
                 boolean selected, boolean playniteBridgeOnline,
-                boolean playniteConnectorConnected, boolean vibepolloBridgeOnline) {
+                boolean playniteConnectorConnected) {
             this.actorProfileId = normalizeIdentity(actorProfileId);
             this.executionProfileId = normalizeIdentity(executionProfileId);
             this.name = name == null ? "" : name.trim();
             this.selected = selected;
             this.playniteBridgeOnline = playniteBridgeOnline;
             this.playniteConnectorConnected = playniteConnectorConnected;
-            this.vibepolloBridgeOnline = vibepolloBridgeOnline;
         }
 
         boolean matches(Request request) {
@@ -264,16 +245,6 @@ final class HostLaunchPreflight {
         }
     }
 
-    static final class EnsuredTarget {
-        final Integer appId;
-        final String appUuid;
-
-        EnsuredTarget(Integer appId, String appUuid) {
-            this.appId = appId;
-            this.appUuid = appUuid == null ? "" : appUuid.trim();
-        }
-    }
-
     static final class Failure {
         final Stage stage;
         final FailureReason reason;
@@ -293,32 +264,28 @@ final class HostLaunchPreflight {
     static final class Result {
         final Status status;
         final NvApp target;
-        final TargetResolution resolution;
         final Failure failure;
 
-        private Result(Status status, NvApp target, TargetResolution resolution,
-                       Failure failure) {
+        private Result(Status status, NvApp target, Failure failure) {
             this.status = status;
             this.target = target;
-            this.resolution = resolution;
             this.failure = failure;
         }
 
-        static Result ready(NvApp target, TargetResolution resolution) {
-            return new Result(Status.READY, target, resolution, null);
+        static Result ready(NvApp target) {
+            return new Result(Status.READY, target, null);
         }
 
         static Result failed(Stage stage, FailureReason reason) {
-            return new Result(Status.FAILED, null, null, new Failure(stage, reason));
+            return new Result(Status.FAILED, null, new Failure(stage, reason));
         }
 
         static Result failed(Stage stage, FailureReason reason, String profileName) {
-            return new Result(Status.FAILED, null, null,
-                    new Failure(stage, reason, profileName));
+            return new Result(Status.FAILED, null, new Failure(stage, reason, profileName));
         }
 
         static Result cancelled() {
-            return new Result(Status.CANCELLED, null, null, null);
+            return new Result(Status.CANCELLED, null, null);
         }
     }
 
@@ -447,7 +414,7 @@ final class HostLaunchPreflight {
                         "preflight.retained_target_reused", "host_id", request.hostId,
                         "app_id", retainedTarget.getAppId(), "game_id", request.gameId);
                 progress.onStage(Stage.TARGET_READY);
-                return Result.ready(retainedTarget, TargetResolution.EXISTING);
+                return Result.ready(retainedTarget);
             }
         }
 
@@ -462,64 +429,17 @@ final class HostLaunchPreflight {
                     FailureReason.TARGET_UNAVAILABLE);
         }
         if (cancelled.getAsBoolean()) return Result.cancelled();
-        if (request.action == Action.WARM_UP) {
-            NvApp neutral = PlayniteTargetResolver.resolveNeutralStream(apps);
-            if (neutral == null) {
-                return Result.failed(Stage.TARGET_READY,
-                        FailureReason.TARGET_UNAVAILABLE);
-            }
-            progress.onStage(Stage.TARGET_READY);
-            return Result.ready(neutral, TargetResolution.EXISTING);
+        // Games start only through the neutral stream; the host starts the game itself.
+        boolean neutral = request.action == Action.WARM_UP || request.requiresPlaynite();
+        NvApp target = neutral ? PlayniteTargetResolver.resolveNeutralStream(apps)
+                : PlayniteTargetResolver.findById(apps, request.appId);
+        if (target == null) {
+            return Result.failed(Stage.TARGET_READY, neutral
+                    ? FailureReason.NEUTRAL_STREAM_UNAVAILABLE
+                    : FailureReason.TARGET_UNAVAILABLE);
         }
-        if (request.isDirectProvider()) {
-            NvApp desktop = PlayniteTargetResolver.resolveProviderStream(apps);
-            if (desktop != null) {
-                progress.onStage(Stage.TARGET_READY);
-                return Result.ready(desktop, TargetResolution.EXISTING);
-            }
-            return Result.failed(Stage.TARGET_READY, FailureReason.TARGET_UNAVAILABLE);
-        }
-        NvApp neutral = request.requiresPlaynite()
-                ? PlayniteTargetResolver.resolveNeutralStream(apps) : null;
-        if (neutral != null) {
-            progress.onStage(Stage.TARGET_READY);
-            return Result.ready(neutral, TargetResolution.EXISTING);
-        }
-        NvApp existing = request.appId > 0
-                ? PlayniteTargetResolver.findById(apps, request.appId) : null;
-        if (existing != null) {
-            progress.onStage(Stage.TARGET_READY);
-            return Result.ready(existing, TargetResolution.EXISTING);
-        }
-        if (!request.requiresPlaynite()) {
-            return Result.failed(Stage.TARGET_READY, FailureReason.TARGET_UNAVAILABLE);
-        }
-
-        progress.onStage(Stage.VIBEPOLLO_READY);
-        profile = awaitVibepolloProfile(request, profile, cancelled);
-        if (cancelled.getAsBoolean()) return Result.cancelled();
-        if (profile == null || !profile.vibepolloBridgeOnline) {
-            return Result.failed(Stage.VIBEPOLLO_READY,
-                    FailureReason.VIBEPOLLO_UNAVAILABLE);
-        }
-        if (!profile.matches(request)) {
-            return Result.failed(Stage.PROFILE_AUTHORIZED,
-                    FailureReason.WINDOWS_IDENTITY_MISMATCH, profile.name);
-        }
-        EnsuredTarget ensured;
-        try {
-            ensured = gateway.ensureTarget(request.hostId, request.profileId,
-                    request.gameId, request.appName);
-        } catch (IOException | RuntimeException unavailable) {
-            boolean wasCancelled = cancelled.getAsBoolean();
-            if (!wasCancelled) recordException(request, Stage.VIBEPOLLO_READY, unavailable);
-            return wasCancelled ? Result.cancelled()
-                    : Result.failed(Stage.VIBEPOLLO_READY,
-                    FailureReason.VIBEPOLLO_UNAVAILABLE);
-        }
-        if (cancelled.getAsBoolean()) return Result.cancelled();
         progress.onStage(Stage.TARGET_READY);
-        return awaitEnsuredTarget(request, ensured, cancelled);
+        return Result.ready(target);
     }
 
     private static void recordException(Request request, Stage stage, Exception error) {
@@ -581,7 +501,7 @@ final class HostLaunchPreflight {
         String lastState = session.state;
         String lastReason = session.reason;
         recordSessionState(request, session, 0);
-        if (session.isReady()) return Result.ready(null, null);
+        if (session.isReady()) return Result.ready(null);
         if (!session.canPoll()) {
             return Result.failed(Stage.INTERACTIVE_SESSION_READY,
                     sessionFailure(session), profile.name);
@@ -620,7 +540,7 @@ final class HostLaunchPreflight {
                 lastState = session.state;
                 lastReason = session.reason;
             }
-            if (session.isReady()) return Result.ready(null, null);
+            if (session.isReady()) return Result.ready(null);
             if (!session.canPoll()) {
                 return Result.failed(Stage.INTERACTIVE_SESSION_READY,
                         sessionFailure(session), profile.name);
@@ -647,21 +567,6 @@ final class HostLaunchPreflight {
             if (last == null || !last.selected || last.playniteBridgeOnline
                     && (!request.requiresPlayniteConnector()
                     || last.playniteConnectorConnected)) return last;
-            try {
-                last = gateway.profile(request.hostId, request.profileId);
-            } catch (IOException | RuntimeException unavailable) {
-                if (cancelled.getAsBoolean()) return last;
-            }
-        } while (clock.now() < deadline && waiter.await(SESSION_POLL_MS, cancelled));
-        return last;
-    }
-
-    private Profile awaitVibepolloProfile(Request request, Profile initial,
-                                          BooleanSupplier cancelled) {
-        long deadline = clock.now() + PROFILE_TIMEOUT_MS;
-        Profile last = initial;
-        do {
-            if (last == null || !last.selected || last.vibepolloBridgeOnline) return last;
             try {
                 last = gateway.profile(request.hostId, request.profileId);
             } catch (IOException | RuntimeException unavailable) {
@@ -717,54 +622,5 @@ final class HostLaunchPreflight {
             return FailureReason.CREDENTIAL_ACTION_REQUIRED;
         }
         return FailureReason.WINDOWS_SIGN_IN_FAILED;
-    }
-
-    private Result awaitEnsuredTarget(Request request, EnsuredTarget ensured,
-                                      BooleanSupplier cancelled) {
-        long deadline = clock.now() + TARGET_TIMEOUT_MS;
-        Integer stableId = null;
-        int stablePolls = 0;
-        long stableSince = 0L;
-        while (!cancelled.getAsBoolean() && clock.now() < deadline) {
-            NvApp candidate = null;
-            try {
-                List<NvApp> apps = sunshine.refreshApps(request.hostId);
-                if (!ensured.appUuid.isEmpty()) {
-                    candidate = PlayniteTargetResolver.findByUuid(apps, ensured.appUuid);
-                }
-                if (candidate == null && ensured.appId != null) {
-                    candidate = PlayniteTargetResolver.findById(apps, ensured.appId);
-                }
-                if (candidate == null && ensured.appUuid.isEmpty() && ensured.appId == null) {
-                    candidate = PlayniteTargetResolver.findPlayableExactName(
-                            apps, request.appName);
-                }
-            } catch (IOException | RuntimeException unavailable) {
-                candidate = null;
-            }
-            if (cancelled.getAsBoolean()) return Result.cancelled();
-            long now = clock.now();
-            if (candidate == null) {
-                stableId = null;
-                stablePolls = 0;
-                stableSince = 0L;
-            } else if (!Integer.valueOf(candidate.getAppId()).equals(stableId)) {
-                stableId = candidate.getAppId();
-                stablePolls = 1;
-                stableSince = now;
-            } else {
-                stablePolls++;
-            }
-            if (candidate != null && stablePolls >= TARGET_STABLE_POLLS
-                    && now - stableSince >= TARGET_STABLE_MS) {
-                return Result.ready(candidate, TargetResolution.ENSURED);
-            }
-            if (!waiter.await(TARGET_POLL_MS, cancelled)) {
-                return Result.cancelled();
-            }
-        }
-        return cancelled.getAsBoolean() ? Result.cancelled()
-                : Result.failed(Stage.TARGET_READY,
-                FailureReason.TARGET_PROPAGATION_TIMEOUT);
     }
 }

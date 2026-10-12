@@ -11,8 +11,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
-/** Routes a user target from one fresh canonical session snapshot. */
-final class SessionOrchestrator implements AutoCloseable {
+/**
+ * Routes a user target from one fresh canonical session snapshot, and owns the one decision
+ * table "session state x user intent -> action" ({@link #transition}). The stream screen asks
+ * it what Back and Cancel mean; it only executes the answer.
+ */
+public final class SessionOrchestrator implements AutoCloseable {
     enum Rejection { INITIALIZING, UNPAIRED, TERMINATING }
     enum CloseResult { CLOSED, REUSED, CANCELLED, NEEDS_CONFIRMATION, PRESENTATION_REQUIRED }
 
@@ -270,6 +274,387 @@ final class SessionOrchestrator implements AutoCloseable {
                 && generation.get() == pending.request;
     }
 
+    /** What the user asked for. A later intent (Retry) adds a kind and its rows. */
+    public static final class UserIntent {
+        public enum Kind { PLAY, BACK, CANCEL }
+
+        /** The physical Back / B button on the stream screen. */
+        public static final UserIntent BACK = new UserIntent(Kind.BACK, null);
+        /** The Cancel control of the transition cover. */
+        public static final UserIntent CANCEL = new UserIntent(Kind.CANCEL, null);
+
+        public final Kind kind;
+        final PlayIntent target;
+
+        private UserIntent(Kind kind, PlayIntent target) {
+            this.kind = kind;
+            this.target = target;
+        }
+
+        static UserIntent play(PlayIntent target) {
+            return new UserIntent(Kind.PLAY, java.util.Objects.requireNonNull(target, "target"));
+        }
+    }
+
+    /**
+     * The facts one decision reads; plain data, filled by whoever asks. The console asks about
+     * Play with the host's session projection and how far that request got; the stream screen
+     * asks about Back and Cancel with the transition it presents. Cover, readiness and input
+     * facts are copied from their owner, {@code LaunchTransitionController}.
+     */
+    public static final class State {
+        // ---- console: the host's session and this Play request's progress ----
+        SessionSnapshot session;
+        /** The retained stream can take this game without being closed. */
+        boolean canSwitchRetained;
+        /** A live warm-up attempt carries the game into the resumed neutral stream. */
+        boolean warmUpCarriesGame;
+        boolean replacementAuthorized;
+        boolean reuseOnly;
+        boolean opaqueReady;
+        boolean targetPrepared;
+        /** This pass evaluates the snapshot a refresh of an unresolved observation produced. */
+        boolean observationRefreshed;
+
+        // ---- stream screen: the presented transition ----
+        /** A transition is presented and no cancel of it is already running. */
+        public boolean transitionActive;
+        public LaunchTransitionType type;
+        public boolean hasGame;
+        public boolean connected;
+        public boolean homeVisible;
+        public boolean parked;
+        /** The cover holds the input (the controller's inputBlocked). */
+        public boolean covered;
+        /** The stream was revealed in this transition. */
+        public boolean revealed;
+        public boolean timedOut;
+        /**
+         * The presented transition settles a kept, already used stream back to the dashboard
+         * (the controller's RETURNING_TO_DASHBOARD): it is not a start.
+         */
+        public boolean returningToDashboard;
+        public boolean gameReadyConfirmed;
+        /** The host granted this transport a control generation. */
+        public boolean controlGranted;
+        public boolean authorizationRetryOffered;
+        public boolean failedStartObservation;
+        public boolean retainedSwitch;
+        /** The session model holds exactly this stream as HOME_LIVE. */
+        public boolean retainedHomeLive;
+
+        static State forPlay(SessionSnapshot session, boolean canSwitchRetained,
+                             boolean warmUpCarriesGame, boolean replacementAuthorized,
+                             boolean reuseOnly, boolean opaqueReady, boolean targetPrepared,
+                             boolean observationRefreshed) {
+            State state = new State();
+            state.session = session;
+            state.canSwitchRetained = canSwitchRetained;
+            state.warmUpCarriesGame = warmUpCarriesGame;
+            state.replacementAuthorized = replacementAuthorized;
+            state.reuseOnly = reuseOnly;
+            state.opaqueReady = opaqueReady;
+            state.targetPrepared = targetPrepared;
+            state.observationRefreshed = observationRefreshed;
+            return state;
+        }
+    }
+
+    public enum ActionKind {
+        // ---- Play ----
+        /** A session is closing: toast, or {@link Action#failure} under the loading layer. */
+        REFUSE_CLOSING,
+        FAIL,
+        SHOW_LOADING,
+        /** Refresh an unresolved observation once; the pass it produces decides. */
+        REFRESH_OBSERVATION,
+        REFRESH_SESSION,
+        REFRESH_PREPARING,
+        /** Decide again, allowed only to reuse the retained stream. */
+        REUSE_STREAM,
+        PREFLIGHT,
+        CLOSE_COMPETING,
+        LAUNCH,
+        /** Launch once the snapshot at effect time is still idle. */
+        LAUNCH_IF_IDLE,
+        RETURN_TO_STREAM,
+        RECONNECT,
+        CONFIRM_REPLACEMENT,
+        // ---- Back / Cancel on the stream screen ----
+        IGNORE,
+        /** Back belongs to the cover: its Cancel control, when offered, raises CANCEL. */
+        CANCEL_ON_COVER,
+        LEAVE_SCREEN,
+        SHOW_HOME,
+        /** Cover the stream first, then open the home over the live stream. */
+        COVER_AND_SHOW_HOME,
+        /** Declines the offered authorization retry; the neutral stream stays. */
+        DECLINE_AUTHORIZATION_RETRY,
+        CANCEL_RETAINED_SWITCH,
+        /** Closes the whole host session (stream and display), stopping only a verified game. */
+        CLOSE_HOST_SESSION,
+        /** This start's provider cleanup first, then the whole host session. */
+        CLOSE_STARTED_SESSION,
+        /** Only the local transport stops; the host stream (and any game) stays to be resumed. */
+        STOP_TRANSPORT_KEEP_SESSION,
+        /** The local transport stops and the host stream its launch opened is closed. */
+        STOP_TRANSPORT_CLOSE_HOST_STREAM,
+        /** Only the local transport stops and the session records are cleared. */
+        STOP_TRANSPORT
+    }
+
+    /** One decided step; the Play parameters are set only for the kinds that use them. */
+    public static final class Action {
+        public final ActionKind kind;
+        final LaunchTransitionType type;
+        final HostLaunchPreflight.Action preflight;
+        final SessionFailure failure;
+        final boolean replacementAuthorized;
+        final boolean reuseOnly;
+        final String sourceSuspendId;
+        final boolean ownsFreshSunshineSession;
+
+        private Action(ActionKind kind, LaunchTransitionType type,
+                       HostLaunchPreflight.Action preflight, SessionFailure failure,
+                       boolean replacementAuthorized, boolean reuseOnly,
+                       String sourceSuspendId, boolean ownsFreshSunshineSession) {
+            this.kind = kind;
+            this.type = type;
+            this.preflight = preflight;
+            this.failure = failure;
+            this.replacementAuthorized = replacementAuthorized;
+            this.reuseOnly = reuseOnly;
+            this.sourceSuspendId = sourceSuspendId;
+            this.ownsFreshSunshineSession = ownsFreshSunshineSession;
+        }
+
+        private static Action of(ActionKind kind) {
+            return new Action(kind, null, null, null, false, false, "", false);
+        }
+
+        private static Action failing(ActionKind kind, SessionFailure failure) {
+            return new Action(kind, null, null, failure, false, false, "", false);
+        }
+
+        /** A step after which the request continues with these two grants. */
+        private static Action step(ActionKind kind, LaunchTransitionType type,
+                                   HostLaunchPreflight.Action preflight,
+                                   boolean replacementAuthorized, boolean reuseOnly) {
+            return new Action(kind, type, preflight, null, replacementAuthorized, reuseOnly,
+                    "", false);
+        }
+
+        private static Action launch(ActionKind kind, LaunchTransitionType type,
+                                     String sourceSuspendId, boolean ownsFreshSunshineSession) {
+            return new Action(kind, type, null, null, false, false, sourceSuspendId,
+                    ownsFreshSunshineSession);
+        }
+    }
+
+    /**
+     * The decision table: session state x user intent -> action. Pure and deterministic; the
+     * caller executes the returned action and fences it at effect time.
+     */
+    public static Action transition(State state, UserIntent intent) {
+        switch (intent.kind) {
+            case PLAY: return play(state, intent.target);
+            case BACK: return back(state);
+            default: return cancel(state);
+        }
+    }
+
+    private static Action play(State s, PlayIntent intent) {
+        SessionSnapshot snapshot = s.session;
+        boolean game = intent.kind == PlayIntent.Kind.PLAYNITE_GAME;
+        LaunchTransitionType fresh = freshType(intent);
+        // A game stop beside a live stream keeps only the way back to that stream open.
+        if (snapshot.state == SessionSnapshot.State.TERMINATING
+                || (snapshot.endingGame && !intent.matches(snapshot))) {
+            // Under the loading layer a toast would leave the loader up with no error.
+            return Action.failing(ActionKind.REFUSE_CLOSING,
+                    s.opaqueReady ? SessionFailure.UNCERTAIN_TERMINATING : null);
+        }
+        if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
+                && !intent.matches(snapshot)) {
+            // Only correlated evidence naming another game refuses, and only under the loading
+            // layer. An uncorrelated observation (the hole between two host polls) decides
+            // nothing: it is refreshed and the request is evaluated on the fresh one, which
+            // refuses when it is the very pass that refresh produced.
+            boolean namesOtherGame = snapshot.observationCorrelated
+                    && !snapshot.playniteGameId.isEmpty();
+            if (namesOtherGame || !snapshot.observationCorrelated) {
+                if (!s.opaqueReady) {
+                    return Action.step(ActionKind.SHOW_LOADING, fresh, null,
+                            s.replacementAuthorized, s.reuseOnly);
+                }
+                if (namesOtherGame || s.observationRefreshed) {
+                    return Action.failing(ActionKind.FAIL,
+                            SessionFailure.UNCERTAIN_RECOVERY_REQUIRED);
+                }
+                return Action.step(ActionKind.REFRESH_OBSERVATION, null, null,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+        }
+        if (snapshot.state == SessionSnapshot.State.PREPARING && game) {
+            if (!s.opaqueReady) {
+                return Action.step(ActionKind.SHOW_LOADING, LaunchTransitionType.GAME, null,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+            if (!s.reuseOnly && snapshot.playniteGameId.isEmpty()) {
+                return s.canSwitchRetained ? Action.of(ActionKind.REUSE_STREAM)
+                        : Action.failing(ActionKind.FAIL,
+                        SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE);
+            }
+            if (!s.reuseOnly) return Action.of(ActionKind.REFRESH_PREPARING);
+            if (!s.targetPrepared) {
+                return Action.step(ActionKind.PREFLIGHT, null,
+                        HostLaunchPreflight.Action.SWITCH_RETAINED, false, true);
+            }
+            return Action.step(ActionKind.CLOSE_COMPETING, null, null, false, true);
+        }
+        if (snapshot.state == SessionSnapshot.State.UNCERTAIN) {
+            if (game) {
+                return Action.step(s.opaqueReady ? ActionKind.REFRESH_SESSION
+                                : ActionKind.SHOW_LOADING, fresh, null,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+            if (!s.opaqueReady) {
+                return Action.step(ActionKind.SHOW_LOADING, fresh, null, false, false);
+            }
+            if (!s.targetPrepared) {
+                return Action.step(ActionKind.PREFLIGHT, null,
+                        HostLaunchPreflight.Action.LAUNCH, false, false);
+            }
+            return Action.launch(ActionKind.LAUNCH, fresh, "", true);
+        }
+
+        boolean matches = intent.matches(snapshot) && !s.canSwitchRetained;
+        if (snapshot.state == SessionSnapshot.State.ACTIVE && matches) {
+            return snapshot.retainedTransport ? Action.of(ActionKind.RETURN_TO_STREAM)
+                    : connect(s);
+        }
+        boolean reconnectingWarmUp = snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
+                && snapshot.neutralStreamTarget
+                && snapshot.playniteGameId.isEmpty()
+                && game;
+        boolean carriesNoGame = reconnectingWarmUp && !matches && !s.warmUpCarriesGame;
+        // Orphaned neutral stream: none to carry and the host proves no game runs (IDLE).
+        // Decided on every pass from this snapshot and never carried forward; it is replaced
+        // without asking. An empty game id from a stale or unresolved observation proves
+        // nothing: it is refreshed once, then the replacement is confirmed.
+        boolean orphaned = carriesNoGame
+                && snapshot.observationState == SessionSnapshot.ObservationState.IDLE;
+        if (carriesNoGame && !orphaned && !s.replacementAuthorized) {
+            if (!s.opaqueReady) {
+                return Action.step(ActionKind.SHOW_LOADING, fresh, null, false, s.reuseOnly);
+            }
+            if (!s.observationRefreshed) {
+                return Action.step(ActionKind.REFRESH_OBSERVATION, null, null,
+                        false, s.reuseOnly);
+            }
+        }
+        if (!carriesNoGame && snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
+                && (matches || reconnectingWarmUp)) {
+            if (!s.opaqueReady) {
+                return Action.step(ActionKind.SHOW_LOADING, LaunchTransitionType.GENERIC, null,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+            if (!s.targetPrepared) {
+                return Action.step(ActionKind.PREFLIGHT, null,
+                        HostLaunchPreflight.Action.RECONNECT,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+            return Action.of(ActionKind.RECONNECT);
+        }
+        if (snapshot.state == SessionSnapshot.State.SUSPENDED && matches) return connect(s);
+        if (snapshot.state == SessionSnapshot.State.NONE && !s.canSwitchRetained) {
+            if (!s.opaqueReady) {
+                return Action.step(ActionKind.SHOW_LOADING, fresh, null,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+            if (!s.targetPrepared) {
+                return Action.step(ActionKind.PREFLIGHT, null,
+                        HostLaunchPreflight.Action.LAUNCH,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+            // Whether the launch owns a fresh host session is read at effect time.
+            return Action.launch(ActionKind.LAUNCH_IF_IDLE, fresh, "", false);
+        }
+        boolean authorized = s.replacementAuthorized || orphaned;
+        boolean reuseOnly = s.reuseOnly || !authorized && s.canSwitchRetained;
+        if (!authorized && !reuseOnly) return Action.of(ActionKind.CONFIRM_REPLACEMENT);
+        if (!s.opaqueReady) {
+            return Action.step(ActionKind.SHOW_LOADING, fresh, null,
+                    s.replacementAuthorized, reuseOnly);
+        }
+        if (!s.targetPrepared) {
+            return Action.step(ActionKind.PREFLIGHT, null,
+                    reuseOnly ? HostLaunchPreflight.Action.SWITCH_RETAINED
+                            : HostLaunchPreflight.Action.LAUNCH,
+                    s.replacementAuthorized, reuseOnly);
+        }
+        return Action.step(ActionKind.CLOSE_COMPETING, null, null, authorized, reuseOnly);
+    }
+
+    /** Connects a new transport to the session the host already runs. */
+    private static Action connect(State s) {
+        if (!s.opaqueReady) {
+            return Action.step(ActionKind.SHOW_LOADING, LaunchTransitionType.GENERIC, null,
+                    false, false);
+        }
+        if (!s.targetPrepared) {
+            return Action.step(ActionKind.PREFLIGHT, null,
+                    HostLaunchPreflight.Action.LAUNCH, false, false);
+        }
+        return Action.launch(ActionKind.LAUNCH, LaunchTransitionType.GENERIC,
+                s.session.explicitSuspension ? s.session.suspendId : "", false);
+    }
+
+    private static Action back(State s) {
+        // A revealed stream whose readiness timed out is live, not a launch to cancel.
+        if (s.connected && !s.homeVisible && s.revealed && s.timedOut) {
+            return Action.of(ActionKind.COVER_AND_SHOW_HOME);
+        }
+        if (s.covered) return Action.of(ActionKind.CANCEL_ON_COVER);
+        if (retainedObservation(s)) return Action.of(ActionKind.COVER_AND_SHOW_HOME);
+        return Action.of(s.connected && !s.homeVisible
+                ? ActionKind.SHOW_HOME : ActionKind.LEAVE_SCREEN);
+    }
+
+    private static Action cancel(State s) {
+        if (!s.transitionActive) return Action.of(ActionKind.IGNORE);
+        if (s.authorizationRetryOffered) {
+            return Action.of(ActionKind.DECLINE_AUTHORIZATION_RETRY);
+        }
+        // The observation kept after a failed start is that start: abandoning it closes.
+        if (s.failedStartObservation) return Action.of(ActionKind.CLOSE_HOST_SESSION);
+        if (retainedObservation(s)) return Action.of(ActionKind.COVER_AND_SHOW_HOME);
+        if (s.retainedSwitch) return Action.of(ActionKind.CANCEL_RETAINED_SWITCH);
+        boolean startsGame = s.type == LaunchTransitionType.GAME && s.hasGame;
+        // A start the host never confirmed ready closes its session, even manually revealed.
+        if (startsGame && (!s.revealed || !s.gameReadyConfirmed) && s.controlGranted) {
+            return Action.of(ActionKind.CLOSE_STARTED_SESSION);
+        }
+        // A cancelled reconnect to a running game never ends that game or its host stream.
+        if (s.type == LaunchTransitionType.GAME_CONNECTION && s.hasGame) {
+            return Action.of(ActionKind.STOP_TRANSPORT_KEEP_SESSION);
+        }
+        // A kept stream settling back to the dashboard was used before: its host stream stays
+        // paused under a granted generation, so its record stays for the next start to replace.
+        if (s.returningToDashboard) return Action.of(ActionKind.STOP_TRANSPORT_KEEP_SESSION);
+        // Nothing was shown: a host stream left paused would only refuse the next launch. A
+        // generation granted after this cancel is closed by the stopped transport.
+        if (!s.revealed) return Action.of(ActionKind.STOP_TRANSPORT_CLOSE_HOST_STREAM);
+        return Action.of(ActionKind.STOP_TRANSPORT);
+    }
+
+    /** A live retained stream observing its game in the foreground: nothing to cancel. */
+    private static boolean retainedObservation(State s) {
+        return s.connected && !s.homeVisible && !s.parked
+                && s.type == LaunchTransitionType.GAME_CONNECTION && s.hasGame
+                && s.retainedHomeLive;
+    }
+
     private void evaluate(long request, PlayIntent intent, boolean replacementAuthorized,
                           boolean reuseOnly, boolean opaqueReady,
                           NvApp preparedTarget, int pass) {
@@ -281,198 +666,97 @@ final class SessionOrchestrator implements AutoCloseable {
 
         SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
-        // A game stop beside a live stream keeps only the way back to that stream open.
-        if (snapshot.state == SessionSnapshot.State.TERMINATING
-                || (snapshot.endingGame && !intent.matches(snapshot))) {
-            diagnostic("WARN", "orchestration.rejected", request, intent,
-                    "reason", Rejection.TERMINATING.name());
-            inFlight = 0L;
-            // Under the loading layer a toast would leave the loader up with no error.
-            if (opaqueReady) fail(request, intent, SessionFailure.UNCERTAIN_TERMINATING, "");
-            else effects.reject(Rejection.TERMINATING);
-            return;
-        }
-        if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
-                && !intent.matches(snapshot)) {
-            // Only correlated evidence naming another game refuses, and only under the loading
-            // layer. An uncorrelated observation (the hole between two host polls) decides
-            // nothing: it is refreshed and the request is evaluated on the fresh one, which
-            // refuses when it is the very pass that refresh produced.
-            boolean namesOtherGame = snapshot.observationCorrelated
-                    && !snapshot.playniteGameId.isEmpty();
-            if (namesOtherGame || !snapshot.observationCorrelated) {
-                if (!opaqueReady) {
-                    awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
-                            reuseOnly, preparedTarget, pass);
-                } else if (namesOtherGame || evaluatesRefresh(request, pass)) {
-                    fail(request, intent, SessionFailure.UNCERTAIN_RECOVERY_REQUIRED, "");
-                } else {
-                    refreshThenEvaluate(request, intent, replacementAuthorized,
-                            reuseOnly, preparedTarget, pass);
-                }
-                return;
-            }
-        }
-        if (snapshot.state == SessionSnapshot.State.PREPARING
-                && intent.kind == PlayIntent.Kind.PLAYNITE_GAME) {
-            if (!opaqueReady) {
-                awaitOpaque(request, intent, LaunchTransitionType.GAME,
-                        replacementAuthorized, reuseOnly, preparedTarget, pass);
-            } else if (!reuseOnly && snapshot.playniteGameId.isEmpty()) {
-                if (!effects.canAttemptRetainedSwitch(intent)) {
-                    fail(request, intent, SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE, "");
-                    return;
-                }
-                evaluate(request, intent, false, true,
-                        true, preparedTarget, pass + 1);
-            } else if (!reuseOnly) {
-                effects.refreshSession(intent, () -> !current(request), success ->
-                        dispatcher.post(() -> {
-                            if (!current(request)) return;
-                            if (!success) {
-                                fail(request, intent,
-                                        SessionFailure.UNCERTAIN_PREPARING_REFRESH_FAILED, "");
-                                return;
-                            }
-                            if (!effects.canAttemptRetainedSwitch(intent)) {
-                                fail(request, intent, SessionFailure
-                                        .UNCERTAIN_PREPARING_NOT_SWITCHABLE_AFTER_REFRESH, "");
-                                return;
-                            }
-                            evaluate(request, intent, false, true,
-                                    true, preparedTarget, pass + 1);
-                        }));
-            } else if (preparedTarget == null) {
-                awaitPreflight(request, intent, false, true, pass,
-                        HostLaunchPreflight.Action.SWITCH_RETAINED);
-            } else {
+        Action action = transition(State.forPlay(snapshot,
+                effects.canAttemptRetainedSwitch(intent), effects.warmUpCarriesGame(),
+                replacementAuthorized, reuseOnly, opaqueReady, preparedTarget != null,
+                evaluatesRefresh(request, pass)), UserIntent.play(intent));
+        switch (action.kind) {
+            case REFUSE_CLOSING:
+                diagnostic("WARN", "orchestration.rejected", request, intent,
+                        "reason", Rejection.TERMINATING.name());
+                inFlight = 0L;
+                if (action.failure != null) fail(request, intent, action.failure, "");
+                else effects.reject(Rejection.TERMINATING);
+                break;
+            case FAIL:
+                fail(request, intent, action.failure, "");
+                break;
+            case SHOW_LOADING:
+                awaitOpaque(request, intent, action.type, action.replacementAuthorized,
+                        action.reuseOnly, preparedTarget, pass);
+                break;
+            case REFRESH_OBSERVATION:
+                refreshThenEvaluate(request, intent, action.replacementAuthorized,
+                        action.reuseOnly, preparedTarget, pass);
+                break;
+            case REFRESH_SESSION:
+                awaitFreshSession(request, intent, action.replacementAuthorized,
+                        action.reuseOnly, preparedTarget, pass);
+                break;
+            case REFRESH_PREPARING:
+                refreshPreparing(request, intent, preparedTarget, pass);
+                break;
+            case REUSE_STREAM:
+                evaluate(request, intent, false, true, true, preparedTarget, pass + 1);
+                break;
+            case PREFLIGHT:
+                awaitPreflight(request, intent, action.replacementAuthorized,
+                        action.reuseOnly, pass, action.preflight);
+                break;
+            case CLOSE_COMPETING:
                 closeCompetingSession(request, intent, preparedTarget,
-                        false, true, pass);
-            }
-            return;
-        }
-        if (snapshot.state == SessionSnapshot.State.UNCERTAIN) {
-            if (intent.kind == PlayIntent.Kind.PLAYNITE_GAME) {
-                if (!opaqueReady) {
-                    awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
-                            reuseOnly, preparedTarget, pass);
-                } else {
-                    awaitFreshSession(request, intent, replacementAuthorized,
-                            reuseOnly, preparedTarget, pass);
-                }
-            } else if (!opaqueReady) {
-                awaitOpaque(request, intent, freshType(intent), false,
-                        false, preparedTarget, pass);
-            } else if (preparedTarget == null) {
-                awaitPreflight(request, intent, false, false, pass,
-                        HostLaunchPreflight.Action.LAUNCH);
-            } else {
-                launch(request, intent, preparedTarget, freshType(intent), "", true);
-            }
-            return;
-        }
-
-        boolean matches = intent.matches(snapshot) && !effects.canAttemptRetainedSwitch(intent);
-        if (snapshot.state == SessionSnapshot.State.ACTIVE && matches) {
-            if (snapshot.retainedTransport) {
-                returnToRetained(request, intent);
-            } else {
-                connect(request, intent, opaqueReady, preparedTarget, snapshot, pass);
-            }
-            return;
-        }
-        boolean reconnectingWarmUp = snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
-                && snapshot.neutralStreamTarget
-                && snapshot.playniteGameId.isEmpty()
-                && intent.kind == PlayIntent.Kind.PLAYNITE_GAME;
-        boolean carriesNoGame = reconnectingWarmUp && !matches && !effects.warmUpCarriesGame();
-        // Orphaned neutral stream: none to carry and the host proves no game runs (IDLE).
-        // Decided on every pass from this snapshot and never carried forward; it is replaced
-        // without asking. An empty game id from a stale or unresolved observation proves
-        // nothing: it is refreshed once, then the replacement is confirmed.
-        boolean orphaned = carriesNoGame
-                && snapshot.observationState == SessionSnapshot.ObservationState.IDLE;
-        if (carriesNoGame && !orphaned && !replacementAuthorized) {
-            if (!opaqueReady) {
-                awaitOpaque(request, intent, freshType(intent), false,
-                        reuseOnly, preparedTarget, pass);
-                return;
-            }
-            if (!evaluatesRefresh(request, pass)) {
-                refreshThenEvaluate(request, intent, false, reuseOnly, preparedTarget, pass);
-                return;
-            }
-        }
-        if (!carriesNoGame && snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
-                && (matches || reconnectingWarmUp)) {
-            if (!opaqueReady) {
-                awaitOpaque(request, intent, LaunchTransitionType.GENERIC,
-                        replacementAuthorized, reuseOnly, preparedTarget, pass);
-            } else if (preparedTarget == null) {
-                awaitPreflight(request, intent, replacementAuthorized, reuseOnly, pass,
-                        HostLaunchPreflight.Action.RECONNECT);
-            } else {
-                reconnect(request, intent);
-            }
-            return;
-        }
-        if (snapshot.state == SessionSnapshot.State.SUSPENDED && matches) {
-            connect(request, intent, opaqueReady, preparedTarget, snapshot, pass);
-            return;
-        }
-        if (snapshot.state == SessionSnapshot.State.NONE && !effects.canAttemptRetainedSwitch(intent)) {
-            if (!opaqueReady) {
-                awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
-                        reuseOnly, preparedTarget, pass);
-            } else if (preparedTarget == null) {
-                awaitPreflight(request, intent, replacementAuthorized, reuseOnly, pass,
-                        HostLaunchPreflight.Action.LAUNCH);
-            } else {
+                        action.replacementAuthorized, action.reuseOnly, pass);
+                break;
+            case LAUNCH:
+                launch(request, intent, preparedTarget, action.type, action.sourceSuspendId,
+                        action.ownsFreshSunshineSession);
+                break;
+            case LAUNCH_IF_IDLE:
                 SessionSnapshot latest = effects.resolve(intent.profileKey);
                 if (!current(request)) return;
                 if (latest.state == SessionSnapshot.State.NONE) {
-                    launch(request, intent, preparedTarget, freshType(intent), "",
+                    launch(request, intent, preparedTarget, action.type, "",
                             latest.hostGameAppId == 0);
                 } else {
                     evaluate(request, intent, replacementAuthorized, reuseOnly,
                             true, preparedTarget, pass + 1);
                 }
-            }
-            return;
-        }
-        boolean authorized = replacementAuthorized || orphaned;
-        reuseOnly |= !authorized && effects.canAttemptRetainedSwitch(intent);
-        if (!authorized && !reuseOnly) {
-            effects.confirmReplacement(() -> {
-                if (current(request)) evaluate(request, intent, true, false,
-                        opaqueReady, preparedTarget, pass + 1);
-            });
-        } else if (!opaqueReady) {
-            awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
-                    reuseOnly, preparedTarget, pass);
-        } else if (preparedTarget == null) {
-            awaitPreflight(request, intent, replacementAuthorized, reuseOnly, pass,
-                    reuseOnly
-                            ? HostLaunchPreflight.Action.SWITCH_RETAINED
-                            : HostLaunchPreflight.Action.LAUNCH);
-        } else {
-            closeCompetingSession(request, intent, preparedTarget,
-                    authorized, reuseOnly, pass);
+                break;
+            case RETURN_TO_STREAM:
+                returnToRetained(request, intent);
+                break;
+            case RECONNECT:
+                reconnect(request, intent);
+                break;
+            case CONFIRM_REPLACEMENT:
+                effects.confirmReplacement(() -> {
+                    if (current(request)) evaluate(request, intent, true, false,
+                            opaqueReady, preparedTarget, pass + 1);
+                });
+                break;
+            default:
+                throw new IllegalStateException("Not a Play action: " + action.kind);
         }
     }
 
-    private void connect(long request, PlayIntent intent, boolean opaqueReady,
-                         NvApp preparedTarget, SessionSnapshot snapshot, int pass) {
-        if (!opaqueReady) {
-            awaitOpaque(request, intent, LaunchTransitionType.GENERIC,
-                    false, false, preparedTarget, pass);
-        } else if (preparedTarget == null) {
-            awaitPreflight(request, intent, false, false, pass,
-                    HostLaunchPreflight.Action.LAUNCH);
-        } else if (current(request)) {
-            launch(request, intent, preparedTarget, LaunchTransitionType.GENERIC,
-                    snapshot.explicitSuspension ? snapshot.suspendId : "", false);
-        }
+    private void refreshPreparing(long request, PlayIntent intent,
+                                  NvApp preparedTarget, int pass) {
+        effects.refreshSession(intent, () -> !current(request), success ->
+                dispatcher.post(() -> {
+                    if (!current(request)) return;
+                    if (!success) {
+                        fail(request, intent,
+                                SessionFailure.UNCERTAIN_PREPARING_REFRESH_FAILED, "");
+                        return;
+                    }
+                    if (!effects.canAttemptRetainedSwitch(intent)) {
+                        fail(request, intent, SessionFailure
+                                .UNCERTAIN_PREPARING_NOT_SWITCHABLE_AFTER_REFRESH, "");
+                        return;
+                    }
+                    evaluate(request, intent, false, true,
+                            true, preparedTarget, pass + 1);
+                }));
     }
 
     private void awaitOpaque(long request, PlayIntent intent, LaunchTransitionType type,

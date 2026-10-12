@@ -350,15 +350,12 @@ public class ConsoleActivityRequestedUiContractTest {
                 source.indexOf("private static String playniteStreamSettingsKey("));
 
         assertTrue(warmUp.contains("pendingGame.requiresConnector"));
-        assertTrue(warmUp.contains("pendingGame.neutralStream"));
         assertTrue(warmUp.contains("pendingGame.startBeforeStream"));
         assertTrue(arm.contains("EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR"));
-        assertTrue(arm.contains("EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM"));
         assertTrue(arm.contains("EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM"));
         assertTrue(resume.contains("providerGameIntent("));
         assertTrue(suspended.contains("providerGameIntent("));
         assertTrue(restore.contains("game.requiresConnector"));
-        assertTrue(restore.contains("game.usesNeutralStream()"));
         assertTrue(restore.contains("game.startBeforeStream"));
     }
 
