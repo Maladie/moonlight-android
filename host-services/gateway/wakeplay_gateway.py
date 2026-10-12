@@ -4631,6 +4631,10 @@ class GatewayState:
                 "generation": generation,
                 "actor_lease_epoch": actor_epoch,
             })
+            if stream.get("actor_profile_id") != session.get("actor_profile_id"):
+                # Another actor taking the stream over in place must not learn how long
+                # it ran before; the same actor's new session keeps its start.
+                stream["stream_started_unix_ms"] = int(time.time() * 1000)
             stream.update({
                 "actor_profile_id": str(session.get("actor_profile_id") or ""),
                 "child_session_id": str(session.get("session_id") or ""),
@@ -4673,12 +4677,25 @@ class GatewayState:
         self.control_state["active"] = None
         if state == "succeeded":
             if operation["direction"] == "start":
+                # One stream keeps its first start (host wall clock) through every later
+                # start of the same actor on its record: reconnect, resume, warm-up,
+                # replacement, reauthorize and Retry. A record that ended (stop, idle proof,
+                # hard reset) is None here, so the next start is a new stream; so is another
+                # actor taking the stream over, who must not learn how long it ran before.
+                previous = self.control_state.get("stream")
+                if isinstance(previous, dict) and previous.get("actor_profile_id") != \
+                        operation.get("actor_profile_id"):
+                    previous = None
                 self.control_state["stream"] = {
-                    key: operation.get(key) for key in (
+                    **{key: operation.get(key) for key in (
                         "client_id", "actor_profile_id", "execution_profile_id",
                         "vibepollo_client_uuid", "stream_session_id", "sunshine_app_id",
                         "generation", "actor_lease_epoch", "child_session_id",
-                        "provider_game_id", "process_token", "process_id")
+                        "provider_game_id", "process_token", "process_id")},
+                    "stream_started_unix_ms": int(
+                        isinstance(previous, dict)
+                        and previous.get("stream_started_unix_ms") or 0)
+                    or int(time.time() * 1000),
                 }
             elif operation["direction"] == "stop":
                 self.control_state["stream"] = None
@@ -6434,6 +6451,8 @@ class GatewayState:
                     "generation": generation,
                     "actor_lease_epoch": actor_epoch,
                 })
+                if stream.get("actor_profile_id") != next_actor:
+                    stream["stream_started_unix_ms"] = int(time.time() * 1000)
                 stream.update({
                     "actor_profile_id": next_actor,
                     "child_session_id": "",
@@ -7642,6 +7661,11 @@ class GatewayState:
         stream = self.control_state.get("stream")
         record = active if isinstance(active, dict) else (
             stream if isinstance(stream, dict) else {})
+        # The stream's start is told only to the actor and execution profile that own it;
+        # 0 when there is no stream record or it is another profile's.
+        own = isinstance(stream, dict) \
+            and stream.get("actor_profile_id") == self.actor_profile_id \
+            and stream.get("execution_profile_id") == self.execution_profile_id
         return {
             "operation_id": str(record.get("operation_id") or ""),
             "stream_session_id": str(record.get("stream_session_id") or ""),
@@ -7649,6 +7673,8 @@ class GatewayState:
                                       self.control_state.get("generation") or 0),
             "actor_lease_epoch": int(record.get("actor_lease_epoch") or
                                      self.control_state.get("actor_lease_epoch") or 0),
+            "stream_started_unix_ms": int(
+                stream.get("stream_started_unix_ms") or 0) if own else 0,
         }
 
     def _record_slow_observation(self, started: float, locked: float, proxied: float,
@@ -7714,11 +7740,24 @@ class GatewayState:
                 "game": {"evidence": "UNAVAILABLE", "id": "",
                          "state": "unknown"},
                 "process": {"evidence": "UNAVAILABLE", "process_id": 0,
-                            "process_token": ""},
+                            "process_token": "", "started_unix_ms": 0},
                 "window": {"evidence": "UNAVAILABLE", "ready": False,
                            "target_kind": "playnite", "stable_samples": 0,
                            "reason": "control_correlation_changed"},
                 "reason": "control_correlation_changed"}
+        process = provider.get("process")
+        if isinstance(process, dict) and self.is_child_profile(actor_id):
+            # A child learns a game's start time only for its own live time session's game.
+            game = provider.get("game")
+            with self.lock:
+                session = self.child_time_session
+                session_game = self._child_time_provider_game(session)
+                own_game = isinstance(session, dict) and bool(session_game) \
+                    and str(session.get("actor_profile_id") or "") == actor_id \
+                    and session_game == self._child_time_normalize_game_id(
+                        game.get("id") if isinstance(game, dict) else "")
+            if not own_game:
+                provider = {**provider, "process": {**process, "started_unix_ms": 0}}
         return HTTPStatus.OK, {**provider, "ok": True, "scope": scope,
                               "correlation": correlation}
 

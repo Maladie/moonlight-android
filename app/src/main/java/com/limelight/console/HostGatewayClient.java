@@ -559,6 +559,13 @@ class HostGatewayClient {
         String previousLaunchProcessToken = "";
         /** Optional {@code window.previous_launch.name}: display text only, never an identity. */
         String previousLaunchGameName = "";
+        /**
+         * Host wall clock (same clock as {@link #observedAtUnixMs}) starts, display only:
+         * {@code correlation.stream_started_unix_ms} of this actor's stream and
+         * {@code process.started_unix_ms} of the verified game process; 0 when unknown.
+         */
+        long streamStartedUnixMs;
+        long processStartedUnixMs;
 
         SessionObservation(String producerBootId, long producerRevision,
                            long observedAtUnixMs, long freshForMs,
@@ -1859,7 +1866,7 @@ class HostGatewayClient {
             throw new IOException(response == null ? "observation_unavailable"
                     : response.optString("reason", "observation_unavailable"));
         }
-        if (requiredLong(response, "schema_version") != 1L) {
+        if (requiredLong(response, "schema_version") != 2L) {
             throw new IOException("unsupported_observation_schema");
         }
         JSONObject producer = requiredObject(response, "producer");
@@ -1895,6 +1902,11 @@ class HostGatewayClient {
         String streamSession = requiredString(correlation, "stream_session_id");
         long controlGeneration = requiredLong(correlation, "control_generation");
         long actorLeaseEpoch = requiredLong(correlation, "actor_lease_epoch");
+        long streamStarted = requiredLong(correlation, "stream_started_unix_ms");
+        long processStarted = requiredLong(process, "started_unix_ms");
+        if (streamStarted < 0L || processStarted < 0L) {
+            throw new IOException("stale_or_malformed_observation");
+        }
         if (!GatewayConnection.normalizeProfileId(expectedActor).equals(actor)
                 || !GatewayConnection.normalizeProfileId(expectedExecution).equals(execution)
                 || ordinal != expectedOrdinal
@@ -1916,7 +1928,7 @@ class HostGatewayClient {
                 && (gameEvidence != Evidence.VERIFIED || processId <= 0
                 || !processToken.matches("[0-9a-f]{64}")))
                 || (processEvidence != Evidence.VERIFIED
-                && (processId != 0 || !processToken.isEmpty()))
+                && (processId != 0 || !processToken.isEmpty() || processStarted != 0L))
                 || (ready && (windowEvidence != Evidence.VERIFIED
                 || processEvidence != Evidence.VERIFIED))) {
             throw new IOException("inconsistent_observation_evidence");
@@ -1954,6 +1966,8 @@ class HostGatewayClient {
         parsed.previousLaunchGameId = previousGameId;
         parsed.previousLaunchProcessToken = previousToken;
         parsed.previousLaunchGameName = previousName;
+        parsed.streamStartedUnixMs = streamStarted;
+        parsed.processStartedUnixMs = processStarted;
         return parsed;
     }
 

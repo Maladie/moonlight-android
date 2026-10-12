@@ -13,6 +13,35 @@ or Playnite Fullscreen owns a visible foreground window on the configured
 streamed display with stable geometry for three consecutive samples. For games
 this is strong technical readiness, not proof that a main menu is visible.
 
+### Durations (display only)
+
+The host owns how long a stream and a game have run; the observation carries both starts on
+the host's wall clock, next to `observed_at_unix_ms` from that same clock. A client shows
+`observed_at_unix_ms - start` plus its own elapsed time since it received the observation
+and never compares a start with its own clock. Both fields are required, which is what
+observation `schema_version` 2 means (the Bridge sets it, the Gateway passes it through, the
+client accepts only 2: `unsupported_observation_schema`); `0` means the fact does not exist
+or is not this caller's to know. A duration over 7 days is not shown. Neither is evidence
+for readiness, Play or close, and neither opens a new `state_episode`.
+
+- `correlation.stream_started_unix_ms` (Gateway): when the retained stream record first
+  succeeded. It is stored in the stream record (so it survives a Gateway restart exactly as
+  the record does) and is carried into every later successful start on that record by the
+  same actor: reconnect, resume, warm-up, replacement, reauthorize and the fresh start of
+  "Retry after a lost transport". It ends with the record (a succeeded stop, the idle
+  proof, a hard reset); the next start is a new stream. A start by another actor (a child
+  or parent taking the stream over on the same TV) begins that actor's own time, and so
+  does an actor change in place without a start operation (a child's time session bound to
+  the retained stream, a child session ended in favour of its parent). Only the
+  actor and execution profile that own the record read it; everyone else reads `0`.
+- `process.started_unix_ms` (Bridge): the start of the verified game process
+  (`processStartedFiletime`), `0` unless `process.evidence` is `VERIFIED`. Another game in
+  the same stream reports its own process start. For a child actor the Gateway keeps it
+  only when the observed game is the game of that child's own live time session and
+  answers `0` otherwise, without another provider read. A child's client holds a running
+  game for its status line only with a non-zero start, so it reads "Online" beside a game
+  its parent runs.
+
 ## Current lifecycle events
 
 The Bridge currently publishes:

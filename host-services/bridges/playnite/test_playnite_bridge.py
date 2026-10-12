@@ -4711,7 +4711,7 @@ class ProviderDiagnosticsTest(unittest.TestCase):
         handler.do_GET()
         status, observation = handler.send_json.call_args.args
         self.assertEqual(HTTPStatus.OK, status)
-        self.assertEqual(1, observation["schema_version"])
+        self.assertEqual(2, observation["schema_version"])
         self.assertIn("connector_evidence", observation["provider"])
         self.assertNotIn("target", observation["process"])
 

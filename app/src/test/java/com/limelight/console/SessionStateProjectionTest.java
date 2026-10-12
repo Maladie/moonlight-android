@@ -697,6 +697,167 @@ public class SessionStateProjectionTest {
         assertTrue(other == SessionStateResolver.owner(m.model, "other", "child", "parent"));
     }
 
+    @Test public void runningGameIsHeldForTheStatusLineButNeverForADecision() {
+        long ordinal = owner.nextRequestOrdinal();
+        SessionSnapshot fresh = owner.accept(running(ordinal, 1, 0L, "game",
+                HOST_NOW - 12 * 60_000L - 50_000L, 0L), m.snapshot(), 0L);
+        assertEquals("game", fresh.playniteGameId);
+        assertEquals("game|12|-1", fresh.display.key());
+
+        // The observation is stale after 5 s: decisions lose the game, the status keeps it.
+        SessionSnapshot stale = owner.current(m.snapshot(), 6_000L);
+        assertEquals("", stale.playniteGameId);
+        assertEquals(SessionSnapshot.ObservationState.PENDING, stale.observationState);
+        assertEquals("observation_stale", stale.observationReason);
+        assertEquals("game|12|-1", stale.display.key());
+
+        // The key (and so a render) changes once a minute, on the host's clock.
+        assertEquals("game|12|-1", owner.rendered(m.snapshot(),
+                SessionStateResolver.LocalFacts.NONE, 9_999L).display.key());
+        SessionSnapshot nextMinute = owner.rendered(m.snapshot(),
+                SessionStateResolver.LocalFacts.NONE, 10_000L);
+        assertEquals("game|13|-1", nextMinute.display.key());
+        // The display is no part of the projection identity.
+        assertEquals(stale, nextMinute);
+        assertEquals(stale.signature(), nextMinute.signature());
+
+        // Without a confirming observation the hold ends at its limit.
+        assertEquals(45_000L, SessionStateResolver.STATUS_DISPLAY_MS);
+        assertEquals("game", owner.current(m.snapshot(), 45_000L).display.runningGameId);
+        assertTrue(SessionSnapshot.Display.NONE
+                == owner.current(m.snapshot(), 45_001L).display);
+    }
+
+    @Test public void heldRunningGameFollowsLaterObservations() {
+        long first = owner.nextRequestOrdinal();
+        owner.accept(running(first, 1, 0L, "game", HOST_NOW - 60_000L, 0L), m.snapshot(), 0L);
+        // Pending evidence says nothing; a confirming observation renews the hold.
+        long second = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(pending("boot-a", 2, second, "episode-b"),
+                m.snapshot(), 40_000L));
+        assertEquals("game", owner.current(m.snapshot(), 40_000L).display.runningGameId);
+        long third = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(running(third, 3, 44_000L, "game", HOST_NOW - 60_000L, 0L),
+                m.snapshot(), 44_000L));
+        assertEquals("game|2|-1", owner.current(m.snapshot(), 80_000L).display.key());
+
+        // Another game replaces it with its own process start.
+        long fourth = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(running(fourth, 4, 81_000L, "other",
+                HOST_NOW + 81_000L - 300_000L, 0L), m.snapshot(), 81_000L));
+        assertEquals("other|5|-1", owner.current(m.snapshot(), 81_000L).display.key());
+
+        // A game that is stopping, and an idle host, refute it.
+        long fifth = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(observation("boot-a", 5, fifth,
+                "stopping", "stopping", HostGatewayClient.Evidence.VERIFIED, "other",
+                HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
+                HostGatewayClient.Evidence.PENDING, false, "stopping"),
+                m.snapshot(), 82_000L));
+        assertTrue(SessionSnapshot.Display.NONE
+                == owner.current(m.snapshot(), 82_000L).display);
+        long sixth = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(running(sixth, 6, 83_000L, "game",
+                HOST_NOW + 83_000L - 60_000L, 0L), m.snapshot(), 83_000L));
+        assertEquals("game|1|-1", owner.current(m.snapshot(), 83_000L).display.key());
+        long seventh = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(idle("boot-a", 7, seventh), m.snapshot(), 84_000L));
+        assertTrue(SessionSnapshot.Display.NONE
+                == owner.current(m.snapshot(), 84_000L).display);
+    }
+
+    @Test public void unreachableHostCloseAndOtherProfilesShowNoRunningGame() {
+        SessionStateResolver.ProjectionOwner otherHost =
+                SessionStateResolver.owner(m.model, "other", "child", "parent");
+        long ordinal = owner.nextRequestOrdinal();
+        owner.accept(running(ordinal, 1, 0L, "game", HOST_NOW - 60_000L, 0L),
+                m.snapshot(), 0L);
+        long otherOrdinal = otherHost.nextRequestOrdinal();
+        otherHost.accept(running(otherOrdinal, 1, 0L, "game", HOST_NOW - 60_000L, 0L),
+                m.snapshot(), 0L);
+        // Each profile has its own owner: another profile of the host shows nothing.
+        assertTrue(SessionSnapshot.Display.NONE == SessionStateResolver.owner(
+                m.model, "host", "parent", "parent").current(m.snapshot(), 1L).display);
+
+        SessionStateResolver.hostUnreachable("HOST");
+        assertTrue(SessionSnapshot.Display.NONE == owner.current(m.snapshot(), 1L).display);
+        assertEquals("game", otherHost.current(m.snapshot(), 1L).display.runningGameId);
+
+        // A close this client finished is a boundary for the display as well.
+        long token = otherHost.beginLocalClose(2L, true);
+        otherHost.finishLocalClose(token, true);
+        assertTrue(SessionSnapshot.Display.NONE
+                == otherHost.current(m.snapshot(), 3L).display);
+    }
+
+    @Test public void childHoldsOnlyTheGameOfItsOwnSessionParentAnyRunningGame() {
+        // The host tells a child no process start for a game that is not its own session's.
+        long ordinal = owner.nextRequestOrdinal();
+        SessionSnapshot foreign = owner.accept(
+                running(ordinal, 1, 0L, "game", 0L, 0L), m.snapshot(), 0L);
+        assertTrue(SessionSnapshot.Display.NONE == foreign.display);
+        long own = owner.nextRequestOrdinal();
+        assertEquals("game|3|-1", owner.accept(running(own, 2, 1_000L, "game",
+                HOST_NOW - 3 * 60_000L, 0L), m.snapshot(), 1_000L).display.key());
+        // The same game stops being the child's own: it is dropped at once.
+        long later = owner.nextRequestOrdinal();
+        assertTrue(SessionSnapshot.Display.NONE == owner.accept(
+                running(later, 3, 2_000L, "game", 0L, 0L), m.snapshot(), 2_000L).display);
+
+        SessionStateResolver.ProjectionOwner parent =
+                SessionStateResolver.owner(m.model, "host", "parent", "parent");
+        HostGatewayClient.SessionObservation seen = new HostGatewayClient.SessionObservation(
+                "boot-a", 1L, HOST_NOW, 5_000L, "running",
+                HOST_NOW, "parent", "parent", parent.nextRequestOrdinal(), "", "operation",
+                "", 1L, 1L, "running", HostGatewayClient.Evidence.VERIFIED,
+                "running", HostGatewayClient.Evidence.VERIFIED, "game",
+                HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
+                HostGatewayClient.Evidence.VERIFIED, true, "game", 3, "target_window_ready",
+                false, true, false);
+        assertEquals("game|-1|-1", parent.accept(seen, m.snapshot(), 0L).display.key());
+    }
+
+    @Test public void durationsOverTheLimitAreNotShown() {
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "host", "child", 42, "");
+        assertTrue(m.bindControlGeneration(controller, "session", 1L));
+        long limit = SessionStateResolver.MAX_STATUS_DURATION_MS;
+        assertEquals(7L * 24L * 60L * 60_000L, limit);
+        long first = owner.nextRequestOrdinal();
+        assertEquals("game|10080|10080", owner.accept(running(first, 1, 0L, "session", "game",
+                HOST_NOW - limit, HOST_NOW - limit), m.snapshot(), 0L).display.key());
+        // A host clock set forward: the game stays named, without an absurd duration.
+        long second = owner.nextRequestOrdinal();
+        assertEquals("game|-1|-1", owner.accept(running(second, 2, 1_000L, "session", "game",
+                HOST_NOW - limit - 1L, HOST_NOW - limit - 1L),
+                m.snapshot(), 1_000L).display.key());
+    }
+
+    @Test public void streamDurationBelongsToTheStreamTheTransportHolds() {
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "host", "child", 42, "");
+        assertTrue(m.bindControlGeneration(controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        SessionSnapshot live = owner.accept(running(first, 1, 0L, "session", "game",
+                HOST_NOW - 5 * 60_000L, HOST_NOW - 65 * 60_000L), m.snapshot(), 0L);
+        assertEquals(SessionSnapshot.State.ACTIVE, live.state);
+        assertEquals("game|5|65", live.display.key());
+        // Between polls both durations stay.
+        assertEquals("game|5|65", owner.current(m.snapshot(), 6_000L).display.key());
+
+        // The host names another stream than the transport holds: not this stream's start.
+        long second = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(running(second, 2, 7_000L, "other-session", "game",
+                HOST_NOW - 5 * 60_000L, HOST_NOW - 65 * 60_000L), m.snapshot(), 7_000L));
+        assertEquals("game|5|-1", owner.current(m.snapshot(), 7_000L).display.key());
+
+        // No stream of this actor on the host: 0 is unknown, not "since 1970".
+        long third = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(running(third, 3, 8_000L, "session", "game",
+                HOST_NOW - 5 * 60_000L, 0L), m.snapshot(), 8_000L));
+        assertEquals("game|5|-1", owner.current(m.snapshot(), 8_000L).display.key());
+    }
+
     @Test public void closingAfterACloseIsBoundedThenUncertainAgain() {
         Controller controller = new Controller();
         m.enterHome(controller, "session", "host",
@@ -928,6 +1089,32 @@ public class SessionStateProjectionTest {
         assertTrue(m.call(new SessionEvent.ReconnectRelinquished(m.snapshot())));
         assertEquals(SessionSnapshot.ObservationState.READY,
                 owner.current(m.snapshot(), 2L).observationState);
+    }
+
+    private static final long HOST_NOW = 1_700_000_000_000L;
+
+    private static HostGatewayClient.SessionObservation running(
+            long ordinal, long revision, long localNow, String gameId,
+            long processStarted, long streamStarted) {
+        return running(ordinal, revision, localNow, "session", gameId, processStarted,
+                streamStarted);
+    }
+
+    /** A verified running game observed at host time {@code HOST_NOW + localNow}. */
+    private static HostGatewayClient.SessionObservation running(
+            long ordinal, long revision, long localNow, String session, String gameId,
+            long processStarted, long streamStarted) {
+        HostGatewayClient.SessionObservation seen = new HostGatewayClient.SessionObservation(
+                "boot-a", revision, HOST_NOW + localNow, 5_000L, "running",
+                HOST_NOW, "child", "parent", ordinal, "", "operation",
+                session, 1L, 1L, "running", HostGatewayClient.Evidence.VERIFIED,
+                "running", HostGatewayClient.Evidence.VERIFIED, gameId,
+                HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
+                HostGatewayClient.Evidence.VERIFIED, true, "game", 3, "target_window_ready",
+                false, true, false);
+        seen.processStartedUnixMs = processStarted;
+        seen.streamStartedUnixMs = streamStarted;
+        return seen;
     }
 
     private static HostGatewayClient.SessionObservation readyAtGeneration(

@@ -793,6 +793,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String renderedExpandedSessionSignature = "";
     private int cardBindBatchDepth;
     private String renderedSessionPresentationKey = "";
+    /** {@link SessionSnapshot.Display#key} of the status line the top bar shows. */
+    private String renderedSessionDisplayKey = "";
     private String renderedSunshineAppsKey = "";
     private String gridChildPolicyKey = "";
     private final Map<String, SessionSnapshot> cardBindBatchMemo = new LinkedHashMap<>();
@@ -864,6 +866,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 reconcileAuthoritativeSession(copy);
             }
             hostStateController.observe(copy, fresh);
+            if (fresh && copy.state == ComputerDetails.State.OFFLINE) {
+                SessionStateResolver.hostUnreachable(copy.uuid);
+            }
             if (fresh) rememberConfirmedHostState(copy);
             if (previous == null && initialHostsLoaded) newlyDiscoveredHosts.add(copy.uuid);
             hosts.put(copy.uuid, copy);
@@ -4453,6 +4458,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (topBar == null) return;
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host == null) return;
+        // Read before the text: a minute that passes in between at worst renders once more.
+        renderedSessionDisplayKey = renderedSessionSnapshot(host).display.key();
         String status = compactHostStatus(host);
         topBar.showHost(host.name, status, ConsoleTopBar.statusDotColor(
                 consoleHostState(host, renderedSessionSnapshot(host))),
@@ -4590,9 +4597,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
      * library render runs only when something the library screen shows changed.
      */
     private void renderLibraryForSessionChange(ComputerDetails host) {
-        if (host == null || sessionPresentationKey(host, renderedSessionSnapshot(host))
-                .equals(renderedSessionPresentationKey)) return;
-        renderPlayniteLibrary(host, currentSunshineApps);
+        if (host == null) return;
+        SessionSnapshot snapshot = renderedSessionSnapshot(host);
+        if (!sessionPresentationKey(host, snapshot).equals(renderedSessionPresentationKey)) {
+            renderPlayniteLibrary(host, currentSunshineApps);
+        } else if (!snapshot.display.key().equals(renderedSessionDisplayKey)) {
+            // Only the status line's minute changed (at most once a minute): no library render.
+            updateHostStatus();
+            updateHostSelectionTile(host);
+        }
     }
 
     /** Everything the library screen shows from a session snapshot. */
@@ -4602,7 +4615,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 + '|' + snapshot.state + '|' + snapshot.observationState
                 + '|' + snapshot.playniteGameId + '|' + snapshot.processEvidence
                 + '|' + snapshot.processId + '|' + snapshot.processToken
-                + '|' + consoleHostState(host, snapshot) + '|' + hostStatus(host, snapshot);
+                + '|' + consoleHostState(host, snapshot)
+                + '|' + hostStatus(host, snapshot, false);
     }
 
     private void invalidateSessionProjectionRequest(String hostId) {
@@ -4698,6 +4712,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 hostId, executionProfileId(hostId, actorProfileId));
     }
     private String hostStatus(ComputerDetails host, SessionSnapshot snapshot) {
+        return hostStatus(host, snapshot, true);
+    }
+
+    /**
+     * {@code timed}: with the running time of a live session or a running game. The library's
+     * presentation key reads the status without it, so a passing minute renders no library.
+     */
+    private String hostStatus(ComputerDetails host, SessionSnapshot snapshot, boolean timed) {
         // A sleep this client requested is known at once and names the whole host, unless a
         // live session or a game being closed still has its own status to show.
         if (showsHostSleep(snapshot)) {
@@ -4728,9 +4750,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
         if (state == ConsoleHostPresentation.State.ACTIVE_SESSION) {
-            String appName = activeSessionName(host, snapshot);
-            return appName == null ? getString(R.string.console_status_active_session)
+            // Between observations the session's game is the one last seen running.
+            String gameId = snapshot.playniteGameId.isEmpty()
+                    ? snapshot.display.runningGameId : snapshot.playniteGameId;
+            String gameName = libraryGameName(gameId);
+            String appName = gameName != null ? gameName
+                    : appDisplayName(findAppName(host, snapshot.hostGameAppId));
+            String status = appName == null ? getString(R.string.console_status_active_session)
                     : getString(R.string.console_status_active_app, appName);
+            return timed ? statusWithMinutes(status, ConsoleHostPresentation.sessionMinutes(
+                    snapshot, gameName == null ? "" : gameId)) : status;
         }
         boolean localWarmUp = host.uuid.equalsIgnoreCase(warmUpClientHostId);
         boolean preparingHost = sessionOrchestrator != null
@@ -4757,7 +4786,33 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return name == null ? getString(R.string.console_status_paused_stream)
                     : getString(R.string.console_status_suspended_game, name);
         }
+        if (ConsoleHostPresentation.showsRunningGame(state, snapshot)) {
+            // Named from this profile's library only: a game it does not list stays unnamed.
+            String name = libraryGameName(snapshot.display.runningGameId);
+            if (name != null) {
+                String status = getString(R.string.console_status_game_running, name);
+                return timed ? statusWithMinutes(status, snapshot.display.gameMinutes) : status;
+            }
+        }
         return getString(ConsoleHostPresentation.status(state));
+    }
+
+    /** The selected profile's library name of {@code gameId}, or null; reads memory only. */
+    private String libraryGameName(String gameId) {
+        if (gameId.isEmpty()) return null;
+        for (PlayniteDashboardItem item : unfilteredPlayniteItems) {
+            if (gameId.equals(SessionSnapshot.normalize(item.stableId()))) return item.game.name;
+        }
+        return null;
+    }
+
+    /** "Stream - Game - 12 min"; a duration under a minute or unknown (-1) adds nothing. */
+    private String statusWithMinutes(String status, long minutes) {
+        return minutes < 1L ? status : getString(R.string.console_status_with_duration, status,
+                PlaynitePlaytimeFormatter.minutes(minutes, new PlaynitePlaytimeFormatter.Labels(
+                        getString(R.string.playnite_never_played),
+                        getString(R.string.playnite_hours_short),
+                        getString(R.string.playnite_minutes_short))));
     }
 
     /**

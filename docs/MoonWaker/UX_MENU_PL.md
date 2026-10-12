@@ -177,7 +177,8 @@ i przejścia.
   | Stan | Wygląd |
   | --- | --- |
   | Online | zielona kropka, „Online" |
-  | Sesja aktywna | znacznik „NA ŻYWO" na kaflu, czerwona kropka, „Stream · Pulpit · 12 min" |
+  | Sesja aktywna | znacznik „NA ŻYWO" na kaflu, czerwona kropka, „Stream · Pulpit · 12 min" (czas streamu); z grą „Stream · <gra> · 12 min" (czas gry); od godziny „1 godz. 5 min"; poniżej minuty, powyżej 7 dni i bez danych z hosta bez czasu; pod nazwą gry nigdy czas streamu |
+  | Gra działa bez streamu | zielona kropka, „Gra działa · <gra> · 12 min" zamiast „Online"; tylko gra z biblioteki wybranego profilu, napis trzyma się między odpytaniami hosta (do 45 s bez potwierdzenia); profil dziecka widzi tak tylko grę własnej sesji — przy grze rodzica „Online" |
   | Budzenie | bursztynowy pierścień postępu wokół kafla, „Budzenie… 12 s" (sekundy liczone na żywo) |
   | Uśpiony | plakietka z księżycem w rogu kafla, szaroniebieska kropka, „Uśpiony" |
   | Offline / niedostępny | kafel odbarwiony i z 60 % krycia, czerwona kropka, „Niedostępny" |

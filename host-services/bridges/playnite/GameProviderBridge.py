@@ -4526,6 +4526,12 @@ class BridgeState:
             else:
                 process_evidence, process_id, process_token = "UNAVAILABLE", 0, ""
 
+            # Host wall clock start of the verified game process (FILETIME -> Unix ms);
+            # 0 when no process is verified. Display only: never part of the episode key.
+            started_unix_ms = max(0, int(
+                current.get("processStartedFiletime") or 0) // 10_000
+                - 11_644_473_600_000) if process_evidence == "VERIFIED" else 0
+
             ready = bool(self.readiness.get("ready", False))
             if ready and process_evidence == "VERIFIED":
                 window_evidence = "VERIFIED"
@@ -4547,7 +4553,7 @@ class BridgeState:
                 self._observation_state_since_ms = observed_at_ms
             self.observation_revision += 1
             return {
-                "schema_version": 1,
+                "schema_version": 2,
                 "producer": {
                     "component": "game-provider",
                     "profile_id": self.profile_id,
@@ -4570,6 +4576,7 @@ class BridgeState:
                 "process": {"evidence": process_evidence,
                             "process_id": process_id,
                             "process_token": process_token,
+                            "started_unix_ms": started_unix_ms,
                             "running_games": [dict(game) for game in current.get(
                                 "running_games", [])],
                             "running_scan_status": str(current.get(

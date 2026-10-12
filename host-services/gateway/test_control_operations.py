@@ -1700,7 +1700,9 @@ class ControlOperationTest(unittest.TestCase):
         ordinary = self.state.control_state["stream"]
         self.assertEqual(
             {**ordinary, "generation": stale["generation"],
-             "actor_lease_epoch": stale["actor_lease_epoch"]}, released)
+             "actor_lease_epoch": stale["actor_lease_epoch"],
+             "stream_started_unix_ms": released["stream_started_unix_ms"]}, released)
+        self.assertGreater(released["stream_started_unix_ms"], 0)
         # The owner can close it.
         self.observe_partial_scan(scan="complete", process="ABSENT")
         self.close_permit(plain)
@@ -2043,6 +2045,136 @@ class ControlOperationTest(unittest.TestCase):
                     expected_generation=a1["generation"]), 0)
                 self.assertEqual((409, "stream_generation_superseded"),
                                  (status, late["reason"]))
+
+    def observation(self, ordinal=1, actor="parent", execution="parent", provider=None):
+        self.state.request_context.actor_profile_id = actor
+        self.state.request_context.execution_profile_id = execution
+        self.state.proxy = lambda *_a, **_k: (True, dict(provider or {
+            "game": {"state": "idle", "id": "", "evidence": "ABSENT"},
+            "process": {"evidence": "ABSENT", "process_id": 0, "process_token": "",
+                        "started_unix_ms": 0}}))
+        try:
+            return self.state.playnite_observation(ordinal, "")
+        finally:
+            self.authorize()
+
+    def test_stream_start_time_is_set_once_and_told_only_to_its_owner(self):
+        self.assertEqual(0, self.observation()[1]["correlation"]["stream_started_unix_ms"])
+        before = int(wakeplay_gateway.time.time() * 1000)
+        _status, permit = self.acquire(self.request("a1-launch"))
+        # A permitted start is not a stream yet.
+        self.assertEqual(0, self.observation(2)[1]["correlation"]["stream_started_unix_ms"])
+        self.complete(permit)
+        started = self.state.control_state["stream"]["stream_started_unix_ms"]
+        self.assertGreaterEqual(started, before)
+        self.assertLessEqual(started, int(wakeplay_gateway.time.time() * 1000))
+        self.assertEqual(started, self.observation(3)[1]["correlation"][
+            "stream_started_unix_ms"])
+        # Another actor or execution profile reads the stream identity but not its start.
+        for actor, execution in (("kid", "parent"), ("other", "other")):
+            correlation = self.observation(4, actor, execution)[1]["correlation"]
+            self.assertEqual(("stream-1", 0), (
+                correlation["stream_session_id"], correlation["stream_started_unix_ms"]))
+
+    def test_stream_start_time_survives_reconnect_replacement_retry_and_restart(self):
+        self.launched_stream()
+        self.state.control_state["stream"]["stream_started_unix_ms"] = 1_234
+        self.state._control_save_locked()
+        generation = self.state.control_state["stream"]["generation"]
+        # Reconnect on a new transport (the application stays paused on the host).
+        self.observe_paused_app()
+        status, resume = self.acquire(self.request(
+            "a2-resume", "resume", session="stream-2"), 0)
+        self.assertEqual(200, status, resume)
+        self.complete(resume)
+        self.assertEqual(("stream-2", 1_234), (
+            self.state.control_state["stream"]["stream_session_id"],
+            self.state.control_state["stream"]["stream_started_unix_ms"]))
+        # Replacement by the same actor.
+        status, replacement = self.acquire(self.request(
+            "a3-replacement", "replacement", session="stream-3",
+            expected_generation=resume["generation"]), 0)
+        self.assertEqual(200, status, replacement)
+        self.complete(replacement)
+        self.assertEqual(("stream-3", 1_234), (
+            self.state.control_state["stream"]["stream_session_id"],
+            self.state.control_state["stream"]["stream_started_unix_ms"]))
+        self.assertGreater(replacement["generation"], generation)
+        # Retry after a lost transport: a fresh start on the retained record.
+        self.observe_closed_app_with_running_game()
+        status, retry = self.acquire(self.request(
+            "a4-retry", "launch", session="stream-3", observed_app_id=0,
+            expected_generation=replacement["generation"]), 0)
+        self.assertEqual((200, "permitted"), (status, retry["state"]), retry)
+        self.complete(retry)
+        self.assertEqual((retry["generation"], 1_234), (
+            self.state.control_state["stream"]["generation"],
+            self.state.control_state["stream"]["stream_started_unix_ms"]))
+        # A Gateway restart keeps it with the stream record.
+        restarted = GatewayState(self.config_path, None)
+        self.assertEqual(1_234, restarted.control_state["stream"]["stream_started_unix_ms"])
+
+    def test_stream_start_time_ends_with_the_stream(self):
+        launch = self.launched_stream()
+        self.state.control_state["stream"]["stream_started_unix_ms"] = 1_234
+        self.observe_provider_idle()
+        status, stop = self.acquire(self.request(
+            "a1-stop", "full_quit", expected_generation=launch["generation"]), 0)
+        self.assertEqual(200, status, stop)
+        self.complete(stop)
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertEqual(0, self.observation()[1]["correlation"]["stream_started_unix_ms"])
+        _status, again = self.acquire(self.request("a2-launch", session="stream-2"))
+        self.complete(again)
+        self.assertGreater(self.state.control_state["stream"]["stream_started_unix_ms"], 1_234)
+
+    def test_another_actor_taking_the_stream_over_starts_its_own_time(self):
+        _status, parent = self.acquire(self.request("parent-stream"))
+        self.complete(parent)
+        self.state.control_state["stream"]["stream_started_unix_ms"] = 1_234
+        self.state.config["profiles"]["kid"] = {
+            "id": "kid", "kind": "child", "enabled": True,
+            "parent_profile_id": "parent"}
+        self.client["profile_grants"]["kid"] = ["use_profile"]
+        child_session_id = "01234567-89ab-cdef-0123-456789abcdef"
+        self.state.child_time_session = {
+            "session_id": child_session_id, "client_id": "tv",
+            "actor_profile_id": "kid", "execution_profile_id": "parent"}
+        self.state.authorize_child_profile(self.client, "kid")
+        status, replacement = self.state.control_operation_acquire(self.client, {
+            "operation_id": "child-replacement", "intent": "replacement",
+            "stream_session_id": "child-stream", "sunshine_app_id": 7,
+            "expected_generation": parent["generation"],
+            "observed_sunshine_app_id": 7,
+            "child_session_id": child_session_id,
+        }, "child-replacement", 0)
+        self.assertEqual(200, status, replacement)
+        self.state.authorize_child_profile(self.client, "kid")
+        status, _done = self.state.control_operation_complete(self.client, {
+            "operation_id": "child-replacement",
+            "generation": replacement["generation"],
+            "actor_lease_epoch": replacement["actor_lease_epoch"],
+            "succeeded": True}, "child-replacement")
+        self.assertEqual(200, status)
+        stream = self.state.control_state["stream"]
+        self.assertEqual("kid", stream["actor_profile_id"])
+        self.assertGreater(stream["stream_started_unix_ms"], 1_234)
+
+    def test_changed_control_correlation_reports_no_process_start(self):
+        self.launched_stream()
+
+        def racing(*_a, **_k):
+            self.state.control_state["stream"]["generation"] += 1
+            return True, {"game": {"state": "running", "id": "steam:7",
+                                   "evidence": "VERIFIED"},
+                          "process": {"evidence": "VERIFIED", "process_id": 77,
+                                      "process_token": "a" * 64,
+                                      "started_unix_ms": 1_700_000_000_000}}
+        self.state.proxy = racing
+        status, observation = self.state.playnite_observation(1, "")
+        self.assertEqual(200, status)
+        self.assertEqual("control_correlation_changed", observation["reason"])
+        self.assertEqual(0, observation["process"]["started_unix_ms"])
 
     def test_retry_keeps_the_record_without_proof_generation_or_ownership(self):
         cases = {

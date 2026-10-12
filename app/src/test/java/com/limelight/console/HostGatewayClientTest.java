@@ -44,7 +44,7 @@ public class HostGatewayClientTest {
                 "boot-a", 2, 7, "transition-a");
         assertObservationRejected(value, "stale_or_malformed_observation", now);
         value = observation(now, "boot-a", 2, 7, "transition-a");
-        value.put("schema_version", 2);
+        value.put("schema_version", 1);
         assertObservationRejected(value, "unsupported_observation_schema", now);
     }
 
@@ -53,7 +53,7 @@ public class HostGatewayClientTest {
         JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
         value.getJSONObject("game").put("state", "starting").put("id", "steam:456");
         value.put("process", new JSONObject().put("evidence", "ABSENT")
-                .put("process_id", 0).put("process_token", ""));
+                .put("process_id", 0).put("process_token", "").put("started_unix_ms", 0));
         value.put("window", new JSONObject().put("evidence", "ABSENT")
                 .put("ready", false).put("target_kind", "game").put("stable_samples", 0)
                 .put("reason", "previous_launch_game_running")
@@ -83,6 +83,37 @@ public class HostGatewayClientTest {
         assertObservationRejected(value, "inconsistent_observation_evidence", now);
         value.getJSONObject("window").remove("previous_launch");
         assertObservationRejected(value, "missing_observation_previous_launch", now);
+    }
+
+    @Test public void streamAndProcessStartsAreRequiredAndZeroMeansUnknown() throws Exception {
+        long now = 1_700_000_000_000L;
+        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        HostGatewayClient.SessionObservation unknown = HostGatewayClient.parseSessionObservation(
+                value, "kid", "parent", 7, "transition-a", now + 100);
+        assertEquals(0L, unknown.streamStartedUnixMs);
+        assertEquals(0L, unknown.processStartedUnixMs);
+
+        value.getJSONObject("correlation").put("stream_started_unix_ms", now - 3_600_000L);
+        value.getJSONObject("process").put("started_unix_ms", now - 720_000L);
+        HostGatewayClient.SessionObservation parsed = HostGatewayClient.parseSessionObservation(
+                value, "kid", "parent", 7, "transition-a", now + 100);
+        assertEquals(now - 3_600_000L, parsed.streamStartedUnixMs);
+        assertEquals(now - 720_000L, parsed.processStartedUnixMs);
+
+        value.getJSONObject("correlation").remove("stream_started_unix_ms");
+        assertObservationRejected(value, "missing_observation_stream_started_unix_ms", now);
+        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value.getJSONObject("process").remove("started_unix_ms");
+        assertObservationRejected(value, "missing_observation_started_unix_ms", now);
+        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value.getJSONObject("correlation").put("stream_started_unix_ms", -1);
+        assertObservationRejected(value, "stale_or_malformed_observation", now);
+        // A process start belongs to a verified process only.
+        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value.put("process", new JSONObject().put("evidence", "PENDING")
+                .put("process_id", 0).put("process_token", "").put("started_unix_ms", now));
+        value.getJSONObject("window").put("evidence", "PENDING").put("ready", false);
+        assertObservationRejected(value, "inconsistent_observation_evidence", now);
     }
 
     @Test public void missingOrWronglyTypedCorrelationIsRejected() throws Exception {
@@ -131,7 +162,7 @@ public class HostGatewayClientTest {
 
     private static JSONObject observation(long observedAt, String boot, long revision,
                                           long ordinal, String transition) throws Exception {
-        return new JSONObject().put("ok", true).put("schema_version", 1)
+        return new JSONObject().put("ok", true).put("schema_version", 2)
                 .put("producer", new JSONObject().put("boot_id", boot)
                         .put("revision", revision))
                 .put("observed_at_unix_ms", observedAt).put("fresh_for_ms", 5_000)
@@ -143,14 +174,16 @@ public class HostGatewayClientTest {
                         .put("caller_transition_id", transition)
                         .put("operation_id", "operation-a")
                         .put("stream_session_id", "session-a")
-                        .put("control_generation", 4).put("actor_lease_epoch", 5))
+                        .put("control_generation", 4).put("actor_lease_epoch", 5)
+                        .put("stream_started_unix_ms", 0))
                 .put("provider", new JSONObject().put("state", "running")
                         .put("connector_evidence", "VERIFIED").put("reason", "none"))
                 .put("game", new JSONObject().put("state", "running")
                         .put("evidence", "VERIFIED")
                         .put("id", "steam:123"))
                 .put("process", new JSONObject().put("evidence", "VERIFIED")
-                        .put("process_id", 42).put("process_token", repeat('a', 64)))
+                        .put("process_id", 42).put("process_token", repeat('a', 64))
+                        .put("started_unix_ms", 0))
                 .put("window", new JSONObject().put("evidence", "VERIFIED")
                         .put("ready", true).put("target_kind", "game")
                         .put("stable_samples", 3).put("reason", "target_window_ready"))

@@ -94,7 +94,19 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         // Session polls re-render the library under an open grid only on a visible change.
         String gate = source.substring(source.indexOf("private void renderLibraryForSessionChange("),
                 source.indexOf("private void invalidateSessionProjectionRequest("));
-        assertTrue(gate.contains(".equals(renderedSessionPresentationKey)) return;"));
+        assertTrue(gate.contains("if (!sessionPresentationKey(host, snapshot)"
+                + ".equals(renderedSessionPresentationKey)) {"));
+        // A passing minute of the status line (its key changes at most once a minute) updates
+        // the top bar and the host tile only; a poll that changes neither key renders nothing.
+        assertTrue(gate.contains(
+                "} else if (!snapshot.display.key().equals(renderedSessionDisplayKey)) {"));
+        assertTrue(gate.indexOf("renderPlayniteLibrary(host, currentSunshineApps);")
+                < gate.indexOf("snapshot.display.key()"));
+        assertTrue(gate.indexOf("snapshot.display.key()") < gate.indexOf("updateHostStatus();"));
+        assertTrue(gate.indexOf("renderPlayniteLibrary(")
+                == gate.lastIndexOf("renderPlayniteLibrary("));
+        assertTrue(source.contains(
+                "renderedSessionDisplayKey = renderedSessionSnapshot(host).display.key();"));
         assertTrue(source.contains("renderLibraryForSessionChange(currentHost(expectedHostId))"));
         assertTrue(grid.contains("grid.setItemPrefetchEnabled(false)"));
         // Library resolve: per-game reuse, prepared off the main thread before renders.

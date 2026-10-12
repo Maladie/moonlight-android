@@ -58,6 +58,35 @@ final class SessionSnapshot {
     final int hostRunningAppId;
     /** A game stop this client runs is in flight; a live stream beside it stays ACTIVE. */
     final boolean endingGame;
+    /** Status-line facts; like {@link #hostRunningAppId} not part of the projection identity. */
+    final Display display;
+
+    /**
+     * What a status line may show beside the session, held by the projection owner between
+     * host observations. Never an input to a readiness, Play or close decision. Durations are
+     * whole minutes on the host's clock, so a value (and {@link #key}) changes at most once a
+     * minute; -1 means unknown.
+     */
+    static final class Display {
+        static final Display NONE = new Display("", -1L, -1L);
+
+        /** The game last observed running on the host for this profile; empty when none. */
+        final String runningGameId;
+        /** Since that game's process started. */
+        final long gameMinutes;
+        /** Since this actor's stream first started. */
+        final long streamMinutes;
+
+        Display(String runningGameId, long gameMinutes, long streamMinutes) {
+            this.runningGameId = normalize(runningGameId);
+            this.gameMinutes = gameMinutes;
+            this.streamMinutes = streamMinutes;
+        }
+
+        String key() {
+            return runningGameId + "|" + gameMinutes + "|" + streamMinutes;
+        }
+    }
 
     SessionSnapshot(String hostId, String profileId, String executionProfileId,
                     State state, int hostGameAppId, String playniteGameId,
@@ -72,6 +101,30 @@ final class SessionSnapshot {
                     String streamSessionId, String processEvidence, int processId,
                     String processToken, String windowEvidence, String observationReason,
                     int hostRunningAppId, boolean endingGame) {
+        this(hostId, profileId, executionProfileId, state, hostGameAppId, playniteGameId,
+                retainedTransport, explicitSuspension, suspensionSleepObserved,
+                hostSleepRequested, hostSleepObserved, suspendId, neutralStreamTarget,
+                observationState, observationCorrelated, producerBootId, producerRevision,
+                requestOrdinal, transportGeneration, controlGeneration, actorLeaseEpoch,
+                operationId, transitionId, streamSessionId, processEvidence, processId,
+                processToken, windowEvidence, observationReason, hostRunningAppId,
+                endingGame, Display.NONE);
+    }
+
+    SessionSnapshot(String hostId, String profileId, String executionProfileId,
+                    State state, int hostGameAppId, String playniteGameId,
+                    boolean retainedTransport, boolean explicitSuspension,
+                    boolean suspensionSleepObserved, boolean hostSleepRequested,
+                    boolean hostSleepObserved, String suspendId,
+                    boolean neutralStreamTarget, ObservationState observationState,
+                    boolean observationCorrelated,
+                    String producerBootId, long producerRevision, long requestOrdinal,
+                    long transportGeneration, long controlGeneration,
+                    long actorLeaseEpoch, String operationId, String transitionId,
+                    String streamSessionId, String processEvidence, int processId,
+                    String processToken, String windowEvidence, String observationReason,
+                    int hostRunningAppId, boolean endingGame, Display display) {
+        this.display = display;
         this.hostId = normalize(hostId);
         this.profileId = GatewayConnection.normalizeProfileId(profileId);
         this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);

@@ -78,7 +78,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
                 running = [dict(item) for item in self.current.get("running_games", [])]
                 exact = running[0] if game_id and running else {}
                 return True, {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "producer": {"boot_id": "producer-boot", "revision": 7},
                     "observed_at_unix_ms": 1_700_000_000_000,
                     "fresh_for_ms": 5_000,

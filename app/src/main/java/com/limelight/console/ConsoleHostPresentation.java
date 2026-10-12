@@ -109,6 +109,27 @@ final class ConsoleHostPresentation {
                 && snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED;
     }
 
+    /**
+     * An online host without a session of this client runs a game (started on the host, or
+     * left running by a closed stream): its status names that game instead of a bare
+     * "Online". The fact comes from the session projection owner, for display only.
+     */
+    static boolean showsRunningGame(State state, SessionSnapshot snapshot) {
+        return (state == State.ONLINE || state == State.PROFILE_ATTENTION)
+                && !snapshot.display.runningGameId.isEmpty();
+    }
+
+    /**
+     * Whole minutes a live session's status shows. With no game named ({@code shownGameId}
+     * empty: the desktop or an application) the stream's; beside a named game only that
+     * game's own, never the stream's. -1 when unknown or the named game is not the held one.
+     */
+    static long sessionMinutes(SessionSnapshot snapshot, String shownGameId) {
+        SessionSnapshot.Display display = snapshot.display;
+        return shownGameId.isEmpty() ? display.streamMinutes
+                : shownGameId.equals(display.runningGameId) ? display.gameMinutes : -1L;
+    }
+
     static boolean canWake(ComputerDetails host) {
         return host != null && host.state != ComputerDetails.State.ONLINE
                 && hasWakeAddress(host);
