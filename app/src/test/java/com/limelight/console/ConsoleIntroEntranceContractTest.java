@@ -178,18 +178,16 @@ public class ConsoleIntroEntranceContractTest {
                 < apps.indexOf("if (playniteInitialLoadPending && currentPlayniteGames.isEmpty()) return;"));
         assertTrue(apps.contains("renderApps(latestHost, apps);"));
 
-        // Every end of the initial load without games renders: no connection, an error, or an
-        // empty answer. The row then shows the empty-library text beside the status message.
+        // An answered initial load without games renders: an error or an empty answer. The row
+        // then shows the empty-library text beside the status message. Without a connection the
+        // app list renders its own row, which a library render must not replace.
         String refresh = between(activity, "private void requestPlayniteRefresh(",
                 "private void scheduleNextPlayniteRefresh()");
         String ends = "if (initialLoad && currentPlayniteGames.isEmpty()) {\n";
-        assertTrue(refresh.split(java.util.regex.Pattern.quote(ends), -1).length - 1 == 2);
+        assertTrue(refresh.split(java.util.regex.Pattern.quote(ends), -1).length - 1 == 1);
         String noConnection = refresh.substring(refresh.indexOf("if (connection == null) {"),
                 refresh.indexOf("cancelPlayniteRequest();"));
-        assertTrue(noConnection.indexOf("boolean initialLoad = playniteInitialLoadPending;")
-                < noConnection.indexOf("playniteInitialLoadPending = false;"));
-        assertTrue(noConnection.contains(ends
-                + "                renderLibraryAfterIntroEntrance(host.uuid);"));
+        assertFalse(noConnection.contains("renderLibraryAfterIntroEntrance"));
         String answered = refresh.substring(refresh.indexOf("mainHandler.post(() -> {"));
         assertTrue(answered.indexOf("boolean initialLoad = playniteInitialLoadPending;")
                 < answered.indexOf("playniteInitialLoadPending = false;"));

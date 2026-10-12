@@ -2326,7 +2326,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (introView != null) {
             introView.carouselCards(() -> firstPendingCarouselCard() != null, () -> {
                 View pending = firstPendingCarouselCard();
-                if (pending != null) buildPendingCarouselCard(pending);
+                if (pending == null) return;
+                buildPendingCarouselCard(pending);
+                requestPendingInitialGameFocus(currentHost(selectedHostUuid));
             });
         }
         buildSidePanel();
@@ -7805,14 +7807,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 hostGatewayStore.loadForHost(host.uuid, address, requestKey.profileId);
         mainHandler.removeCallbacks(playniteRefreshCycle);
         if (connection == null) {
-            boolean initialLoad = playniteInitialLoadPending;
             playniteInitialLoadPending = false;
             playniteLibraryRefreshing = false;
             playniteLibraryError = PlayniteLibraryRepository.ErrorKind.AUTHENTICATION;
             updatePlayniteLibraryStatus(host);
-            if (initialLoad && currentPlayniteGames.isEmpty()) {
-                renderLibraryAfterIntroEntrance(host.uuid);
-            }
             scheduleNextPlayniteRefresh();
             return;
         }
@@ -8197,6 +8195,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void requestPendingInitialGameFocus(ComputerDetails host) {
         if (!pendingInitialGameFocus || hostSelectionVisible || host == null || appRow == null
                 || !host.uuid.equals(selectedHostUuid)) return;
+        // The first game's card is still to be built: its build asks again.
+        if (appRow.getChildCount() > 0 && pendingCarouselGameId(appRow.getChildAt(0)) != null) {
+            return;
+        }
         View target = firstFocusableChild(appRow);
         if (target == null) return;
         pendingInitialGameFocus = false;
