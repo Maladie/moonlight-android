@@ -793,8 +793,10 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(restoreData.contains("currentSunshineApps = cached.sunshineApps"));
         assertTrue(restoreData.contains("initialLocalAppsHostId = host.uuid"));
         assertTrue(restoreData.contains("initialLocalLibraryHostId = host.uuid"));
-        assertTrue(localLibrary.contains(
-                "if (!requiresPreparedInitialCarouselFrame()) showCarouselLoadingGhosts()"));
+        assertTrue(localLibrary.indexOf("if (!requiresPreparedInitialCarouselFrame()) {")
+                < localLibrary.indexOf("showCarouselLoadingGhosts();"));
+        assertTrue(localLibrary.indexOf("showCarouselLoadingGhosts();")
+                < localLibrary.indexOf("updatePlayniteLibraryStatus(host);"));
         assertTrue(prepare.contains("if (!initialCarouselArtworkLoads.isEmpty()) return false"));
         assertTrue(restoreArtwork.contains("cachePlayniteBitmap(cached.file)"));
         assertTrue(restoreArtwork.contains("appRow.postInvalidateOnAnimation()"));

@@ -68,6 +68,18 @@ final class PlayniteLibraryDiff {
         return changes;
     }
 
+    /** Cards one carousel render builds itself when more than this many are missing. */
+    static final int IMMEDIATE_CARDS = 3;
+
+    /**
+     * Whether a render builds the missing card at this position itself. A render missing only
+     * a few cards builds them all; one missing many builds the leading positions and leaves a
+     * placeholder at the others, which later frames turn into cards one at a time.
+     */
+    static boolean buildsInRender(int position, int missingCards) {
+        return missingCards <= IMMEDIATE_CARDS || position < IMMEDIATE_CARDS;
+    }
+
     static String selectionAfter(String focusedId, int previousIndex,
                                  List<PlayniteDashboardItem> newItems) {
         if (focusedId != null) {
