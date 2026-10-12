@@ -118,14 +118,36 @@ unexpected process crash.
 A control permit is released by its holder's terminal write. The one host-side exception
 is a client start (not `reauthorize`, not a stop or provider transition): once the holder
 has been silent for 60 s after the permit, or 15 s after its own uncertain report
-(`complete` with `succeeded=false`; every repeat restarts the 15 s), the Gateway ends it as
-`failed/start_effect_absent`, but only on the streamer's fresh proof that neither a
-transport nor a running application is left. Without that proof the permit stays. An
-`acquire` of the next start waits out a grace that ends within its request, leaving 10 s
-for the proof; closes are answered at once. If the released holder then reports
-`succeeded=true` and nothing has been granted since (same generation, no active permit, no
-stream record), the start is accepted as succeeded and its stream is recorded; after any
-newer grant the `failed` receipt stands and the Gateway logs `control-start-late-effect`.
+(`complete` with `succeeded=false`; every repeat restarts the 15 s), the Gateway ends it
+itself, but only on the streamer's fresh, authoritative and coherent answer about what the
+start left (the rule the abandon below uses). A Gateway restart starts the 60 s anew.
+
+| The streamer shows | The permit ends as | Effect |
+| --- | --- | --- |
+| Neither a transport nor a running application | `failed/start_effect_absent`, logged `control-start-auto-resolved` (`effect=absent`) | Nothing is recorded; the next `acquire` is granted. |
+| This start's own effect: its application is the only one running and no connected client has another UUID than the holder's (nobody connected included) | `succeeded/start_effect_present`, logged `control-start-auto-adopted` | Exactly the holder's own `complete` with `succeeded=true`: the stream record is written on the permit's client, actor, execution profile and child session with the permit's generation, and keeps or sets the stream start time by the same rule. |
+| Anything else (another application, another client, a transport without the application) | `failed/start_effect_foreign`, logged `control-start-auto-resolved` (`effect=foreign`) | Nothing is recorded: what runs is not this holder's and stays unmanaged, as for any later `acquire`. |
+| No authoritative, coherent answer | - | The permit stays. |
+
+An `acquire` of the next start waits out a grace that ends within its request, leaving 10 s
+for the proof; closes are answered at once.
+
+An adopted stream is an ordinary retained stream. Its owner's next start connects to it
+(resume or reconnect on a new transport, or a replay under the same operation ID); every
+other caller gets the refusals a retained stream gives; and when nobody uses it, the idle
+reconciliation retires the record once the streamer reports it idle, abandoning a game start
+that never produced a process. The Gateway does not close the application itself: while
+the streamer keeps it running the record stays its close handle. Adoption checks nothing
+`complete` does not check and grants nothing the permit did not: a child actor's record
+carries its child session, and without a live session that child may still only close.
+
+The holder's late terminal write reads the receipt. After an adoption both
+`succeeded=true` and `succeeded=false` read `succeeded/start_effect_present` with the
+permit's generation, and change nothing. After `start_effect_absent`, a late
+`succeeded=true` is accepted as succeeded and its stream recorded while nothing has been
+granted since (same generation, no active permit, no stream record); after any newer grant
+the `failed` receipt stands and the Gateway logs `control-start-late-effect`. After
+`start_effect_foreign` the `failed` receipt always stands.
 
 ## Abandoning a client start
 
@@ -148,7 +170,7 @@ the host state is.
 | No record; the streamer proves neither a transport nor a running application | `200`, `state=failed`, `reason=start_abandoned`, `released=true` | The permit ends; the next `acquire` is granted. |
 | No record; the streamer shows this start's own effect: its application is the only one running and no connected client has another UUID than the holder's | `200`, `state=succeeded`, `reason=start_effect_present`, `released=false`, `generation` | The start is recorded as the stream; the holder closes it with an ordinary `full_quit` on that generation. |
 | No record; the streamer shows anything else (another application, another client, a transport without the application) | `200`, `state=failed`, `reason=start_abandoned`, `released=true` | The permit ends and nothing is recorded: what runs is not this holder's (a child actor included) and stays unmanaged, as for any later `acquire`. |
-| No record; no authoritative, coherent streamer answer | `409`, `state=uncertain`, `reason=start_abandoned`, `released=false` | The permit stays, with no grace left: the Gateway ends it on the first proof (previous section), also after its own restart and within the holder's next `acquire` of the same operation ID. |
+| No record; no authoritative, coherent streamer answer | `409`, `state=uncertain`, `reason=start_abandoned`, `released=false` | The permit stays, with no grace left: the Gateway ends it on the first answer (previous section: released, adopted or failed as foreign), also after its own restart and within the holder's next `acquire` of the same operation ID. |
 
 A repeat reads the stored receipt, so the call is idempotent. A failed start receipt
 (abandoned, absent, rejected) never answers a later `acquire`: the same operation ID is a

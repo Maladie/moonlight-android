@@ -4805,20 +4805,23 @@ class GatewayState:
                                           or stale[1].get("reason") == "start_abandoned"):
                     # Another client start permit holds the host, or this one's holder
                     # abandoned it (Retry derives the same operation ID). Once its grace is
-                    # over the streamer may prove it started nothing. Only the user's next Play
+                    # over the streamer may prove what it left: nothing, this start's own
+                    # stream (recorded for its holder) or something else. Only the user's next Play
                     # waits a grace out (a close is answered at once), and only when the reserve
                     # covers the proof after it; a retained stream needs further probes
                     # (idle proof, abandon), so it never waits.
                     stale_key, holder, grace_left = stale
                     if grace_left <= 0:
-                        absent = probes.read(
-                            "start_absent", stale_key,
-                            lambda holder=holder: self._control_start_effect_absent(holder),
-                            False)
-                        if absent is probes.PENDING:
+                        effect = probes.read(
+                            "start_effect", stale_key,
+                            lambda holder=holder: self._control_start_effect(holder),
+                            "unknown")
+                        if effect is probes.PENDING:
                             continue
-                        if absent and self._control_resolve_stale_start_locked(stale_key):
-                            # Read the receipt it left: under this ID it is a new attempt.
+                        if self._control_resolve_stale_start_locked(stale_key, effect):
+                            # Read what it left: under this ID a failed receipt is a new
+                            # attempt and an adopted one a replay; any other request meets
+                            # the adopted stream record like any retained stream.
                             continue
                     elif direction == "start" and self.control_state.get("stream") is None \
                             and grace_left < deadline - time.monotonic() \
@@ -5466,31 +5469,47 @@ class GatewayState:
                 self.control_condition.notify_all()
                 return HTTPStatus.CONFLICT, {**self._control_result(active), "released": False}
 
-    def _control_resolve_stale_start_locked(self, key: tuple[Any, ...]) -> bool:
-        """End the probed start permit as failed, only if it is still the same permit in the
-        same state. Its holder's late terminal write then reads this receipt; a late
-        success is still accepted while nothing was granted since."""
+    def _control_resolve_stale_start_locked(self, key: tuple[Any, ...], effect: str) -> bool:
+        """End the probed start permit by what the streamer proved of it, only if it is
+        still the same permit in the same state; without proof ("unknown") it stays.
+
+        "present" (its application alone, no other client): the start took effect and its
+        holder went away, so it ends exactly as the holder's own `complete(true)` would,
+        leaving the stream record on the holder. "absent" and "foreign" end it as failed
+        and record nothing: what a foreign snapshot shows stays unmanaged. The holder's
+        late terminal write reads the receipt; after "absent" a late success is still
+        accepted while nothing was granted since."""
         stale = self._control_stale_start_locked()
-        if stale is None or stale[0] != key:
+        if effect == "unknown" or stale is None or stale[0] != key:
             return False
         active = self.control_state["active"]
-        DIAGNOSTICS.record("control-start-auto-resolved", "WARN", **{
-            field: active.get(field, "") for field in (
-                "operation_id", "intent", "state", "reason", "generation",
-                "actor_lease_epoch", "stream_session_id", "child_session_id",
-                "permitted_at", "state_changed_at")})
-        self._control_finish_locked(active, "failed", "start_effect_absent")
+        adopted = effect == "present"
+        DIAGNOSTICS.record(
+            "control-start-auto-adopted" if adopted else "control-start-auto-resolved",
+            "WARN", effect=effect, **{
+                field: active.get(field, "") for field in (
+                    "operation_id", "intent", "state", "reason", "generation",
+                    "actor_lease_epoch", "stream_session_id", "child_session_id",
+                    "actor_profile_id", "execution_profile_id", "sunshine_app_id",
+                    "permitted_at", "state_changed_at")})
+        if adopted:
+            self._control_finish_locked(active, "succeeded", "start_effect_present")
+        else:
+            self._control_finish_locked(
+                active, "failed",
+                "start_effect_absent" if effect == "absent" else "start_effect_foreign")
         return True
 
     def _control_resolve_stale_start(self) -> bool:
-        """Housekeeping: end an uncertain or abandoned client start nothing remains of,
-        without holding the Gateway lock across the streamer read."""
+        """Housekeeping: end an uncertain or abandoned client start once the streamer proves
+        what it left, without holding the Gateway lock across the streamer read."""
         with self.lock:
             stale = self._control_stale_start_locked()
-        if stale is None or stale[2] > 0 or not self._control_start_effect_absent(stale[1]):
+        if stale is None or stale[2] > 0:
             return False
+        effect = self._control_start_effect(stale[1])
         with self.lock:
-            return self._control_resolve_stale_start_locked(stale[0])
+            return self._control_resolve_stale_start_locked(stale[0], effect)
 
     def _control_flush_abandons(self) -> None:
         """Send the abandon requests queued under the lock, outside it."""
@@ -5583,8 +5602,8 @@ class GatewayState:
             # An app-id sample cannot fence a permit holder whose direct effect may
             # still be delayed.  Only the exact holder's durable terminal write (or
             # a host-owned child cleanup retry below) may release this barrier - or,
-            # for a client start, the streamer's proof after the grace that it left
-            # neither a transport nor a running app (`_control_resolve_stale_start`).
+            # for a client start, the streamer's proof after the grace of what it left
+            # (`_control_resolve_stale_start`).
             del observed_app_id
             return HTTPStatus.CONFLICT, {**self._control_result(active),
                                          "reason": "terminal_owner_required"}

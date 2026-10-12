@@ -1377,9 +1377,14 @@ class ControlOperationTest(unittest.TestCase):
     def test_stale_start_is_kept_without_grace_or_proof(self):
         cases = {
             "in_grace": (False, lambda: self.observe_partial_scan(app_running=False)),
-            "app_running": (True, lambda: self.observe_partial_scan(app_running=True)),
-            "transport_live": (True, lambda: self.observe_partial_scan(
-                connected_count=1, app_running=False)),
+            "own_effect_in_grace": (False, self.observe_paused_app),
+            "foreign_effect_in_grace": (False, lambda: self.observe_streamer((9,))),
+            # The session count names a client the list lacks: not authoritative.
+            "snapshot_incoherent": (True, lambda: setattr(
+                self.state, "proxy", lambda name, path, **_k: (True, {
+                    **control_evidence(1, app_running=True), "clients": [],
+                    "apps": [{"app_id": 7, "running": True}]})
+                if name == "vibepollo" else (False, {"error": "fixture_offline"}))),
             "snapshot_unavailable": (True, lambda: None),
         }
         for case, (aged, observe) in cases.items():
@@ -1432,7 +1437,8 @@ class ControlOperationTest(unittest.TestCase):
         self.age_holder()
         key = self.state._control_stale_start_locked()[0]
         self.complete(permit, succeeded=False)  # The holder acted during the probe.
-        self.assertFalse(self.state._control_resolve_stale_start_locked(key))
+        self.assertFalse(self.state._control_resolve_stale_start_locked(key, "absent"))
+        self.assertFalse(self.state._control_resolve_stale_start_locked(key, "present"))
         self.assertEqual("uncertain", self.state.control_state["active"]["state"])
 
     def test_host_owned_and_stop_operations_are_never_stale_starts(self):
@@ -1471,6 +1477,221 @@ class ControlOperationTest(unittest.TestCase):
         self.assertIsNone(restarted.control_state["active"])
         self.assertEqual("failed",
                          restarted.control_state["completed"]["before-restart"]["state"])
+
+    # --- lab fix: a start whose own effect is on the streamer is adopted, not kept --------
+
+    def adopted_start(self, operation_id="client-died"):
+        """The client died after its launch reached the streamer: the application runs,
+        nobody is connected, the permit was never completed."""
+        _status, permit = self.acquire(self.request(operation_id))
+        self.observe_paused_app()
+        self.age_holder(wakeplay_gateway.CONTROL_START_SILENT_GRACE_SECONDS + 1)
+        with patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
+            self.assertTrue(self.state._control_resolve_stale_start())
+        return permit, record
+
+    def test_stale_start_with_its_own_effect_is_adopted_as_the_holders_stream(self):
+        permit, record = self.adopted_start()
+        self.assertEqual(
+            [("control-start-auto-adopted", "WARN"), ("control-operation-terminal",)],
+            [call.args for call in record.call_args_list])
+        adopted = record.call_args_list[0].kwargs
+        self.assertEqual(("client-died", "permitted", "none", "present", "parent"), (
+            adopted["operation_id"], adopted["state"], adopted["reason"],
+            adopted["effect"], adopted["actor_profile_id"]))
+        receipt = self.state.control_state["completed"]["client-died"]
+        self.assertEqual(("succeeded", "start_effect_present"),
+                         (receipt["state"], receipt["reason"]))
+        self.assertIsNone(self.state.control_state["active"])
+        record_left = dict(self.state.control_state["stream"])
+        self.assertGreater(record_left["stream_started_unix_ms"], 0)
+        # The holder's late terminal write, either way, reads the receipt and changes nothing.
+        for succeeded in (True, False):
+            status, late = self.complete(permit, succeeded=succeeded)
+            self.assertEqual((200, True, "succeeded", "start_effect_present",
+                              permit["generation"]),
+                             (status, late["ok"], late["state"], late["reason"],
+                              late["generation"]))
+            self.assertEqual(record_left, self.state.control_state["stream"])
+        # The record is the one the holder's own complete(true) leaves.
+        self.state.control_state.update({"active": None, "stream": None, "completed": {}})
+        _status, plain = self.acquire(self.request("client-died"))
+        self.complete(plain)
+        self.assertEqual(
+            {**self.state.control_state["stream"], "generation": permit["generation"],
+             "actor_lease_epoch": permit["actor_lease_epoch"],
+             "stream_started_unix_ms": record_left["stream_started_unix_ms"]}, record_left)
+
+    def test_owner_connects_to_the_adopted_stream_and_others_are_refused_as_before(self):
+        permit, _record = self.adopted_start()
+        # Another TV meets a managed stream, as for any retained one.
+        other = dict(self.client, id="tv-2")
+        self.state.authorize_profile(other, "parent")
+        body = self.request("other-play", session="stream-9", observed_app_id=7)
+        status, refused = self.state.control_operation_acquire(other, body, "other-play", 0)
+        self.assertEqual((409, "managed_stream_conflict"), (status, refused["reason"]))
+        # The owner's next Play resumes it on a new transport (rebind) and may close it.
+        with patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
+            status, resume = self.acquire(self.request(
+                "next-play", "resume", session="stream-2"), 0)
+        self.assertEqual((200, "permitted"), (status, resume["state"]), resume)
+        self.assertIn("control-stream-transport-rebound",
+                      [call.args[0] for call in record.call_args_list])
+        self.assertEqual(200, self.complete(resume)[0])
+        stream = self.state.control_state["stream"]
+        self.assertEqual(("stream-2", resume["generation"]),
+                         (stream["stream_session_id"], stream["generation"]))
+        self.assertGreater(resume["generation"], permit["generation"])
+
+    def test_next_play_adopts_the_stale_start_within_its_acquire(self):
+        permit = self.uncertain_start()
+        self.observe_paused_app()
+        with patch.object(wakeplay_gateway, "CONTROL_START_REPORTED_GRACE_SECONDS", 0.2):
+            # Before the grace is over nothing changes, whatever the streamer shows.
+            self.assertFalse(self.state._control_resolve_stale_start())
+            self.assertEqual("uncertain", self.state.control_state["active"]["state"])
+            status, resume = self.acquire(self.request(
+                "next-play", "resume", session="stream-2"))
+        self.assertEqual((200, "permitted"), (status, resume["state"]), resume)
+        self.assertEqual("succeeded",
+                         self.state.control_state["completed"]["stale-launch"]["state"])
+        self.assertGreater(resume["generation"], permit["generation"])
+
+    def test_stale_start_beside_a_foreign_effect_fails_and_records_nothing(self):
+        other = "89abcdef-0123-4567-89ab-cdef01234567"
+        cases = {"foreign_app": ((9,), ()), "foreign_app_beside_own": ((7, 9), ()),
+                 "foreign_client": ((7,), (other,)),
+                 "foreign_client_beside_own": ((7,), (VIBE_UUID, other)),
+                 "transport_without_app": ((), (VIBE_UUID,))}
+        for case, (apps, clients) in cases.items():
+            with self.subTest(case=case):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                operation_id = "stale-" + case.replace("_", "-")
+                _status, permit = self.acquire(self.request(operation_id))
+                self.observe_streamer(apps, clients)
+                self.assertFalse(self.state._control_resolve_stale_start())  # In grace.
+                self.age_holder(wakeplay_gateway.CONTROL_START_SILENT_GRACE_SECONDS + 1)
+                with patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
+                    self.assertTrue(self.state._control_resolve_stale_start())
+                self.assertEqual(("control-start-auto-resolved", "foreign"), (
+                    record.call_args_list[0].args[0],
+                    record.call_args_list[0].kwargs["effect"]))
+                receipt = self.state.control_state["completed"][operation_id]
+                self.assertEqual(("failed", "start_effect_foreign"),
+                                 (receipt["state"], receipt["reason"]))
+                self.assertEqual((None, None), (self.state.control_state["active"],
+                                                self.state.control_state["stream"]))
+                # A late success is not accepted: what runs is not this holder's.
+                status, late = self.complete(permit)
+                self.assertEqual((200, False, "failed", "start_effect_foreign"),
+                                 (status, late["ok"], late["state"], late["reason"]))
+                self.assertIsNone(self.state.control_state["stream"])
+                status, close = self.acquire(self.request(
+                    "close-" + case.replace("_", "-"), "full_quit",
+                    expected_generation=permit["generation"]), 0)
+                self.assertEqual((409, "managed_stream_unavailable"),
+                                 (status, close["reason"]))
+
+    def test_restarted_gateway_adopts_the_persisted_start_after_its_grace(self):
+        _status, permit = self.acquire(self.request("before-restart"))
+        restarted = GatewayState(self.config_path, None)
+        active = restarted.control_state["active"]
+        self.assertEqual("gateway_restarted_before_terminal_result", active["reason"])
+        self.state = restarted
+        self.client = restarted.client_for_token("token")
+        self.observe_paused_app()
+        self.assertIsNone(restarted.child_time_housekeeping_tick())  # Grace runs anew.
+        self.assertEqual("before-restart", restarted.control_state["active"]["operation_id"])
+        active["holder_monotonic"] -= wakeplay_gateway.CONTROL_START_SILENT_GRACE_SECONDS + 1
+        self.assertIsNone(restarted.child_time_housekeeping_tick())
+        self.assertIsNone(restarted.control_state["active"])
+        stream = restarted.control_state["stream"]
+        self.assertEqual(("tv", "parent", "stream-1", 7, permit["generation"]), (
+            stream["client_id"], stream["actor_profile_id"], stream["stream_session_id"],
+            stream["sunshine_app_id"], stream["generation"]))
+        status, resume = self.acquire(self.request(
+            "next-play", "resume", session="stream-2"), 0)
+        self.assertEqual((200, "permitted"), (status, resume["state"]), resume)
+
+    def test_unused_adopted_stream_is_retired_by_the_idle_reconcile(self):
+        permit, _record = self.adopted_start()
+        # While the streamer keeps the application the record stays the handle of it.
+        self.assertIsNone(self.state.child_time_housekeeping_tick())
+        self.assertEqual(permit["generation"], self.state.control_state["stream"]["generation"])
+        self.observe_partial_scan(app_running=False, scan="complete", process="ABSENT")
+        self.assertIsNone(self.state.child_time_housekeeping_tick())
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertEqual(permit["generation"],
+                         self.state.control_state["idle_stream"]["generation"])
+        status, play = self.acquire(self.request("next-play", session="stream-2"), 0)
+        self.assertEqual((200, "permitted"), (status, play["state"]), play)
+
+    def test_unused_adopted_stream_abandons_its_game_start_when_it_ends(self):
+        permit, _record = self.adopted_start()
+        self.observe_launch("starting")
+        calls = self.record_abandons()
+        self.assertIsNone(self.state.child_time_housekeeping_tick())
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assert_abandoned(calls, permit["generation"] + 1)
+
+    def test_adopted_child_start_leaves_the_record_its_own_complete_would(self):
+        child_session_id = "01234567-89ab-cdef-0123-456789abcdef"
+        self.state.config["profiles"]["kid"] = {
+            "id": "kid", "kind": "child", "name": "Kid", "enabled": True,
+            "parent_profile_id": "parent"}
+        self.client["profile_grants"]["kid"] = ["use_profile"]
+        session = {"session_id": child_session_id, "client_id": "tv",
+                   "actor_profile_id": "kid", "execution_profile_id": "parent"}
+
+        def child_start(operation_id):
+            self.state.child_time_session = session
+            self.state.authorize_child_profile(self.client, "kid")
+            body = {**self.request(operation_id), "child_session_id": child_session_id}
+            status, permit = self.state.control_operation_acquire(
+                self.client, body, operation_id, 0)
+            self.assertEqual(200, status, permit)
+            return permit
+
+        for case in ("session_live", "session_ended"):
+            with self.subTest(case=case):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                permit = child_start("kid-" + case.replace("_", "-"))
+                self.observe_paused_app()
+                self.age_holder(wakeplay_gateway.CONTROL_START_SILENT_GRACE_SECONDS + 1)
+                if case == "session_ended":
+                    self.state.child_time_session = None
+                self.assertTrue(self.state._control_resolve_stale_start())
+                adopted = dict(self.state.control_state["stream"])
+                self.assertEqual(("kid", "parent", child_session_id), (
+                    adopted["actor_profile_id"], adopted["execution_profile_id"],
+                    adopted["child_session_id"]))
+                # Exactly what the child's own complete(true) leaves in the same situation.
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                plain = child_start("kid-plain-" + case.replace("_", "-"))
+                if case == "session_ended":
+                    self.state.child_time_session = None
+                self.state.authorize_child_profile(self.client, "kid")
+                self.assertEqual(200, self.state.control_operation_complete(self.client, {
+                    "operation_id": plain["operation_id"],
+                    "generation": plain["generation"],
+                    "actor_lease_epoch": plain["actor_lease_epoch"],
+                    "succeeded": True}, plain["operation_id"])[0])
+                ordinary = self.state.control_state["stream"]
+                self.assertEqual(
+                    {**ordinary, "generation": permit["generation"],
+                     "actor_lease_epoch": permit["actor_lease_epoch"],
+                     "stream_session_id": adopted["stream_session_id"],
+                     "stream_started_unix_ms": adopted["stream_started_unix_ms"]}, adopted)
+        # Adoption grants the child nothing: without a live session it still may only close.
+        self.state.authorize_child_profile(self.client, "kid")
+        body = {**self.request("kid-again", "resume", session="stream-2"),
+                "child_session_id": child_session_id}
+        status, refused = self.state.control_operation_acquire(
+            self.client, body, "kid-again", 0)
+        self.assertEqual((409, "child_session_unmanaged"), (status, refused["reason"]))
 
     # --- D-1: an ended stream abandons its game start ------------------------------------
 

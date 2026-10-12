@@ -49,7 +49,9 @@ public class SessionFailureControlRejectionTest {
         String game = source("Game.java");
         String failed = game.substring(game.indexOf("private void stageFailed("),
                 game.indexOf("private static int streamStageCode("));
-        int pending = failed.indexOf("rejection == SessionFailure.CONTROL_OPERATION_PENDING");
+        int pending = failed.indexOf("rejection != null && rejection.offersHardTerminate()");
+        assertTrue(SessionFailure.CONTROL_OPERATION_PENDING.offersHardTerminate());
+        assertTrue(!SessionFailure.CONTROL_REJECTED.offersHardTerminate());
         assertTrue(pending > 0);
         assertTrue(failed.indexOf("R.string.console_hard_terminate_session", pending) > 0);
         assertTrue(failed.indexOf("ConsoleActivity.offerHardTerminate(hostId)", pending) > 0);

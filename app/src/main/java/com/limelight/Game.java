@@ -227,6 +227,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private final WholeSessionTermination.Owner wholeSessionTermination =
             new WholeSessionTermination.Owner();
     private final AtomicBoolean freshOwnedFailureCleanupInFlight = new AtomicBoolean();
+    // The Gateway refused this Game's start at its acquire: nothing of it is on the host.
+    private volatile boolean hostRefusedStart;
     private final AtomicBoolean childEndSent = new AtomicBoolean();
     private String childSessionId = "";
     private String childActorProfileId = "";
@@ -4933,7 +4935,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
-    public void controlRejected(String stage, String reason) {
+    public void controlRejected(String stage, String reason, boolean nothingStarted) {
+        // Before the failure is handled: no host session is closed for a start the host
+        // refused, and the error stays on screen until the user answers it.
+        hostRefusedStart = nothingStarted;
         stageFailed(stage, 0, 0, SessionFailure.fromControlRejection(reason),
                 SessionFailure.safeDetail(reason));
     }
@@ -4998,7 +5003,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         dialogText += "\n\n" + getResources().getString(R.string.nettest_text_blocked);
                     }
 
-                    if (rejection == SessionFailure.CONTROL_OPERATION_PENDING) {
+                    if (rejection != null && rejection.offersHardTerminate()) {
                         // The host panel's hard close, one step from this error.
                         String hostId = getIntent().getStringExtra(EXTRA_PC_UUID);
                         ConsoleConfirmDialog.show(Game.this,
@@ -5964,12 +5969,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return startsProviderGame && !streamEverRevealed;
     }
 
+    /**
+     * A failed fresh neutral start closes the host session it began. A start the host refused
+     * ({@code hostRefusedStart}) began none: closing would act without a control generation,
+     * be rejected and report a session left on the host that this attempt never started.
+     */
     static boolean shouldTerminateFreshOwnedSunshineSession(
             boolean ownsFreshSession, boolean neutralTarget,
             LaunchTransitionType type, boolean startsProviderGame,
-            boolean streamEverRevealed, boolean retainedSession) {
+            boolean streamEverRevealed, boolean retainedSession, boolean hostRefusedStart) {
         return ownsFreshSession && neutralTarget && type == LaunchTransitionType.GAME
-                && startsProviderGame && !streamEverRevealed && !retainedSession;
+                && startsProviderGame && !streamEverRevealed && !retainedSession
+                && !hostRefusedStart;
     }
 
     static boolean shouldHonorExternalSwitchCancellation(
@@ -5988,7 +5999,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 getIntent().getBooleanExtra(EXTRA_NEUTRAL_STREAM_TARGET, false),
                 transitionSpec == null ? null : transitionSpec.type,
                 transitionCoordinator.startsProviderGame(), streamEverRevealed,
-                retainedSwitch != null || hasOwnRetainedSession());
+                retainedSwitch != null || hasOwnRetainedSession(), hostRefusedStart);
         logLaunchMilestone(milestone);
         if (ownsFreshSession) {
             if (freshOwnedFailureCleanupInFlight.compareAndSet(false, true)) {

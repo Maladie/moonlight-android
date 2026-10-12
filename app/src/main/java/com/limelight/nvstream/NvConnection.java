@@ -58,6 +58,8 @@ public class NvConnection implements StreamInput {
     private volatile boolean startAbandoned;
     // Written and read on the start thread only.
     private boolean startReleased;
+    // The Gateway refused this start's acquire: no permit, no effect sent.
+    private boolean startRefused;
     private final NativeStartGate startGate = new NativeStartGate(connectionAllowed);
 
     public static final class ControlBinding {
@@ -401,6 +403,7 @@ public class NvConnection implements StreamInput {
         } catch (GatewayTransport.GatewayException rejected) {
             // A received Gateway rejection is authoritative. Reconciliation is
             // only for an unknown outcome after transport loss.
+            startRefused = true;
             throw rejected;
         } catch (IOException unavailable) {
             ControlOperationClient.Result reconciled = null;
@@ -586,10 +589,11 @@ public class NvConnection implements StreamInput {
                     return;
                 } catch (XmlPullParserException | IOException e) {
                     e.printStackTrace();
-                    if (e instanceof GatewayTransport.GatewayException
-                            && ((GatewayTransport.GatewayException) e).statusCode() == 409) {
+                    if (e instanceof GatewayTransport.GatewayException && (startRefused
+                            || ((GatewayTransport.GatewayException) e).statusCode() == 409)) {
                         String reason = ((GatewayTransport.GatewayException) e).reason();
-                        context.connListener.controlRejected(appName, reason == null ? "" : reason);
+                        context.connListener.controlRejected(
+                                appName, reason == null ? "" : reason, startRefused);
                         return;
                     }
                     context.connListener.displayMessage(e.getMessage());

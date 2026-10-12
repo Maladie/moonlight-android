@@ -713,10 +713,11 @@ public final class StreamRuntime implements NvConnectionListener,
         lostWithoutPresentation("stage_failed");
     }
 
-    @Override public void controlRejected(String stage, String reason) {
+    @Override public void controlRejected(String stage, String reason,
+                                          boolean nothingStarted) {
         Presentation p = attached();
         if (p != null) {
-            p.controlRejected(stage, reason);
+            p.controlRejected(stage, reason, nothingStarted);
             return;
         }
         lostWithoutPresentation("stage_failed");

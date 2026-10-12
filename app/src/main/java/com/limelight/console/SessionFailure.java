@@ -140,7 +140,12 @@ public enum SessionFailure {
         this.details = details;
     }
 
-    /** Maps the Gateway reason of an HTTP 409 control-operation response to its failure. */
+    /** The stream error screen offers the host panel's hard close next to this failure. */
+    public boolean offersHardTerminate() {
+        return this == CONTROL_OPERATION_PENDING;
+    }
+
+    /** Maps the Gateway reason of a refused control operation to its failure. */
     public static SessionFailure fromControlRejection(String reason) {
         String value = reason == null ? "" : reason;
         switch (value) {
