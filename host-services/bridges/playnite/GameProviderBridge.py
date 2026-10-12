@@ -5820,7 +5820,13 @@ class GameProviderHandler(BaseHTTPRequestHandler):
         try:
             target = urllib.parse.urlsplit(self.path)
             query = urllib.parse.parse_qs(target.query)
-            if target.path == "/library/list":
+            if target.path == "/health":
+                # Process identity for the hot updater's post-swap check. Provider state
+                # stays in /observation.
+                self.send_json(HTTPStatus.OK, {
+                    "ok": True, "component": "game-provider", "pid": os.getpid(),
+                    "profile_id": self.state.profile_id})
+            elif target.path == "/library/list":
                 cursor = query.get("cursor", ["0"])[0] or "0"
                 limit = int(query.get("limit", ["50"])[0])
                 self.send_json(HTTPStatus.OK, self.state.library_page(cursor, limit))

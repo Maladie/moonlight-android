@@ -1080,6 +1080,22 @@ class StartReadinessTest(unittest.TestCase):
                                              response["accepted"]))
         self.assertEqual({"state": "idle"}, self.state.current)
 
+    def test_gateway_stream_idle_abandon_is_rejected_after_a_newer_operation(self):
+        # The Gateway binds an ended stream's abandon as `stream-idle-N`, one generation
+        # above the start it ends. A Play permitted after it reaches the Bridge first.
+        binding = {"operation_id": "stream-idle-10", "generation": 10,
+                   "actor_lease_epoch": 4, "effect_sequence": 0,
+                   "actor_profile_id": "parent", "execution_profile_id": "parent",
+                   "stream_session_id": "stream-1"}
+        self.state.authorize_control_effect({
+            **binding, "operation_id": "next-play", "generation": 11,
+            "actor_lease_epoch": 5, "stream_session_id": "stream-2"})
+        status, response = self.post("/game/abandon-start",
+                                     {"game_id": "steam:1", "control_operation": binding})
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status)
+        self.assertIn("Stale", response["error"])
+        self.assertEqual("starting", self.state.current["state"])
+
     def fail_a_then_start_b(self):
         self.now += GAME_START_TIMEOUT
         self.no_window()

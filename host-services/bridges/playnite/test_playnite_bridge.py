@@ -4692,7 +4692,7 @@ class ProviderDiagnosticsTest(unittest.TestCase):
                            encoding="utf-8").splitlines()]
             self.assertTrue(all("request_id" not in entry for entry in entries))
 
-    def test_observation_replaces_removed_health_endpoint(self):
+    def test_health_is_process_identity_and_observation_carries_provider_state(self):
         state = BridgeState(profile_id="living-room")
         handler = object.__new__(GameProviderHandler)
         handler.server = SimpleNamespace(state=state)
@@ -4702,7 +4702,10 @@ class ProviderDiagnosticsTest(unittest.TestCase):
 
         handler.path = "/health"
         handler.do_GET()
-        self.assertEqual(HTTPStatus.NOT_FOUND, handler.send_json.call_args.args[0])
+        self.assertEqual(
+            (HTTPStatus.OK, {"ok": True, "component": "game-provider",
+                             "pid": os.getpid(), "profile_id": "living-room"}),
+            handler.send_json.call_args.args)
 
         handler.path = "/observation"
         handler.do_GET()

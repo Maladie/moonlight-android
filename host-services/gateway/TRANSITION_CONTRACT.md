@@ -83,3 +83,17 @@ The current host services do not implement this host privacy window. Consequentl
 the Android layer masks all normal client-driven transitions, but cannot promise
 to conceal a frame that was already captured before notification of an
 unexpected process crash.
+
+## Client start that never reports its result
+
+A control permit is released by its holder's terminal write. The one host-side exception
+is a client start (not `reauthorize`, not a stop or provider transition): once the holder
+has been silent for 60 s after the permit, or 15 s after its own uncertain report
+(`complete` with `succeeded=false`; every repeat restarts the 15 s), the Gateway ends it as
+`failed/start_effect_absent`, but only on the streamer's fresh proof that neither a
+transport nor a running application is left. Without that proof the permit stays. An
+`acquire` of the next start waits out a grace that ends within its request, leaving 10 s
+for the proof; closes are answered at once. If the released holder then reports
+`succeeded=true` and nothing has been granted since (same generation, no active permit, no
+stream record), the start is accepted as succeeded and its stream is recorded; after any
+newer grant the `failed` receipt stands and the Gateway logs `control-start-late-effect`.

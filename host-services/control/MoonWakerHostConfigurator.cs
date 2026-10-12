@@ -17,9 +17,9 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("0.7.132.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.7.132.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.7.132+2026.10.08-reveal-launcher")]
+[assembly: System.Reflection.AssemblyVersion("0.7.133.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.7.133.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.7.133+2026.10.12-start-recovery")]
 
 namespace MoonWaker.HostConfigurator
 {

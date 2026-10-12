@@ -1597,17 +1597,57 @@ $mutex = [Threading.Mutex]::new($true, $mutexName, [ref]$createdNew)
 if (-not $createdNew) { Write-BridgeLog "Another bridge instance is already running" "WARN"; exit 0 }
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $script:ListenPort)
 $running = $true
-try {
+# Every game start needs the MoonWaker Stream application, and Vibepollo's API may not answer
+# yet when the Bridge starts. Ensure it again every 30 s until it exists: often enough to be
+# ready before the first Play, rare enough that an offline API (each attempt blocks this
+# single-threaded listener for one API timeout) does not starve /health. A name/UUID conflict
+# lasts until the user removes or renames the foreign application, so it is retried rarely.
+$script:StreamEnsureIntervalSeconds = 30
+$script:StreamEnsureConflictIntervalSeconds = 300
+$script:StreamEnsured = $false
+$script:StreamEnsureNextAttempt = [DateTime]::MinValue
+$script:StreamEnsureLastError = ""
+function Update-MoonWakerStreamTarget {
+    if ($script:StreamEnsured -or [DateTime]::UtcNow -lt $script:StreamEnsureNextAttempt) { return }
+    $script:StreamEnsureNextAttempt = [DateTime]::UtcNow.AddSeconds($script:StreamEnsureIntervalSeconds)
     try {
         $ensuredStream = Ensure-MoonWakerStream
+        $script:StreamEnsured = $true
         Write-BridgeLog "MoonWaker Stream target ready: $($ensuredStream.uuid)"
     }
     catch {
-        Write-BridgeLog "MoonWaker Stream target was not changed: $($_.Exception.Message)" "WARN"
+        $message = [string]$_.Exception.Message
+        # A foreign or hand-edited application holds the reserved name/UUID. It is never
+        # overwritten; games cannot start until the user removes or renames it.
+        $conflict = $message -match 'already use|Multiple managed|manual commands or hooks'
+        if ($conflict) {
+            $script:StreamEnsureNextAttempt = [DateTime]::UtcNow.AddSeconds($script:StreamEnsureConflictIntervalSeconds)
+        }
+        # Log a failure once, not on every retry.
+        if ($message -eq $script:StreamEnsureLastError) { return }
+        $script:StreamEnsureLastError = $message
+        if ($conflict) {
+            Write-BridgeLog "MoonWaker Stream target CONFLICT, application left untouched, game starts are blocked; retrying every $($script:StreamEnsureConflictIntervalSeconds) s: $message" "ERROR"
+        }
+        else {
+            Write-BridgeLog "MoonWaker Stream target not ready; retrying every $($script:StreamEnsureIntervalSeconds) s: $message" "WARN"
+        }
     }
+}
+try {
+    Update-MoonWakerStreamTarget
     $listener.Start()
     Write-BridgeLog "Vibepollo Bridge started on http://127.0.0.1:$script:ListenPort; API=$script:BaseUrl"
     while ($running) {
+        if (-not $script:StreamEnsured -and -not $listener.Pending()) {
+            Update-MoonWakerStreamTarget
+            if (-not $script:StreamEnsured) {
+                # Block until the next attempt is due or a request arrives; no busy polling.
+                $waitSeconds = [Math]::Max(0.05, ($script:StreamEnsureNextAttempt - [DateTime]::UtcNow).TotalSeconds)
+                [void]$listener.Server.Poll([int]($waitSeconds * 1000000), [Net.Sockets.SelectMode]::SelectRead)
+            }
+            continue
+        }
         $client = $listener.AcceptTcpClient()
         try {
             $request = Read-HttpRequest $client
