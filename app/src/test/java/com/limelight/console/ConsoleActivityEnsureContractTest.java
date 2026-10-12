@@ -377,6 +377,31 @@ public class ConsoleActivityEnsureContractTest {
                 "refreshSessionProjection(host, intent.profileKey, accepted ->"));
         assertTrue(orchestration.contains("console_session_uncertain_title"));
         assertTrue(orchestration.contains("@Override public void sessionFailed("));
+        // A host that does not answer is woken by the table's own step under the visible
+        // waking status, with the existing bounded wake; the refresh itself never wakes.
+        String wake = orchestration.substring(orchestration.indexOf(
+                        "@Override public SessionFailure awaitHost("),
+                orchestration.indexOf("@Override public SessionSnapshot resolve(String hostId)"));
+        assertTrue(orchestration.contains("@Override public boolean isHostOnline(String hostId)"));
+        assertTrue(wake.contains("HostReadiness.await("));
+        assertTrue(wake.contains("getString(R.string.console_status_waking)"));
+        assertTrue(wake.contains("streamLoadingView.setStep(1, message)"));
+        // No wake address: no empty WoL, the wait stays. A host this client put to sleep is
+        // woken while its polls still call it online. The Gateway is awaited after the port.
+        assertTrue(wake.contains(
+                "ConsoleHostPresentation.hasWakeAddress(host) ? host : null, cancelled,"));
+        assertTrue(wake.indexOf("HostReadiness.awaitDown(current, cancelled)")
+                < wake.indexOf("HostReadiness.await("));
+        assertTrue(wake.indexOf("HostReadiness.await(")
+                < wake.indexOf("if (!ConsoleActionCatalog.isPaired(ready)) return null;"));
+        assertTrue(wake.indexOf("if (!ConsoleActionCatalog.isPaired(ready)) return null;")
+                < wake.indexOf("getString(R.string.transition_waiting_gateway)"));
+        assertTrue(wake.indexOf("getString(R.string.transition_waiting_gateway)")
+                < wake.indexOf("hostLaunchPreflight.awaitGateway("));
+        assertTrue(wake.contains("? null : SessionFailure.HOST_GATEWAY_TIMEOUT"));
+        assertTrue(wake.contains("new SessionEvent.HostSleepCleared(host.uuid)"));
+        assertFalse(wake.contains("WakeOnLanSender"));
+        assertFalse(resolver.contains("HostReadiness"));
         assertTrue(resolver.contains("invalidateSessionProjectionRequest(host.uuid)"));
         assertTrue(resolver.contains("completion.accept(false)"));
         // No exit before the poll starts may strand a waiting completion (endless loader).
@@ -545,6 +570,42 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(status.indexOf("ConsoleHostPresentation.State.ACTIVE_SESSION")
                 < status.indexOf("warmUpStatus == WARM_UP_ERROR"));
         assertTrue(status.contains("if (localWarmUp && preparingHost)"));
+        // A sleep this client requested is shown at once, before every session status but
+        // that of a live session or a game being closed.
+        assertTrue(source.contains("return snapshot.hostSleepRequested "
+                + "&& !snapshot.hasActiveSession()"));
+        assertTrue(source.contains("                && !snapshot.endingGame;"));
+        assertFalse(source.contains("if (snapshot.hostSleepRequested) {"));
+        assertFalse(source.contains("|| session.hostSleepRequested"));
+        assertTrue(status.indexOf("if (showsHostSleep(snapshot)) {")
+                < status.indexOf("sessionSubscriber.warmUpStatus("));
+        assertTrue(status.indexOf("R.string.console_status_suspending_short")
+                < status.indexOf("closingStatus(snapshot)"));
+        String dot = source.substring(source.indexOf(
+                "private ConsoleHostPresentation.State consoleHostState("),
+                source.indexOf("private ConsoleHostPresentation.Profile consoleProfile("));
+        assertTrue(dot.indexOf("if (showsHostSleep(snapshot)) {")
+                < dot.indexOf("SessionSnapshot.State.TERMINATING"));
+        // A saved session on an online host is named from its record (stable between host
+        // polls), after every warm-up status and instead of a bare "Online".
+        assertTrue(status.contains(
+                "ConsoleHostPresentation.holdsPausedSession(state, snapshot)"));
+        assertTrue(status.indexOf("warmUpStatus == WARM_UP_ERROR")
+                < status.indexOf("ConsoleHostPresentation.holdsPausedSession("));
+        assertTrue(status.indexOf("ConsoleHostPresentation.holdsPausedSession(")
+                < status.indexOf("return getString(ConsoleHostPresentation.status(state));"));
+        assertTrue(status.contains("sessionModel.records().pending"));
+        assertTrue(status.contains("R.string.console_status_paused_stream"));
+        // The status renders on the UI thread: the paused name reads no app list.
+        String paused = status.substring(status.indexOf("private String pausedSessionName("),
+                status.indexOf("private String closingStatus("));
+        assertFalse(paused.contains("findAppName"));
+        assertFalse(paused.contains("loadApps"));
+        assertTrue(status.contains("getString(R.string.console_status_suspended_game, name)"));
+        assertTrue(english.contains(
+                "name=\"console_status_paused_stream\">Paused stream<"));
+        assertTrue(polish.contains(
+                "name=\"console_status_paused_stream\">Wstrzymany stream<"));
         assertFalse(status.contains("&& warmUpStatus == WARM_UP_PREPARING) {\n"
                 + "            return getString(R.string.console_warm_up_preparing);"));
         int preflight = worker.indexOf("hostLaunchPreflight.run(");

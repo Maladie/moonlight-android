@@ -164,6 +164,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.security.cert.X509Certificate;
 
 /** TV-first dashboard adapted from Wake & Play and backed by Moonlight's internal APIs. */
@@ -2464,7 +2465,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         // OK frames the tile at once; a host not polled yet decides here when its poll answers.
         if (hostStateController.state(host) == ConsoleHostPresentation.State.CHECKING) {
             hostEntryAttempt.awaitPoll(uuid);
-        } else if (host.pairState != PairingManager.PairState.PAIRED) {
+        } else if (!ConsoleActionCatalog.isRememberedPaired(host)) {
             hostEntryAttempt.cancel();
             pairHost(host);
         } else {
@@ -3650,7 +3651,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         if (sessionOrchestrator != null
-                && ConsoleActionCatalog.canPrepareHost(host)
+                && ConsoleActionCatalog.isRememberedPaired(host)
                 && HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid)) {
             if (managerBinder == null) {
                 pendingHostPreparation = host.uuid;
@@ -4670,6 +4671,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 hostId, executionProfileId(hostId, actorProfileId));
     }
     private String hostStatus(ComputerDetails host, SessionSnapshot snapshot) {
+        // A sleep this client requested is known at once and names the whole host, unless a
+        // live session or a game being closed still has its own status to show.
+        if (showsHostSleep(snapshot)) {
+            if (host.state != ComputerDetails.State.ONLINE) {
+                return getString(R.string.console_status_asleep);
+            }
+            if (!snapshot.hostSleepObserved) {
+                return getString(R.string.console_status_suspending_short);
+            }
+        }
         int warmUp = sessionSubscriber.warmUpStatus(host.uuid, snapshot.neutralStreamTarget);
         if (warmUp != 0) return getString(warmUp);
         String closing = closingStatus(snapshot);
@@ -4687,14 +4698,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return getString(R.string.console_status_suspending_game, title);
             }
             return getString(R.string.console_status_suspended_game, title);
-        }
-        if (snapshot.hostSleepRequested) {
-            if (host.state != ComputerDetails.State.ONLINE) {
-                return getString(R.string.console_status_asleep);
-            }
-            if (!snapshot.hostSleepObserved) {
-                return getString(R.string.console_status_suspending_short);
-            }
         }
         ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
         if (state == ConsoleHostPresentation.State.ACTIVE_SESSION) {
@@ -4722,7 +4725,32 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (localWarmUp && warmUpStatus == WARM_UP_ERROR) {
             return getString(R.string.console_warm_up_error);
         }
+        if (ConsoleHostPresentation.holdsPausedSession(state, snapshot)) {
+            String name = pausedSessionName(host, snapshot);
+            return name == null ? getString(R.string.console_status_paused_stream)
+                    : getString(R.string.console_status_suspended_game, name);
+        }
         return getString(ConsoleHostPresentation.status(state));
+    }
+
+    /**
+     * The game a saved session carries, named from its record: stable between host polls,
+     * unlike the observed game id. Null when the record names no known game. Runs on every
+     * status render, so it reads only what is already in memory.
+     */
+    private String pausedSessionName(ComputerDetails host, SessionSnapshot snapshot) {
+        SessionResumeManager.PendingSession pending = sessionModel.records().pending;
+        String gameId = pending != null && pending.hostUuid.equalsIgnoreCase(host.uuid)
+                && pending.executionProfileId.equals(snapshot.executionProfileId)
+                ? pending.playniteGameId : "";
+        if (!gameId.isEmpty()) {
+            for (PlayniteDashboardItem item : unfilteredPlayniteItems) {
+                if (gameId.equals(SessionSnapshot.normalize(item.stableId()))) {
+                    return item.game.name;
+                }
+            }
+        }
+        return null;
     }
 
     /** What a local close or game stop in flight shows, or null when none runs. */
@@ -4732,8 +4760,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? getString(R.string.console_status_closing_session) : null;
     }
 
+    private static boolean showsHostSleep(SessionSnapshot snapshot) {
+        return snapshot.hostSleepRequested && !snapshot.hasActiveSession()
+                && !snapshot.endingGame;
+    }
+
     private ConsoleHostPresentation.State consoleHostState(
             ComputerDetails host, SessionSnapshot snapshot) {
+        // Same order as hostStatus: a sleep this client requested comes first.
+        if (showsHostSleep(snapshot)) {
+            return host.state == ComputerDetails.State.ONLINE
+                    ? ConsoleHostPresentation.State.CONNECTING
+                    : ConsoleHostPresentation.State.ASLEEP;
+        }
         if (snapshot.state == SessionSnapshot.State.TERMINATING) {
             return ConsoleHostPresentation.State.CONNECTING;
         }
@@ -4747,11 +4786,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return !snapshot.suspensionSleepObserved
                     ? ConsoleHostPresentation.State.CONNECTING
                     : ConsoleHostPresentation.State.WAKING;
-        }
-        if (snapshot.hostSleepRequested) {
-            return host.state == ComputerDetails.State.ONLINE
-                    ? ConsoleHostPresentation.State.CONNECTING
-                    : ConsoleHostPresentation.State.ASLEEP;
         }
         ConsoleHostPresentation.State state = hostStateController.state(host);
         if (state == ConsoleHostPresentation.State.ACTIVE_SESSION) {
@@ -4882,7 +4916,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         facts.resumeAvailable = session.isResumeAvailable() && session.hostGameAppId != 0;
         HostGatewayClient.IntegrationProfile profile =
                 hostGatewayStore.profileSelection(host.uuid).selected;
-        String state = facts.sessionActive ? hostStatus(host, session)
+        String state = facts.sessionActive || showsHostSleep(session)
+                ? hostStatus(host, session)
                 : getString(terminating ? R.string.console_status_closing_session
                 : facts.reachable ? R.string.console_status_online
                 : R.string.console_status_offline);
@@ -11142,7 +11177,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             mainHandler.post(() -> {
                 ComputerDetails current = currentHost(hostUuid);
                 if (current == null || desktop == null
-                        || !ConsoleActionCatalog.isPaired(current)) {
+                        || !ConsoleActionCatalog.isRememberedPaired(current)) {
                     ConsoleUiFeedback.makeText(this,
                             R.string.console_launch_desktop_unavailable,
                             Toast.LENGTH_SHORT).show();
@@ -11278,7 +11313,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
         card.addView(copy, copyParams);
         card.setOnClickListener(v -> {
-            if (ConsoleActionCatalog.isPaired(host)) playSunshineApp(host, app, "");
+            if (ConsoleActionCatalog.isRememberedPaired(host)) playSunshineApp(host, app, "");
             else showAppActions(host, app, poster);
         });
         card.setOnLongClickListener(view -> {
@@ -12129,11 +12164,46 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
 
             @Override public boolean isPaired(String hostId) {
-                return ConsoleActionCatalog.isPaired(currentHost(hostId));
+                return ConsoleActionCatalog.isRememberedPaired(currentHost(hostId));
             }
 
-            @Override public boolean canPrepareHost(String hostId) {
-                return ConsoleActionCatalog.canPrepareHost(currentHost(hostId));
+            @Override public boolean isHostOnline(String hostId) {
+                return ConsoleActionCatalog.isOnline(currentHost(hostId));
+            }
+
+            @Override public SessionFailure awaitHost(
+                    PlayIntent intent, BooleanSupplier cancelled) {
+                ComputerDetails host = currentHost(intent.hostId);
+                if (host == null) return SessionFailure.HOST_WAKE_TIMEOUT;
+                String waking = getString(R.string.console_status_waking);
+                // A host without a wake address is still awaited: it can be switched on by hand.
+                // A host this client put to sleep is woken while its polls still call it online.
+                Supplier<ComputerDetails> current = () -> managerBinder != null
+                        ? managerBinder.getComputer(intent.hostId) : null;
+                Consumer<String> status = message -> mainHandler.post(() -> {
+                    if (!cancelled.getAsBoolean() && streamLoadingView != null) {
+                        streamLoadingView.setStep(1, message);
+                    }
+                });
+                HostSleepStateStore.State sleep = sessionModel.records().hostSleep(host.uuid);
+                if (sleep != null && sleep.sleepObservedAt == 0L) {
+                    // A host still going down answers its port and would end the wake at once:
+                    // let it stop answering first. One that never does is taken as awake.
+                    status.accept(getString(R.string.console_status_suspending_short));
+                    HostReadiness.awaitDown(current, cancelled);
+                }
+                ComputerDetails ready = HostReadiness.await(current,
+                        ConsoleHostPresentation.hasWakeAddress(host) ? host : null, cancelled,
+                        status, waking, waking);
+                if (ready == null) return SessionFailure.HOST_WAKE_TIMEOUT;
+                sessionModel.post(new SessionEvent.HostSleepCleared(host.uuid));
+                // Not paired on the fresh state: the table's next pass refuses it.
+                if (!ConsoleActionCatalog.isPaired(ready)) return null;
+                status.accept(getString(R.string.transition_waiting_gateway));
+                // After a cold start the Gateway comes up later than the streaming port.
+                return hostLaunchPreflight.awaitGateway(HostLaunchPreflight.Request.from(
+                        intent, HostLaunchPreflight.Action.LAUNCH), cancelled)
+                        ? null : SessionFailure.HOST_GATEWAY_TIMEOUT;
             }
 
             @Override public SessionSnapshot resolve(String hostId) {
@@ -12417,7 +12487,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                 } finally {
                     if (reconnectTermination != null) {
-                        sessionModel.post(SessionEvent.DirectTerminationCompleted.completed(
+                        // Awaited: the resolve that follows must see the model past TERMINATING.
+                        sessionModel.await(SessionEvent.DirectTerminationCompleted.completed(
                                 reconnectTermination, outcome.streamClosed(),
                                 outcome == HostSessionTermination.Outcome
                                         .CLOSED_GAME_UNVERIFIED));
@@ -12569,6 +12640,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                     return null;
                 }
+                // A host that answered the warm-up is not asleep.
+                sessionModel.post(new SessionEvent.HostSleepCleared(host.uuid));
                 if (!ConsoleActionCatalog.isPaired(ready)) {
                     setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
                     return null;

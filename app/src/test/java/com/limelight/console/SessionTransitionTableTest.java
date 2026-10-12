@@ -489,6 +489,84 @@ public class SessionTransitionTableTest {
                 play(pending, game(), true, true, true).kind);
     }
 
+    @Test public void playThatNeedsAFreshSessionFirstWakesAHostThatDoesNotAnswer() {
+        SessionSnapshot uncertain = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        SessionSnapshot hole = observed(SessionSnapshot.State.ACTIVE, 42, "",
+                SessionSnapshot.ObservationState.RECOVERY_REQUIRED, false, false);
+        SessionSnapshot neutral = observed(SessionSnapshot.State.RECONNECT_REQUIRED, 77, "",
+                SessionSnapshot.ObservationState.PENDING, false, true);
+        // Every entrance that would refresh the session wakes the host instead.
+        for (SessionSnapshot session : new SessionSnapshot[] {uncertain, hole, neutral}) {
+            State offline = playState(session, true, true, false);
+            offline.hostOnline = false;
+            assertEquals(ActionKind.WAKE_HOST,
+                    SessionOrchestrator.transition(offline, UserIntent.play(game())).kind);
+            // The loading layer is raised first: the wake is never invisible.
+            State uncovered = playState(session, false, true, false);
+            uncovered.hostOnline = false;
+            assertEquals(ActionKind.SHOW_LOADING,
+                    SessionOrchestrator.transition(uncovered, UserIntent.play(game())).kind);
+        }
+        // The grants of the request survive the wake.
+        State authorized = playState(uncertain, true, false, false);
+        authorized.hostOnline = false;
+        authorized.replacementAuthorized = true;
+        assertTrue(SessionOrchestrator.transition(
+                authorized, UserIntent.play(game())).replacementAuthorized);
+        // Decisions that refresh nothing are not touched: the preflight wakes on its own.
+        State app = playState(uncertain, true, false, false);
+        app.hostOnline = false;
+        assertEquals(ActionKind.PREFLIGHT,
+                SessionOrchestrator.transition(app, UserIntent.play(desktop())).kind);
+        State idle = playState(snapshot(SessionSnapshot.State.NONE, 0, ""), true, false, false);
+        idle.hostOnline = false;
+        assertEquals(ActionKind.PREFLIGHT,
+                SessionOrchestrator.transition(idle, UserIntent.play(game())).kind);
+    }
+
+    @Test public void hostThisClientPutToSleepIsWokenBeforeAnythingContactsIt() {
+        // The polls still call it online; the sleep record alone makes the fact false.
+        // Idle and uncertain sessions (a refresh or a preflight) and a saved one to reconnect.
+        SessionSnapshot[] sessions = {asleep(SessionSnapshot.State.NONE, 0, ""),
+                asleep(SessionSnapshot.State.UNCERTAIN, 0, ""),
+                asleep(SessionSnapshot.State.NONE, 0, ""),
+                asleep(SessionSnapshot.State.UNCERTAIN, 0, ""),
+                asleep(SessionSnapshot.State.RECONNECT_REQUIRED, 42, "game")};
+        PlayIntent[] intents = {game(), game(), desktop(), desktop(), game()};
+        for (int index = 0; index < sessions.length; index++) {
+            State covered = playState(sessions[index], true, false, false);
+            assertFalse(covered.hostOnline);
+            assertEquals(ActionKind.WAKE_HOST, SessionOrchestrator.transition(
+                    covered, UserIntent.play(intents[index])).kind);
+            // The loading layer is raised first: the wake is never invisible.
+            assertEquals(ActionKind.SHOW_LOADING, SessionOrchestrator.transition(
+                    playState(sessions[index], false, false, false),
+                    UserIntent.play(intents[index])).kind);
+        }
+        // Once the wake cleared the record, the same request goes on to its preflight.
+        assertEquals(ActionKind.PREFLIGHT, play(snapshot(SessionSnapshot.State.NONE, 0, ""),
+                game(), true, false, false).kind);
+        // A switch on the retained stream contacts no sleeping host.
+        State retained = playState(asleep(SessionSnapshot.State.ACTIVE, 7, "other"),
+                true, false, false);
+        retained.canSwitchRetained = true;
+        Action reuse = SessionOrchestrator.transition(retained, UserIntent.play(game()));
+        assertEquals(ActionKind.PREFLIGHT, reuse.kind);
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, reuse.preflight);
+    }
+
+    @Test public void unpairedHostIsRefusedOnEveryPassBeforeAnyOtherDecision() {
+        for (SessionSnapshot.State session : SessionSnapshot.State.values()) {
+            for (boolean opaqueReady : new boolean[] {false, true}) {
+                State state = playState(snapshot(session, 42, "game"), opaqueReady, true, false);
+                state.hostPaired = false;
+                state.hostOnline = false;
+                assertEquals(ActionKind.REFUSE_UNPAIRED,
+                        SessionOrchestrator.transition(state, UserIntent.play(game())).kind);
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static ActionKind cancel(State state) {
@@ -535,7 +613,16 @@ public class SessionTransitionTableTest {
     private static State playState(SessionSnapshot snapshot, boolean opaqueReady,
                                    boolean targetPrepared, boolean observationRefreshed) {
         return State.forPlay(snapshot, false, false, false, false, opaqueReady,
-                targetPrepared, observationRefreshed);
+                targetPrepared, observationRefreshed, true, true);
+    }
+
+    /** A session of a host whose sleep this client requested. */
+    private static SessionSnapshot asleep(SessionSnapshot.State state, int appId, String gameId) {
+        return new SessionSnapshot("host", "default", "default", state, appId, gameId,
+                false, false, false, true, false, "",
+                false, SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
     private static PlayIntent game() {

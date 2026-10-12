@@ -153,6 +153,27 @@ public class ConsoleHostPresentationTest {
         }
     }
 
+    @Test
+    public void onlyAnOnlineHostWithASavedSessionReadsAsPaused() {
+        for (SessionSnapshot.State session : SessionSnapshot.State.values()) {
+            for (ConsoleHostPresentation.State state : ConsoleHostPresentation.State.values()) {
+                boolean online = state == ConsoleHostPresentation.State.ONLINE
+                        || state == ConsoleHostPresentation.State.PROFILE_ATTENTION;
+                assertEquals(session + " on " + state,
+                        online && session == SessionSnapshot.State.RECONNECT_REQUIRED,
+                        ConsoleHostPresentation.holdsPausedSession(state, session(session)));
+            }
+        }
+    }
+
+    private static SessionSnapshot session(SessionSnapshot.State state) {
+        return new SessionSnapshot("host", "default", "default", state, 42, "", false,
+                state == SessionSnapshot.State.SUSPENDED, false, false, false, "", false,
+                SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
+    }
+
     private static HostGatewayClient.IntegrationProfile profile(
             String id, String name, String sessionState) {
         return new HostGatewayClient.IntegrationProfile(id, name,

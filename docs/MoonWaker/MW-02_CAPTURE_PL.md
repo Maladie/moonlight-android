@@ -133,7 +133,9 @@ gotowości.” + „Żaden port streamingu nie odpowiedział w ciągu 90 sekund�
 | `uncertain.refresh_failed` | Stan sesji był niepewny, a odświeżenie z hosta się nie udało. | `SessionOrchestrator.awaitFreshSession` | C |
 | `uncertain.still_uncertain_after_refresh` | Odświeżenie się udało, ale stan nadal był niepewny. | `SessionOrchestrator.awaitFreshSession` | C |
 | `uncertain.terminating` | Poprzednia sesja zaczęła się zamykać już po podniesieniu ekranu ładowania dla tego Play. | `SessionOrchestrator.evaluate`, gałąź `TERMINATING` pod warstwą ładowania | C |
-| `orchestration.pass_limit` | Decyzja o uruchomieniu kręciła się w kółko i przerwano ją po dziewięciu przebiegach. | `SessionOrchestrator.evaluate` | D |
+| `host.wake_timeout` | Host nie odpowiadał, więc Play najpierw go budził; żaden port streamingu nie odpowiedział w ciągu 90 sekund. | `SessionOrchestrator.awaitHost` → `HostReadiness.await` | C |
+| `host.gateway_timeout` | Wybudzony host odpowiedział na porcie streamingu, ale jego Gateway nie odpowiedział w ciągu kolejnych 90 sekund. | `SessionOrchestrator.awaitHost` → `HostLaunchPreflight.awaitGateway` | C |
+| `orchestration.pass_limit` | Decyzja o uruchomieniu kręciła się w kółko i przerwano ją po jedenastu przebiegach. | `SessionOrchestrator.evaluate` | D |
 | `orchestration.executor_rejected` | Nie dało się uruchomić zadania w tle. | `SessionOrchestrator.execute` | D |
 | `attach.resume_intent_missing` | Stream w tle nie miał ekranu gry, a nie było zapisanych danych, by go otworzyć. Nic nie zamknięto. | `ConsoleActivity.attachPresentationForSwitch` | E |
 | `attach.start_activity_failed` | System nie otworzył ekranu gry dla streamu w tle. Nic nie zamknięto. | `ConsoleActivity.attachPresentationForSwitch` | E |

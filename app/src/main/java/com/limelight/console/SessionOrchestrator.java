@@ -64,9 +64,20 @@ public final class SessionOrchestrator implements AutoCloseable {
 
     interface Dispatcher { void post(Runnable action); }
     interface Effects {
-        boolean isAvailable(); boolean isPaired(String hostId); SessionSnapshot resolve(String hostId);
+        boolean isAvailable(); SessionSnapshot resolve(String hostId);
+        /**
+         * The host's last poll reported it paired, or no poll has reported its pairing yet and
+         * its pairing certificate is saved. A host that answers always reports its pairing.
+         */
+        boolean isPaired(String hostId);
         default SessionSnapshot resolve(HostProfileKey key) { return resolve(key.hostId); }
-        default boolean canPrepareHost(String hostId) { return isPaired(hostId); }
+        /** The host answers its polls; only then can its session be refreshed. */
+        boolean isHostOnline(String hostId);
+        /**
+         * Shows the waking status, wakes the host and waits, bounded, until it and its Gateway
+         * answer. Null once both do; otherwise what never answered. Runs on the worker.
+         */
+        SessionFailure awaitHost(PlayIntent intent, BooleanSupplier cancelled);
         void returnToRetainedStream(); void reconnectSavedSession(PlayIntent intent);
         /** A live warm-up attempt carries the intent's game into the resumed neutral stream. */
         boolean warmUpCarriesGame();
@@ -141,11 +152,6 @@ public final class SessionOrchestrator implements AutoCloseable {
                     "reason", Rejection.INITIALIZING.name());
             effects.reject(Rejection.INITIALIZING); return;
         }
-        if (!effects.isPaired(intent.hostId)) {
-            diagnostic("WARN", "orchestration.rejected", request, intent,
-                    "reason", Rejection.UNPAIRED.name());
-            effects.reject(Rejection.UNPAIRED); return;
-        }
         inFlight = request;
         evaluate(request, intent, false, false, false, null, 0);
     }
@@ -163,7 +169,7 @@ public final class SessionOrchestrator implements AutoCloseable {
         if (!effects.isAvailable()) {
             return 0L;
         }
-        if (!effects.canPrepareHost(intent.hostId)) {
+        if (!effects.isPaired(intent.hostId)) {
             return 0L;
         }
         Preparation pending = new Preparation(request, intent.profileKey);
@@ -317,6 +323,13 @@ public final class SessionOrchestrator implements AutoCloseable {
         boolean targetPrepared;
         /** This pass evaluates the snapshot a refresh of an unresolved observation produced. */
         boolean observationRefreshed;
+        /**
+         * The host answers its polls and this client did not put it to sleep; a refresh of its
+         * session needs that.
+         */
+        boolean hostOnline;
+        /** Paired, or remembered as paired until its first poll answers. */
+        boolean hostPaired;
 
         // ---- stream screen: the presented transition ----
         /** A transition is presented and no cancel of it is already running. */
@@ -356,7 +369,8 @@ public final class SessionOrchestrator implements AutoCloseable {
         static State forPlay(SessionSnapshot session, boolean canSwitchRetained,
                              boolean warmUpCarriesGame, boolean replacementAuthorized,
                              boolean reuseOnly, boolean opaqueReady, boolean targetPrepared,
-                             boolean observationRefreshed) {
+                             boolean observationRefreshed, boolean hostOnline,
+                             boolean hostPaired) {
             State state = new State();
             state.session = session;
             state.canSwitchRetained = canSwitchRetained;
@@ -366,12 +380,17 @@ public final class SessionOrchestrator implements AutoCloseable {
             state.opaqueReady = opaqueReady;
             state.targetPrepared = targetPrepared;
             state.observationRefreshed = observationRefreshed;
+            // A sleep this client requested is known at once; the polls notice it only later.
+            state.hostOnline = hostOnline && !session.hostSleepRequested;
+            state.hostPaired = hostPaired;
             return state;
         }
     }
 
     public enum ActionKind {
         // ---- Play ----
+        /** The host is not paired: toast, or the same message under the loading layer. */
+        REFUSE_UNPAIRED,
         /** A session is closing: toast, or {@link Action#failure} under the loading layer. */
         REFUSE_CLOSING,
         FAIL,
@@ -380,6 +399,8 @@ public final class SessionOrchestrator implements AutoCloseable {
         REFRESH_OBSERVATION,
         REFRESH_SESSION,
         REFRESH_PREPARING,
+        /** Wake the host and wait for it; the pass after it answers decides. */
+        WAKE_HOST,
         /** Decide again, allowed only to reuse the retained stream. */
         REUSE_STREAM,
         PREFLIGHT,
@@ -486,6 +507,26 @@ public final class SessionOrchestrator implements AutoCloseable {
     }
 
     private static Action play(State s, PlayIntent intent) {
+        // Decided on every pass: a host woken for this request reports its real pairing.
+        if (!s.hostPaired) return Action.of(ActionKind.REFUSE_UNPAIRED);
+        Action action = playOnHost(s, intent);
+        // A session refresh needs a host that answers: one that does not is woken first, and
+        // the pass after it answers decides from its fresh state. A host this client put to
+        // sleep is woken before its preflight too: the polls still call it online, so the
+        // preflight would not wake it.
+        boolean refreshes = action.kind == ActionKind.REFRESH_SESSION
+                || action.kind == ActionKind.REFRESH_OBSERVATION;
+        boolean preflightsAsleep = s.session.hostSleepRequested
+                && action.kind == ActionKind.PREFLIGHT
+                && action.preflight != HostLaunchPreflight.Action.SWITCH_RETAINED;
+        if (!s.hostOnline && (refreshes || preflightsAsleep)) {
+            return Action.step(ActionKind.WAKE_HOST, null, null,
+                    action.replacementAuthorized, action.reuseOnly);
+        }
+        return action;
+    }
+
+    private static Action playOnHost(State s, PlayIntent intent) {
         SessionSnapshot snapshot = s.session;
         boolean game = intent.kind == PlayIntent.Kind.PLAYNITE_GAME;
         LaunchTransitionType fresh = freshType(intent);
@@ -705,7 +746,10 @@ public final class SessionOrchestrator implements AutoCloseable {
                           boolean reuseOnly, boolean opaqueReady,
                           NvApp preparedTarget, int pass) {
         if (!current(request)) return;
-        if (pass > 8) {
+        // The longest chain of a host that answers takes passes 0..8. A host found asleep adds
+        // one WAKE_HOST pass; one that fell asleep unnoticed adds the failed refresh and then
+        // the wake. A host that keeps flapping runs into this limit.
+        if (pass > 10) {
             fail(request, intent, SessionFailure.ORCHESTRATION_PASS_LIMIT, "");
             return;
         }
@@ -715,8 +759,15 @@ public final class SessionOrchestrator implements AutoCloseable {
         Action action = transition(State.forPlay(snapshot,
                 effects.canAttemptRetainedSwitch(intent), effects.warmUpCarriesGame(),
                 replacementAuthorized, reuseOnly, opaqueReady, preparedTarget != null,
-                evaluatesRefresh(request, pass)), UserIntent.play(intent));
+                evaluatesRefresh(request, pass), effects.isHostOnline(intent.hostId),
+                effects.isPaired(intent.hostId)), UserIntent.play(intent));
         switch (action.kind) {
+            case REFUSE_UNPAIRED:
+                diagnostic("WARN", "orchestration.rejected", request, intent,
+                        "reason", Rejection.UNPAIRED.name());
+                inFlight = 0L;
+                effects.reject(Rejection.UNPAIRED);
+                break;
             case REFUSE_CLOSING:
                 diagnostic("WARN", "orchestration.rejected", request, intent,
                         "reason", Rejection.TERMINATING.name());
@@ -741,6 +792,10 @@ public final class SessionOrchestrator implements AutoCloseable {
                 break;
             case REFRESH_PREPARING:
                 refreshPreparing(request, intent, preparedTarget, pass);
+                break;
+            case WAKE_HOST:
+                awaitHost(request, intent, action.replacementAuthorized,
+                        action.reuseOnly, preparedTarget, pass);
                 break;
             case REUSE_STREAM:
                 evaluate(request, intent, false, true, true, preparedTarget, pass + 1);
@@ -839,6 +894,24 @@ public final class SessionOrchestrator implements AutoCloseable {
         });
     }
 
+    private void awaitHost(long request, PlayIntent intent, boolean replacementAuthorized,
+                           boolean reuseOnly, NvApp preparedTarget, int pass) {
+        diagnostic("INFO", "orchestration.wake_started", request, intent);
+        execute(request, intent, () -> {
+            SessionFailure unanswered = effects.awaitHost(intent, () -> !current(request));
+            dispatcher.post(() -> {
+                // A cancelled wake closes nothing: it only stops waiting.
+                if (!current(request)) return;
+                if (unanswered != null) {
+                    fail(request, intent, unanswered, "");
+                    return;
+                }
+                evaluate(request, intent, replacementAuthorized, reuseOnly,
+                        true, preparedTarget, pass + 1);
+            });
+        });
+    }
+
     /** Whether this pass evaluates the snapshot a refresh of an unresolved observation produced. */
     private boolean evaluatesRefresh(long request, int pass) {
         return refreshedRequest == request && refreshedPass == pass;
@@ -859,7 +932,15 @@ public final class SessionOrchestrator implements AutoCloseable {
                 dispatcher.post(() -> {
                     if (!current(request)) return;
                     if (!success) {
-                        fail(request, intent, SessionFailure.UNCERTAIN_REFRESH_FAILED, "");
+                        if (effects.isHostOnline(intent.hostId)) {
+                            fail(request, intent, SessionFailure.UNCERTAIN_REFRESH_FAILED, "");
+                            return;
+                        }
+                        // The host fell asleep before its polls noticed: nothing was
+                        // refreshed, so the table decides again and wakes it.
+                        refreshedRequest = 0L;
+                        evaluate(request, intent, replacementAuthorized, reuseOnly,
+                                true, preparedTarget, pass + 1);
                         return;
                     }
                     if (effects.resolve(intent.profileKey).state
@@ -926,11 +1007,13 @@ public final class SessionOrchestrator implements AutoCloseable {
                 }
                 SessionSnapshot afterClose = effects.resolve(intent.profileKey);
                 if (!current(request)) return;
-                // The verified close is authoritative. UNCERTAIN here only means that no
-                // host observation newer than the close has been accepted yet; every
-                // local fact already shows nothing left to close.
+                // The verified close is authoritative. UNCERTAIN, or TERMINATING while the
+                // closing confirmation window is open, only means that no host observation
+                // newer than the close has been accepted yet; every local fact already
+                // shows nothing left to close.
                 if (afterClose.state == SessionSnapshot.State.NONE
-                        || afterClose.state == SessionSnapshot.State.UNCERTAIN) {
+                        || afterClose.state == SessionSnapshot.State.UNCERTAIN
+                        || afterClose.state == SessionSnapshot.State.TERMINATING) {
                     launch(request, intent, preparedTarget, freshType(intent), "",
                             afterClose.hostGameAppId == 0);
                 } else if (intent.matches(afterClose)) {
