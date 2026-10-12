@@ -10,12 +10,15 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /** Wake-on-LAN and bounded pre-launch port readiness check. */
 final class HostReadiness {
     private static final long TIMEOUT_MS = 90_000L;
     private static final long WAKE_INTERVAL_MS = 5_000L;
+    private static final long DOWN_TIMEOUT_MS = 30_000L;
 
     private HostReadiness() {}
 
@@ -90,14 +93,44 @@ final class HostReadiness {
                 status.accept(waitingStatus);
             }
 
-            try {
-                Thread.sleep(1200L);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
+            if (!pause()) return null;
         }
         return null;
+    }
+
+    /**
+     * Waits, bounded, for a host that was told to sleep to stop answering, so the wake that
+     * follows is not ended by a host still going down. True once it no longer answers.
+     */
+    static boolean awaitDown(Supplier<ComputerDetails> currentHost, BooleanSupplier cancelled) {
+        return awaitDown(currentHost, cancelled, HostReadiness::isStreamingPortReachable,
+                System::currentTimeMillis, HostReadiness::pause);
+    }
+
+    static boolean awaitDown(Supplier<ComputerDetails> currentHost, BooleanSupplier cancelled,
+                             Predicate<ComputerDetails> reachable, LongSupplier clock,
+                             BooleanSupplier pause) {
+        long deadline = clock.getAsLong() + DOWN_TIMEOUT_MS;
+        while (!cancelled.getAsBoolean() && clock.getAsLong() < deadline) {
+            ComputerDetails current = currentHost.get();
+            if (current == null || current.state != ComputerDetails.State.ONLINE
+                    || current.activeAddress == null || !reachable.test(current)) {
+                return true;
+            }
+            if (!pause.getAsBoolean()) return false;
+        }
+        return false;
+    }
+
+    /** False when the wait was interrupted. */
+    private static boolean pause() {
+        try {
+            Thread.sleep(1200L);
+            return true;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private static boolean isStreamingPortReachable(ComputerDetails host) {

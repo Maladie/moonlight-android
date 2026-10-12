@@ -34,7 +34,15 @@ public class ConsoleHostPreparationContractTest {
         String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String prepare = section(source, "private void prepareSelectedHost(",
                 "private void dispatchPendingHostPreparation()");
-        assertTrue(prepare.contains("ConsoleActionCatalog.canPrepareHost(host)"));
+        assertTrue(prepare.contains("ConsoleActionCatalog.isRememberedPaired(host)"));
+        // One pairing rule: host entry, Play and the warm-up all read the same one.
+        assertTrue(section(source, "private void activateHostFromSelection(String uuid)",
+                "private void resolveProfileGate(ComputerDetails host")
+                .contains("} else if (!ConsoleActionCatalog.isRememberedPaired(host)) {"));
+        assertTrue(source.contains("@Override public boolean isPaired(String hostId) {\n"
+                + "                return ConsoleActionCatalog.isRememberedPaired("
+                + "currentHost(hostId));"));
+        assertFalse(source.contains("canPrepareHost"));
         assertTrue(prepare.indexOf("if (managerBinder == null)")
                 < prepare.indexOf("sessionOrchestrator.prepareHost(host.uuid,"));
         assertTrue(prepare.contains("pendingHostPreparation = host.uuid;\n                return;"));

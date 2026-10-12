@@ -98,6 +98,17 @@ final class ConsoleHostPresentation {
         return State.OFFLINE;
     }
 
+    /**
+     * An online host holds a saved session to resume, so its status names that session instead
+     * of a bare "Online". RECONNECT_REQUIRED comes from the saved record; for a record without
+     * autoResume it also needs host.runningGameId from the serverinfo poll, so once the session
+     * is closed or the host restarts the status reads "Online" again.
+     */
+    static boolean holdsPausedSession(State state, SessionSnapshot snapshot) {
+        return (state == State.ONLINE || state == State.PROFILE_ATTENTION)
+                && snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED;
+    }
+
     static boolean canWake(ComputerDetails host) {
         return host != null && host.state != ComputerDetails.State.ONLINE
                 && hasWakeAddress(host);
@@ -147,7 +158,7 @@ final class ConsoleHostPresentation {
         }
     }
 
-    private static boolean hasWakeAddress(ComputerDetails host) {
+    static boolean hasWakeAddress(ComputerDetails host) {
         return host.macAddress != null
                 && !host.macAddress.isEmpty()
                 && !"00:00:00:00:00:00".equals(host.macAddress);

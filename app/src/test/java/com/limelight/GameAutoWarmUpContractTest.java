@@ -388,8 +388,8 @@ public class GameAutoWarmUpContractTest {
                 "private String currentSessionGameId()");
         String home = between(game, "private void openConsoleHome()",
                 "private void openPreparingConsoleHome()");
-        String retry = between(game, "private void retryTransition()",
-                "private void retryRetainedObservation()");
+        String retry = between(game, "private void restartStreamForRetry()",
+                "private boolean retryStillCurrent(");
 
         assertTrue(reveal.contains("!rejectedProviderStart && transitionCoordinator != null"));
         assertTrue(reveal.contains("if (rejectedProviderStart)"
@@ -409,11 +409,13 @@ public class GameAutoWarmUpContractTest {
     @Test public void retainedGameRetryKeepsTransportAndColdPadsArePrimed()
             throws IOException {
         String game = source();
-        String retry = between(game, "private void retryTransition()",
-                "private void retryRetainedObservation()");
-        assertTrue(retry.contains("transitionSpec.type == LaunchTransitionType.GAME"));
-        assertTrue(retry.indexOf("retryRetainedObservation()")
-                < retry.indexOf("stopConnection("));
+        // The table decides (SessionTransitionTableTest); on a live transport Game only
+        // starts the game again or observes again, and neither touches the transport.
+        String retry = between(game, "private void retryGameStart()",
+                "public void displayMessage");
+        assertTrue(retry.contains("LaunchTransitionType.GAME,"));
+        assertTrue(retry.contains("LaunchTransitionType.GAME_CONNECTION"));
+        assertFalse(retry.contains("stopConnection("));
 
         Path controllerPath = Paths.get(
                 "src/main/java/com/limelight/binding/input/ControllerHandler.java");

@@ -452,6 +452,11 @@ final class HostLaunchPreflight {
                 "error_type", error.getClass().getName());
     }
 
+    /** Waits, bounded, until the Gateway of a host that just woke answers for the profile. */
+    boolean awaitGateway(Request request, BooleanSupplier cancelled) {
+        return awaitGatewayProfile(request, cancelled) != null;
+    }
+
     private Profile awaitGatewayProfile(Request request, BooleanSupplier cancelled) {
         long deadline = clock.now() + GATEWAY_TIMEOUT_MS;
         Exception lastError = null;

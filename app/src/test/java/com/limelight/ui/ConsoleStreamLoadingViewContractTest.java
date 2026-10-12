@@ -159,12 +159,13 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(showError.contains("retryView.setEnabled(true)"));
 
         String game = gameSource();
-        String gameRetry = game.substring(game.indexOf("private void retryTransition()"),
-                game.indexOf("private void retryRetainedObservation()"));
+        String gameRetry = game.substring(
+                game.indexOf("private SessionOrchestrator.State transitionState()"),
+                game.indexOf("private void retryGameStart()"));
         assertTrue(gameRetry.contains("transitionSpec.id.equals(retryTransitionId)"));
         assertTrue(gameRetry.indexOf("transitionSpec.id.equals(retryTransitionId)")
                 < gameRetry.indexOf("stopConnection("));
-        assertTrue(gameRetry.contains("retryTransitionId = retryId"));
+        assertTrue(gameRetry.contains("retryTransitionId = transitionSpec.id"));
         assertTrue(gameRetry.contains("if (!retryStillCurrent(retryId)) return;"));
     }
 

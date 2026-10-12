@@ -105,11 +105,18 @@ final class ConsoleActionCatalog {
         return host != null && host.pairState == PairingManager.PairState.PAIRED;
     }
 
-    static boolean canPrepareHost(ComputerDetails host) {
-        return host != null && canPrepareHost(host.pairState, host.serverCert != null);
+    /**
+     * The one rule for a host the user may enter, play on, wake and warm up: its last poll
+     * reported it paired, or no poll has reported its pairing yet (the pairing is not stored)
+     * and its pairing certificate is saved. Whatever follows still goes through the pinned
+     * certificate, and the first poll that answers replaces the remembered pairing.
+     */
+    static boolean isRememberedPaired(ComputerDetails host) {
+        return host != null && isRememberedPaired(host.pairState, host.serverCert != null);
     }
 
-    static boolean canPrepareHost(PairingManager.PairState pairState, boolean savedCertificate) {
+    static boolean isRememberedPaired(PairingManager.PairState pairState,
+                                      boolean savedCertificate) {
         return pairState == PairingManager.PairState.PAIRED
                 || (pairState == null && savedCertificate);
     }

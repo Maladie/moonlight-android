@@ -192,6 +192,154 @@ public class SessionTransitionTableTest {
         assertEquals(ActionKind.LEAVE_SCREEN, back(underHome));
     }
 
+    // ---------------------------------------------------------------- Retry
+
+    @Test public void retryWithoutAPresentedTransitionOrDuringACancelIsIgnored() {
+        State state = failedStart();
+        state.transitionActive = false;
+        assertEquals(ActionKind.IGNORE, retry(state));
+    }
+
+    @Test public void repeatedRetryOfTheSameTransitionIsIgnored() {
+        State start = failedStart();
+        start.controlGranted = true;
+        start.retryStarted = true;
+        assertEquals(ActionKind.IGNORE, retry(start));
+
+        State gone = failedStart();
+        gone.connected = false;
+        gone.retryStarted = true;
+        assertEquals(ActionKind.IGNORE, retry(gone));
+    }
+
+    @Test public void retryNeverCoversAStreamTheUserRevealed() {
+        for (LaunchTransitionType type : LaunchTransitionType.values()) {
+            State state = covered(type, true);
+            state.connected = true;
+            state.covered = false;
+            state.revealed = true;
+            assertEquals(ActionKind.IGNORE, retry(state));
+        }
+        // "Reveal now" was chosen and its reveal still runs: the cover is already given up.
+        State revealing = failedStart();
+        revealing.manuallyRevealed = true;
+        assertEquals(ActionKind.IGNORE, retry(revealing));
+        revealing.connected = false;
+        assertEquals(ActionKind.IGNORE, retry(revealing));
+    }
+
+    @Test public void retryWithoutALiveTransportStartsTheStreamAgain() {
+        for (LaunchTransitionType type : LaunchTransitionType.values()) {
+            State state = covered(type, type != LaunchTransitionType.GENERIC);
+            assertEquals(type.name(), ActionKind.RESTART_STREAM, retry(state));
+        }
+        // Whatever a retained switch recorded: nothing lives to retry on.
+        State offered = failedStart();
+        offered.connected = false;
+        offered.retainedSwitch = true;
+        offered.retainedSwitchAttempted = true;
+        offered.authorizationRetryOffered = true;
+        assertEquals(ActionKind.RESTART_STREAM, retry(offered));
+    }
+
+    @Test public void retryOfAFailedGameStartStartsTheGameAgainOnTheLiveStream() {
+        State state = failedStart();
+        assertEquals(ActionKind.RETRY_GAME_START, retry(state));
+        // Granted or not, retained as home-live or not: the stream stays.
+        state.controlGranted = true;
+        state.retainedHomeLive = true;
+        assertEquals(ActionKind.RETRY_GAME_START, retry(state));
+    }
+
+    @Test public void retryAfterTheGameWasConfirmedReadyOnlyObservesAgain() {
+        State state = failedStart();
+        state.gameReadyConfirmed = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(state));
+    }
+
+    @Test public void retryNeverStopsAGameWhoseStartTheHostDidNotReportFailed() {
+        // Readiness timed out while the game runs (its window is not in the foreground):
+        // no cleanup was ordered, so the running game is only observed again.
+        State running = failedStart();
+        running.failedStartCleanup = false;
+        running.timedOut = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(running));
+        running.controlGranted = true;
+        running.retainedHomeLive = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(running));
+        // A refused start (launcher interaction, locked host) ordered no cleanup either.
+        State refused = failedStart();
+        refused.failedStartCleanup = false;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(refused));
+
+        // A timeout whose cleanup was ordered (the stream never set up) is a failed start.
+        State failed = failedStart();
+        failed.timedOut = true;
+        assertEquals(ActionKind.RETRY_GAME_START, retry(failed));
+    }
+
+    @Test public void retryOfAFailedConnectionOrObservationObservesAgainOnTheLiveStream() {
+        for (LaunchTransitionType type : new LaunchTransitionType[] {
+                LaunchTransitionType.GAME_CONNECTION, LaunchTransitionType.PLAYNITE,
+                LaunchTransitionType.GENERIC}) {
+            State state = covered(type, type == LaunchTransitionType.GAME_CONNECTION);
+            state.connected = true;
+            assertEquals(type.name(), ActionKind.RETRY_OBSERVATION, retry(state));
+        }
+        // The observation kept after a failed start whose game could not be stopped.
+        State kept = reconnectToGame();
+        kept.connected = true;
+        kept.failedStartObservation = true;
+        kept.retainedHomeLive = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(kept));
+        // A GAME transition without a game has no start to repeat.
+        State noGame = covered(LaunchTransitionType.GAME, false);
+        noGame.connected = true;
+        assertEquals(ActionKind.RETRY_OBSERVATION, retry(noGame));
+    }
+
+    @Test public void retryOnAnOfferedAuthorizationRetryAcceptsIt() {
+        State state = reconnectToGame();
+        state.connected = true;
+        state.retainedSwitch = true;
+        state.authorizationRetryOffered = true;
+        assertEquals(ActionKind.ACCEPT_AUTHORIZATION_RETRY, retry(state));
+    }
+
+    @Test public void retryDuringARetainedSwitchRestartsItsAttemptOrWaitsForIt() {
+        State state = failedStart();
+        state.retainedSwitch = true;
+        state.retainedSwitchAttempted = true;
+        assertEquals(ActionKind.RETRY_RETAINED_SWITCH, retry(state));
+        // Also when the attempt only observes: the switch owns its start.
+        state.type = LaunchTransitionType.GAME_CONNECTION;
+        assertEquals(ActionKind.RETRY_RETAINED_SWITCH, retry(state));
+
+        state.retainedSwitchAttempted = false;
+        assertEquals(ActionKind.IGNORE, retry(state));
+    }
+
+    @Test public void noRetryOnALiveTransportStopsOrRestartsTheStream() {
+        for (LaunchTransitionType type : LaunchTransitionType.values()) {
+            for (int facts = 0; facts < 64; facts++) {
+                State state = covered(type, (facts & 1) != 0);
+                state.connected = true;
+                state.gameReadyConfirmed = (facts & 2) != 0;
+                state.retainedSwitch = (facts & 4) != 0;
+                state.retainedSwitchAttempted = state.retainedSwitch && (facts & 8) != 0;
+                state.authorizationRetryOffered = state.retainedSwitch && (facts & 16) != 0;
+                state.failedStartCleanup = (facts & 32) != 0;
+                ActionKind decided = retry(state);
+                assertTrue(type + " facts=" + facts + " -> " + decided,
+                        decided == ActionKind.IGNORE
+                                || decided == ActionKind.ACCEPT_AUTHORIZATION_RETRY
+                                || decided == ActionKind.RETRY_RETAINED_SWITCH
+                                || decided == ActionKind.RETRY_GAME_START
+                                || decided == ActionKind.RETRY_OBSERVATION);
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- Play
 
     @Test public void playWhileASessionClosesIsRefused() {
@@ -341,6 +489,84 @@ public class SessionTransitionTableTest {
                 play(pending, game(), true, true, true).kind);
     }
 
+    @Test public void playThatNeedsAFreshSessionFirstWakesAHostThatDoesNotAnswer() {
+        SessionSnapshot uncertain = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        SessionSnapshot hole = observed(SessionSnapshot.State.ACTIVE, 42, "",
+                SessionSnapshot.ObservationState.RECOVERY_REQUIRED, false, false);
+        SessionSnapshot neutral = observed(SessionSnapshot.State.RECONNECT_REQUIRED, 77, "",
+                SessionSnapshot.ObservationState.PENDING, false, true);
+        // Every entrance that would refresh the session wakes the host instead.
+        for (SessionSnapshot session : new SessionSnapshot[] {uncertain, hole, neutral}) {
+            State offline = playState(session, true, true, false);
+            offline.hostOnline = false;
+            assertEquals(ActionKind.WAKE_HOST,
+                    SessionOrchestrator.transition(offline, UserIntent.play(game())).kind);
+            // The loading layer is raised first: the wake is never invisible.
+            State uncovered = playState(session, false, true, false);
+            uncovered.hostOnline = false;
+            assertEquals(ActionKind.SHOW_LOADING,
+                    SessionOrchestrator.transition(uncovered, UserIntent.play(game())).kind);
+        }
+        // The grants of the request survive the wake.
+        State authorized = playState(uncertain, true, false, false);
+        authorized.hostOnline = false;
+        authorized.replacementAuthorized = true;
+        assertTrue(SessionOrchestrator.transition(
+                authorized, UserIntent.play(game())).replacementAuthorized);
+        // Decisions that refresh nothing are not touched: the preflight wakes on its own.
+        State app = playState(uncertain, true, false, false);
+        app.hostOnline = false;
+        assertEquals(ActionKind.PREFLIGHT,
+                SessionOrchestrator.transition(app, UserIntent.play(desktop())).kind);
+        State idle = playState(snapshot(SessionSnapshot.State.NONE, 0, ""), true, false, false);
+        idle.hostOnline = false;
+        assertEquals(ActionKind.PREFLIGHT,
+                SessionOrchestrator.transition(idle, UserIntent.play(game())).kind);
+    }
+
+    @Test public void hostThisClientPutToSleepIsWokenBeforeAnythingContactsIt() {
+        // The polls still call it online; the sleep record alone makes the fact false.
+        // Idle and uncertain sessions (a refresh or a preflight) and a saved one to reconnect.
+        SessionSnapshot[] sessions = {asleep(SessionSnapshot.State.NONE, 0, ""),
+                asleep(SessionSnapshot.State.UNCERTAIN, 0, ""),
+                asleep(SessionSnapshot.State.NONE, 0, ""),
+                asleep(SessionSnapshot.State.UNCERTAIN, 0, ""),
+                asleep(SessionSnapshot.State.RECONNECT_REQUIRED, 42, "game")};
+        PlayIntent[] intents = {game(), game(), desktop(), desktop(), game()};
+        for (int index = 0; index < sessions.length; index++) {
+            State covered = playState(sessions[index], true, false, false);
+            assertFalse(covered.hostOnline);
+            assertEquals(ActionKind.WAKE_HOST, SessionOrchestrator.transition(
+                    covered, UserIntent.play(intents[index])).kind);
+            // The loading layer is raised first: the wake is never invisible.
+            assertEquals(ActionKind.SHOW_LOADING, SessionOrchestrator.transition(
+                    playState(sessions[index], false, false, false),
+                    UserIntent.play(intents[index])).kind);
+        }
+        // Once the wake cleared the record, the same request goes on to its preflight.
+        assertEquals(ActionKind.PREFLIGHT, play(snapshot(SessionSnapshot.State.NONE, 0, ""),
+                game(), true, false, false).kind);
+        // A switch on the retained stream contacts no sleeping host.
+        State retained = playState(asleep(SessionSnapshot.State.ACTIVE, 7, "other"),
+                true, false, false);
+        retained.canSwitchRetained = true;
+        Action reuse = SessionOrchestrator.transition(retained, UserIntent.play(game()));
+        assertEquals(ActionKind.PREFLIGHT, reuse.kind);
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, reuse.preflight);
+    }
+
+    @Test public void unpairedHostIsRefusedOnEveryPassBeforeAnyOtherDecision() {
+        for (SessionSnapshot.State session : SessionSnapshot.State.values()) {
+            for (boolean opaqueReady : new boolean[] {false, true}) {
+                State state = playState(snapshot(session, 42, "game"), opaqueReady, true, false);
+                state.hostPaired = false;
+                state.hostOnline = false;
+                assertEquals(ActionKind.REFUSE_UNPAIRED,
+                        SessionOrchestrator.transition(state, UserIntent.play(game())).kind);
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static ActionKind cancel(State state) {
@@ -349,6 +575,18 @@ public class SessionTransitionTableTest {
 
     private static ActionKind back(State state) {
         return SessionOrchestrator.transition(state, UserIntent.BACK).kind;
+    }
+
+    private static ActionKind retry(State state) {
+        return SessionOrchestrator.transition(state, UserIntent.RETRY).kind;
+    }
+
+    /** A covered game start the host reported failed while its stream stays connected. */
+    private static State failedStart() {
+        State state = covered(LaunchTransitionType.GAME, true);
+        state.connected = true;
+        state.failedStartCleanup = true;
+        return state;
     }
 
     /** A covered, unrevealed transition before the host granted anything. */
@@ -375,7 +613,16 @@ public class SessionTransitionTableTest {
     private static State playState(SessionSnapshot snapshot, boolean opaqueReady,
                                    boolean targetPrepared, boolean observationRefreshed) {
         return State.forPlay(snapshot, false, false, false, false, opaqueReady,
-                targetPrepared, observationRefreshed);
+                targetPrepared, observationRefreshed, true, true);
+    }
+
+    /** A session of a host whose sleep this client requested. */
+    private static SessionSnapshot asleep(SessionSnapshot.State state, int appId, String gameId) {
+        return new SessionSnapshot("host", "default", "default", state, appId, gameId,
+                false, false, false, true, false, "",
+                false, SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
     private static PlayIntent game() {
