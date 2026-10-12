@@ -33,6 +33,31 @@ public class S05ControlPlaneContractTest {
                 .contains(".quitApp("));
     }
 
+    @Test public void cancelledOrUnansweredStartHandsItsPermitBackBeforeAnyEffect()
+            throws Exception {
+        String connection = source("com/limelight/nvstream/NvConnection.java");
+        String start = between(connection, "private boolean startApp(",
+                "private boolean startAppEffect(");
+        // A lost acquire answer: reconcile first, then the declaration, never an effect.
+        int lost = start.indexOf("catch (IOException unavailable)");
+        int lostAbandon = start.indexOf("abandonControlStart(operationId, app.getAppId(), 0L)", lost);
+        assertTrue(lost >= 0 && start.indexOf("controlBinding.client.reconcile(", lost) < lostAbandon);
+        // Cancel before the effect: the permit is abandoned and the launch is never sent.
+        int cancelled = start.indexOf("if (startAbandoned && currentAppId == 0 && !replayed) {");
+        int abandon = start.indexOf(
+                "abandonControlStart(permit.operationId, app.getAppId(), permit.generation)");
+        int effect = start.indexOf("succeeded = startAppEffect(");
+        assertTrue(lostAbandon < cancelled && cancelled < abandon && abandon < effect);
+        String branch = start.substring(cancelled, effect);
+        assertTrue(branch.contains("controlGeneration = abandoned.generation;"));
+        assertTrue(branch.contains("startReleased = true;"));
+        assertFalse(branch.contains(".complete("));
+        assertTrue(connection.contains(
+                "if (!startReleased) context.connListener.stageFailed(appName, 0, 0);"));
+        assertTrue(source("com/limelight/stream/AndroidStreamRuntime.java").contains(
+                "@Override public void abandonStart() { connection.abandonStart(); }"));
+    }
+
     @Test public void semanticAcquireRejectionIsNotReconciledAsTransportLoss()
             throws Exception {
         String connection = source("com/limelight/nvstream/NvConnection.java");
@@ -153,7 +178,7 @@ public class S05ControlPlaneContractTest {
             throws Exception {
         String gateway = source("com/limelight/console/HostGatewayClient.java");
         String console = source("com/limelight/console/ConsoleActivity.java");
-        assertTrue(gateway.contains("available(capabilities, \"control_operations_v1\")"));
+        assertTrue(gateway.contains("available(capabilities, \"control_operations_v2\")"));
         assertTrue(console.contains(
                 "if (!hostGatewayClient.getCapabilities(connection).controlOperations)"));
         assertTrue(console.contains("EXTRA_SUPPRESS_AUTO_WARM_UP"));

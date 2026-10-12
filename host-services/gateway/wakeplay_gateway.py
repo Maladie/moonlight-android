@@ -67,7 +67,7 @@ GATEWAY_SCHEMA_VERSION = 3
 CHILD_PROFILE_KIND = "child"
 STANDARD_PROFILE_KIND = "standard"
 CHILD_PROFILES_CAPABILITY = "child_profiles_v1"
-CONTROL_OPERATIONS_CAPABILITY = "control_operations_v1"
+CONTROL_OPERATIONS_CAPABILITY = "control_operations_v2"
 CHILD_MANAGEMENT_SESSION_SECONDS = 5 * 60
 CHILD_PARENT_POLICY_REVISION_FIELD = "children_policy_revision"
 CHILD_SHARING_REQUESTS_FIELD = "child_sharing_requests"
@@ -149,7 +149,8 @@ DIAGNOSTIC_CONTROL_REJECTION_CODES = frozenset({
     "retained_process_unconfirmed", "unmanaged_stream", "managed_stream_conflict",
     "child_session_unmanaged", "operation_id_reused", "stale_operation",
     "operation_in_progress", "terminal_owner_required", "terminal_result_timeout",
-    "reconcile_required", "retained_owner_unconfirmed",
+    "reconcile_required", "retained_owner_unconfirmed", "managed_stream_unavailable",
+    "stream_owner_mismatch", "stream_generation_superseded", "start_abandoned",
 })
 DIAGNOSTIC_FIELDS = {
     "method", "route", "request_id", "profile_id", "actor_profile_id",
@@ -978,8 +979,11 @@ class GatewayState:
         if isinstance(active_control, dict):
             # Monotonic values cannot survive a process restart: the holder's grace
             # restarts from this process' clock.
-            self._control_uncertain(active_control,
-                                    "gateway_restarted_before_terminal_result", True)
+            # An abandoned start keeps its reason, and with it no grace.
+            self._control_uncertain(
+                active_control, "start_abandoned"
+                if active_control.get("reason") == "start_abandoned"
+                else "gateway_restarted_before_terminal_result", True)
         self.child_time_session = self.child_time_usage.get("active_session")
         if isinstance(self.child_time_session, dict):
             # Monotonic values cannot survive a process restart.  Resume the
@@ -4772,13 +4776,20 @@ class GatewayState:
                         return HTTPStatus.CONFLICT, {"ok": False,
                                                      "state": "blocked",
                                                      "reason": "operation_id_reused"}
-                    return HTTPStatus.OK, self._control_result(completed)
+                    if completed.get("direction") != "start" \
+                            or completed.get("state") != "failed":
+                        return HTTPStatus.OK, self._control_result(completed)
+                    # A start that failed or was abandoned left nothing to replay: the same
+                    # request (Retry derives the same operation ID) is a new attempt.
+                    del self.control_state["completed"][operation_id]
                 self._control_recover_provider_locked()
                 stale = self._control_stale_start_locked()
-                if stale is not None and stale[1]["operation_id"] != operation_id:
-                    # Another client start permit holds the host. Once its grace is over the
-                    # streamer may prove it started nothing. Only the user's next Play waits a
-                    # grace out (a close is answered at once), and only when the reserve
+                if stale is not None and (stale[1]["operation_id"] != operation_id
+                                          or stale[1].get("reason") == "start_abandoned"):
+                    # Another client start permit holds the host, or this one's holder
+                    # abandoned it (Retry derives the same operation ID). Once its grace is
+                    # over the streamer may prove it started nothing. Only the user's next Play
+                    # waits a grace out (a close is answered at once), and only when the reserve
                     # covers the proof after it; a retained stream needs further probes
                     # (idle proof, abandon), so it never waits.
                     stale_key, holder, grace_left = stale
@@ -4789,8 +4800,9 @@ class GatewayState:
                             False)
                         if absent is probes.PENDING:
                             continue
-                        if absent:
-                            self._control_resolve_stale_start_locked(stale_key)
+                        if absent and self._control_resolve_stale_start_locked(stale_key):
+                            # Read the receipt it left: under this ID it is a new attempt.
+                            continue
                     elif direction == "start" and self.control_state.get("stream") is None \
                             and grace_left < deadline - time.monotonic() \
                             - CONTROL_START_PROOF_RESERVE_SECONDS:
@@ -4818,7 +4830,12 @@ class GatewayState:
                         completed = self.control_state.setdefault(
                             "completed", {}).get(operation_id)
                         if isinstance(completed, dict):
-                            return HTTPStatus.OK, self._control_result(completed)
+                            if completed.get("direction") != "start" \
+                                    or completed.get("state") != "failed":
+                                return HTTPStatus.OK, self._control_result(completed)
+                            # The attempt this request waited on failed or was abandoned
+                            # (Cancel, then Retry at once): this request is the new attempt.
+                            del self.control_state["completed"][operation_id]
                         continue
                     if intent == "full_quit" and active.get("state") == "permitted" \
                             and self._control_signature(active)[1:] == \
@@ -4864,6 +4881,32 @@ class GatewayState:
                         idle_restart = proven_idle is not None and \
                             self._control_reconcile_idle_apply_locked(candidate, proven_idle)
                     stream = self.control_state.get("stream")
+                    # The owner starts again on the exact generation it holds while the
+                    # streamer proves the application closed and no transport is left (Retry
+                    # after a lost transport): this request is a fresh start. The record
+                    # stays the handle for closing what still runs until the new start
+                    # succeeds and replaces it; a failed or abandoned one leaves it as it is.
+                    # The new record carries no game process identity; the Bridge binds one.
+                    # ponytail: not while a child time session runs - its attachment to the
+                    # stream generation would need re-binding; such a Retry still needs a close.
+                    if isinstance(stream, dict) and self.child_time_session is None \
+                            and expected_generation > 0 \
+                            and expected_generation == int(stream.get("generation") or 0) \
+                            and all(stream.get(key) == proposed.get(key) for key in (
+                                "client_id", "actor_profile_id", "execution_profile_id",
+                                "sunshine_app_id", "child_session_id")):
+                        closed = probes.read(
+                            "stream_closed", self._control_probe_key_locked(),
+                            lambda stream=dict(stream):
+                                self._control_start_effect_absent(stream), False)
+                        if closed is probes.PENDING:
+                            continue
+                        if closed:
+                            DIAGNOSTICS.record(
+                                "control-stream-closed-restart", operation_id=operation_id,
+                                generation=stream.get("generation"),
+                                stream_session_id=stream.get("stream_session_id"))
+                            idle_restart, stream = True, None
                 if direction == "stop":
                     idle = self.control_state.get("idle_stream")
                     if stream is None and isinstance(idle, dict) and expected_generation == idle.get("generation") \
@@ -4879,11 +4922,21 @@ class GatewayState:
                         if intent in {"full_quit", "hard_reset"} else \
                         ("client_id", "actor_profile_id", "execution_profile_id",
                          "stream_session_id", "sunshine_app_id")
-                    if (not isinstance(stream, dict) or
-                            any(stream.get(key) != proposed.get(key) for key in close_keys) or
-                            expected_generation != int(stream.get("generation") or 0)):
+                    # Why this close has no stream to act on: none is recorded; it is another
+                    # owner's; this owner's newer generation replaced it (nothing is left of
+                    # the caller's); or, below, the streamer runs an app MoonWaker did not start.
+                    refusal = "managed_stream_unavailable" if not isinstance(stream, dict) \
+                        else "stream_owner_mismatch" if any(
+                            stream.get(key) != proposed.get(key) for key in close_keys
+                            if key not in {"stream_session_id", "sunshine_app_id"}) \
+                        else "stream_generation_superseded" \
+                        if expected_generation < int(stream.get("generation") or 0) \
+                        else "stream_owner_mismatch" if any(
+                            stream.get(key) != proposed.get(key) for key in close_keys) \
+                        or expected_generation != int(stream.get("generation") or 0) else ""
+                    if refusal:
                         return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                                     "reason": "unmanaged_stream"}
+                                                     "reason": refusal}
                     if observed_app_id not in {0, int(stream.get("sunshine_app_id") or 0)}:
                         return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                      "reason": "unmanaged_stream"}
@@ -5305,22 +5358,96 @@ class GatewayState:
                 or active.get("intent") == "reauthorize" \
                 or active.get("state") not in {"permitted", "uncertain"}:
             return None
-        grace = CONTROL_START_REPORTED_GRACE_SECONDS \
+        grace = 0.0 if active.get("reason") == "start_abandoned" \
+            else CONTROL_START_REPORTED_GRACE_SECONDS \
             if active.get("reason") == "effect_result_uncertain" \
             else CONTROL_START_SILENT_GRACE_SECONDS
         acted = float(active["holder_monotonic"])
         return ((active["operation_id"], active["generation"], active["state"], acted),
                 dict(active), acted + grace - time.monotonic())
 
-    def _control_start_effect_absent(self, operation: dict[str, Any]) -> bool:
-        """The streamer authoritatively reports neither a transport nor a running app, so
-        this start left nothing behind (network read)."""
+    def _control_start_effect(self, operation: dict[str, Any]) -> str:
+        """What the streamer authoritatively reports of a start (network read); see
+        ControlOperationPolicy.streamer_start_effect."""
         try:
             ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
                                       profile_id=operation["execution_profile_id"])
         except (OSError, TypeError, ValueError):
-            return False
-        return ok and ControlOperationPolicy.streamer_idle(snapshot)
+            return "unknown"
+        return ControlOperationPolicy.streamer_start_effect(snapshot, operation) \
+            if ok else "unknown"
+
+    def _control_start_effect_absent(self, operation: dict[str, Any]) -> bool:
+        """The streamer authoritatively reports neither a transport nor a running app, so
+        this start left nothing behind (network read)."""
+        return self._control_start_effect(operation) == "absent"
+
+    def control_operation_abandon(self, client: dict[str, Any], body: dict[str, Any],
+                                  request_id: str) -> tuple[int, dict[str, Any]]:
+        """The holder of a client start declares it will not send or finish it.
+
+        The permit ends at once when nothing can be left ownerless: a retained stream record
+        stays the handle of whatever runs, or the streamer proves no effect of this start
+        ("released"). This start's own effect (its application alone, no other client) is
+        recorded as the started stream, so the holder closes it through the ordinary full
+        quit with the returned generation; anything else the streamer runs is not this
+        holder's and stays unmanaged. Without proof the permit stays, with no grace left
+        before the host resolves it itself. Unknown, foreign and non-start operation IDs,
+        and a known generation that is not the permit's, get one answer that tells nothing
+        of the state.
+        """
+        operation_id = self._control_text(body.get("operation_id"), "operation ID")
+        if operation_id != request_id:
+            raise ValueError("The operation ID must match X-Request-Id.")
+        child_session_id = str(body.get("child_session_id") or "").strip().lower()
+        if child_session_id and not CHILD_TIME_SESSION_ID_PATTERN.fullmatch(child_session_id):
+            raise ValueError("A valid child session ID is required.")
+        generation = body.get("generation", 0)
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+            raise ValueError("A valid generation is required.")
+        client_id, actor_id, execution_id, _client_uuid = self._control_identity(client)
+        holder = {"operation_id": operation_id, "client_id": client_id,
+                  "actor_profile_id": actor_id, "execution_profile_id": execution_id,
+                  "child_session_id": child_session_id, "direction": "start"}
+
+        def held(operation: Any) -> bool:
+            # generation 0: the holder never read its permit (lost acquire answer).
+            return isinstance(operation, dict) and operation.get("intent") != "reauthorize" \
+                and all(operation.get(key) == value for key, value in holder.items()) \
+                and generation in {0, int(operation.get("generation") or 0)}
+
+        probes = ControlProbes(time.monotonic() + 20.0)
+        while True:
+            probes.run()
+            with self.control_condition:
+                completed = self.control_state.setdefault("completed", {}).get(operation_id)
+                active = self.control_state.get("active")
+                if held(completed):
+                    return HTTPStatus.OK, {**self._control_result(completed),
+                                           "released": completed.get("state") != "succeeded"}
+                if not held(active):
+                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                 "reason": "stale_operation"}
+                effect = "absent"
+                if self.control_state.get("stream") is None:
+                    effect = probes.read(
+                        "start_effect", (operation_id, active.get("generation")),
+                        lambda active=dict(active): self._control_start_effect(active),
+                        "unknown")
+                    if effect is probes.PENDING:
+                        continue
+                DIAGNOSTICS.record("control-start-abandoned", operation_id=operation_id,
+                                   generation=active.get("generation"), effect=effect)
+                if effect in {"absent", "foreign"}:
+                    return HTTPStatus.OK, {**self._control_finish_locked(
+                        active, "failed", "start_abandoned"), "released": True}
+                if effect == "present":
+                    return HTTPStatus.OK, {**self._control_finish_locked(
+                        active, "succeeded", "start_effect_present"), "released": False}
+                self._control_uncertain(active, "start_abandoned", True)
+                self._control_save_locked()
+                self.control_condition.notify_all()
+                return HTTPStatus.CONFLICT, {**self._control_result(active), "released": False}
 
     def _control_resolve_stale_start_locked(self, key: tuple[Any, ...]) -> bool:
         """End the probed start permit as failed, only if it is still the same permit in the
@@ -7794,6 +7921,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if int(status) >= 400 and isinstance(value, dict) and \
                 getattr(self, "_diagnostic_route", "") in {
                     f"{API_PREFIX}/control/operation/acquire",
+                    f"{API_PREFIX}/control/operation/abandon",
                     f"{API_PREFIX}/control/operation/reconcile"}:
             reason = value.get("reason")
             if isinstance(reason, str) and reason in DIAGNOSTIC_CONTROL_REJECTION_CODES:
@@ -8552,6 +8680,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "complete": {"operation_id", "generation",
                                  "actor_lease_epoch", "succeeded", "effect_result"},
                     "reconcile": {"operation_id", "observed_sunshine_app_id"},
+                    "abandon": {"operation_id", "child_session_id", "generation"},
                     "status": set(),
                 }.get(action)
                 if fields is None:
@@ -8576,6 +8705,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         authenticated_client, body, request_id)
                 elif action == "complete":
                     status, result = self.state.control_operation_complete(
+                        authenticated_client, body, request_id)
+                elif action == "abandon":
+                    status, result = self.state.control_operation_abandon(
                         authenticated_client, body, request_id)
                 elif action == "status":
                     status, result = self.state.control_operation_status(authenticated_client)

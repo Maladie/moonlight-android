@@ -132,3 +132,33 @@ class ControlOperationPolicy:
                 connected[0].get("uuid") or "").lower() == str(
                 stream.get("vibepollo_client_uuid")).lower()
         return not connected
+
+    @staticmethod
+    def streamer_start_effect(snapshot: Any, operation: Any) -> str:
+        """What a snapshot shows of this start: "absent" (no transport, no running app),
+        "present" (its app is the only one running and no other client is connected),
+        "foreign" (something this start does not own), else "unknown"."""
+        session = ControlOperationPolicy._authoritative_session(snapshot)
+        if session is None or not isinstance(operation, dict):
+            return "unknown"
+        if ControlOperationPolicy.streamer_idle(snapshot):
+            return "absent"
+        clients = ControlOperationPolicy._snapshot_items(snapshot.get("clients"))
+        apps = ControlOperationPolicy._snapshot_items(snapshot.get("apps"))
+        if clients is None or apps is None \
+                or any(not isinstance(item, dict) or type(item.get("connected")) is not bool
+                       for item in clients) \
+                or any(not isinstance(item, dict) or type(item.get("running")) is not bool
+                       for item in apps):
+            return "unknown"
+        connected = [str(item.get("uuid") or "").lower() for item in clients
+                     if item["connected"]]
+        running = [item.get("app_id") for item in apps if item["running"]]
+        if session["count"] != len(connected) or session["app_running"] != bool(running):
+            return "unknown"
+        app_id = operation.get("sunshine_app_id")
+        uuid = str(operation.get("vibepollo_client_uuid") or "").lower()
+        own = type(app_id) is int and app_id > 0 \
+            and [type(item) is int and item for item in running] == [app_id] \
+            and all(uuid and item == uuid for item in connected)
+        return "present" if own else "foreign"

@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 
 /** Activity-free host half of one exact whole-session termination. */
 public final class HostSessionTermination {
@@ -34,13 +35,25 @@ public final class HostSessionTermination {
         CLOSED_GAME_UNVERIFIED,
         /** The Gateway refused the close: it could not prove the provider game or its absence. */
         GAME_UNVERIFIED,
-        /** Sunshine runs a stream this session does not own. */
+        /** The host stream is another owner's, or Sunshine runs an app MoonWaker did not start. */
         OTHER_STREAM,
+        /**
+         * Nothing of this session is left to close: no stream record while Sunshine runs no
+         * application; or, for an abandoned start, the host stream is a newer generation's
+         * or another owner's.
+         */
+        NOTHING_TO_CLOSE,
+        /**
+         * One attempt's refusal, never a result: the host holds a newer generation of this
+         * owner's stream (every later start on it advances the record), so the session and
+         * its game still run under a binding this attempt did not name.
+         */
+        SUPERSEDED,
         FAILED;
 
         /** The whole session ended: the stream closed and no unverified game was left. */
         public boolean closed() {
-            return this == CLOSED;
+            return this == CLOSED || this == NOTHING_TO_CLOSE;
         }
 
         /**
@@ -48,7 +61,7 @@ public final class HostSessionTermination {
          * close of this session (cancel start, close session) may treat that as done.
          */
         public boolean streamClosed() {
-            return this == CLOSED || this == CLOSED_GAME_UNVERIFIED;
+            return closed() || this == CLOSED_GAME_UNVERIFIED;
         }
 
         public static Outcome of(boolean closed) {
@@ -58,20 +71,74 @@ public final class HostSessionTermination {
 
     private HostSessionTermination() { }
 
+    /**
+     * A close the user ordered. A binding the host superseded still names a running session,
+     * so the close is repeated once with the binding the host reports for this owner.
+     */
     public static Outcome run(Context context, String hostId, String activeHost,
                               int port, int httpsPort, String uniqueId, byte[] certificate,
                               String streamSessionId, int appId, String gameId,
                               long expectedGeneration,
                               PlayniteTransitionGateway.ActorContext actor) {
+        return close(false, context, hostId, activeHost, port, httpsPort, uniqueId,
+                certificate, streamSessionId, appId, gameId, expectedGeneration, actor);
+    }
+
+    /**
+     * Closes only what one start this client gave up left on the host: its exact generation.
+     * A newer generation or another owner there means nothing of that start remains.
+     */
+    public static Outcome closeAbandonedStart(
+            Context context, String hostId, String activeHost, int port, int httpsPort,
+            String uniqueId, byte[] certificate, String streamSessionId, int appId,
+            String gameId, long expectedGeneration,
+            PlayniteTransitionGateway.ActorContext actor) {
+        return close(true, context, hostId, activeHost, port, httpsPort, uniqueId,
+                certificate, streamSessionId, appId, gameId, expectedGeneration, actor);
+    }
+
+    private static Outcome close(
+            boolean abandonedStart, Context context, String hostId, String activeHost, int port,
+            int httpsPort, String uniqueId, byte[] certificate, String streamSessionId,
+            int appId, String gameId, long expectedGeneration,
+            PlayniteTransitionGateway.ActorContext actor) {
         GatewayConnection gateway = new HostGatewayStore(context).loadForHost(
                 hostId, activeHost, actor.actorProfileId);
         if (gateway == null || expectedGeneration <= 0L) return Outcome.FAILED;
         ControlOperationClient control = new ControlOperationClient(new GatewayTransport());
+        return retrySuperseded(attempt(abandonedStart, context, hostId, activeHost, port,
+                httpsPort, uniqueId, certificate, streamSessionId, appId, gameId,
+                expectedGeneration, actor, gateway, control), () -> {
+            ControlOperationClient.Permit owned = control.ownedSession(gateway);
+            return attempt(false, context, hostId, activeHost, port, httpsPort, uniqueId,
+                    certificate, owned.streamSessionId, owned.sunshineAppId, gameId,
+                    owned.generation, actor, gateway, control);
+        });
+    }
+
+    /** A superseded attempt is repeated once; a second refusal or no binding is a failure. */
+    static Outcome retrySuperseded(Outcome first, Callable<Outcome> withOwnedBinding) {
+        if (first != Outcome.SUPERSEDED) return first;
+        try {
+            Outcome second = withOwnedBinding.call();
+            return second == Outcome.SUPERSEDED ? Outcome.FAILED : second;
+        } catch (Exception unavailable) {
+            return Outcome.FAILED;
+        }
+    }
+
+    private static Outcome attempt(
+            boolean abandonedStart, Context context, String hostId, String activeHost, int port,
+            int httpsPort, String uniqueId, byte[] certificate, String streamSessionId,
+            int appId, String gameId, long expectedGeneration,
+            PlayniteTransitionGateway.ActorContext actor, GatewayConnection gateway,
+            ControlOperationClient control) {
         String operationId = "control-full-quit-" + UUID.randomUUID();
         ControlOperationClient.Permit permit = null;
         boolean effectSucceeded = false;
         boolean effectResultUncertain = false;
         boolean gameLeftUnverified = false;
+        int running = 0;
         try {
             X509Certificate serverCertificate = certificate == null ? null
                     : (X509Certificate) CertificateFactory.getInstance("X.509")
@@ -79,13 +146,13 @@ public final class HostSessionTermination {
             NvHTTP http = new NvHTTP(new ComputerDetails.AddressTuple(activeHost, port),
                     httpsPort, uniqueId, serverCertificate,
                     PlatformBinding.getCryptoProvider(context));
-            int running = http.getComputerDetails(true).runningGameId;
+            running = http.getComputerDetails(true).runningGameId;
             try {
                 permit = control.acquire(gateway, operationId, "full_quit", streamSessionId,
                         appId, expectedGeneration, running, "");
             } catch (Exception unavailable) {
                 // A definitive rejection grants no permit, so there is nothing to reconcile.
-                Outcome rejected = rejection(unavailable);
+                Outcome rejected = rejection(unavailable, running, abandonedStart);
                 if (rejected != Outcome.FAILED) return rejected;
                 ControlOperationClient.Result reconciled = control.reconcile(
                         gateway, operationId, streamSessionId, appId, running);
@@ -163,7 +230,7 @@ public final class HostSessionTermination {
                 }
             }
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
-            return failure(error.getMessage());
+            return failure(error.getMessage(), running, abandonedStart);
         }
     }
 
@@ -198,13 +265,29 @@ public final class HostSessionTermination {
     }
 
     /** The outcome of a Gateway rejection of the acquire; FAILED for anything else. */
-    static Outcome rejection(Exception error) {
+    static Outcome rejection(Exception error, int runningAppId, boolean abandonedStart) {
         return error instanceof GatewayTransport.GatewayException
-                ? failure(error.getMessage()) : Outcome.FAILED;
+                ? failure(error.getMessage(), runningAppId, abandonedStart) : Outcome.FAILED;
     }
 
-    static Outcome failure(String reason) {
-        return "retained_process_unconfirmed".equals(reason) ? Outcome.GAME_UNVERIFIED
-                : "unmanaged_stream".equals(reason) ? Outcome.OTHER_STREAM : Outcome.FAILED;
+    /**
+     * The outcome of a refused or failed close, by the host's reason, the application
+     * Sunshine ran when the close began (0: none) and whether it closes an abandoned start:
+     * of that, a newer generation or another owner on the host leaves nothing.
+     */
+    static Outcome failure(String reason, int runningAppId, boolean abandonedStart) {
+        if (reason == null) return Outcome.FAILED;
+        switch (reason) {
+            case "retained_process_unconfirmed": return Outcome.GAME_UNVERIFIED;
+            case "stream_owner_mismatch":
+                return abandonedStart ? Outcome.NOTHING_TO_CLOSE : Outcome.OTHER_STREAM;
+            case "unmanaged_stream": return Outcome.OTHER_STREAM;
+            case "stream_generation_superseded":
+                return abandonedStart ? Outcome.NOTHING_TO_CLOSE : Outcome.SUPERSEDED;
+            // No record: a running application may be this session's stream left behind.
+            case "managed_stream_unavailable":
+                return runningAppId == 0 ? Outcome.NOTHING_TO_CLOSE : Outcome.FAILED;
+            default: return Outcome.FAILED;
+        }
     }
 }

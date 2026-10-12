@@ -6,6 +6,11 @@ public interface NvConnectionListener {
     void stageFailed(String stage, int portFlags, int errorCode);
     /** The Gateway refused the control operation (HTTP 409 on acquire, reconcile or complete); reason is its stable code or empty. */
     void controlRejected(String stage, String reason);
+    /**
+     * A start this connection gave up without reading its permit was found started on the
+     * host under that generation; the stage still fails, and the stream's owner closes it.
+     */
+    default void startLeftOnHost(long controlGeneration) { }
     
     void connectionStarted();
     void connectionTerminated(int errorCode);

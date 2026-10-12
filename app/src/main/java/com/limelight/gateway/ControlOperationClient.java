@@ -120,6 +120,29 @@ public final class ControlOperationClient {
         return new Result(result.state, result.reason, result.generation);
     }
 
+    /**
+     * Hands back a start this client will not send or finish, known by its operation ID and,
+     * when the permit arrived, its generation (0: it never did), which keeps a repeated request
+     * from releasing a newer attempt under the same ID. A failed result means the host
+     * released it; a
+     * succeeded one names the generation of a stream the host found started anyway, which the
+     * caller closes through the ordinary full quit. An unknown operation and a permit the host
+     * could not yet resolve are Gateway rejections.
+     */
+    public Result abandon(GatewayConnection connection, String operationId,
+                          String streamSessionId, int sunshineAppId, String childSessionId,
+                          long generation) throws IOException {
+        if (generation < 0) throw new IllegalArgumentException("Invalid generation");
+        JSONObject body = new JSONObject();
+        put(body, "operation_id", GatewayTransport.requireRequestId(operationId));
+        put(body, "child_session_id", childSessionId == null ? "" : childSessionId.trim());
+        put(body, "generation", generation);
+        Permit result = parse(poster.post(connection,
+                "/api/v1/control/operation/abandon", body, operationId, TIMEOUT_MS),
+                operationId, streamSessionId, sunshineAppId, false);
+        return new Result(result.state, result.reason, result.generation);
+    }
+
     public Result reconcile(GatewayConnection connection, Permit permit, int observedAppId)
             throws IOException {
         return reconcile(connection, permit.operationId, permit.streamSessionId,

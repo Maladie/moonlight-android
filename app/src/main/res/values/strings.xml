@@ -1194,6 +1194,7 @@
     <string name="control_previous_game_unconfirmed">The host has not confirmed that the previous game has ended. Wait a moment and try again.</string>
     <string name="control_state_changed">The session state on the host changed while starting. Try again.</string>
     <string name="control_rejected">The host rejected starting this stream. Try again in a moment.</string>
+    <string name="control_operation_pending">The host is still holding an unfinished operation and could not resolve it by itself. Try again in a moment, or use Hard close to reset the host session.</string>
     <string name="console_session_uncertain_title">Session status is still being verified</string>
     <string name="console_session_uncertain_details">MoonWaker has not yet confirmed which game is running. Wait a moment and try again. No game or stream was started or stopped.</string>
     <string name="console_presentation_launch_failed_title">Could not show the stream</string>

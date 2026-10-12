@@ -152,6 +152,43 @@ public class ControlOperationClientTest {
         client.ownedSession(connection);
     }
 
+    @Test
+    public void abandonNamesTheOperationAndKnownGenerationAndReadsReleaseOrTheStarted()
+            throws Exception {
+        List<String> requests = new ArrayList<>();
+        String[] state = {"failed"};
+        ControlOperationClient client = new ControlOperationClient((connection, path, body,
+                                                                     requestId, timeout) -> {
+            requests.add(path + ":" + requestId + ":" + body);
+            return response(body.optString("operation_id"), "stream-1", 7, 4, 3, state[0]);
+        });
+
+        ControlOperationClient.Result released = client.abandon(
+                connection, "op-1", "stream-1", 7, " child-1 ", 4L);
+        state[0] = "succeeded";
+        // 0: the permit never arrived, so its generation is unknown.
+        ControlOperationClient.Result started = client.abandon(
+                connection, "op-1", "stream-1", 7, null, 0L);
+
+        assertFalse(released.succeeded());
+        assertTrue(started.succeeded());
+        assertEquals(4, started.generation);
+        assertEquals(List.of(
+                "/api/v1/control/operation/abandon:op-1:"
+                        + new JSONObject().put("operation_id", "op-1")
+                        .put("child_session_id", "child-1").put("generation", 4L),
+                "/api/v1/control/operation/abandon:op-1:"
+                        + new JSONObject().put("operation_id", "op-1")
+                        .put("child_session_id", "").put("generation", 0L)), requests);
+    }
+
+    @Test(expected = IOException.class)
+    public void abandonResultForAnotherOperationIsRejected() throws Exception {
+        new ControlOperationClient((connection, path, body, requestId, timeout) ->
+                response("another-op", "stream-1", 7, 4, 3, "failed"))
+                .abandon(connection, "op-1", "stream-1", 7, "", 0L);
+    }
+
     private static JSONObject response(String operation, String session, int app,
                                        long generation, long epoch, String state)
             throws IOException {

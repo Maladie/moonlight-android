@@ -278,10 +278,10 @@ class ChildSessionsHttpTest(unittest.TestCase):
                 self.assertEqual(200, status)
                 self.assertEqual({"gateway", "capabilities"}, set(result))
                 self.assertEqual({"online": True, "api_version": 1}, result["gateway"])
-                self.assertEqual({"child_profiles_v1", "control_operations_v1"},
+                self.assertEqual({"child_profiles_v1", "control_operations_v2"},
                                  set(result["capabilities"]))
                 self.assertTrue(result["capabilities"]["child_profiles_v1"]["available"])
-                self.assertTrue(result["capabilities"]["control_operations_v1"]["available"])
+                self.assertTrue(result["capabilities"]["control_operations_v2"]["available"])
             proxy.assert_not_called()
             proxy_json.assert_not_called()
             self.assertIsNone(self.state.child_time_session)
@@ -356,7 +356,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
     def test_legacy_child_start_needs_an_active_time_session(self):
         status, result = self.get("/api/v1/capabilities", profile="kid", capability=True)
         self.assertEqual(200, status)
-        self.assertTrue(result["capabilities"]["control_operations_v1"]["available"])
+        self.assertTrue(result["capabilities"]["control_operations_v2"]["available"])
         status, result = self.post("/api/v1/control/operation/acquire", {
             "operation_id": "http-request", "intent": "launch",
             "stream_session_id": SESSION_ID, "sunshine_app_id": 7,
@@ -400,6 +400,141 @@ class ChildSessionsHttpTest(unittest.TestCase):
         }, request_id="http-next-play")
         self.assertEqual(200, status)
         self.assertEqual("permitted", next_play["state"])
+
+    # ---- abandon: a child hands back its own start only, and adopts nothing foreign ----
+
+    def child_pending_launch(self, operation_id):
+        if self.state.child_time_session is None:
+            status, _result = self.post("/api/v1/child/session/start", {
+                "game_id": "steam:123", "session_id": SESSION_ID,
+                "request_id": "abandon-session-start"}, profile="kid", capability=True)
+            self.assertEqual(202, status)
+        status, permit = self.post("/api/v1/control/operation/acquire", {
+            "operation_id": operation_id, "intent": "launch",
+            "stream_session_id": "child-stream", "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": SESSION_ID,
+        }, profile="kid", capability=True, request_id=operation_id)
+        self.assertEqual(200, status, permit)
+        return permit
+
+    def child_abandon(self, operation_id, child_session_id=SESSION_ID, profile="kid",
+                      **body):
+        return self.post("/api/v1/control/operation/abandon", {
+            "operation_id": operation_id, "child_session_id": child_session_id, **body},
+            profile=profile, capability=profile == "kid", request_id=operation_id)
+
+    def observe_streamer(self, apps=(), clients=()):
+        original = self.state.proxy
+
+        def proxy(name, path, timeout=2.5, profile_id=None):
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {
+                    **control_evidence(len(clients), bool(apps)),
+                    "clients": [{"uuid": uuid, "connected": True} for uuid in clients],
+                    "apps": [{"app_id": app_id, "running": True} for app_id in apps]}
+            return original(name, path, timeout, profile_id)
+
+        self.state.proxy = proxy
+        self.addCleanup(setattr, self.state, "proxy", original)
+
+    def test_child_abandon_needs_its_own_actor_and_session_binding(self):
+        permit = self.child_pending_launch("child-abandon")
+        refused = (409, {"ok": False, "state": "blocked", "reason": "stale_operation"})
+        self.assertEqual(refused, self.child_abandon("child-abandon", ""))
+        self.assertEqual(refused, self.child_abandon(
+            "child-abandon", "11111111-89ab-cdef-0123-456789abcdef"))
+        # The parent whose Windows profile executes it is another actor.
+        self.assertEqual(refused, self.child_abandon("child-abandon", profile="parent"))
+        self.assertEqual(refused, self.child_abandon("child-abandon", "", profile="parent"))
+        self.assertEqual(refused, self.child_abandon(
+            "child-abandon", generation=permit["generation"] + 1))
+        for invalid in ({"child_session_id": "not-a-session"}, {"unexpected": True},
+                        {"generation": "1"}):
+            with self.subTest(invalid=invalid):
+                status, _result = self.child_abandon("child-abandon", **{
+                    "child_session_id": SESSION_ID, **invalid})
+                self.assertEqual(400, status)
+        self.assertEqual(("child-abandon", "permitted"), (
+            self.state.control_state["active"]["operation_id"],
+            self.state.control_state["active"]["state"]))
+        status, result = self.child_abandon(
+            "child-abandon", generation=permit["generation"])
+        self.assertEqual((200, True, "failed", "start_abandoned"), (
+            status, result["released"], result["state"], result["reason"]))
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertFalse(self.state.control_state.get("stream"))
+
+    def test_child_abandon_never_adopts_a_stream_it_did_not_start(self):
+        other = "89abcdef-0123-4567-89ab-cdef01234567"
+        for case, apps, clients in (("foreign-app", (9,), ()),
+                                    ("foreign-client", (7,), (other,)),
+                                    ("foreign-client-beside-own", (7,), (VIBE_UUID, other)),
+                                    ("host-app-own-client", (9,), (VIBE_UUID,))):
+            with self.subTest(case=case):
+                self.child_pending_launch("child-" + case)
+                self.observe_streamer(apps, clients)
+                status, result = self.child_abandon("child-" + case)
+                self.assertEqual((200, True, "failed", "start_abandoned"), (
+                    status, result["released"], result["state"], result["reason"]))
+                # No record: the child owns nothing it could later close.
+                self.assertFalse(self.state.control_state.get("stream"))
+                status, close = self.post("/api/v1/control/operation/acquire", {
+                    "operation_id": "close-" + case, "intent": "full_quit",
+                    "stream_session_id": "child-stream", "sunshine_app_id": 7,
+                    "expected_generation": result["generation"],
+                    "observed_sunshine_app_id": apps[0], "child_session_id": "",
+                }, profile="kid", capability=True, request_id="close-" + case)
+                self.assertEqual((409, "managed_stream_unavailable"),
+                                 (status, close["reason"]))
+                self.doCleanups()
+
+    def test_child_abandon_records_its_own_started_stream_for_its_close(self):
+        permit = self.child_pending_launch("child-own")
+        self.observe_streamer((7,), (VIBE_UUID,))
+        status, result = self.child_abandon("child-own")
+        self.assertEqual((200, False, "succeeded", "start_effect_present"), (
+            status, result["released"], result["state"], result["reason"]))
+        stream = self.state.control_state["stream"]
+        self.assertEqual(("kid", "parent", SESSION_ID, permit["generation"]), (
+            stream["actor_profile_id"], stream["execution_profile_id"],
+            stream["child_session_id"], stream["generation"]))
+
+    def test_child_abandon_after_its_session_ended_releases_or_leaves_only_a_close(self):
+        for case, own_effect in (("released", False), ("own-effect", True)):
+            with self.subTest(case=case):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                self.state.child_time_completed.clear()
+                self.child_pending_launch("child-ended-" + case)
+                self.state.child_time_session = None  # The session ended meanwhile.
+                refused = (409, {"ok": False, "state": "blocked",
+                                 "reason": "stale_operation"})
+                self.assertEqual(refused, self.child_abandon("child-ended-" + case, ""))
+                if own_effect:
+                    self.observe_streamer((7,), (VIBE_UUID,))
+                status, result = self.child_abandon("child-ended-" + case)
+                self.assertEqual(200, status, result)
+                self.assertEqual(not own_effect, result["released"])
+                self.assertIsNone(self.state.control_state["active"])
+                self.assertEqual(own_effect, bool(self.state.control_state.get("stream")))
+                # Without a session the child may still only close: no new start is granted.
+                status, play = self.post("/api/v1/control/operation/acquire", {
+                    "operation_id": "play-" + case, "intent": "launch",
+                    "stream_session_id": "child-stream-2", "sunshine_app_id": 7,
+                    "expected_generation": 0, "observed_sunshine_app_id": 0,
+                    "child_session_id": SESSION_ID,
+                }, profile="kid", capability=True, request_id="play-" + case)
+                self.assertEqual((409, "child_session_unmanaged"), (status, play["reason"]))
+                if own_effect:
+                    status, close = self.post("/api/v1/control/operation/acquire", {
+                        "operation_id": "close-" + case, "intent": "full_quit",
+                        "stream_session_id": "child-stream", "sunshine_app_id": 7,
+                        "expected_generation": result["generation"],
+                        "observed_sunshine_app_id": 7, "child_session_id": "",
+                    }, profile="kid", capability=True, request_id="close-" + case)
+                    self.assertEqual((200, "permitted"), (status, close["state"]), close)
+                self.doCleanups()
 
     def test_child_library_refresh_uses_child_authorization(self):
         status, result = self.post(
@@ -507,7 +642,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
         status, result = self.get(
             "/api/v1/capabilities", profile="kid", capability=True)
         self.assertEqual(200, status)
-        self.assertTrue(result["capabilities"]["control_operations_v1"]["available"])
+        self.assertTrue(result["capabilities"]["control_operations_v2"]["available"])
         status, result = self.get(
             "/api/v1/profiles", profile="kid", capability=True)
         self.assertEqual(200, status)

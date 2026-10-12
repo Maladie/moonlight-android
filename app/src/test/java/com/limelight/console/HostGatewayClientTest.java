@@ -385,10 +385,14 @@ public class HostGatewayClientTest {
         HostGatewayClient.Capabilities capabilities = HostGatewayClient.parseCapabilities(
                 new JSONObject().put("capabilities", new JSONObject()
                         .put("child_profiles_v1", new JSONObject().put("available", true))
-                        .put("control_operations_v1",
+                        .put("control_operations_v2",
                                 new JSONObject().put("available", true))));
         assertTrue(capabilities.childProfiles);
         assertTrue(capabilities.controlOperations);
+        // A host before the abandon endpoint and the close refusal reasons is refused.
+        assertFalse(HostGatewayClient.parseCapabilities(new JSONObject().put("capabilities",
+                new JSONObject().put("control_operations_v1",
+                        new JSONObject().put("available", true)))).controlOperations);
 
         HostGatewayClient.IntegrationProfiles profiles =
                 HostGatewayClient.parseIntegrationProfiles(new JSONObject()

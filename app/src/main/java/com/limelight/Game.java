@@ -4064,7 +4064,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             && allowance.actorProfileId.equals(ended.actorProfileId)
                             && ChildSessionLifecycle.terminal(ended) && !ended.cleanupRequired;
                 } else {
-                    resolved = HostSessionTermination.run(application, next.hostId,
+                    resolved = HostSessionTermination.closeAbandonedStart(application,
+                            next.hostId,
                             transferIntent.getStringExtra(EXTRA_HOST),
                             transferIntent.getIntExtra(EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
                             transferIntent.getIntExtra(EXTRA_HTTPS_PORT, 0),
@@ -4997,7 +4998,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         dialogText += "\n\n" + getResources().getString(R.string.nettest_text_blocked);
                     }
 
-                    Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_error_title), dialogText, true);
+                    if (rejection == SessionFailure.CONTROL_OPERATION_PENDING) {
+                        // The host panel's hard close, one step from this error.
+                        String hostId = getIntent().getStringExtra(EXTRA_PC_UUID);
+                        ConsoleConfirmDialog.show(Game.this,
+                                getString(R.string.conn_error_title), dialogText,
+                                getString(android.R.string.ok),
+                                getString(R.string.console_hard_terminate_session),
+                                () -> ConsoleActivity.offerHardTerminate(hostId),
+                                0L, Game.this::finish);
+                    } else {
+                        Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_error_title), dialogText, true);
+                    }
                 }
             }
         });

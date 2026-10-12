@@ -121,6 +121,12 @@ public enum SessionFailure {
             R.string.conn_error_title, R.string.control_previous_game_unconfirmed),
     CONTROL_STATE_CHANGED("control.state_changed",
             R.string.conn_error_title, R.string.control_state_changed),
+    // A control operation on the host is uncertain (its holder went silent, abandoned it or
+    // could not confirm its effect) and the host could not end it by itself; the stream error
+    // screen offers the host panel's hard close next to this message. An operation that is
+    // simply running (operation_in_progress) is an ordinary "try again in a moment".
+    CONTROL_OPERATION_PENDING("control.operation_pending",
+            R.string.conn_error_title, R.string.control_operation_pending),
     CONTROL_REJECTED("control.rejected",
             R.string.conn_error_title, R.string.control_rejected);
 
@@ -143,6 +149,13 @@ public enum SessionFailure {
             case "retained_owner_unconfirmed": return CONTROL_PREVIOUS_GAME_UNCONFIRMED;
             case "stale_operation":
             case "stale_session": return CONTROL_STATE_CHANGED;
+            case "terminal_result_timeout":
+            case "terminal_owner_required":
+            case "reconcile_required":
+            case "effect_result_uncertain":
+            case "start_abandoned":
+            case "reauthorization_fence_unconfirmed":
+            case "gateway_restarted_before_terminal_result": return CONTROL_OPERATION_PENDING;
             default: return CONTROL_REJECTED;
         }
     }

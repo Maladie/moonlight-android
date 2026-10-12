@@ -1164,7 +1164,21 @@ class GatewayStateTest(unittest.TestCase):
             "http://127.0.0.1:8880/library/list",
             state.bridge_url("playnite", "/library/list"),
         )
+        probed = []
+
+        def proxy(name, path, timeout=2.5, profile_id=None):
+            # These are a real host's Bridge ports: record the address, never connect.
+            del timeout
+            probed.append(state.bridge_url(name, path, profile_id=profile_id))
+            return False, {"error": "fixture_offline"}
+
+        state.proxy = proxy
         self.assertEqual("basia", state.capabilities()["gateway"]["integration_profile_id"])
+        self.assertEqual([
+            "http://localhost:8875/health",
+            "http://127.0.0.1:8865/health",
+            "http://127.0.0.1:8880/observation",
+        ], probed)
 
     def test_authenticated_profile_use_is_persisted_for_host_control(self):
         state = GatewayState(self.config_path, None)
@@ -2675,8 +2689,13 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
         self.assertEqual("living-room", self.state.authorize_profile(
             self.client, "default"))
+        # The summary probes the parent's Bridges; keep that off the loopback network.
+        self.state.proxy = mock.Mock(return_value=(False, {"error": "fixture_offline"}))
         self.assertNotIn("kid", [profile["id"] for profile in
                                   self.state.profiles_summary(self.client)["profiles"]])
+        self.state.proxy.assert_called()
+        self.assertNotIn("kid", [call.kwargs.get("profile_id")
+                                 for call in self.state.proxy.call_args_list])
 
         self.state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
         handler, responses = GatewayStateTest.request_handler(

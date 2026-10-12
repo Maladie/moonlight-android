@@ -734,6 +734,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final ConcurrentHashMap<String, ResolvedArtwork> resolvedPlayniteArtwork =
             new ConcurrentHashMap<>();
     private static volatile InitialLibraryPresentation initialLibraryPresentation;
+    private static final long HARD_TERMINATE_OFFER_WINDOW_MS = 10_000L;
+    private static volatile String hardTerminateOfferHostId = "";
+    private static volatile long hardTerminateOfferAt;
+
+    /**
+     * The stream error screen offers the host panel's hard close: its confirmation opens when
+     * the console is shown again at once, on that host's own screen. Otherwise the offer
+     * lapses and the action stays in the host panel.
+     */
+    public static void offerHardTerminate(String hostId) {
+        hardTerminateOfferAt = SystemClock.uptimeMillis();
+        hardTerminateOfferHostId = hostId == null ? "" : hostId;
+    }
 
     private static final class InitialLibraryPresentation {
         final HostProfileKey profileKey;
@@ -1318,6 +1331,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         active = true;
         if (initialHostsLoaded) resolveInitialHostSelection();
+        String hardTerminateOffer = hardTerminateOfferHostId;
+        hardTerminateOfferHostId = "";
+        if (!hardTerminateOffer.isEmpty() && SystemClock.uptimeMillis()
+                - hardTerminateOfferAt <= HARD_TERMINATE_OFFER_WINDOW_MS) {
+            // ponytail: also dropped when this console was recreated and its host binder is
+            // not connected yet; the action stays in the host panel.
+            mainHandler.post(() -> {
+                // Never over a host picker, a profile gate or its PIN, nor on another host.
+                if (hardTerminateOffer.equalsIgnoreCase(selectedHostUuid)
+                        && !hostSelectionVisible && profileGateHostUuid == null) {
+                    confirmHardTerminateSession(currentHost(hardTerminateOffer));
+                }
+            });
+        }
         refreshChildBindingStates();
         refreshDiscordAccess();
         // The retained stream Home always belongs to the host backing the live stream.
@@ -7131,6 +7158,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         refreshSessionState(host.uuid);
         // The host confirms the closed session free now, not at the next poll cadence.
         refreshSessionProjection(host, profileKey, accepted -> { });
+        // The session was already gone: the refreshed state says so, no notice.
+        if (outcome == HostSessionTermination.Outcome.NOTHING_TO_CLOSE) return;
         ConsoleUiFeedback.makeText(this,
                 outcome == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED
                         ? R.string.console_terminate_session_game_left

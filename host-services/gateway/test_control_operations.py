@@ -177,7 +177,7 @@ class ControlOperationTest(unittest.TestCase):
                              expected_generation=start["generation"] - 1)
         status, result = self.acquire(stale, 0)
         self.assertEqual(409, status)
-        self.assertEqual("unmanaged_stream", result["reason"])
+        self.assertEqual("stream_generation_superseded", result["reason"])
         self.assertEqual(start["generation"],
                          self.state.control_state["stream"]["generation"])
 
@@ -922,7 +922,7 @@ class ControlOperationTest(unittest.TestCase):
         status, stale = self.acquire(self.request(
             "a1-late-stop", "full_quit", expected_generation=a1["generation"]), 0)
         self.assertEqual(409, status)
-        self.assertEqual("unmanaged_stream", stale["reason"])
+        self.assertEqual("stream_generation_superseded", stale["reason"])
 
     def track_reads(self, during=None):
         """Record each proxy read and whether it ran under the Gateway lock."""
@@ -1148,7 +1148,14 @@ class ControlOperationTest(unittest.TestCase):
                                       "state": state, "id": "steam:7",
                                       "evidence": "VERIFIED"})
 
-    def close_permit(self, a1, intent="full_quit"):
+    def close_permit(self, a1, intent="full_quit", abandons=False):
+        """abandons: answer the Bridge's abandon-start from a fixture (no loopback request)
+        and require that exactly this start was abandoned."""
+        abandoned = []
+        if abandons:
+            self.state.proxy_json = lambda name, path, body, **kwargs: (
+                abandoned.append((name, path, body["game_id"], kwargs["profile_id"]))
+                or (True, {"accepted": True}))
         status, close = self.acquire(self.request(
             "a1-" + intent, intent, expected_generation=a1["generation"]), 0)
         self.assertEqual(200, status, close)
@@ -1157,21 +1164,24 @@ class ControlOperationTest(unittest.TestCase):
             close["process_id"]))
         self.assertEqual(200, self.complete(close)[0])
         self.assertIsNone(self.state.control_state["stream"])
+        if abandons:
+            self.assertEqual(
+                [("game_provider", "/game/abandon-start", "steam:7", "parent")], abandoned)
 
     def test_close_without_game_process_while_launch_starting(self):
         a1 = self.launched_stream()
         self.observe_launch("starting")
-        self.close_permit(a1)
+        self.close_permit(a1, abandons=True)
 
     def test_hard_reset_without_game_process_while_launch_starting(self):
         a1 = self.launched_stream()
         self.observe_launch("starting")
-        self.close_permit(a1, "hard_reset")
+        self.close_permit(a1, "hard_reset", abandons=True)
 
     def test_close_without_game_process_after_failed_launch(self):
         a1 = self.launched_stream()
         self.observe_launch("failed")
-        self.close_permit(a1)
+        self.close_permit(a1, abandons=True)
 
     def test_close_after_failed_launch_abandons_that_start_in_the_bridge(self):
         a1 = self.launched_stream()
@@ -1226,7 +1236,7 @@ class ControlOperationTest(unittest.TestCase):
     def test_close_after_failed_launch_when_retained_process_gone(self):
         a1 = self.launched_stream(token="a" * 64)
         self.observe_launch("failed")
-        self.close_permit(a1)
+        self.close_permit(a1, abandons=True)
 
     def test_launch_close_unconfirmed_when_retained_process_not_gone(self):
         a1 = self.launched_stream(token="a" * 64)
@@ -1837,6 +1847,535 @@ class ControlOperationTest(unittest.TestCase):
         self.assertEqual(409, self.acquire(self.request(
             "quit-2", "full_quit", expected_generation=a1["generation"]), 0)[0])
 
+    # ---- D-2: abandon, close refusal reasons, Retry on a closed application ----
+
+    def abandon(self, operation_id, child_session_id="", **generation):
+        self.authorize()
+        return self.state.control_operation_abandon(
+            self.client, {"operation_id": operation_id,
+                          "child_session_id": child_session_id, **generation}, operation_id)
+
+    def test_abandon_without_effect_releases_the_permit_and_is_idempotent(self):
+        _status, permit = self.acquire(self.request("cancelled"))
+        self.observe_partial_scan(app_running=False)
+        for _attempt in range(2):
+            status, result = self.abandon("cancelled")
+            self.assertEqual((200, True, False, "failed", "start_abandoned"), (
+                status, result["released"], result["ok"], result["state"], result["reason"]))
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNone(self.state.control_state["stream"])
+        # The released holder's late success is not the absent-effect receipt: it stands.
+        self.assertEqual((200, "failed"), (
+            self.complete(permit)[0], self.complete(permit)[1]["state"]))
+        self.assertIsNone(self.state.control_state["stream"])
+        status, play = self.acquire(self.request("next-play", session="stream-2"), 0)
+        self.assertEqual((200, "permitted"), (status, play["state"]), play)
+
+    def test_abandoned_start_is_a_new_attempt_under_the_same_operation_id(self):
+        self.acquire(self.request("retry"))
+        self.observe_partial_scan(app_running=False)
+        self.assertTrue(self.abandon("retry")[1]["released"])
+        status, again = self.acquire(self.request("retry"), 0)
+        self.assertEqual((200, "permitted"), (status, again["state"]), again)
+        self.assertEqual(200, self.complete(again)[0])
+        self.assertEqual(again["generation"],
+                         self.state.control_state["stream"]["generation"])
+
+    def test_abandon_with_an_effect_records_the_stream_for_an_ordinary_close(self):
+        for case, observe in {
+                "app_running": lambda: self.observe_partial_scan(
+                    app_running=True, scan="complete", process="ABSENT"),
+                "transport_live": lambda: self.observe_partial_scan(
+                    connected_count=1, app_running=True, scan="complete",
+                    process="ABSENT")}.items():
+            with self.subTest(case=case):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                self.state.proxy = lambda *_a, **_k: (False, {"error": "fixture_offline"})
+                operation_id = "started-" + case
+                _status, permit = self.acquire(self.request(operation_id))
+                observe()
+                for _attempt in range(2):
+                    status, result = self.abandon(operation_id)
+                    self.assertEqual(
+                        (200, False, "succeeded", "start_effect_present",
+                         permit["generation"]),
+                        (status, result["released"], result["state"], result["reason"],
+                         result["generation"]))
+                self.assertEqual(permit["generation"],
+                                 self.state.control_state["stream"]["generation"])
+                status, close = self.acquire(self.request(
+                    "close-" + case, "full_quit",
+                    expected_generation=result["generation"]), 0)
+                self.assertEqual((200, "permitted"), (status, close["state"]), close)
+                self.complete(close)
+
+    def test_abandon_without_proof_keeps_the_permit_until_the_host_proves_it(self):
+        self.acquire(self.request("unproven"))
+        status, result = self.abandon("unproven")
+        self.assertEqual((409, False, "uncertain", "start_abandoned"), (
+            status, result["released"], result["state"], result["reason"]))
+        self.assertEqual("unproven", self.state.control_state["active"]["operation_id"])
+        status, blocked = self.acquire(self.request("next-play", session="stream-2"), 0)
+        self.assertEqual((409, "start_abandoned"), (status, blocked["reason"]))
+        # No grace is left: the first authoritative proof releases it.
+        self.observe_partial_scan(app_running=False)
+        self.assertTrue(self.state._control_resolve_stale_start())
+        self.assertTrue(self.abandon("unproven")[1]["released"])
+        self.assertEqual(200, self.acquire(self.request("next-play", session="stream-2"), 0)[0])
+
+    def test_abandon_of_a_resume_keeps_the_retained_stream_record(self):
+        a1 = self.launched_stream()
+        self.observe_paused_app()
+        _status, resume = self.acquire(self.request(
+            "a1-resume", "resume", expected_generation=a1["generation"]), 0)
+        self.assertEqual("permitted", resume["state"], resume)
+        reads = self.track_reads()
+        status, result = self.abandon("a1-resume")
+        self.assertEqual((200, True, "start_abandoned"),
+                         (status, result["released"], result["reason"]))
+        self.assertEqual([], reads)
+        self.assertEqual(a1["generation"], self.state.control_state["stream"]["generation"])
+        status, close = self.acquire(self.request(
+            "a1-quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual((200, "permitted"), (status, close["state"]), close)
+
+    def test_abandon_refuses_unknown_foreign_and_non_start_operations_alike(self):
+        refused = (409, {"ok": False, "state": "blocked", "reason": "stale_operation"})
+        self.assertEqual(refused, self.abandon("never-acquired"))
+        self.acquire(self.request("foreign"))
+        self.observe_partial_scan(app_running=False)
+        for key, value in (("client_id", "other-tv"), ("actor_profile_id", "other"),
+                           ("execution_profile_id", "other"),
+                           ("child_session_id", "01234567-89ab-cdef-0123-456789abcdef")):
+            with self.subTest(key=key):
+                active = self.state.control_state["active"]
+                original = active[key]
+                active[key] = value
+                self.assertEqual(refused, self.abandon("foreign"))
+                self.assertEqual("permitted", active["state"])
+                active[key] = original
+        with self.assertRaises(ValueError):
+            self.state.control_operation_abandon(
+                self.client, {"operation_id": "foreign"}, "another-request")
+        self.assertTrue(self.abandon("foreign")[1]["released"])
+        # A foreign receipt is as unknown as a foreign permit.
+        self.state.control_state["completed"]["foreign"]["client_id"] = "other-tv"
+        self.assertEqual(refused, self.abandon("foreign"))
+        a1 = self.launched_stream()
+        self.observe_partial_scan(scan="complete", process="ABSENT")
+        _status, close = self.acquire(self.request(
+            "a1-quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual("permitted", close["state"], close)
+        self.assertEqual(refused, self.abandon("a1-quit"))
+        self.assertEqual("a1-quit", self.state.control_state["active"]["operation_id"])
+
+    def test_each_close_refusal_names_its_reason(self):
+        self.observe_partial_scan(scan="complete", process="ABSENT")
+
+        def close(operation_id, generation, **changes):
+            body = {**self.request(operation_id, "full_quit",
+                                   expected_generation=generation), **changes}
+            status, result = self.acquire(body, 0)
+            return status, result["reason"]
+
+        self.assertEqual((409, "managed_stream_unavailable"), close("no-record", 1))
+        a1 = self.launched_stream()
+        generation = a1["generation"]
+        stream = self.state.control_state["stream"]
+        for key in ("client_id", "execution_profile_id"):
+            with self.subTest(owner=key):
+                original, stream[key] = stream[key], "other"
+                self.assertEqual((409, "stream_owner_mismatch"),
+                                 close("foreign-" + key, generation))
+                stream[key] = original
+        self.assertEqual((409, "stream_owner_mismatch"),
+                         close("other-session", generation, stream_session_id="stream-9"))
+        self.assertEqual((409, "stream_owner_mismatch"), close("future", generation + 5))
+        self.assertEqual((409, "stream_generation_superseded"),
+                         close("superseded", generation - 1))
+        self.assertEqual((409, "unmanaged_stream"),
+                         close("foreign-app", generation, observed_sunshine_app_id=99))
+        self.assertEqual(generation, stream["generation"])
+        self.assertIsNone(self.state.control_state["active"])
+        status, result = self.acquire(self.request(
+            "a1-quit", "full_quit", expected_generation=generation), 0)
+        self.assertEqual((200, "permitted"), (status, result["state"]), result)
+
+    def observe_closed_app_with_running_game(self):
+        """The streamer closed the application; the provider still runs the game."""
+        self.observe_partial_scan(
+            app_running=False, scan="complete", process="VERIFIED",
+            game={"state": "running", "id": "steam:7", "evidence": "VERIFIED"},
+            running=[{"game_id": "steam:7", "process_id": 77, "process_token": "a" * 64}])
+
+    def test_retry_on_a_closed_application_starts_fresh_and_replaces_the_record(self):
+        for intent in ("reconnect", "launch"):
+            with self.subTest(intent=intent):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                self.state.proxy = lambda *_a, **_k: (False, {"error": "fixture_offline"})
+                a1 = self.launched_stream(token="a" * 64)
+                self.observe_closed_app_with_running_game()
+                # The provider is not idle, so the idle reconcile keeps the record.
+                self.assertFalse(self.state._control_reconcile_idle())
+                with patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
+                    status, retry = self.acquire(self.request(
+                        "retry-" + intent, intent, observed_app_id=0,
+                        expected_generation=a1["generation"]), 0)
+                self.assertEqual((200, "permitted"), (status, retry["state"]), retry)
+                self.assertIn("control-stream-closed-restart",
+                              [call.args[0] for call in record.call_args_list])
+                self.assertGreater(retry["generation"], a1["generation"])
+                # Until the new start succeeds the record stays the close handle.
+                self.assertEqual(a1["generation"],
+                                 self.state.control_state["stream"]["generation"])
+                self.assertEqual(200, self.complete(retry)[0])
+                stream = self.state.control_state["stream"]
+                # No game process identity is carried over without the Bridge's proof.
+                self.assertEqual((retry["generation"], False), (
+                    stream["generation"], bool(stream["provider_game_id"]
+                                               or stream["process_token"]
+                                               or stream["process_id"])))
+                # The dead generation's late close finds its newer one and does nothing.
+                status, late = self.acquire(self.request(
+                    "late-" + intent, "full_quit",
+                    expected_generation=a1["generation"]), 0)
+                self.assertEqual((409, "stream_generation_superseded"),
+                                 (status, late["reason"]))
+
+    def test_retry_keeps_the_record_without_proof_generation_or_ownership(self):
+        cases = {
+            "app_running": (lambda: self.observe_paused_app(), {}, {}),
+            "transport_live": (lambda: self.observe_partial_scan(
+                connected_count=1, app_running=False), {}, {}),
+            "snapshot_unavailable": (lambda: None, {}, {}),
+            "stale_generation": (self.observe_closed_app_with_running_game,
+                                 {"expected_generation": 0}, {}),
+            "other_client": (self.observe_closed_app_with_running_game, {},
+                             {"client_id": "other-tv"}),
+            "other_actor": (self.observe_closed_app_with_running_game, {},
+                            {"actor_profile_id": "other"}),
+            "other_app": (self.observe_closed_app_with_running_game, {},
+                          {"sunshine_app_id": 9}),
+        }
+        for case, (observe, request_changes, stream_changes) in cases.items():
+            with self.subTest(case=case):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                self.state.proxy = lambda *_a, **_k: (False, {"error": "fixture_offline"})
+                a1 = self.launched_stream(token="a" * 64)
+                self.state.control_state["stream"].update(stream_changes)
+                kept = dict(self.state.control_state["stream"])
+                observe()
+                status, result = self.acquire({**self.request(
+                    "retry-" + case, "reconnect", observed_app_id=0,
+                    expected_generation=a1["generation"]), **request_changes}, 0)
+                self.assertEqual(409, status, result)
+                self.assertIn(result["reason"], {"unmanaged_stream", "managed_stream_conflict"})
+                self.assertEqual(kept, self.state.control_state["stream"])
+                self.assertIsNone(self.state.control_state["active"])
+
+    def test_retry_on_a_closed_application_waits_for_a_close_under_a_child_session(self):
+        a1 = self.launched_stream(token="a" * 64)
+        self.observe_closed_app_with_running_game()
+        self.state.child_time_session = {
+            "session_id": "01234567-89ab-cdef-0123-456789abcdef", "client_id": "tv",
+            "actor_profile_id": "kid", "execution_profile_id": "parent"}
+        status, result = self.acquire(self.request(
+            "retry", "reconnect", observed_app_id=0,
+            expected_generation=a1["generation"]), 0)
+        self.assertEqual((409, "unmanaged_stream"), (status, result["reason"]))
+        self.assertEqual(a1["generation"], self.state.control_state["stream"]["generation"])
+
+    # ---- D-2 review: whose effect, kept close handle, same-ID retries, restart ----
+
+    def observe_streamer(self, apps=(), clients=()):
+        """A coherent authoritative snapshot: running app IDs and connected client UUIDs."""
+        def proxy(name, path, **_kwargs):
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {
+                    **control_evidence(len(clients), app_running=bool(apps)),
+                    "clients": [{"uuid": uuid, "connected": True} for uuid in clients]
+                    + [{"uuid": "ffffffff-89ab-cdef-0123-456789abcdef", "connected": False}],
+                    "apps": [{"app_id": app_id, "running": True} for app_id in apps]
+                    + [{"app_id": 3, "running": False}]}
+            return False, {"error": "fixture_offline"}
+        self.state.proxy = target_aware(proxy)
+
+    def test_abandon_records_only_this_starts_own_effect(self):
+        other = "89abcdef-0123-4567-89ab-cdef01234567"
+        cases = {
+            "own_app": ((7,), (), True),
+            "own_app_and_client": ((7,), (VIBE_UUID.upper(),), True),
+            "foreign_app": ((9,), (), False),
+            "foreign_app_beside_own": ((7, 9), (), False),
+            "foreign_client": ((7,), (other,), False),
+            "foreign_client_beside_own": ((7,), (VIBE_UUID, other), False),
+            "foreign_app_own_client": ((9,), (VIBE_UUID,), False),
+            "transport_without_app": ((), (VIBE_UUID,), False),
+        }
+        for case, (apps, clients, own) in cases.items():
+            with self.subTest(case=case):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                operation_id = "abandoned-" + case.replace("_", "-")
+                _status, permit = self.acquire(self.request(operation_id))
+                self.observe_streamer(apps, clients)
+                status, result = self.abandon(operation_id)
+                if own:
+                    self.assertEqual(
+                        (200, False, "succeeded", "start_effect_present"),
+                        (status, result["released"], result["state"], result["reason"]))
+                    self.assertEqual(permit["generation"],
+                                     self.state.control_state["stream"]["generation"])
+                    continue
+                # Not this start's: the permit ends and nobody is made its owner.
+                self.assertEqual((200, True, "failed", "start_abandoned"), (
+                    status, result["released"], result["state"], result["reason"]))
+                self.assertIsNone(self.state.control_state["stream"])
+                self.assertIsNone(self.state.control_state["active"])
+                status, close = self.acquire(self.request(
+                    "close-" + case.replace("_", "-"), "full_quit",
+                    expected_generation=permit["generation"]), 0)
+                self.assertEqual((409, "managed_stream_unavailable"),
+                                 (status, close["reason"]))
+                if apps and apps != (7,):
+                    status, play = self.acquire(self.request(
+                        "play-" + case.replace("_", "-"), observed_app_id=apps[-1]), 0)
+                    self.assertEqual((409, "unmanaged_stream"), (status, play["reason"]))
+
+    def test_start_effect_needs_a_coherent_snapshot(self):
+        operation = {"sunshine_app_id": 7, "vibepollo_client_uuid": VIBE_UUID}
+        effect = ControlOperationPolicy.streamer_start_effect
+        own = {**control_evidence(1, app_running=True),
+               "clients": [{"uuid": VIBE_UUID, "connected": True}],
+               "apps": [{"app_id": 7, "running": True}]}
+        self.assertEqual("present", effect(own, operation))
+        self.assertEqual("foreign", effect(own, {**operation, "vibepollo_client_uuid": ""}))
+        self.assertEqual("foreign", effect(own, {**operation, "sunshine_app_id": 0}))
+        self.assertEqual("absent", effect(
+            {**control_evidence(0), "clients": [], "apps": []}, operation))
+        for broken in ({"control_fresh": False}, {"clients": None}, {"apps": None},
+                       {"clients": [{"uuid": VIBE_UUID, "connected": "yes"}]},
+                       {"apps": [{"app_id": 7, "running": 1}]},
+                       {"clients": []},  # The session count names a client the list lacks.
+                       {"apps": []}):    # The session runs an app the list lacks.
+            with self.subTest(broken=broken):
+                self.assertEqual("unknown", effect({**own, **broken}, operation))
+
+    def retry_on_closed_application(self):
+        a1 = self.launched_stream(token="a" * 64)
+        self.observe_closed_app_with_running_game()
+        status, retry = self.acquire(self.request(
+            "retry", "reconnect", observed_app_id=0,
+            expected_generation=a1["generation"]), 0)
+        self.assertEqual((200, "permitted"), (status, retry["state"]), retry)
+        self.assertGreater(retry["generation"], a1["generation"])
+        return a1, retry
+
+    def test_failed_retry_on_a_closed_application_keeps_the_record_as_the_close_handle(self):
+        def rejected(retry):
+            self.authorize()
+            status, result = self.state.control_operation_complete(self.client, {
+                "operation_id": "retry", "generation": retry["generation"],
+                "actor_lease_epoch": retry["actor_lease_epoch"], "succeeded": False,
+                "effect_result": {"outcome": "definitive_failure"}}, "retry")
+            self.assertEqual((200, "failed", "effect_rejected"),
+                             (status, result["state"], result["reason"]))
+
+        def abandoned(retry):
+            reads = self.track_reads()
+            status, result = self.abandon("retry", generation=retry["generation"])
+            self.assertEqual((200, True, "start_abandoned"),
+                             (status, result["released"], result["reason"]))
+            self.assertEqual([], reads)  # The record answers; no streamer proof is needed.
+            self.observe_closed_app_with_running_game()
+
+        def silent(retry):
+            self.assertEqual(409, self.complete(retry, succeeded=False)[0])
+            # The provider still runs the game, the streamer is idle: the host ends the
+            # permit, and the record of the running game stays.
+            self.age_holder()
+            self.assertTrue(self.state._control_resolve_stale_start())
+
+        for end in (rejected, abandoned, silent):
+            with self.subTest(end=end.__name__):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                self.state.proxy = lambda *_a, **_k: (False, {"error": "fixture_offline"})
+                a1, retry = self.retry_on_closed_application()
+                kept = dict(self.state.control_state["stream"])
+                self.assertEqual((a1["generation"], "a" * 64),
+                                 (kept["generation"], kept["process_token"]))
+                end(retry)
+                self.assertIsNone(self.state.control_state["active"])
+                self.assertEqual(kept, self.state.control_state["stream"])
+                # "Close session" with the old generation still finds the session and closes
+                # it on the Bridge's proof of the running game.
+                status, close = self.acquire(self.request(
+                    "close-" + end.__name__, "full_quit", observed_app_id=0,
+                    expected_generation=a1["generation"]), 0)
+                self.assertEqual((200, "permitted"), (status, close["state"]), close)
+                self.assertEqual(("steam:7", "a" * 64, 77), (
+                    close["provider_game_id"], close["process_token"], close["process_id"]))
+                self.assertEqual(200, self.complete(close)[0])
+                self.assertIsNone(self.state.control_state["stream"])
+
+    def test_retry_waiting_on_its_own_cancelled_attempt_is_the_new_attempt(self):
+        _status, first = self.acquire(self.request("cancel-retry"))
+        self.observe_partial_scan(app_running=False)
+        entered, result = threading.Event(), []
+
+        def retry():
+            entered.set()
+            result.append(self.acquire(self.request("cancel-retry"), 5.0))
+
+        thread = threading.Thread(target=retry)
+        thread.start()
+        self.assertTrue(entered.wait(1.0))
+        thread.join(0.2)
+        self.assertEqual([], result)  # It waits for the attempt in flight.
+        self.assertTrue(self.abandon("cancel-retry", generation=first["generation"])[1][
+            "released"])
+        thread.join(5.0)
+        status, again = result[0]
+        self.assertEqual((200, "permitted"), (status, again["state"]), again)
+        self.assertGreater(again["generation"], first["generation"])
+        self.assertNotIn("cancel-retry", self.state.control_state["completed"])
+        self.assertEqual((200, "succeeded"), (
+            self.complete(again)[0], self.state.control_state["completed"][
+                "cancel-retry"]["state"]))
+        self.assertEqual(again["generation"],
+                         self.state.control_state["stream"]["generation"])
+
+    def test_abandon_with_a_known_generation_must_name_the_permits(self):
+        refused = (409, {"ok": False, "state": "blocked", "reason": "stale_operation"})
+        _status, old = self.acquire(self.request("same-id"))
+        self.observe_partial_scan(app_running=False)
+        self.assertEqual(refused, self.abandon("same-id", generation=old["generation"] + 1))
+        self.assertEqual("permitted", self.state.control_state["active"]["state"])
+        self.assertTrue(self.abandon("same-id", generation=old["generation"])[1]["released"])
+        _status, new = self.acquire(self.request("same-id"), 0)
+        # The old attempt's abandon, repeated by HTTP, does not release the new permit.
+        self.assertEqual(refused, self.abandon("same-id", generation=old["generation"]))
+        self.assertEqual(("same-id", "permitted", new["generation"]), tuple(
+            self.state.control_state["active"][key]
+            for key in ("operation_id", "state", "generation")))
+        self.assertTrue(self.abandon("same-id", generation=new["generation"])[1]["released"])
+        # The receipt replays to its own generation only.
+        self.assertEqual(refused, self.abandon("same-id", generation=old["generation"]))
+        self.assertTrue(self.abandon("same-id", generation=new["generation"])[1]["released"])
+        self.assertTrue(self.abandon("same-id")[1]["released"])
+        for invalid in (-1, True, "1", 1.0, None):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                self.abandon("same-id", generation=invalid)
+
+    def test_restarted_gateway_keeps_an_abandoned_start_without_grace(self):
+        self.acquire(self.request("abandoned-before-restart"))
+        self.assertEqual(409, self.abandon("abandoned-before-restart")[0])
+        restarted = GatewayState(self.config_path, None)
+        active = restarted.control_state["active"]
+        self.assertEqual(("uncertain", "start_abandoned"), (active["state"], active["reason"]))
+        self.assertLessEqual(restarted._control_stale_start_locked()[2], 0)
+
+        def idle(name, path, **_kwargs):
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(0, app_running=False),
+                              "clients": [], "apps": []}
+            return False, {"error": "fixture_offline"}
+
+        restarted.proxy = idle
+        restarted.child_time_housekeeping_tick()  # The first proof ends it: no grace anew.
+        self.assertIsNone(restarted.control_state["active"])
+        self.assertEqual("start_effect_absent", restarted.control_state["completed"][
+            "abandoned-before-restart"]["reason"])
+
+    def test_retry_on_its_own_unproven_abandoned_start_is_proven_within_the_acquire(self):
+        for retry_id in ("abandoned-unproven", "another-play"):
+            with self.subTest(retry_id=retry_id):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                self.state.proxy = lambda *_a, **_k: (False, {"error": "fixture_offline"})
+                _status, first = self.acquire(self.request("abandoned-unproven"))
+                self.assertEqual(409, self.abandon("abandoned-unproven")[0])
+                # Still no proof: the permit holds the host.
+                status, blocked = self.acquire(self.request(retry_id), 0)
+                self.assertEqual((409, "uncertain", "start_abandoned"),
+                                 (status, blocked["state"], blocked["reason"]))
+                # The proof is read by this acquire, not by a later housekeeping tick.
+                self.observe_partial_scan(app_running=False)
+                status, again = self.acquire(self.request(retry_id), 0)
+                self.assertEqual((200, "permitted"), (status, again["state"]), again)
+                self.assertGreater(again["generation"], first["generation"])
+                status, finished = self.complete(again)
+                self.assertEqual((200, "succeeded"), (status, finished["state"]))
+                self.assertEqual(again["generation"],
+                                 self.state.control_state["stream"]["generation"])
+
+    def test_a_reported_uncertain_start_is_not_proven_for_its_own_retry(self):
+        _status, permit = self.acquire(self.request("reported"))
+        self.assertEqual(409, self.complete(permit, succeeded=False)[0])
+        self.observe_partial_scan(app_running=False)
+        reads = self.track_reads()
+        status, retry = self.acquire(self.request("reported"), 0)
+        self.assertEqual((409, "effect_result_uncertain"), (status, retry["reason"]))
+        self.assertEqual([], reads)
+
+    def test_abandon_of_a_reported_uncertain_start(self):
+        for case, observe, expected in (
+                ("absent", lambda: self.observe_partial_scan(app_running=False),
+                 (200, "failed", "start_abandoned", True)),
+                ("own-effect", lambda: self.observe_streamer((7,), (VIBE_UUID,)),
+                 (200, "succeeded", "start_effect_present", False)),
+                ("unproven", lambda: None, (409, "uncertain", "start_abandoned", False))):
+            with self.subTest(case=case):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                self.state.proxy = lambda *_a, **_k: (False, {"error": "fixture_offline"})
+                _status, permit = self.acquire(self.request("reported-" + case))
+                status, reported = self.complete(permit, succeeded=False)
+                self.assertEqual((409, "effect_result_uncertain"),
+                                 (status, reported["reason"]))
+                observe()
+                status, result = self.abandon("reported-" + case,
+                                              generation=permit["generation"])
+                self.assertEqual(expected, (status, result["state"], result["reason"],
+                                            result["released"]))
+                if case == "unproven":
+                    # The holder's declaration costs the permit its 15 s grace.
+                    self.assertLessEqual(self.state._control_stale_start_locked()[2], 0)
+
+    def test_late_success_after_an_unresolved_or_host_resolved_abandon_is_accepted(self):
+        for case in ("unresolved", "host-resolved"):
+            with self.subTest(case=case):
+                self.state.control_state.update(
+                    {"active": None, "stream": None, "completed": {}})
+                self.state.proxy = lambda *_a, **_k: (False, {"error": "fixture_offline"})
+                _status, permit = self.acquire(self.request("late-" + case))
+                status, result = self.abandon("late-" + case)
+                self.assertEqual((409, "start_abandoned"), (status, result["reason"]))
+                if case == "host-resolved":
+                    self.observe_partial_scan(app_running=False)
+                    self.assertTrue(self.state._control_resolve_stale_start())
+                    self.assertEqual("start_effect_absent", self.state.control_state[
+                        "completed"]["late-" + case]["reason"])
+                # The start was sent after all: nothing was granted since, so it is recorded.
+                status, late = self.complete(permit)
+                self.assertEqual((200, "succeeded"), (status, late["state"]), late)
+                self.assertEqual(permit["generation"],
+                                 self.state.control_state["stream"]["generation"])
+
+    def test_abandon_is_a_control_operation_route_with_its_own_body(self):
+        source = Path(wakeplay_gateway.__file__).read_text(encoding="utf-8")
+        self.assertIn('"abandon": {"operation_id", "child_session_id", "generation"},',
+                      source)
+        self.assertIn('f"{API_PREFIX}/control/operation/abandon",', source)
+        self.assertEqual("control_operations_v2",
+                         wakeplay_gateway.CONTROL_OPERATIONS_CAPABILITY)
+        version = json.loads((Path(wakeplay_gateway.__file__).parents[1]
+                              / "version.json").read_text(encoding="utf-8-sig"))
+        self.assertEqual(7, version["protocol_version"])
 
 if __name__ == "__main__":
     unittest.main()

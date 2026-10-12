@@ -1160,7 +1160,7 @@ class HostGatewayClient {
                 available(capabilities, "virtualhere"),
                 available(capabilities, "playnite"),
                 available(capabilities, "child_profiles_v1"),
-                available(capabilities, "control_operations_v1"));
+                available(capabilities, "control_operations_v2"));
     }
 
     IntegrationProfiles getIntegrationProfiles(GatewayConnection connection) throws IOException {

@@ -31,6 +31,8 @@ public final class StreamRuntime implements NvConnectionListener,
         void start(NvConnectionListener listener);
         void stop();
         long controlGeneration();
+        /** The start was cancelled: a host permit not used yet is handed back, not used. */
+        void abandonStart();
         boolean reauthorizeControlGeneration(long expected, long generation);
         void requestIdrFrame();
         boolean attachDecoder(VideoDecoderRenderer decoder);
@@ -662,11 +664,16 @@ public final class StreamRuntime implements NvConnectionListener,
         if (p != null) p.stageComplete(stage);
     }
 
+    @Override public void startLeftOnHost(long controlGeneration) {
+        closeAbandonedLaunch(controlGeneration);
+    }
+
     /**
      * The presentation cancelled its launch, after stopping this runtime, and left the host
      * stream that launch opened to this runtime: the stream revealed nothing, whether or not the
      * host had granted it. A grant that already arrived (even through the live path, before the
-     * stop) closes now; a later one closes in {@link #stageComplete}, whatever the session model has
+     * stop) closes now; a permit whose start was not sent yet is handed back to the host; a
+     * start already sent closes in {@link #stageComplete}, whatever the session model has
      * processed of the cancel by then.
      */
     public void abandonLaunch() {
@@ -674,6 +681,7 @@ public final class StreamRuntime implements NvConnectionListener,
         launchAbandoned = true;
         long controlGeneration = transport.controlGeneration();
         if (controlGeneration > 0L) closeAbandonedLaunch(controlGeneration);
+        else transport.abandonStart();
     }
 
     /**
