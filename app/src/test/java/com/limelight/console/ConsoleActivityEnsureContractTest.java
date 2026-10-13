@@ -713,7 +713,7 @@ public class ConsoleActivityEnsureContractTest {
                 + " || hasCompletedPreparingRelay()"));
         assertTrue(create.indexOf("acceptPreparingHomeFrame()")
                 < create.indexOf("registerFrameCommitCallback"));
-        assertTrue(create.contains("!hasResolvedInitialHostSelection()"));
+        assertTrue(create.contains("boolean ready = hasResolvedInitialHostSelection()"));
         assertTrue(create.contains("registerFrameCommitCallback"));
         assertEquals(2, occurrences(create, "postOnAnimation("));
         assertTrue(build.contains("container.setBackgroundResource(R.color.console_background)"));
@@ -866,6 +866,42 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(restoreArtwork.contains("cachePlayniteBitmap(cached.file)"));
         assertTrue(restoreArtwork.contains("appRow.postInvalidateOnAnimation()"));
         assertFalse(restoreArtwork.contains("fetchPlayniteArtwork("));
+    }
+
+    @Test public void heldFirstHomeFrameAlwaysEndsWithinItsLimit() throws IOException {
+        long limit = StreamHomeActivity.INITIAL_FRAME_HOLD_LIMIT_MS;
+        assertTrue(limit > 0L && limit <= 2_000L);
+        assertTrue(StreamHomeActivity.holdsInitialFrame(false, 0L));
+        assertTrue(StreamHomeActivity.holdsInitialFrame(false, limit - 1L));
+        // Past the limit the frame draws whatever is still unprepared.
+        assertFalse(StreamHomeActivity.holdsInitialFrame(false, limit));
+        assertFalse(StreamHomeActivity.holdsInitialFrame(false, Long.MAX_VALUE));
+        assertFalse(StreamHomeActivity.holdsInitialFrame(true, 0L));
+
+        String streamHome = streamHomeActivitySource();
+        String preDraw = streamHome.substring(streamHome.indexOf(
+                        "@Override public boolean onPreDraw()"),
+                streamHome.indexOf("return true;", streamHome.indexOf(
+                        "@Override public boolean onPreDraw()")));
+        // The only frame hold: every cancelled draw reschedules a traversal that asks again.
+        assertEquals(1, occurrences(preDraw, "return false;"));
+        assertTrue(preDraw.contains(
+                "if (holdsInitialFrame(ready, now - heldSince)) return false;"));
+        assertTrue(preDraw.contains("if (heldSince == 0L) heldSince = now;"));
+
+        // The carousel's layout animation starts only with a drawn frame and suppresses the
+        // row's layouts until it ends: it is not installed while the first frame is held.
+        String console = consoleActivitySource();
+        String build = console.substring(console.indexOf("private FrameLayout buildUi()"),
+                console.indexOf("private void deferSecondaryLayersAfterFirstLayout("));
+        assertTrue(build.contains("if (!requiresPreparedInitialCarouselFrame()) {\n"
+                + "                appRow.setLayoutTransition(carouselTransition);"));
+        String complete = console.substring(console.indexOf(
+                        "protected final void completeInitialCarouselFrame()"),
+                console.indexOf("static boolean initialLocalPresentationReady("));
+        assertTrue(complete.contains(
+                "if (carouselTransition != null) appRow.setLayoutTransition(carouselTransition);"));
+        assertEquals(2, occurrences(console, "setLayoutTransition("));
     }
 
     @Test public void ownedPreparingRelayRecreationDoesNotKeepTheFrameInputGate()

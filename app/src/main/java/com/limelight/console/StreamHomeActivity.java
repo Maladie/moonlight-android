@@ -3,6 +3,7 @@ package com.limelight.console;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -58,10 +59,16 @@ public final class StreamHomeActivity extends ConsoleActivity {
         }
         content.getViewTreeObserver().addOnPreDrawListener(
                 new ViewTreeObserver.OnPreDrawListener() {
+                    private long heldSince;
+
                     @Override public boolean onPreDraw() {
-                        if (initialCarouselFramePending
-                                && (!hasResolvedInitialHostSelection()
-                                || !prepareInitialCarouselFrame())) return false;
+                        if (initialCarouselFramePending) {
+                            boolean ready = hasResolvedInitialHostSelection()
+                                    && prepareInitialCarouselFrame();
+                            long now = SystemClock.uptimeMillis();
+                            if (heldSince == 0L) heldSince = now;
+                            if (holdsInitialFrame(ready, now - heldSince)) return false;
+                        }
                         if (content.getViewTreeObserver().isAlive()) {
                             content.getViewTreeObserver().removeOnPreDrawListener(this);
                         }
@@ -98,6 +105,17 @@ public final class StreamHomeActivity extends ConsoleActivity {
     @Override
     protected boolean requiresPreparedInitialCarouselFrame() {
         return initialCarouselFramePending;
+    }
+
+    /**
+     * A window without a drawn frame gets no input focus, so the first frame waits for the
+     * prepared carousel at most this long: past it, it draws as it is.
+     */
+    static final long INITIAL_FRAME_HOLD_LIMIT_MS = 2_000L;
+
+    /** Every held frame schedules the next traversal, which asks again: the hold always ends. */
+    static boolean holdsInitialFrame(boolean ready, long heldMs) {
+        return !ready && heldMs < INITIAL_FRAME_HOLD_LIMIT_MS;
     }
 
     static boolean shouldAwaitPreparingFrame(boolean exactPreparing,

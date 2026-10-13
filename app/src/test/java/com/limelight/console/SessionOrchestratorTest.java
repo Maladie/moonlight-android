@@ -725,20 +725,6 @@ public class SessionOrchestratorTest {
         assertTrue(effects.failures.isEmpty());
     }
 
-    @Test public void preparingObservedGameStillRequiresFreshExactBridgeState() {
-        Fake effects = new Fake();
-        effects.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "old");
-        effects.canSwitch = true;
-        effects.closeResult = SessionOrchestrator.CloseResult.REUSED;
-
-        orchestrator(effects).play(game());
-
-        assertEquals(1, effects.refreshes);
-        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED,
-                effects.preflightAction);
-        assertEquals(1, effects.returned);
-    }
-
     @Test public void retainedNeutralStreamLaunchesManagedGameWithoutClosingTransport() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE,
@@ -754,7 +740,8 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.launches);
     }
 
-    @Test public void preparingWarmUpUsesOpaqueRetainedSwitchWithoutFreshLaunch() {
+    /** The TV case: Play while the warm-up stream still connects runs nothing beside it. */
+    @Test public void playDuringWarmUpRunsOneSwitchOnlyAfterItIsLive() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "");
         effects.canSwitch = true;
@@ -763,11 +750,67 @@ public class SessionOrchestratorTest {
         orchestrator(effects).play(game());
 
         assertEquals(1, effects.loadings);
-        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED,
-                effects.preflightAction);
-        assertEquals(Boolean.FALSE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.awaitedPrepared);
+        assertEquals("no host operation beside the warm-up start", 0, effects.readiness);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.refreshes);
+
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42, "", true, "", true);
+        effects.preparedSettle.run();
+
+        assertEquals(1, effects.readiness);
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, effects.preflightAction);
         assertEquals(1, effects.closes);
+        assertEquals(Boolean.FALSE, effects.allowDestructiveCloseSeen);
         assertEquals(1, effects.returned);
+        assertEquals(0, effects.launches);
+        assertEquals(1, effects.loadings);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void playDuringWarmUpObservingAGameAlsoWaitsForIt() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "old");
+        effects.canSwitch = true;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.awaitedPrepared);
+        assertEquals(0, effects.readiness);
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.closes);
+    }
+
+    @Test public void warmUpThatFailedWhileWaitingLaunchesTheGameFresh() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "");
+        effects.canSwitch = true;
+
+        orchestrator(effects).play(game());
+        effects.canSwitch = false;
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        effects.preparedSettle.run();
+
+        assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
+        assertEquals(1, effects.launches);
+        assertEquals(LaunchTransitionType.GAME, effects.launchType);
+        assertEquals(0, effects.closes);
+    }
+
+    @Test public void cancelledWhileWaitingForTheWarmUpDecidesNothingMore() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "");
+        effects.canSwitch = true;
+        SessionOrchestrator orchestrator = orchestrator(effects);
+
+        orchestrator.play(game());
+        orchestrator.cancel();
+
+        assertTrue(effects.preparedCancelled.getAsBoolean());
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42, "", true, "", true);
+        effects.preparedSettle.run();
+        assertEquals(0, effects.readiness);
+        assertEquals(0, effects.closes);
         assertEquals(0, effects.launches);
     }
 
@@ -1170,30 +1213,6 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.closes);
         assertEquals(0, effects.launches);
         assertTrue(effects.failures.isEmpty());
-    }
-
-    @Test public void preparingWarmUpBranchesReportDistinctCodes() {
-        Fake ineligible = new Fake();
-        ineligible.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "");
-        orchestrator(ineligible).play(game());
-        assertEquals(java.util.Collections.singletonList(
-                SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE), ineligible.failures);
-
-        Fake refreshFailed = new Fake();
-        refreshFailed.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "old");
-        refreshFailed.canSwitch = true;
-        refreshFailed.refreshSuccess = false;
-        orchestrator(refreshFailed).play(game());
-        assertEquals(java.util.Collections.singletonList(
-                SessionFailure.UNCERTAIN_PREPARING_REFRESH_FAILED), refreshFailed.failures);
-
-        Fake ineligibleAfterRefresh = new Fake();
-        ineligibleAfterRefresh.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "old");
-        orchestrator(ineligibleAfterRefresh).play(game());
-        assertEquals(1, ineligibleAfterRefresh.refreshes);
-        assertEquals(java.util.Collections.singletonList(
-                SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE_AFTER_REFRESH),
-                ineligibleAfterRefresh.failures);
     }
 
     @Test public void refreshThatStillCannotResolveReportsItsOwnCode() {
@@ -1779,6 +1798,14 @@ public class SessionOrchestratorTest {
             preparedGame = pendingGame;
         }
         @Override public void preparationFailed() { preparationFailures++; }
+        int awaitedPrepared;
+        BooleanSupplier preparedCancelled;
+        Runnable preparedSettle;
+        @Override public void awaitPrepared(BooleanSupplier cancelled, Runnable settled) {
+            awaitedPrepared++;
+            preparedCancelled = cancelled;
+            preparedSettle = settled;
+        }
         @Override public void refreshSession(
                 PlayIntent intent, BooleanSupplier cancelled,
                 Consumer<Boolean> completion) {

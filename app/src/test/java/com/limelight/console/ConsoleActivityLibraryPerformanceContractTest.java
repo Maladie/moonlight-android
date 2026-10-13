@@ -190,6 +190,21 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         assertEquals(2, reveal.split("carouselCard\\(libraryTransitionGameId\\)", -1).length - 1);
     }
 
+    @Test public void menuAmbienceContinuesWhereTheLastConsoleStoppedIt() throws IOException {
+        String audio = source("ConsoleAudioEngine.java");
+        String update = audio.substring(audio.indexOf("private synchronized void updateAmbient("),
+                audio.indexOf("private synchronized void applyFadeStep("));
+        assertTrue(audio.contains("private static int ambientPositionMs;"));
+        assertTrue(update.indexOf("ambientPlayer.seekTo(ambientPositionMs);")
+                < update.indexOf("ambientPlayer.start();"));
+        assertFalse(audio.contains("ambientPlayer.pause();\n        }"));
+        String pause = audio.substring(audio.indexOf("private void pauseAmbient()"),
+                audio.indexOf("private void setAmbientVolume("));
+        assertTrue(pause.indexOf("ambientPositionMs = ambientPlayer.getCurrentPosition();")
+                < pause.indexOf("ambientPlayer.pause();"));
+        assertEquals(1, audio.split("ambientPlayer\\.pause\\(\\)", -1).length - 1);
+    }
+
     private static String consoleActivitySource() throws IOException {
         return source("ConsoleActivity.java");
     }

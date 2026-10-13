@@ -89,17 +89,18 @@ public class ConsoleStreamLoadingViewContractTest {
         String apply = game.substring(game.indexOf("private void applyTransitionSnapshot"),
                 game.indexOf("static boolean shouldShowTransitionOverlay"));
 
-        assertTrue(apply.contains("if (usesClosingPresentation(snapshot))"));
+        // Which states are the passive closing screen is the controller snapshot's decision.
+        assertTrue(apply.contains("if (snapshot.closingPresentation())"));
         assertTrue(apply.contains("consoleLoadingView.showClosing("));
         assertTrue(apply.indexOf("consoleLoadingView.showClosing(")
                 < apply.indexOf("consoleLoadingView.setStep("));
         assertTrue(apply.contains("R.string.transition_game_ended"));
         assertTrue(apply.contains("R.string.transition_returning_library"));
-        String predicate = game.substring(game.indexOf(
-                        "private static boolean usesClosingPresentation"),
-                game.indexOf("static boolean shouldShowTransitionOverlay"));
-        assertTrue(predicate.contains("LaunchTransitionType.GAME_CONNECTION"));
-        assertTrue(predicate.contains("snapshot.spec.playniteGameId.isEmpty()"));
+        // A failure after that closing screen brings the cover's actions back.
+        String failure = apply.substring(apply.indexOf(
+                "snapshot.state == LaunchTransitionState.ERROR"));
+        assertTrue(failure.indexOf("consoleLoadingView.showFullTransitionAppearance()")
+                < failure.indexOf("consoleLoadingView.showError(getString(title)"));
     }
 
     @Test public void revealAvailabilityDoesNotStealFocus() throws IOException {

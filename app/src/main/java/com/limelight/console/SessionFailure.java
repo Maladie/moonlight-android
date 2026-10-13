@@ -63,13 +63,6 @@ public enum SessionFailure {
     // SessionOrchestrator: the canonical snapshot could not be trusted for this target.
     UNCERTAIN_RECOVERY_REQUIRED("uncertain.recovery_required",
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
-    UNCERTAIN_PREPARING_NOT_SWITCHABLE("uncertain.preparing_not_switchable",
-            R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
-    UNCERTAIN_PREPARING_REFRESH_FAILED("uncertain.preparing_refresh_failed",
-            R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
-    UNCERTAIN_PREPARING_NOT_SWITCHABLE_AFTER_REFRESH(
-            "uncertain.preparing_not_switchable_after_refresh",
-            R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
     UNCERTAIN_REFRESH_FAILED("uncertain.refresh_failed",
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
     UNCERTAIN_AFTER_REFRESH("uncertain.still_uncertain_after_refresh",
