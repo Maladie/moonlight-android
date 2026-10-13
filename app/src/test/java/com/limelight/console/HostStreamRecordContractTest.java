@@ -36,15 +36,22 @@ public class HostStreamRecordContractTest {
         // A lost network never terminates gracefully: it keeps its reconnect record.
         assertTrue(terminated.contains("errorCode == MoonBridge.ML_ERROR_GRACEFUL_TERMINATION"
                 + " && !userInitiatedDisconnect"));
-        assertTrue(terminated.indexOf("confirmClosedOnHost();")
+        // Only a stream the user saw is announced, never this client's own cleanup.
+        assertTrue(terminated.contains("confirmClosedOnHost(streamEverRevealed\n"
+                + "                    && !freshOwnedFailureCleanupInFlight.get());"));
+        assertTrue(terminated.indexOf("confirmClosedOnHost(")
                 < terminated.indexOf("cleanupUnrevealedProviderLaunch("));
-        String confirm = section(game, "private void confirmClosedOnHost()",
+        String confirm = section(game, "private void confirmClosedOnHost(boolean announce)",
                 "private String currentProfileId()");
-        assertTrue(confirm.contains("control.ownedStream(gateway)"));
+        // The first read waits as well, so the termination path's own saveReconnect lands first.
+        assertTrue(confirm.indexOf("Thread.sleep(2_000L)") >= 0 && confirm.indexOf(
+                "Thread.sleep(2_000L)") < confirm.indexOf("control.ownedStream(gateway)"));
         assertTrue(confirm.contains("HostStreamRecord.Action.RETIRE"));
         assertTrue(confirm.contains("SessionEvent.Cleared.byHost(sessionId)"));
         assertTrue(confirm.contains("new SessionEvent.ReconnectCleared(sessionId)"));
-        assertTrue(confirm.contains("R.string.session_closed_on_host"));
+        assertTrue(confirm.contains("\"host_close.confirmed\""));
+        assertTrue(confirm.indexOf("if (announce)") >= 0 && confirm.indexOf("if (announce)")
+                < confirm.indexOf("R.string.session_closed_on_host"));
     }
 
     @Test public void consoleReadsTheRecordOncePerHostEntryAndNeverInItsPollLoop()
@@ -56,9 +63,17 @@ public class HostStreamRecordContractTest {
                 "private String ownReconnectRecord(");
         assertTrue(reconcile.contains("!hostStreamReconciled.add(key.cacheKey())"));
         assertTrue(reconcile.contains(".ownedStream(gateway)"));
+        // The app list cache an adoption needs is read on the worker, never on the UI thread.
+        assertTrue(reconcile.contains("? loadApps(host, true)"));
+        assertFalse(section(console, "private Intent adoptedStreamRecord(",
+                "private long knownControlGeneration(").contains("loadApps("));
         String apply = section(console, "private void applyHostStreamRecord(",
                 "private Intent adoptedStreamRecord(");
         assertTrue(apply.contains("HostStreamRecord.decide(owned, key.profileId, local)"));
+        // A start or reconnect of this host begun since the read owns the records.
+        int owns = apply.indexOf(
+                "HostStreamRecord.sessionOwnsRecords(hostId, sessionModel.snapshot())");
+        assertTrue(owns >= 0 && owns < apply.indexOf("HostStreamRecord.decide("));
         // Adoption is a reconnect record: Play reconnects it through the saved-session path.
         assertTrue(apply.contains("new SessionEvent.ReconnectSaved(")
                 && apply.contains("owned.streamSessionId, false)"));

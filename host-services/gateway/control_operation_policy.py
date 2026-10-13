@@ -130,8 +130,8 @@ class ControlOperationPolicy:
 
     @staticmethod
     def host_streamer_close_allowed(snapshot: Any, stream: Any) -> bool:
-        """The host's close of its own record (`host_held`: tray, idle close): the record's
-        app is the only one running. A session no client is attributed to is not a foreign
+        """The host's close of its own record (`host_held`: tray, a child's terminal operation;
+        never the automatic idle close): the record's app is the only one running. A session no client is attributed to is not a foreign
         client; a connected client other than the record's is."""
         observed = ControlOperationPolicy._own_app_transport(snapshot, stream)
         if observed is None:

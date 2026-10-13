@@ -7460,10 +7460,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         HostProfileKey key = selectedProfileKey(host.uuid);
-        SessionModel.Snapshot retained = sessionModel.snapshot();
-        if (host.uuid.equalsIgnoreCase(retained.hostId)
-                && retained.state != SessionModel.State.NONE
-                && retained.state != SessionModel.State.RECONNECT_REQUIRED) return;
+        if (HostStreamRecord.sessionOwnsRecords(host.uuid, sessionModel.snapshot())) return;
         String local = ownReconnectRecord(host.uuid, key);
         // ponytail: one reconnect record slot; another host's record stays and nothing is
         // adopted beside it.
@@ -7479,7 +7476,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             } catch (IOException | RuntimeException unknown) {
                 return;
             }
-            mainHandler.post(() -> applyHostStreamRecord(hostId, key, local, owned));
+            // An adoption needs the host's app list: its cache is read here, off the UI thread.
+            List<NvApp> apps = HostStreamRecord.decide(owned, key.profileId, local)
+                    == HostStreamRecord.Action.ADOPT ? loadApps(host, true)
+                    : Collections.emptyList();
+            mainHandler.post(() -> applyHostStreamRecord(hostId, key, local, owned, apps));
         });
     }
 
@@ -7493,12 +7494,24 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void applyHostStreamRecord(String hostId, HostProfileKey key, String local,
-                                       ControlOperationClient.Permit owned) {
+                                       ControlOperationClient.Permit owned, List<NvApp> apps) {
         ComputerDetails host = currentHost(hostId);
-        // Records or selection that changed meanwhile are read again at a later entry.
-        if (host == null || isDestroyed() || !key.equals(selectedProfileKey(hostId))
+        // Records or selection that changed meanwhile, or a start or reconnect of this host
+        // begun since the read, are read again at a later entry.
+        if (host == null || isDestroyed()
+                || HostStreamRecord.sessionOwnsRecords(hostId, sessionModel.snapshot())
+                || !key.equals(selectedProfileKey(hostId))
                 || !local.equals(ownReconnectRecord(hostId, key))) return;
-        switch (HostStreamRecord.decide(owned, key.profileId, local)) {
+        HostStreamRecord.Action action = HostStreamRecord.decide(owned, key.profileId, local);
+        Intent record = action == HostStreamRecord.Action.ADOPT
+                ? adoptedStreamRecord(host, key, owned, apps) : null;
+        MoonWakerDiagnostics.record("INFO", "android.console", "host_stream_record.applied",
+                "host_id", hostId, "profile_id", key.profileId, "action", action.name(),
+                "local_stream_session_id", local,
+                "host_stream_session_id", owned == null ? "" : owned.streamSessionId,
+                "provider_game_id", owned == null ? "" : owned.providerGameId,
+                "adopted", record != null);
+        switch (action) {
             case RETIRE:
                 // A stream that ended while it was watched tells the user itself (Game).
                 sessionModel.post(SessionEvent.Cleared.byHost(local));
@@ -7506,7 +7519,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 BackgroundStreamService.dismiss(this, local);
                 break;
             case ADOPT:
-                Intent record = adoptedStreamRecord(host, key, owned);
                 if (record != null) {
                     sessionModel.post(new SessionEvent.ReconnectSaved(
                             record, owned.streamSessionId, false));
@@ -7522,8 +7534,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
      * once connected, with the host's generation, so Play reconnects it like any saved session.
      */
     private Intent adoptedStreamRecord(ComputerDetails host, HostProfileKey key,
-                                       ControlOperationClient.Permit owned) {
-        NvApp app = PlayniteTargetResolver.findById(loadApps(host, true), owned.sunshineAppId);
+                                       ControlOperationClient.Permit owned, List<NvApp> apps) {
+        NvApp app = PlayniteTargetResolver.findById(apps, owned.sunshineAppId);
         if (app == null || host.activeAddress == null || managerBinder == null) return null;
         LaunchTransitionSpec transition = LaunchTransitionSpec.create(host.uuid, key.profileId,
                 owned.providerGameId.isEmpty() ? LaunchTransitionType.GENERIC

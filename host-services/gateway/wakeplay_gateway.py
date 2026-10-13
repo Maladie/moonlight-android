@@ -5698,11 +5698,14 @@ class GatewayState:
             if stream.get("client_id") != client_id or \
                     stream.get("execution_profile_id") != execution_id:
                 return HTTPStatus.CONFLICT, {"ok": False, "reason": "stream_owner_mismatch"}
+            # A record without a bound game (an adopted start) holds None there: the
+            # answer keeps its types, so no client reads a JSON null as the game "null".
             return HTTPStatus.OK, {"ok": True, "state": "owned", **{
-                key: stream.get(key) for key in (
-                    "stream_session_id", "sunshine_app_id", "generation", "actor_lease_epoch",
-                    "actor_profile_id", "execution_profile_id", "child_session_id",
-                    "provider_game_id", "process_token", "process_id")}}
+                key: str(stream.get(key) or "") for key in (
+                    "stream_session_id", "actor_profile_id", "execution_profile_id",
+                    "child_session_id", "provider_game_id", "process_token")}, **{
+                key: int(stream.get(key) or 0) for key in (
+                    "sunshine_app_id", "generation", "actor_lease_epoch", "process_id")}}
 
     def _control_reconcile_idle_candidate_locked(
             self) -> tuple[dict[str, Any], tuple[int, int, int, int]] | None:
@@ -6364,9 +6367,11 @@ class GatewayState:
                     or stream.get("child_session_id") != session.get("session_id"):
                 return False, "stale_session"
             close_trace: dict[str, Any] = {}
+            # The Gateway holds a child's terminal operation on its own record: a session
+            # no client is attributed to must not keep an enforced limit's stream open.
             closed, close_reason = StreamerControlOperation.close(
                 self.proxy, str(session.get("execution_profile_id") or ""), stream,
-                trace=close_trace)
+                trace=close_trace, host_held=True)
             DIAGNOSTICS.record(
                 "child-terminal-streamer-close", level="INFO" if closed else "WARN",
                 operation_id=operation_id, generation=permit["generation"],
@@ -7548,7 +7553,7 @@ class GatewayState:
                 # The streamer decision comes first: a stream the close would leave keeps
                 # its game too, so the answer is never "refused" over a stopped game.
                 stopped, reason = StreamerControlOperation.closable(
-                    self.proxy, profile_id, stream, trace, host_held=True)
+                    self.proxy, profile_id, stream, trace, host_held=not idle_only)
             if stopped and game_id:
                 ok, result = self._child_time_control_call(stream, lambda:
                     self.provider_control_operation.execute(
@@ -7561,10 +7566,13 @@ class GatewayState:
                 if not stopped:
                     reason = "game_stop_unconfirmed"
             if stopped:
+                # An automatic idle close keeps the strict rule: any streamer session, even
+                # one no client is attributed to yet, blocks it.
                 closed, reason = StreamerControlOperation.close(
-                    self.proxy, profile_id, stream, trace=trace, host_held=True)
+                    self.proxy, profile_id, stream, trace=trace, host_held=not idle_only)
                 if not closed and game_id:
-                    # Only a streamer change since the decision above leaves this state.
+                    # A streamer change since the decision, or a close it ignored, leaves
+                    # this state.
                     reason = "game_closed_stream_unconfirmed"
             if trace:
                 DIAGNOSTICS.record(
@@ -7590,15 +7598,18 @@ class GatewayState:
         return "completed", "stream_closed_game_unconfirmed" if game_unconfirmed \
             else "stream_and_game_closed" if game_id else "stream_closed"
 
-    def _host_close_own_streamer_app(self, profile_id: str) -> bool:
-        """The streamer authoritatively runs MoonWaker's own application and nothing else."""
+    def _host_close_own_streamer_app(self, profile_id: str) -> bool | None:
+        """Whether the streamer authoritatively runs MoonWaker's own application and nothing
+        else; None when its snapshot cannot tell."""
         try:
             ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
                                       profile_id=profile_id)
         except OSError:
-            return False
-        return bool(ok) and ControlOperationPolicy.streamer_runs_only(
-            snapshot, MOONWAKER_STREAM_APP_UUID)
+            return None
+        if not ok or not ControlOperationPolicy.streamer_snapshot_authoritative(snapshot) \
+                or ControlOperationPolicy._snapshot_items(snapshot.get("apps")) is None:
+            return None
+        return ControlOperationPolicy.streamer_runs_only(snapshot, MOONWAKER_STREAM_APP_UUID)
 
     def _host_close_unmanaged(self, profile_id: str,
                               operation_id: str) -> tuple[str, str]:
@@ -7606,6 +7617,7 @@ class GatewayState:
         streamer while MoonWaker's own application is all it runs. A game the provider cannot
         verify is left: only that own stream is closed, and without one nothing is. The
         Bridge fences effects by generation, so the host holds a permit of its own for them.
+        A streamer whose snapshot cannot be read closes nothing (`streamer_snapshot_unavailable`).
         The answer names exactly what was closed."""
         current = self._child_time_current_game(profile_id)
         identity = current.get("identity") if current.get("kind") == "active" else None
@@ -7614,8 +7626,12 @@ class GatewayState:
         unverified = current.get("kind") != "idle" and not game_id
         nothing = ("refused", "game_state_unverified") if unverified \
             else ("completed", "nothing_to_close")
-        if not game_id and not self._host_close_own_streamer_app(profile_id):
-            return nothing
+        if not game_id:
+            own_app = self._host_close_own_streamer_app(profile_id)
+            if own_app is None:
+                return "refused", "streamer_snapshot_unavailable"
+            if not own_app:
+                return nothing
         with self.control_condition:
             if any(owner is not None for owner in (
                     self.control_state.get("active"), self.control_state.get("stream"),
@@ -7642,9 +7658,12 @@ class GatewayState:
         game_stopped, own_app, closed, failure = False, False, False, "none"
         try:
             # Decided before the game stops and read under the permit: no MoonWaker start
-            # can change the streamer meanwhile.
+            # can change the streamer meanwhile. A streamer it cannot read is no decision:
+            # the game is left as well.
             own_app = self._host_close_own_streamer_app(profile_id)
-            if game_id:
+            if own_app is None:
+                failure = "streamer_snapshot_unavailable"
+            elif game_id:
                 ok, result = self.proxy_json("game_provider", "/game/stop-verified", {
                     "force": False, "game_id": game_id, "expected_process_token": token,
                     "control_operation": ControlOperationPolicy.bridge_binding(operation),
@@ -7657,7 +7676,9 @@ class GatewayState:
             failure = "host_close_failed"
             DIAGNOSTICS.record("host-close-failed", level="WARN", error=error,
                                operation_id=operation_id, include_frames=True)
-        if game_id and not game_stopped:
+        if own_app is None:
+            pass  # streamer_snapshot_unavailable: nothing was stopped
+        elif game_id and not game_stopped:
             failure = "game_stop_unconfirmed"
         elif own_app and not closed and failure == "none":
             failure = "game_closed_stream_unconfirmed" if game_stopped \

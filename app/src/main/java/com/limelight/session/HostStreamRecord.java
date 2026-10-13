@@ -20,6 +20,17 @@ public final class HostStreamRecord {
     private HostStreamRecord() { }
 
     /**
+     * Whether the session model's own session of {@code hostId} (a start, a reconnect, a live
+     * or terminating stream) owns its records now, so a host record read meanwhile must not
+     * adopt or retire them.
+     */
+    public static boolean sessionOwnsRecords(String hostId, SessionModel.Snapshot session) {
+        return hostId != null && hostId.equalsIgnoreCase(session.hostId)
+                && session.state != SessionModel.State.NONE
+                && session.state != SessionModel.State.RECONNECT_REQUIRED;
+    }
+
+    /**
      * @param owned the host's record, or null when the host confirmed it holds none
      * @param actorProfileId this client's actor
      * @param localStreamSessionId the local stream (live, or a reconnect record) of this host

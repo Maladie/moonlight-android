@@ -200,6 +200,15 @@ the binding `control/operation/status` reports, and that attempt's result is the
 local session records are cleared only by a close that succeeded or found nothing on the
 host, never by the refusal itself.
 
+`control/operation/status` has exactly three answers, mapped in one place on the client
+(`ControlOperationClient.ownedStream`): HTTP 200 `owned` is the record (strings `""` and
+integers `0` where the record has nothing bound yet, as an adopted start has no game);
+HTTP 409 `managed_stream_unavailable` (no record) or `stream_owner_mismatch` (the record is
+another TV's or execution profile's) means no record of this TV; anything else is unknown
+and changes nothing. Status never answers `stream_generation_superseded`; a newer stream of
+another actor on this TV is answered as `owned` with that actor, which retires this actor's
+own local record of an older stream and is never adopted by it.
+
 ## Retry after a lost transport
 
 A start from the owner of the retained record has two outcomes. While the streamer still
@@ -261,23 +270,33 @@ owners:
   changed after the decision, or ignored the close) is answered
   `game_closed_stream_unconfirmed`; the record stays. The same order holds without a
   record: the own application is identified before the game stops.
-- A host-held close of the Gateway's own record (`host-close:`, `host-idle:`) may end the
-  streamer when, authoritatively, the record's application (`sunshine_app_id`) is the one
-  application running and every client the snapshot shows connected is the record's
-  client, with no more connected clients than sessions
-  (`ControlOperationPolicy.host_streamer_close_allowed`). A session no client is
-  attributed to (the streamer reports a session, no client `connected`) is not a foreign
-  client: the local account may close its own stream. Another application, a connected
-  client other than the record's, or a non-authoritative or inconsistent snapshot is
-  refused. Every other close - a child session's terminal operation included - keeps the
-  client rule (`streamer_close_allowed`): the session count equals the connected clients
-  and a connected client is the record's by UUID.
+- The host rule (`ControlOperationPolicy.host_streamer_close_allowed`) applies to the
+  closes of its own record the Gateway holds on the owner's or the policy's behalf: Host
+  Control's close (`host-close:`) and a child session's terminal operation
+  (`child-terminal:`, whose record carries `child_session_id` checked under the permit;
+  time limit, revoked access, the tray's close). It may end the streamer when,
+  authoritatively, the record's application (`sunshine_app_id`) is the one application
+  running and every client the snapshot shows connected is the record's client, with no
+  more connected clients than sessions. A session no client is attributed to (the streamer
+  reports a session, no client `connected`) is not a foreign client and does not keep an
+  enforced child limit's stream open. This deliberately lets an unattributed session of the
+  same application through: `count=2, connected=[the record's client]` closes both,
+  because the tray's close is ordered by the owner at the PC and a child's limit must end.
+  Another application, a connected client other than the record's, or a non-authoritative
+  or inconsistent snapshot is refused. A child's terminal operation keeps its order: the
+  verified game stops first, then the stream closes.
+- Every other close - a client's own `full_quit` and the automatic idle close
+  (`host-idle:`) included - keeps the strict client rule (`streamer_close_allowed`): the
+  session count equals the connected clients and a connected client is the record's by
+  UUID. Any streamer session, even one no client is attributed to yet, therefore blocks the
+  idle close: a client that connected between the idle sample and the close is not cut off.
 - Without a stream record the Gateway holds a permit of its own (`intent` `host_close`, a
   new generation and actor epoch), stops the provider's verified game process and then
   closes the streamer only while the `MoonWaker Stream` application is the one application
   it runs, as read under the permit before the game stops. A game that does not confirm its
   stop leaves the streamer open (`game_stop_unconfirmed`); any other streamer application
-  is always left.
+  is always left. A streamer snapshot that cannot tell whether that application runs is no
+  decision: nothing is stopped or closed (`streamer_snapshot_unavailable`).
 - A game process the provider cannot confirm (its Bridge is stopped, it reports another
   process than the record's, its state is unverified) does not refuse Host Control's close:
   the Gateway closes the stream alone, through the same identity-checked streamer close,

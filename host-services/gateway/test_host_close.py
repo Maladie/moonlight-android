@@ -733,6 +733,68 @@ class HostCloseTest(unittest.TestCase):
         receipt = self.state.control_state["completed"][f"host-idle:{generation}"]
         self.assertEqual("failed", receipt["state"])
 
+    def test_status_of_a_record_without_a_bound_game_keeps_its_types(self):
+        # An adopted start: the record has no provider game yet (None in the record).
+        self.start_stream(with_game=False)
+        self.assertIsNone(self.state.control_state["stream"].get("provider_game_id"))
+        self.state.authorize_profile(self.client, "parent")
+        status, body = self.state.control_operation_status(self.client)
+
+        self.assertEqual((200, "owned"), (status, body["state"]))
+        self.assertEqual(("", "", "", 0), tuple(body[key] for key in (
+            "provider_game_id", "process_token", "child_session_id", "process_id")))
+        self.assertEqual(("stream-1", 7, "parent"), tuple(body[key] for key in (
+            "stream_session_id", "sunshine_app_id", "actor_profile_id")))
+        self.assertNotIn(None, body.values())
+
+    def test_idle_close_keeps_the_strict_rule_for_an_unattributed_session(self):
+        generation = self.abandon_stream()
+        self.idle_tick()
+        # A client connects after the idle sample; the streamer does not attribute it yet.
+        self.state._host_idle_observation = lambda stream: True
+        self.connected, self.attributed = True, False
+        self.idle_tick(wakeplay_gateway.HOST_IDLE_STREAM_CLOSE_SECONDS + 5)
+
+        self.assertEqual([], self.closes())
+        self.assertEqual(MOONWAKER_STREAM_APP_UUID, self.running_app)
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertEqual(generation, self.state.control_state["stream"]["generation"])
+        receipt = self.state.control_state["completed"][f"host-idle:{generation}"]
+        self.assertEqual("failed", receipt["state"])
+
+    def test_unreadable_streamer_without_a_record_closes_nothing(self):
+        for case, snapshot in (("http_error", (False, {"error": "offline"})),
+                               ("not_authoritative", None)):
+            with self.subTest(case=case):
+                self.calls.clear()
+                self.stops.clear()
+                self.run_game()
+                self.running_app = MOONWAKER_STREAM_APP_UUID
+                inner = self.state.proxy
+
+                def proxy(name, path, *args, value=snapshot, **kwargs):
+                    if name == "vibepollo" and path == "/snapshot?force=1":
+                        if value is not None:
+                            return value
+                        ok, observed = inner(name, path, *args, **kwargs)
+                        return ok, {**observed, "control_fresh": False}
+                    return inner(name, path, *args, **kwargs)
+                self.state.proxy = proxy
+                request_id = sha256_text(case)[:32]
+                self.write_request(request_id)
+                self.poll()
+                self.state.proxy = inner
+
+                self.assert_result("refused", "streamer_snapshot_unavailable", request_id)
+                self.assertEqual([], self.stops)
+                self.assertEqual([], self.closes())
+                self.assertIsNotNone(self.game)
+                self.assertEqual(MOONWAKER_STREAM_APP_UUID, self.running_app)
+                self.assertIsNone(self.state.control_state["active"])
+                receipt = self.state.control_state["completed"]["host-close:" + request_id]
+                self.assertEqual(("failed", "streamer_snapshot_unavailable"),
+                                 (receipt["state"], receipt["reason"]))
+
     def test_host_idle_permit_left_by_a_gateway_restart_ends(self):
         generation = self.abandon_stream()
         self.state.authorize_profile(self.client, "parent")
