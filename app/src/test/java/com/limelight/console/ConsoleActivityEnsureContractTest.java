@@ -58,19 +58,6 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(method.contains("setScaleType("));
     }
 
-    @Test public void successfulEnsurePollsBeforeAnyRenderOfTheOldAppList() throws IOException {
-        String method = consoleActivitySource();
-        method = method.substring(method.indexOf("private void ensureVibepolloAfterInstall"),
-                method.indexOf("private static String playniteInstallNotificationKey"));
-
-        assertTrue(method.contains("if (\"playnite\".equals(game.provider)) {\n"
-                + "                    result = hostGatewayClient.ensureVibepolloPlayniteApp("));
-        assertTrue(method.contains("if (ensured != null) {\n"
-                + "                    if (appListPoller != null) appListPoller.pollNow();\n"
-                + "                    return;\n"
-                + "                }"));
-    }
-
     @Test public void dashboardTerminationUsesRetainedOwnerOrExactControlPlane() throws IOException {
         String source = consoleActivitySource();
         String method = source.substring(source.indexOf(
@@ -317,7 +304,7 @@ public class ConsoleActivityEnsureContractTest {
                                 + "switchRetainedProviderGame(")));
         String completedInstall = source.substring(source.indexOf(
                         "private void completePlayniteInstallation("),
-                source.indexOf("private void ensureVibepolloAfterInstall("));
+                source.indexOf("private static String playniteInstallNotificationKey("));
 
         assertTrue(activity.contains(
                 "PlayHistory.gameKey(hostUuid, item.stableId())"));
@@ -596,6 +583,36 @@ public class ConsoleActivityEnsureContractTest {
                 < status.indexOf("return getString(ConsoleHostPresentation.status(state));"));
         assertTrue(status.contains("sessionModel.records().pending"));
         assertTrue(status.contains("R.string.console_status_paused_stream"));
+        // A game running without this client's session is named after every session status
+        // and instead of a bare "Online", from the projection owner's display fact and this
+        // profile's library only (a child's library lists only its shared games).
+        assertTrue(status.indexOf("ConsoleHostPresentation.holdsPausedSession(")
+                < status.indexOf("ConsoleHostPresentation.showsRunningGame(state, snapshot)"));
+        assertTrue(status.indexOf("ConsoleHostPresentation.showsRunningGame(")
+                < status.indexOf("return getString(ConsoleHostPresentation.status(state));"));
+        assertTrue(status.contains("libraryGameName(snapshot.display.runningGameId)"));
+        assertTrue(status.contains("getString(R.string.console_status_game_running, name)"));
+        String named = status.substring(status.indexOf("private String libraryGameName("),
+                status.indexOf("private String pausedSessionName("));
+        assertTrue(named.contains("unfilteredPlayniteItems"));
+        assertFalse(named.contains("findAppName"));
+        assertFalse(named.contains("loadApps"));
+        // Durations come from the host through the same owner, in the shared format; a live
+        // session shows its game's time, otherwise the stream's.
+        assertTrue(status.contains("ConsoleHostPresentation.sessionMinutes("));
+        assertTrue(status.contains("snapshot.display.gameMinutes"));
+        assertTrue(named.contains("minutes < 1L ? status"));
+        assertTrue(named.contains("PlaynitePlaytimeFormatter.minutes(minutes,"));
+        assertFalse(status.contains("System.currentTimeMillis()"));
+        // The library's presentation key reads the status without its minutes.
+        assertTrue(source.contains("+ '|' + hostStatus(host, snapshot, false);"));
+        assertTrue(source.contains("SessionStateResolver.hostUnreachable(copy.uuid);"));
+        assertTrue(english.contains(
+                "name=\"console_status_game_running\">Game running · %1$s<"));
+        assertTrue(polish.contains(
+                "name=\"console_status_game_running\">Gra działa · %1$s<"));
+        assertTrue(english.contains("name=\"console_status_with_duration\">%1$s · %2$s<"));
+        assertTrue(polish.contains("name=\"console_status_with_duration\">%1$s · %2$s<"));
         // The status renders on the UI thread: the paused name reads no app list.
         String paused = status.substring(status.indexOf("private String pausedSessionName("),
                 status.indexOf("private String closingStatus("));

@@ -75,6 +75,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.proxy_calls = []
         self.bridge_calls = []
         self.streamer_active = False
+        self.attributed = True  # the snapshot names the TV's UUID for its transport
 
         def proxy(name, path, timeout=2.5, profile_id=None):
             del timeout
@@ -103,7 +104,8 @@ class ChildTimeControlTest(unittest.TestCase):
             if name == "vibepollo" and path == "/snapshot?force=1":
                 return True, {**control_evidence(int(self.streamer_active), self.streamer_active),
                               "clients": [{"uuid": VIBE_UUID,
-                                           "connected": self.streamer_active}],
+                                           "connected": self.streamer_active
+                                                        and self.attributed}],
                               "apps": [{"app_id": 7,
                                         "running": self.streamer_active}]}
             if name == "vibepollo" and path == "/action/close-app":
@@ -382,6 +384,69 @@ class ChildTimeControlTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertEqual("ended", body["state"])
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+
+    def test_host_control_close_ends_the_child_session_game_and_stream(self):
+        session_id = self.start_running()
+        self.clock.advance(60)
+        generation = self.state.control_state["stream"]["generation"]
+        request = "0123456789abcdef0123456789abcdef"
+        self.config_path.with_name("host-close-request.json").write_text(json.dumps({
+            "request_id": request, "profile_id": "parent",
+            "expires_at": int(wakeplay_gateway.time.time()) + 30}), encoding="utf-8-sig")
+        self.state.host_close_poll()
+
+        result = json.loads(self.config_path.with_name("host-close-result.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual((request, "completed", "session_closed"),
+                         (result["request_id"], result["state"], result["reason"]))
+        self.assertIsNone(self.state.child_time_session)
+        self.assertEqual("host_closed",
+                         self.state.child_time_completed[session_id]["reason"])
+        self.assertEqual(60, self.used())
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertGreater(self.state.control_state["generation"], generation)
+        self.assertEqual("", self.current["id"])
+        stops = [call for call in self.bridge_calls if call[1] == "/game/stop-verified"]
+        self.assertEqual(1, len(stops))
+        self.assertEqual(TOKEN, stops[0][2]["expected_process_token"])
+        self.assertEqual("child-terminal:" + session_id,
+                         stops[0][2]["control_operation"]["operation_id"])
+        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        # The child's TV meets what it meets after any host-side end of its session.
+        with self.assertRaisesRegex(PermissionError, "child_session_binding_mismatch"):
+            self.state.child_time_session_heartbeat(self.client, "kid", session_id)
+
+    def test_unattributed_session_does_not_keep_a_host_closed_child_stream_open(self):
+        # Lab: the TV streams (session count 1) but no client is marked connected.
+        self.start_running()
+        self.attributed = False
+        request = "0123456789abcdef0123456789abcdef"
+        self.config_path.with_name("host-close-request.json").write_text(json.dumps({
+            "request_id": request, "profile_id": "parent",
+            "expires_at": int(wakeplay_gateway.time.time()) + 30}), encoding="utf-8-sig")
+        self.state.host_close_poll()
+
+        result = json.loads(self.config_path.with_name("host-close-result.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual(("completed", "session_closed"), (result["state"], result["reason"]))
+        self.assertFalse(self.streamer_active)
+        self.assertEqual("", self.current["id"])
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIsNone(self.state.child_time_session)
+
+    def test_unattributed_session_does_not_keep_an_expired_child_stream_open(self):
+        self.start_running()
+        self.attributed = False
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        self.clock.advance(2)
+        status, body = self.state.child_time_housekeeping_tick()
+
+        self.assertEqual((200, "ended"), (status, body["state"]), body)
+        self.assertFalse(self.streamer_active)
+        self.assertEqual("", self.current["id"])
         self.assertIsNone(self.state.control_state["stream"])
         self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
 
@@ -2057,8 +2122,8 @@ class ChildTimeControlTest(unittest.TestCase):
         original_close = wakeplay_gateway.StreamerControlOperation.close
         attempts = []
 
-        def transient_close(proxy, profile_id, stream, trace=None):
-            del proxy, profile_id, stream, trace
+        def transient_close(proxy, profile_id, stream, trace=None, host_held=False):
+            del proxy, profile_id, stream, trace, host_held
             attempts.append(True)
             return (False, "streamer_close_unconfirmed") if len(attempts) == 1 \
                 else (True, "streamer_idle_after_close")

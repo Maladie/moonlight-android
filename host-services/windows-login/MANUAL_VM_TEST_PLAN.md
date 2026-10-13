@@ -63,10 +63,11 @@ LogonUI behavior.
 - [ ] **15. Remove profile:** remove Gry in Host Control. Its grant, startup
   task, profile data, and Broker credential are removed; the Windows `Gry`
   account and built-in sign-in remain unchanged.
-- [ ] **16. Local stream hotkey:** with Host Control running in the tray, start
-  a stream and press `Ctrl+Alt+Shift+End` once on the normal desktop, then repeat
-  after locking Windows. In both cases Vibepollo closes the stream and Sunshine
-  restores the physical displays; no game process is terminated by Host Control.
+- [ ] **16. Local close-session hotkey:** with Host Control running in the tray,
+  start a game and press `Ctrl+Alt+Shift+End` once on the normal desktop, then
+  repeat after locking Windows. In both cases the Gateway stops the verified game
+  and closes the stream, Sunshine restores the physical displays, Host Control
+  reports the outcome, and the TV returns to its menu without a stale session.
 
 ## Explicit profile-switch acceptance
 

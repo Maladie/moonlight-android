@@ -103,7 +103,7 @@ final class PlayniteLibraryCache {
                             value.optString("install_launcher", ""),
                             value.optString("operation_state", ""),
                             value.optInt("operation_progress", -1),
-                            value.optBoolean("uninstalling", false), "",
+                            value.optBoolean("uninstalling", false),
                             provider,
                             providerGameId,
                             value.optString("playnite_game_id",

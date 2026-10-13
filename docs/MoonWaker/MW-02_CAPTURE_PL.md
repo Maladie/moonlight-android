@@ -106,7 +106,9 @@ Ekrany: **A** = „Nie udało się zakończyć” + „Nie udało się zamknąć
 hosta…”; **B** = „Nie udało się zakończyć” + „Gra nadal się uruchamia i nie ma jeszcze
 procesu…”; **C** = „Stan sesji jest jeszcze sprawdzany”; **D** = „Host nie osiągnął stanu
 gotowości.” + „Żaden port streamingu nie odpowiedział w ciągu 90 sekund…”;
-**E** = „Nie udało się wyświetlić streamu”.
+**E** = „Nie udało się wyświetlić streamu”; **F** = okno błędu połączenia na ekranie streamu
+z przyciskami „OK” i „Twarde zamknięcie” (drugi otwiera w konsoli potwierdzenie
+twardego zamknięcia sesji z panelu hosta).
 
 | Kod | Co znaczy | Gdzie powstaje | Ekran |
 | --- | --- | --- | --- |
@@ -137,6 +139,7 @@ gotowości.” + „Żaden port streamingu nie odpowiedział w ciągu 90 sekund�
 | `attach.resume_intent_missing` | Stream w tle nie miał ekranu gry, a nie było zapisanych danych, by go otworzyć. Nic nie zamknięto. | `ConsoleActivity.attachPresentationForSwitch` | E |
 | `attach.start_activity_failed` | System nie otworzył ekranu gry dla streamu w tle. Nic nie zamknięto. | `ConsoleActivity.attachPresentationForSwitch` | E |
 | `support.previous_not_closed` | Przy uruchamianiu instalatora gry nie udało się zamknąć innej sesji na hoście. | `ConsoleActivity.beginInstallationSupportStream` | A |
+| `control.operation_pending` | Host odrzucił start streamu (409), bo trzyma niepewną operację (jej posiadacz zamilkł, porzucił ją albo nie potwierdził efektu), której sam nie rozstrzygnął; powód hosta jest w polu `detail` (`terminal_result_timeout`, `terminal_owner_required`, `reconcile_required`, `effect_result_uncertain`, `start_abandoned`, `reauthorization_fence_unconfirmed`, `gateway_restarted_before_terminal_result`). | `Game.controlRejected` → `SessionFailure.fromControlRejection` | F |
 | `support.host_not_ready` | Przy uruchamianiu instalatora gry host nie osiągnął gotowości. | `ConsoleActivity.beginInstallationSupportStream` | D |
 
 ## 5. Tabela klasyfikacji

@@ -56,6 +56,7 @@ import com.limelight.ui.GameGestures;
 import com.limelight.ui.StreamView;
 import com.limelight.ui.overlay.CustomCommand;
 import com.limelight.ui.overlay.OverlayMenuView;
+import com.limelight.session.HostStreamRecord;
 import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionResumeManager;
@@ -227,6 +228,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private final WholeSessionTermination.Owner wholeSessionTermination =
             new WholeSessionTermination.Owner();
     private final AtomicBoolean freshOwnedFailureCleanupInFlight = new AtomicBoolean();
+    // The Gateway refused this Game's start at its acquire: nothing of it is on the host.
+    private volatile boolean hostRefusedStart;
     private final AtomicBoolean childEndSent = new AtomicBoolean();
     private String childSessionId = "";
     private String childActorProfileId = "";
@@ -4075,7 +4078,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             && allowance.actorProfileId.equals(ended.actorProfileId)
                             && ChildSessionLifecycle.terminal(ended) && !ended.cleanupRequired;
                 } else {
-                    resolved = HostSessionTermination.run(application, next.hostId,
+                    resolved = HostSessionTermination.closeAbandonedStart(application,
+                            next.hostId,
                             transferIntent.getStringExtra(EXTRA_HOST),
                             transferIntent.getIntExtra(EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
                             transferIntent.getIntExtra(EXTRA_HTTPS_PORT, 0),
@@ -4944,7 +4948,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
-    public void controlRejected(String stage, String reason) {
+    public void controlRejected(String stage, String reason, boolean nothingStarted) {
+        // Before the failure is handled: no host session is closed for a start the host
+        // refused, and the error stays on screen until the user answers it.
+        hostRefusedStart = nothingStarted;
         stageFailed(stage, 0, 0, SessionFailure.fromControlRejection(reason),
                 SessionFailure.safeDetail(reason));
     }
@@ -5009,7 +5016,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         dialogText += "\n\n" + getResources().getString(R.string.nettest_text_blocked);
                     }
 
-                    Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_error_title), dialogText, true);
+                    if (rejection != null && rejection.offersHardTerminate()) {
+                        // The host panel's hard close, one step from this error.
+                        String hostId = getIntent().getStringExtra(EXTRA_PC_UUID);
+                        ConsoleConfirmDialog.show(Game.this,
+                                getString(R.string.conn_error_title), dialogText,
+                                getString(android.R.string.ok),
+                                getString(R.string.console_hard_terminate_session),
+                                () -> ConsoleActivity.offerHardTerminate(hostId),
+                                0L, Game.this::finish);
+                    } else {
+                        Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_error_title), dialogText, true);
+                    }
                 }
             }
         });
@@ -5043,6 +5061,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (wholeSessionTermination.isRunning()) stopConnection();
             });
             return;
+        }
+        // The host ended the stream; a lost network never terminates it gracefully.
+        if (errorCode == MoonBridge.ML_ERROR_GRACEFUL_TERMINATION && !userInitiatedDisconnect) {
+            // Only a stream the user saw is announced; this client's own cleanup is not.
+            confirmClosedOnHost(streamEverRevealed
+                    && !freshOwnedFailureCleanupInFlight.get());
         }
         if (cleanupUnrevealedProviderLaunch(
                 "stream-terminated-before-reveal:" + errorCode)
@@ -5958,12 +5982,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return startsProviderGame && !streamEverRevealed;
     }
 
+    /**
+     * A failed fresh neutral start closes the host session it began. A start the host refused
+     * ({@code hostRefusedStart}) began none: closing would act without a control generation,
+     * be rejected and report a session left on the host that this attempt never started.
+     */
     static boolean shouldTerminateFreshOwnedSunshineSession(
             boolean ownsFreshSession, boolean neutralTarget,
             LaunchTransitionType type, boolean startsProviderGame,
-            boolean streamEverRevealed, boolean retainedSession) {
+            boolean streamEverRevealed, boolean retainedSession, boolean hostRefusedStart) {
         return ownsFreshSession && neutralTarget && type == LaunchTransitionType.GAME
-                && startsProviderGame && !streamEverRevealed && !retainedSession;
+                && startsProviderGame && !streamEverRevealed && !retainedSession
+                && !hostRefusedStart;
     }
 
     static boolean shouldHonorExternalSwitchCancellation(
@@ -5982,7 +6012,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 getIntent().getBooleanExtra(EXTRA_NEUTRAL_STREAM_TARGET, false),
                 transitionSpec == null ? null : transitionSpec.type,
                 transitionCoordinator.startsProviderGame(), streamEverRevealed,
-                retainedSwitch != null || hasOwnRetainedSession());
+                retainedSwitch != null || hasOwnRetainedSession(), hostRefusedStart);
         logLaunchMilestone(milestone);
         if (ownsFreshSession) {
             if (freshOwnedFailureCleanupInFlight.compareAndSet(false, true)) {
@@ -8244,6 +8274,61 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private int autoWarmUpAppId() {
         return getIntent().getIntExtra(
                 EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
+    }
+
+    /**
+     * After the host ended this stream: once its Gateway confirms it holds no record of it,
+     * the session was closed on the host (tray, shortcut, idle close), so its records end and,
+     * when {@code announce}, the user is told. Anything else, an unreachable Gateway included,
+     * changes nothing.
+     */
+    private void confirmClosedOnHost(boolean announce) {
+        String sessionId = streamSessionId;
+        String hostId = getIntent().getStringExtra(EXTRA_PC_UUID);
+        String address = getIntent().getStringExtra(EXTRA_HOST);
+        String actor = currentProfileId();
+        Context application = getApplicationContext();
+        SessionModel model = sessionModel;
+        if (sessionId == null || sessionId.isEmpty()) return;
+        new Thread(() -> {
+            GatewayConnection gateway = new HostGatewayStore(application).loadForHost(
+                    hostId, address, actor);
+            if (gateway == null) return;
+            ControlOperationClient control =
+                    new ControlOperationClient(new GatewayTransport());
+            // ponytail: three reads 2 s apart, while the host's own close finishes; a close
+            // that takes longer leaves the records to the console's next host entry. The
+            // first read waits too, so the termination path's saveReconnect lands first.
+            for (int attempt = 0; attempt < 3; attempt++) {
+                try {
+                    Thread.sleep(2_000L);
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
+                HostStreamRecord.Action action;
+                try {
+                    action = HostStreamRecord.decide(
+                            control.ownedStream(gateway), actor, sessionId);
+                } catch (IOException | RuntimeException unknown) {
+                    return;
+                }
+                if (action == HostStreamRecord.Action.RETIRE) {
+                    model.post(SessionEvent.Cleared.byHost(sessionId));
+                    model.post(new SessionEvent.ReconnectCleared(sessionId));
+                    BackgroundStreamService.dismiss(application, sessionId);
+                    // A toast is no window a UI dump shows: this event is its evidence.
+                    MoonWakerDiagnostics.record("INFO", "android.stream",
+                            "host_close.confirmed", "stream_session_id", sessionId,
+                            "announced", announce);
+                    if (announce) {
+                        new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(
+                                application, R.string.session_closed_on_host,
+                                Toast.LENGTH_LONG).show());
+                    }
+                    return;
+                }
+            }
+        }, "MoonWaker-HostClosedCheck").start();
     }
 
     private String currentProfileId() {

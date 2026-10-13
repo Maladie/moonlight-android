@@ -23,6 +23,16 @@ final class SessionStateResolver {
      * this long; then the ordinary uncertain path (refresh/confirm) applies again.
      */
     static final long CLOSING_CONFIRMATION_MS = 3 * OBSERVATION_LIVENESS_MS;
+    /**
+     * How long a status line keeps the running game and the stream duration of the last
+     * observation that showed them when no later one does. Polls come every 5 s and a fresh
+     * observation lasts 5 s, so the status would otherwise blink; three liveness windows span
+     * several lost polls, and a host that stopped answering for that long is not described.
+     * Display only: readiness, Play and close decisions never read it.
+     */
+    static final long STATUS_DISPLAY_MS = 3 * OBSERVATION_LIVENESS_MS;
+    /** A longer stream or game duration is not shown. */
+    static final long MAX_STATUS_DURATION_MS = 7L * 24L * 60L * 60_000L;
     private static final Map<String, ProjectionOwner> OWNERS = new LinkedHashMap<>();
 
     static synchronized ProjectionOwner owner(SessionModel model, String hostId,
@@ -42,6 +52,14 @@ final class SessionStateResolver {
     static synchronized void forgetHost(String hostId) {
         String normalized = SessionSnapshot.normalize(hostId);
         OWNERS.values().removeIf(owner -> owner.hostId.equals(normalized));
+    }
+
+    /** An unreachable host runs nothing this client may still describe. */
+    static synchronized void hostUnreachable(String hostId) {
+        String normalized = SessionSnapshot.normalize(hostId);
+        for (ProjectionOwner owner : OWNERS.values()) {
+            if (owner.hostId.equals(normalized)) owner.forgetDisplay();
+        }
     }
 
     static synchronized void resetProjectionOwnersForTests() {
@@ -219,6 +237,20 @@ final class SessionStateResolver {
         private long publishedAtMs;
         private String diagnosticSignature = "";
         private long diagnosticEvents;
+        /**
+         * Status-line facts of {@link SessionSnapshot.Display}; this owner is their only
+         * holder. The running game is the last accepted observation's verified running
+         * process, kept until an observation refutes it (idle, another game, a game that is
+         * not running), a termination boundary, an unreachable host or
+         * {@link #STATUS_DISPLAY_MS} without a confirming observation.
+         */
+        private String displayGameId = "";
+        private long displayGameStartedHostMs;
+        private long displayGameSeenAtMs;
+        private String displayStreamSessionId = "";
+        private long displayStreamStartedHostMs;
+        /** Host wall clock minus this client's clock at the last accepted observation. */
+        private long hostClockOffsetMs;
 
         private ProjectionOwner(SessionModel model, String hostId, String actorProfileId,
                                 String executionProfileId) {
@@ -286,6 +318,7 @@ final class SessionStateResolver {
             lastAcceptedOrdinal = candidate.requestOrdinal;
             observation = candidate;
             observationAcceptedAtMs = nowMs;
+            holdDisplay(candidate, nowMs);
             String nextEpisode = candidate.producerBootId + "|" + candidate.stateEpisode
                     + "|" + candidate.operationId + "|" + candidate.callerTransitionId
                     + "|" + candidate.providerState;
@@ -416,6 +449,61 @@ final class SessionStateResolver {
             episodeKey = "";
             episodeDeadlineMs = 0L;
             lastResolvedAtMs = -1L;
+            forgetDisplay();
+        }
+
+        private void holdDisplay(HostGatewayClient.SessionObservation seen, long nowMs) {
+            hostClockOffsetMs = seen.observedAtUnixMs - nowMs;
+            displayStreamSessionId = seen.streamSessionId;
+            displayStreamStartedHostMs = seen.streamStartedUnixMs;
+            String gameId = SessionSnapshot.normalize(seen.gameId);
+            // A child (it acts on its parent's execution profile) is told a process start
+            // only for the game of its own live time session; any other game running there
+            // is the parent's activity and is not held for the child's status line.
+            boolean own = actorProfileId.equals(executionProfileId)
+                    || seen.processStartedUnixMs > 0L;
+            boolean running = own && seen.gameEvidence == HostGatewayClient.Evidence.VERIFIED
+                    && "running".equals(seen.gameState);
+            if (running && seen.processEvidence == HostGatewayClient.Evidence.VERIFIED) {
+                displayGameId = gameId;
+                displayGameStartedHostMs = seen.processStartedUnixMs;
+                displayGameSeenAtMs = nowMs;
+            } else if (seen.gameEvidence == HostGatewayClient.Evidence.ABSENT
+                    || (seen.gameEvidence == HostGatewayClient.Evidence.VERIFIED
+                    && !(running && gameId.equals(displayGameId)))) {
+                // Refuted. Pending or unavailable evidence says nothing and keeps the game.
+                displayGameId = "";
+                displayGameStartedHostMs = 0L;
+            }
+        }
+
+        synchronized void forgetDisplay() {
+            displayGameId = "";
+            displayGameStartedHostMs = 0L;
+            displayStreamSessionId = "";
+            displayStreamStartedHostMs = 0L;
+        }
+
+        private SessionSnapshot.Display display(SessionModel.Snapshot retained,
+                                                boolean matchingTransport, long nowMs) {
+            boolean game = !displayGameId.isEmpty()
+                    && nowMs - displayGameSeenAtMs <= STATUS_DISPLAY_MS;
+            boolean stream = displayStreamStartedHostMs > 0L
+                    && nowMs - observationAcceptedAtMs <= STATUS_DISPLAY_MS
+                    && (!matchingTransport
+                    || retained.streamSessionId.equals(displayStreamSessionId));
+            if (!game && !stream) return SessionSnapshot.Display.NONE;
+            long hostNowMs = nowMs + hostClockOffsetMs;
+            return new SessionSnapshot.Display(game ? displayGameId : "",
+                    game ? wholeMinutes(hostNowMs, displayGameStartedHostMs) : -1L,
+                    stream ? wholeMinutes(hostNowMs, displayStreamStartedHostMs) : -1L);
+        }
+
+        /** -1 for an unknown start and for one a host clock set forward puts over the limit. */
+        private static long wholeMinutes(long hostNowMs, long startedHostMs) {
+            long elapsedMs = hostNowMs - startedHostMs;
+            return startedHostMs <= 0L || elapsedMs > MAX_STATUS_DURATION_MS ? -1L
+                    : Math.max(0L, elapsedMs) / 60_000L;
         }
 
         synchronized long diagnosticEventsForTests() { return diagnosticEvents; }
@@ -598,7 +686,9 @@ final class SessionStateResolver {
                     evidence == null ? 0 : evidence.processId,
                     evidence == null ? "" : evidence.processToken,
                     evidence == null ? "UNAVAILABLE" : evidence.windowEvidence.name(),
-                    reason, local.hostRunningAppId, endingGame);
+                    reason, local.hostRunningAppId, endingGame,
+                    retired ? SessionSnapshot.Display.NONE
+                            : display(retained, matchingTransport, nowMs));
         }
     }
 }

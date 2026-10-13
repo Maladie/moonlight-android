@@ -17,9 +17,9 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Timer = System.Windows.Forms.Timer;
 
-[assembly: AssemblyVersion("0.7.132.0")]
-[assembly: AssemblyFileVersion("0.7.132.0")]
-[assembly: AssemblyInformationalVersion("0.7.132+2026.10.08-reveal-launcher")]
+[assembly: AssemblyVersion("0.7.133.0")]
+[assembly: AssemblyFileVersion("0.7.133.0")]
+[assembly: AssemblyInformationalVersion("0.7.133+2026.10.13-child-close")]
 
 namespace MoonWaker.HostControl
 {
@@ -212,7 +212,7 @@ namespace MoonWaker.HostControl
         private readonly bool startInTray;
         private bool refreshing;
         private bool exiting;
-        private bool streamClosePending;
+        private bool sessionClosePending;
         private bool legendaryInstalled;
         private readonly string hostVersion;
         private const int StreamHotkeyId = 0x4D57;
@@ -366,7 +366,7 @@ namespace MoonWaker.HostControl
             Controls.Add(footer);
 
             ConfigureTrayIcon();
-            streamHotkeyPipe = new StreamHotkeyPipe(this, CloseStreamFromHotkey);
+            streamHotkeyPipe = new StreamHotkeyPipe(this, CloseSession);
             timer.Interval = 5000;
             timer.Tick += delegate { RefreshStatus(); };
             Shown += delegate
@@ -391,8 +391,8 @@ namespace MoonWaker.HostControl
             ContextMenuStrip menu = new ContextMenuStrip();
             menu.Items.Add("Otwórz MoonWaker Host Control", null, delegate { ShowControl(); });
             menu.Items.Add("Odśwież status", null, delegate { RefreshStatus(); });
-            menu.Items.Add("Zamknij stream  (Ctrl+Alt+Shift+End)", null,
-                delegate { CloseStreamFromHotkey(); });
+            menu.Items.Add("Zamknij sesję  (Ctrl+Alt+Shift+End)", null,
+                delegate { CloseSession(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Zakończ", null, delegate
             {
@@ -475,23 +475,30 @@ namespace MoonWaker.HostControl
         protected override void WndProc(ref Message message)
         {
             if (message.Msg == WmHotkey && message.WParam.ToInt32() == StreamHotkeyId)
-                CloseStreamFromHotkey();
+                CloseSession();
             base.WndProc(ref message);
         }
 
-        private async void CloseStreamFromHotkey()
+        // The tray menu, the global hotkey and its secure-desktop pipe all end the session
+        // the same way: the Gateway closes the stream and the game on its own record.
+        private async void CloseSession()
         {
-            if (streamClosePending) return;
-            streamClosePending = true;
-            footer.Text = "Zamykam stream…";
+            if (sessionClosePending) return;
+            sessionClosePending = true;
+            footer.Text = "Zamykam sesję…";
             try
             {
-                Dictionary<string, object> result = await RunControlAsync("CloseStream", null);
-                if (!IsOk(result)) throw new InvalidOperationException(
-                    GetText(result, "error", "Nie udało się zamknąć streamu."));
-                footer.Text = "Wysłano polecenie zamknięcia streamu.";
-                trayIcon.ShowBalloonTip(3000, "MoonWaker",
-                    "Wysłano polecenie zamknięcia streamu.", ToolTipIcon.Info);
+                Dictionary<string, object> result = await RunControlAsync("CloseSession", null);
+                string reason = GetText(result, "reason", "");
+                if (reason.Length == 0) throw new InvalidOperationException(
+                    GetText(result, "error", "Nie udało się zamknąć sesji."));
+                string text = CloseSessionMessage(reason);
+                if (!IsOk(result)) throw new InvalidOperationException(text);
+                footer.Text = text;
+                // The stream is closed, but the game may still run: a warning, not a success.
+                trayIcon.ShowBalloonTip(3000, "MoonWaker", text,
+                    reason == "stream_closed_game_unconfirmed"
+                        ? ToolTipIcon.Warning : ToolTipIcon.Info);
             }
             catch (Exception ex)
             {
@@ -499,7 +506,48 @@ namespace MoonWaker.HostControl
                 trayIcon.ShowBalloonTip(5000, "MoonWaker — błąd", ex.Message,
                     ToolTipIcon.Error);
             }
-            finally { streamClosePending = false; }
+            finally { sessionClosePending = false; }
+        }
+
+        private static string CloseSessionMessage(string reason)
+        {
+            switch (reason)
+            {
+                case "stream_and_game_closed": return "Zamknięto stream i grę.";
+                case "stream_closed": return "Zamknięto stream.";
+                case "game_closed": return "Zamknięto grę.";
+                case "stream_closed_game_unconfirmed":
+                    return "Zamknięto stream. Nie udało się potwierdzić procesu gry — gra mogła pozostać uruchomiona na hoście.";
+                case "session_closed": return "Zamknięto sesję dziecka: grę i stream.";
+                case "nothing_to_close": return "Nie ma sesji do zamknięcia.";
+                case "operation_in_progress":
+                    return "Trwa inna operacja na hoście (start albo zamykanie z TV). Spróbuj ponownie za chwilę.";
+                case "session_on_other_profile":
+                    return "Sesja działa na innym profilu Windows. Zamknij ją z tamtego konta.";
+                case "game_state_unverified":
+                    return "Nie udało się potwierdzić procesu gry, a MoonWaker nie prowadzi streamu, więc niczego nie zamknięto.";
+                case "game_stop_unconfirmed":
+                    return "Gra nie potwierdziła zamknięcia. Stream pozostał otwarty.";
+                case "streamer_identity_unconfirmed":
+                    return "W streamerze działa aplikacja albo klient spoza tej sesji MoonWaker. Niczego nie zamknięto: gra i stream pozostały.";
+                case "game_closed_stream_unconfirmed":
+                    return "Zamknięto grę, ale streamer nie potwierdził zamknięcia streamu — stream mógł pozostać otwarty.";
+                case "streamer_close_unconfirmed":
+                    return "Streamer nie potwierdził zamknięcia streamu.";
+                case "streamer_snapshot_unavailable":
+                    return "Nie udało się odczytać stanu streamera. Niczego nie zamknięto.";
+                case "child_cleanup_required":
+                    return "Nie udało się dokończyć zamykania sesji dziecka. Spróbuj ponownie.";
+                case "gateway_not_responding":
+                    return "Gateway nie odpowiada. Sprawdź, czy usługa MoonWaker Gateway działa. Sesja nie została zamknięta.";
+                case "result_timeout":
+                    return "Gateway przyjął żądanie, ale nie potwierdził zamknięcia sesji.";
+                case "profile_ambiguous":
+                    return "Nie można jednoznacznie ustalić profilu tego konta Windows.";
+                case "channel_missing":
+                    return "Ten Gateway nie obsługuje zamykania sesji z hosta. Zainstaluj ponownie MoonWaker Host.";
+                default: return "Gateway odmówił zamknięcia sesji (" + reason + ").";
+            }
         }
 
         private Panel NewPanel(int left, int top, int width, int height)
@@ -1114,6 +1162,7 @@ namespace MoonWaker.HostControl
                             action == "ConnectPlaynite" ? 90000 :
                             action == "ExportDiagnostics" ? 120000 :
                             action == "RecoverAll" ? 90000 :
+                            action == "CloseSession" ? 120000 :
                             action.EndsWith("Gateway", StringComparison.Ordinal) ? 60000 : 30000;
                         if (!process.WaitForExit(timeout))
                         {

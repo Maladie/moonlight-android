@@ -341,9 +341,10 @@ public class GameTransitionCancelContractTest {
         assertTrue(text.contains("WholeSessionTermination.Owner wholeSessionTermination"));
         assertTrue(terminated.indexOf("if (wholeSessionTermination.isRunning())")
                 < terminated.indexOf("cleanupUnrevealedProviderLaunch("));
+        // The guard ends where a host-ended stream is checked against the host's record.
         String verifiedGuard = terminated.substring(terminated.indexOf(
                 "if (wholeSessionTermination.isRunning())"), terminated.indexOf(
-                "cleanupUnrevealedProviderLaunch("));
+                "// The host ended the stream"));
         assertTrue(verifiedGuard.contains("stopConnection()"));
         assertFalse(verifiedGuard.contains("finish()"));
         assertFalse(verifiedGuard.contains("cleanupUnrevealedProviderLaunch"));
@@ -548,20 +549,109 @@ public class GameTransitionCancelContractTest {
         assertFalse(Game.shouldCleanupUnrevealedProviderLaunch(false, false));
     }
 
+    /**
+     * Lab s3-3: Play on a fresh neutral start while the host held an unfinished operation.
+     * The acquire was refused (409), yet the "fresh neutral" cleanup claimed the failure,
+     * asked for a whole-session close that had no control generation, showed "the host
+     * session could not be closed" and finished Game before any error screen.
+     */
+    @Test public void refusedAcquireOnAFreshNeutralStartClosesNothingAndShowsItsError()
+            throws IOException {
+        // The exact inputs of the lab case: fresh owner, neutral target, GAME, provider
+        // start pending, never revealed, nothing retained - and the host refused the start.
+        assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
+                true, true, LaunchTransitionType.GAME, true, false, false, true));
+
+        String text = source();
+        // Only the answer to the start's own acquire says that nothing was started; a 409 on
+        // a later complete or reconcile follows a sent effect and keeps the cleanup.
+        Path nv = Paths.get("src/main/java/com/limelight/nvstream/NvConnection.java");
+        if (!Files.exists(nv)) nv = Paths.get("app").resolve(nv);
+        String connection = new String(Files.readAllBytes(nv), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
+        String start = connection.substring(connection.indexOf("private boolean startApp("),
+                connection.indexOf("private boolean startAppEffect("));
+        int refused = start.indexOf("startRefused = true;");
+        assertEquals(refused, start.lastIndexOf("startRefused = true;"));
+        // Only a 4xx answer is a refusal. A 5xx or an unreadable 2xx may follow a granted
+        // permit, so it takes the lost-answer path below it: reconcile, then abandon.
+        int guard = start.indexOf("if (refusedStatus >= 400 && refusedStatus < 500) {");
+        int lost = start.indexOf("reconciled = controlBinding.client.reconcile(");
+        assertTrue(guard > start.indexOf("catch (IOException unavailable)")
+                && refused > guard && refused < start.indexOf("throw unavailable;")
+                && start.indexOf("throw unavailable;") < lost
+                && lost < start.indexOf("abandonControlStart(operationId"));
+        // A refused acquire is a control rejection whatever its 4xx status: none of them
+        // reaches the generic stage failure with its port hints, and a pairing or grant
+        // refusal (no reason in its body) keeps its cause.
+        assertTrue(connection.contains(
+                "e instanceof GatewayTransport.GatewayException && (startRefused\n"));
+        assertTrue(connection.contains(
+                "if (reason == null) reason = status == 401 ? \"unauthorized\"\n"
+                + "                                : status == 403 ? \"forbidden\" : \"\";\n"
+                + "                        context.connListener.controlRejected("
+                + "appName, reason, startRefused);"));
+
+        String rejected = text.substring(text.indexOf("public void controlRejected("),
+                text.indexOf("public void connectionTerminated("));
+        // The refusal is recorded before the failure is handled...
+        int recorded = rejected.indexOf("hostRefusedStart = nothingStarted;");
+        assertTrue(recorded > 0 && recorded < rejected.indexOf("stageFailed(stage, 0, 0,"));
+        assertEquals(text.indexOf("hostRefusedStart = "), text.lastIndexOf("hostRefusedStart = "));
+        // ...and reaches the one rule that claims a failure for a host close, on this
+        // failure and again when the answered error screen finishes Game.
+        String cleanup = text.substring(
+                text.indexOf("private boolean cleanupUnrevealedProviderLaunch("),
+                text.indexOf("private boolean isFreshOwnedFailureCleanup("));
+        assertTrue(cleanup.contains(
+                "retainedSwitch != null || hasOwnRetainedSession(), hostRefusedStart);"));
+        // So the claim that leads to terminateWholeSessionVerified, the only sender of
+        // "host session left open" on this path, is not made, and the error screen follows.
+        int claim = cleanup.indexOf("freshOwnedFailureCleanupInFlight.compareAndSet(false, true)");
+        assertTrue(claim > cleanup.indexOf("if (ownsFreshSession) {"));
+        assertFalse(rejected.contains("terminateWholeSessionVerified("));
+        assertFalse(rejected.contains("transition_host_session_left_open"));
+        int dialog = rejected.indexOf("if (!displayedFailureDialog) {");
+        assertTrue(dialog > rejected.indexOf("cleanupUnrevealedProviderLaunch("));
+        // The screen stays until the user answers it: both dialogs finish Game themselves.
+        String shown = rejected.substring(dialog);
+        assertTrue(shown.contains("if (rejection != null && rejection.offersHardTerminate()) {"));
+        assertTrue(shown.contains("() -> ConsoleActivity.offerHardTerminate(hostId),\n"
+                + "                                0L, Game.this::finish);"));
+        assertTrue(shown.contains(
+                "getResources().getString(R.string.conn_error_title), dialogText, true);"));
+        assertFalse(shown.contains("finish();"));
+
+        // What each refused acquire shows: only an uncertain host operation offers the hard
+        // close; a running one, a stream conflict and a child without a session do not.
+        for (String reason : new String[] {"terminal_result_timeout", "effect_result_uncertain",
+                "start_abandoned", "gateway_restarted_before_terminal_result",
+                "reconcile_required", "terminal_owner_required"}) {
+            assertTrue(reason, com.limelight.console.SessionFailure
+                    .fromControlRejection(reason).offersHardTerminate());
+        }
+        for (String reason : new String[] {"operation_in_progress", "child_session_unmanaged",
+                "managed_stream_conflict", "unmanaged_stream", "operation_id_reused",
+                "retained_process_unconfirmed", ""}) {
+            assertFalse(reason, com.limelight.console.SessionFailure
+                    .fromControlRejection(reason).offersHardTerminate());
+        }
+    }
+
     @Test public void freshNeutralFailureOwnsProviderAndSunshineCleanupExactlyOnce()
             throws IOException {
         assertTrue(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME, true, false, false));
+                true, true, LaunchTransitionType.GAME, true, false, false, false));
         assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                false, true, LaunchTransitionType.GAME, true, false, false));
+                false, true, LaunchTransitionType.GAME, true, false, false, false));
         assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, false, LaunchTransitionType.GAME, true, false, false));
+                true, false, LaunchTransitionType.GAME, true, false, false, false));
         assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME_CONNECTION, false, false, false));
+                true, true, LaunchTransitionType.GAME_CONNECTION, false, false, false, false));
         assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME, true, true, false));
+                true, true, LaunchTransitionType.GAME, true, true, false, false));
         assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME, true, false, true));
+                true, true, LaunchTransitionType.GAME, true, false, true, false));
 
         String text = source();
         String failed = text.substring(text.indexOf("public void stageFailed("),

@@ -69,7 +69,7 @@ public class PlayniteArtworkSpecTest {
     private static PlayniteLibraryGame game(String cover, String background, String hero) {
         return new PlayniteLibraryGame("steam:620", "Game", true, false, false,
                 0, "", cover, background, hero, "", 0, "Steam", "", false,
-                "", "", "", "", -1, false, "", "steam", "620", "",
+                "", "", "", "", -1, false, "steam", "620", "",
                 "steam", "Steam", true, true, true, false, false);
     }
 }

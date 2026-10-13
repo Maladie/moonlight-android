@@ -222,6 +222,16 @@ if (-not (Test-Path -LiteralPath $pairingControl -PathType Leaf)) {
     "*${serviceSid}:(M)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" `
     "*S-1-5-32-545:(M)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Unable to configure the pairing control ACL." }
+# Host Control's "close session" request: any local account may ask the Gateway to end the
+# running session. Both sides read and overwrite the file in place, so neither gets DELETE:
+# an account that could remove the file would disable the channel until a reinstall. The
+# Gateway writes the outcome beside it, where the directory ACL lets Host Control read it.
+$hostCloseRequest = Join-Path $InstallDirectory "host-close-request.json"
+[IO.File]::WriteAllText($hostCloseRequest, "{}", [Text.UTF8Encoding]::new($false))
+& $icacls $hostCloseRequest /inheritance:r /grant:r `
+    "*${serviceSid}:(R,W)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" `
+    "*S-1-5-32-545:(R,W)" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Unable to configure the host close request ACL." }
 & $icacls $privateKey /inheritance:r /grant:r `
     "*${serviceSid}:(R)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Unable to secure the Gateway private key." }

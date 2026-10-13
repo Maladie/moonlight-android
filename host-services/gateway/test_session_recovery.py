@@ -241,10 +241,15 @@ class SessionRecoveryTest(unittest.TestCase):
     def test_parent_child_and_child_to_child_handoff_move_one_actor_and_time_attachment(self):
         first = self.start_child()
         first_stream = dict(self.gateway.control_state["stream"])
+        # Every in-place actor change restarts the stream clock: the next actor must
+        # not read how long the previous one streamed.
+        self.gateway.control_state["stream"]["stream_started_unix_ms"] = 1
         status, released = self.gateway.child_time_session_end(
             self.client, "kid", first, "actor_replaced", "parent")
         self.assertEqual(200, status, released)
         self.assertEqual("parent", self.gateway.control_state["stream"]["actor_profile_id"])
+        self.assertGreater(
+            self.gateway.control_state["stream"]["stream_started_unix_ms"], 1)
         self.assertEqual("", self.gateway.control_state["stream"]["child_session_id"])
         self.assertEqual(released["control_generation"],
                          self.gateway.control_state["stream"]["generation"])
@@ -252,14 +257,24 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertEqual(200, status, parent)
         self.assertEqual("parent", self.gateway.control_state["stream"]["actor_profile_id"])
         self.assertGreater(parent["generation"], first_stream["generation"])
+        self.gateway.control_state["stream"]["stream_started_unix_ms"] = 1
 
         child_a = str(UUID(int=8101))
         self.gateway.authorize_profile(self.client, "kid", allow_child=True)
         status, _ = self.gateway.child_time_session_start(
             self.client, "kid", "steam:123", child_a, "handoff-child-a")
         self.assertEqual(202, status)
+        self.assertEqual("kid", self.gateway.control_state["stream"]["actor_profile_id"])
+        self.assertGreater(
+            self.gateway.control_state["stream"]["stream_started_unix_ms"], 1)
         status, actor_a = self.acquire("kid", "reauthorize", child_a)
         self.assertEqual(200, status, actor_a)
+        # The same actor's own reauthorize keeps its stream start.
+        self.gateway.control_state["stream"]["stream_started_unix_ms"] = 1
+        status, same = self.acquire("kid", "reauthorize", child_a)
+        self.assertEqual(200, status, same)
+        self.assertEqual(
+            1, self.gateway.control_state["stream"]["stream_started_unix_ms"])
 
         child_b = str(UUID(int=8102))
         self.gateway.authorize_profile(self.client, "kid-b", allow_child=True)
@@ -268,6 +283,8 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertEqual(202, status)
         self.assertEqual("kid-b", self.gateway.control_state["stream"]["actor_profile_id"])
         self.assertEqual(child_b, self.gateway.control_state["stream"]["child_session_id"])
+        self.assertGreater(
+            self.gateway.control_state["stream"]["stream_started_unix_ms"], 1)
         self.assertGreater(self.gateway.control_state["stream"]["generation"],
                            actor_a["generation"])
         status, actor_b = self.acquire("kid-b", "reauthorize", child_b)

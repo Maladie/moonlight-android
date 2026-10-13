@@ -6,7 +6,7 @@ param(
         "StartProfile", "StopProfile", "RestartProfile", "RecoverAll",
         "ConfigureSteamWebApi", "DisconnectSteam", "ConnectEpic", "DisconnectEpic",
         "ConnectPlaynite", "DisconnectPlaynite",
-        "ConfigureIntegrations", "CloseStream",
+        "ConfigureIntegrations", "CloseSession",
         "ClearDiscord", "ClearDiscordMachine", "ExportDiagnostics")]
     [string]$Action,
     [ValidatePattern('^[A-Za-z0-9._-]{0,64}$')][string]$ProfileId = "",
@@ -17,6 +17,8 @@ param(
     [string]$SteamWebApiDiagnosticPath = "",
     [string]$PlayniteDirectory = "",
     [string]$DiagnosticsOutputDirectory = "",
+    # How long CloseSession waits for the Gateway to take its request up.
+    [ValidateRange(1, 45)][int]$CloseAcceptSeconds = 25,
     [string]$ResultPath = ""
 )
 
@@ -915,7 +917,7 @@ function Resolve-Profile([string]$Id) {
     return [pscustomobject]@{ gateway_directory = $directory; config = $config; entry = $property.Value; root = $root }
 }
 
-function Close-ActiveStream {
+function Close-HostSession {
     $directory = Get-GatewayDirectory
     $config = Get-Content -LiteralPath (Join-Path $directory "gateway.json") -Raw |
         ConvertFrom-Json
@@ -925,24 +927,58 @@ function Close-ActiveStream {
         Test-CurrentProfileOwner $_.Value
     })
     if ($owned.Count -ne 1) {
-        throw "Nie można jednoznacznie ustalić aktywnego profilu streamu."
+        return [ordered]@{ ok = $false; state = "unavailable"; reason = "profile_ambiguous" }
     }
-    $property = $owned[0]
-    $profileId = [string]$property.Name
-    $endpoint = [string]$property.Value.vibepollo_bridge
-    $uri = $null
-    if (-not [uri]::TryCreate($endpoint, [UriKind]::Absolute, [ref]$uri) -or
-        $uri.Scheme -ne "http" -or
-        $uri.Host -notin @("127.0.0.1", "localhost") -or
-        $uri.Port -lt 1024 -or $uri.Port -gt 65535) {
-        throw "Profil '$profileId' nie ma bezpiecznego lokalnego endpointu Vibepollo."
+    # The Gateway owns the stream record and ends the stream and the game itself. This
+    # request file is the only local channel to it; no Bridge is called from here.
+    $requestPath = Join-Path $directory "host-close-request.json"
+    $answerPath = Join-Path $directory "host-close-result.json"
+    if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
+        return [ordered]@{ ok = $false; state = "unavailable"; reason = "channel_missing" }
     }
-    $response = Invoke-RestMethod -Uri ($endpoint.TrimEnd('/') + "/action/close-app") `
-        -Method Post -TimeoutSec 10
-    if ($response -and $response.PSObject.Properties["ok"] -and $response.ok -eq $false) {
-        throw "Vibepollo odrzucił zamknięcie streamu."
+    $requestId = [guid]::NewGuid().ToString("N")
+    # Written in place: local accounts may read and write this file, not delete or replace it.
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllText($requestPath, ([ordered]@{
+        request_id = $requestId
+        expires_at = [DateTimeOffset]::UtcNow.AddSeconds(45).ToUnixTimeSeconds()
+        profile_id = [string]$owned[0].Name
+    } | ConvertTo-Json -Compress), $utf8)
+    $accepted = $false
+    $withdrawn = $false
+    # The Gateway may be busy for a while (a close in flight); the request's own
+    # expires_at (45 s) bounds the wait anyway.
+    $acceptDeadline = [DateTime]::UtcNow.AddSeconds($CloseAcceptSeconds)
+    $deadline = [DateTime]::UtcNow.AddSeconds(105)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 250
+        $state = ""
+        $reason = ""
+        try {
+            $answer = Get-Content -LiteralPath $answerPath -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ([string]$answer.request_id -eq $requestId) {
+                $state = [string]$answer.state
+                $reason = [string]$answer.reason
+            }
+        } catch {}
+        if ($state -in @("completed", "refused")) {
+            return [ordered]@{ ok = ($state -eq "completed"); state = $state; reason = $reason }
+        }
+        if ($state -eq "accepted") {
+            $accepted = $true
+        } elseif (-not $accepted -and $withdrawn) {
+            return [ordered]@{ ok = $false; state = "unavailable"; reason = "gateway_not_responding" }
+        } elseif (-not $accepted -and [DateTime]::UtcNow -ge $acceptDeadline) {
+            # Nothing took the request up. Withdraw it, so a Gateway that starts later
+            # does not close a session the user was told is still open. The Gateway may
+            # have read it just before: wait one of its polls (1 s) and read its answer
+            # once more before saying that it does not respond.
+            [IO.File]::WriteAllText($requestPath, "{}", $utf8)
+            $withdrawn = $true
+            Start-Sleep -Milliseconds 1000
+        }
     }
-    return [ordered]@{ ok = $true; profile_id = $profileId }
+    return [ordered]@{ ok = $false; state = "accepted"; reason = "result_timeout" }
 }
 
 function Invoke-ProfileControl([string]$Id, [string]$Mode) {
@@ -1213,7 +1249,7 @@ try {
         "ConnectPlaynite" { Set-PlayniteConnection $ProfileId $true $PlayniteDirectory }
         "DisconnectPlaynite" { Set-PlayniteConnection $ProfileId $false }
         "ConfigureIntegrations" { Set-ProfileIntegrations $ProfileId }
-        "CloseStream" { Close-ActiveStream }
+        "CloseSession" { Close-HostSession }
         "ClearDiscord" { Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "ClearDiscordMachine" { $RemoveMachineDiscordApplication = $true; Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "ExportDiagnostics" { Export-Diagnostics }

@@ -84,8 +84,6 @@ the header retain the fixed five-minute lease for compatibility.
   test per client/profile pair. Android uses an 8 MiB probe, then targets an
   approximately eight-second second sample within those bounds.
 - `GET /api/v1/vibepollo/repair/status` - Vibepollo health summary.
-- `POST /api/v1/vibepollo/apps/ensure` - start idempotent creation or migration of a Playnite-backed Vibepollo app.
-- `GET /api/v1/vibepollo/apps/status?playnite_game_id=...` - read its host-owned preparation state.
 - `POST /api/v1/vibepollo/repair/{restart|reset-display|export-logs}` - repair action.
 - `GET /api/v1/discord/status` - Bridge, RPC and authorization status.
 - `GET /api/v1/discord/home` - favorites, recent channels and servers.

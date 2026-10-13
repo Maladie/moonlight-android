@@ -1164,7 +1164,21 @@ class GatewayStateTest(unittest.TestCase):
             "http://127.0.0.1:8880/library/list",
             state.bridge_url("playnite", "/library/list"),
         )
+        probed = []
+
+        def proxy(name, path, timeout=2.5, profile_id=None):
+            # These are a real host's Bridge ports: record the address, never connect.
+            del timeout
+            probed.append(state.bridge_url(name, path, profile_id=profile_id))
+            return False, {"error": "fixture_offline"}
+
+        state.proxy = proxy
         self.assertEqual("basia", state.capabilities()["gateway"]["integration_profile_id"])
+        self.assertEqual([
+            "http://localhost:8875/health",
+            "http://127.0.0.1:8865/health",
+            "http://127.0.0.1:8880/observation",
+        ], probed)
 
     def test_authenticated_profile_use_is_persisted_for_host_control(self):
         state = GatewayState(self.config_path, None)
@@ -1510,61 +1524,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertFalse(second.is_alive())
         self.assertEqual([(200, {"ok": True})] * 2, results)
 
-    def test_vibepollo_app_creation_forwards_only_validated_fields(self):
-        state = GatewayState(self.config_path, None)
-        calls = []
-        state.proxy_json = lambda name, path, body, timeout=8.0: (
-            calls.append((name, path, body, timeout)) or
-            (True, {"created": True, "uuid": "generated", "name": body["name"]}))
-
-        status, result = state.vibepollo_ensure_app({
-            "playnite_game_id": "11223344-5566-7788-99aa-bbccddeeff00",
-            "name": "  Żółw Ninja  ",
-            "ignored": "must not cross the loopback boundary",
-        })
-
-        self.assertEqual(202, status)
-        self.assertTrue(result["ok"])
-        self.assertEqual("preparing", result["state"])
-        for _ in range(50):
-            if calls:
-                break
-            time.sleep(0.01)
-        self.assertEqual(1, len(calls))
-        self.assertEqual("vibepollo", calls[0][0])
-        self.assertEqual("/apps/ensure", calls[0][1])
-        self.assertEqual({
-            "playnite_game_id": "11223344-5566-7788-99aa-bbccddeeff00",
-            "name": "Żółw Ninja",
-        }, calls[0][2])
-
-    def test_vibepollo_app_creation_rejects_invalid_input(self):
-        state = GatewayState(self.config_path, None)
-        with self.assertRaises(ValueError):
-            state.vibepollo_ensure_app({"playnite_game_id": "../bad", "name": "Game"})
-        with self.assertRaises(ValueError):
-            state.vibepollo_ensure_app({
-                "playnite_game_id": "11223344-5566-7788-99aa-bbccddeeff00",
-                "name": "bad\nname",
-            })
-
-    def test_library_exposes_gateway_owned_vibepollo_preparation(self):
-        state = GatewayState(self.config_path, None)
-        game_id = "11223344-5566-7788-99aa-bbccddeeff00"
-        state.vibepollo_app_operations["default:" + game_id] = {
-            "state": "preparing", "playnite_game_id": game_id,
-        }
-        state.proxy = lambda name, path, timeout=2.5: (True, {
-            "games": [{"id": game_id, "name": "Game"}],
-        })
-
-        status, result = state.playnite_library("", 50)
-
-        self.assertEqual(200, status)
-        self.assertEqual("preparing",
-                         result["library"]["games"][0]["vibepollo_state"])
-
-    def test_capabilities_advertise_vibepollo_app_management(self):
+    def test_capabilities_read_the_provider_observation(self):
         state = GatewayState(self.config_path, None)
         calls = []
 
@@ -1576,7 +1536,8 @@ class GatewayStateTest(unittest.TestCase):
 
         capabilities = state.capabilities()["capabilities"]
 
-        self.assertTrue(capabilities["vibepollo_apps"]["available"])
+        self.assertTrue(capabilities["vibepollo_pairing"]["available"])
+        self.assertNotIn("vibepollo_apps", capabilities)
         self.assertIn(("game_provider", "/observation", "default"), calls)
         self.assertFalse(any(name == "game_provider" and path == "/health"
                              for name, path, _profile_id in calls))
@@ -2675,8 +2636,13 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
         self.assertEqual("living-room", self.state.authorize_profile(
             self.client, "default"))
+        # The summary probes the parent's Bridges; keep that off the loopback network.
+        self.state.proxy = mock.Mock(return_value=(False, {"error": "fixture_offline"}))
         self.assertNotIn("kid", [profile["id"] for profile in
                                   self.state.profiles_summary(self.client)["profiles"]])
+        self.state.proxy.assert_called()
+        self.assertNotIn("kid", [call.kwargs.get("profile_id")
+                                 for call in self.state.proxy.call_args_list])
 
         self.state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
         handler, responses = GatewayStateTest.request_handler(

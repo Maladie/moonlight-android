@@ -467,6 +467,17 @@ window. Passwords are sent only over the local management pipe to
 `MoonWakerLoginBroker`; they never pass through Gateway, Android, PowerShell
 arguments, environment variables, ordinary configuration, or logs.
 
+Host Control's "Zamknij sesję" (tray menu and `Ctrl+Alt+Shift+End`) is a request to
+the Gateway, the owner of the stream record: Host Control writes a one-time, short-lived
+request into `host-close-request.json` in the Gateway directory (installer-granted ACL:
+local accounts overwrite it in place and cannot delete it) and shows the outcome the
+Gateway publishes in `host-close-result.json`. The Gateway ends the stream and the verified
+game as a host operation through its control-operation ledger; a game process it cannot
+confirm is left and reported, and the stream alone is closed. By the same host operation
+the Gateway closes a stream record that had no client and no game for 10 minutes. Host
+Control itself calls no Bridge and the Gateway gains no local-only HTTP route. See
+`host-services/gateway/TRANSITION_CONTRACT.md`.
+
 `MoonWakerLoginBroker` is a LocalSystem service and the sole owner of LSA private
 secrets and short-lived sign-in attempts. Attempts are bound to client, profile,
 request, and SID, expire after two minutes, and issue a credential once. A

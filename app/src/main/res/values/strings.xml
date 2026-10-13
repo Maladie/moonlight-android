@@ -390,6 +390,8 @@
     <string name="console_status_active_session">Active session</string>
     <string name="console_status_active_app">Stream · %1$s</string>
     <string name="console_status_paused_stream">Paused stream</string>
+    <string name="console_status_game_running">Game running · %1$s</string>
+    <string name="console_status_with_duration">%1$s · %2$s</string>
     <string name="console_refresh_library">Refresh library</string>
     <string name="console_change_host">Change host</string>
     <string name="console_return_to_stream">Return to stream</string>
@@ -1101,7 +1103,6 @@
     <string name="playnite_game_details">Game details</string>
     <string name="playnite_metadata_unknown">Unknown</string>
     <string name="playnite_game_details_body">Status: %1$s\nLast played: %2$s\nTime played: %3$s\nLibrary: %4$s\nGenres: %5$s\n\n%6$s</string>
-    <string name="playnite_preparing_short">Preparing…</string>
     <string name="playnite_ready_short">Ready</string>
     <string name="playnite_configuration_short">Setup needed</string>
     <string name="playnite_install_starting">Starting installation of “%1$s”…</string>
@@ -1139,7 +1140,6 @@
     <string name="playnite_legend_back">Back</string>
     <string name="playnite_no_installed_games">The game library has no installed games.</string>
     <string name="playnite_launch_not_configured">Launch not configured</string>
-    <string name="playnite_creating_vibepollo_app">Preparing the game in Vibepollo…</string>
     <string name="playnite_target_saved">Sunshine launch target saved for %1$s</string>
     <string name="playnite_change_target">Change Sunshine launch target</string>
     <string name="playnite_clear_target">Clear launch target</string>
@@ -1194,6 +1194,7 @@
     <string name="control_previous_game_unconfirmed">The host has not confirmed that the previous game has ended. Wait a moment and try again.</string>
     <string name="control_state_changed">The session state on the host changed while starting. Try again.</string>
     <string name="control_rejected">The host rejected starting this stream. Try again in a moment.</string>
+    <string name="control_operation_pending">The host is still holding an unfinished operation and could not resolve it by itself. Try again in a moment, or use Hard close to reset the host session.</string>
     <string name="console_session_uncertain_title">Session status is still being verified</string>
     <string name="console_session_uncertain_details">MoonWaker has not yet confirmed which game is running. Wait a moment and try again. No game or stream was started or stopped.</string>
     <string name="console_presentation_launch_failed_title">Could not show the stream</string>
@@ -1210,6 +1211,7 @@
     <string name="console_terminate_session_game_unverified">The game on the host could not be verified. Try again.</string>
     <string name="console_terminate_session_game_left">Stream closed. The game could not be verified and may still be running on the host.</string>
     <string name="transition_host_session_left_open">The host session could not be closed — the game and stream may still be running on the host.</string>
+    <string name="session_closed_on_host">The session ended on the host.</string>
     <string name="console_terminate_session_other_stream">The host is running a stream MoonWaker does not own. Close it on the host.</string>
     <string name="console_close_session">Close session</string>
     <string name="console_replace_session_title">Replace the current session?</string>

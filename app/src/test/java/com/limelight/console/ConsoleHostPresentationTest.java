@@ -166,6 +166,58 @@ public class ConsoleHostPresentationTest {
         }
     }
 
+    @Test
+    public void onlyAnOnlineHostNamesTheGameThatRunsWithoutASession() {
+        for (ConsoleHostPresentation.State state : ConsoleHostPresentation.State.values()) {
+            boolean online = state == ConsoleHostPresentation.State.ONLINE
+                    || state == ConsoleHostPresentation.State.PROFILE_ATTENTION;
+            assertEquals(state.name(), online, ConsoleHostPresentation.showsRunningGame(
+                    state, session(new SessionSnapshot.Display("Game", 12L, -1L))));
+            // No held game: a bare "Online" stays.
+            assertEquals(state.name(), false, ConsoleHostPresentation.showsRunningGame(
+                    state, session(SessionSnapshot.Display.NONE)));
+            assertEquals(state.name(), false, ConsoleHostPresentation.showsRunningGame(
+                    state, session(new SessionSnapshot.Display("", -1L, 65L))));
+        }
+    }
+
+    @Test
+    public void liveSessionShowsTheStreamsTimeOnlyWhenItNamesNoGame() {
+        SessionSnapshot both = session(new SessionSnapshot.Display("game", 12L, 65L));
+        assertEquals(12L, ConsoleHostPresentation.sessionMinutes(both, "game"));
+        // The desktop or an application: the stream.
+        assertEquals(65L, ConsoleHostPresentation.sessionMinutes(both, ""));
+        // Another game than the held one, or one without a known process start: no time,
+        // never the stream's under a game's name.
+        assertEquals(-1L, ConsoleHostPresentation.sessionMinutes(both, "other"));
+        assertEquals(-1L, ConsoleHostPresentation.sessionMinutes(
+                session(new SessionSnapshot.Display("game", -1L, 65L)), "game"));
+        assertEquals(-1L, ConsoleHostPresentation.sessionMinutes(
+                session(SessionSnapshot.Display.NONE), "game"));
+        assertEquals(-1L, ConsoleHostPresentation.sessionMinutes(
+                session(new SessionSnapshot.Display("game", 12L, -1L)), ""));
+    }
+
+    @Test
+    public void statusDurationsUseTheSharedHoursAndMinutesFormat() {
+        PlaynitePlaytimeFormatter.Labels polish =
+                new PlaynitePlaytimeFormatter.Labels("Nie grano", "godz.", "min");
+        assertEquals("12 min", PlaynitePlaytimeFormatter.minutes(12L, polish));
+        assertEquals("59 min", PlaynitePlaytimeFormatter.minutes(59L, polish));
+        assertEquals("1 godz.", PlaynitePlaytimeFormatter.minutes(60L, polish));
+        assertEquals("1 godz. 5 min", PlaynitePlaytimeFormatter.minutes(65L, polish));
+        assertEquals("1 hr 5 min", PlaynitePlaytimeFormatter.minutes(65L,
+                new PlaynitePlaytimeFormatter.Labels("Never played", "hr", "min")));
+    }
+
+    private static SessionSnapshot session(SessionSnapshot.Display display) {
+        return new SessionSnapshot("host", "default", "default",
+                SessionSnapshot.State.UNCERTAIN, 0, "", false, false, false, false, false, "",
+                false, SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false, display);
+    }
+
     private static SessionSnapshot session(SessionSnapshot.State state) {
         return new SessionSnapshot("host", "default", "default", state, 42, "", false,
                 state == SessionSnapshot.State.SUSPENDED, false, false, false, "", false,

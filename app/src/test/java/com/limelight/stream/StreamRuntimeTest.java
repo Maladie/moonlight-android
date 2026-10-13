@@ -465,6 +465,47 @@ public class StreamRuntimeTest {
         assertEquals(Collections.singletonList("s1:p:9"), platform.abandonedCloses);
     }
 
+    @Test public void cancelBeforeTheGrantHandsTheStartBackInsteadOfClosing() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        runtime.start();
+        // Not a cancel yet: a running start is never abandoned.
+        runtime.abandonLaunch();
+        assertEquals(0, transport.abandonedStarts.get());
+        runtime.stop(r -> { });
+        runtime.abandonLaunch();
+
+        assertEquals(1, transport.abandonedStarts.get());
+        assertEquals(Collections.emptyList(), platform.abandonedCloses);
+        // The start had been sent after all, or the host found it started: closed once.
+        transport.controlGeneration = 9L;
+        runtime.stageComplete("app");
+        assertEquals(Collections.singletonList("s1:p:9"), platform.abandonedCloses);
+    }
+
+    @Test public void startFoundOnTheHostAfterALostPermitIsClosedOnce() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        runtime.start();
+        // No cancel and no bound generation: the host named the one it found started.
+        runtime.startLeftOnHost(9L);
+        runtime.startLeftOnHost(9L);
+
+        assertEquals(Collections.singletonList("s1:p:9"), platform.abandonedCloses);
+    }
+
+    @Test public void cancelAfterTheGrantClosesWithoutAbandoning() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        runtime.start();
+        transport.controlGeneration = 9L;
+        runtime.stop(r -> { });
+        runtime.abandonLaunch();
+
+        assertEquals(0, transport.abandonedStarts.get());
+        assertEquals(Collections.singletonList("s1:p:9"), platform.abandonedCloses);
+    }
+
     @Test public void grantRacingTheCancelStopThroughTheLivePathIsClosedOnce() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
@@ -797,7 +838,8 @@ public class StreamRuntimeTest {
         @Override public void stageStarting(String stage) { }
         @Override public void stageComplete(String stage) { }
         @Override public void stageFailed(String stage, int portFlags, int errorCode) { }
-        @Override public void controlRejected(String stage, String reason) { }
+        @Override public void controlRejected(String stage, String reason,
+                                              boolean nothingStarted) { }
         @Override public void connectionStarted() { started.incrementAndGet(); }
         @Override public void connectionTerminated(int errorCode) { terminated.incrementAndGet(); }
         @Override public void connectionStatusUpdate(int connectionStatus) { }
@@ -834,7 +876,9 @@ public class StreamRuntimeTest {
             if (failStop) throw new IllegalStateException("stop failed");
         }
         volatile long controlGeneration;
+        final AtomicInteger abandonedStarts = new AtomicInteger();
         @Override public long controlGeneration() { return controlGeneration; }
+        @Override public void abandonStart() { abandonedStarts.incrementAndGet(); }
         @Override public boolean reauthorizeControlGeneration(long expected, long generation) { return true; }
         final AtomicInteger idrRequests = new AtomicInteger();
         volatile CountDownLatch idrEntered;

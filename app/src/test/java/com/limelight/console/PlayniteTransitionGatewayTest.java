@@ -542,7 +542,7 @@ public class PlayniteTransitionGatewayTest {
                     long now = System.currentTimeMillis();
                     String transition = java.net.URLDecoder.decode(path.replaceFirst(
                             ".*transition_id=([^&]*).*", "$1"), "UTF-8");
-                    return new JSONObject().put("ok", true).put("schema_version", 1)
+                    return new JSONObject().put("ok", true).put("schema_version", 2)
                             .put("producer", new JSONObject().put("boot_id", "boot-a")
                                     .put("revision", revision > 0L ? revision : ordinal))
                             .put("observed_at_unix_ms", now).put("fresh_for_ms", 5_000)
@@ -559,7 +559,8 @@ public class PlayniteTransitionGatewayTest {
                                     .put("operation_id", operationId)
                                     .put("stream_session_id", streamSessionId)
                                     .put("control_generation", controlGeneration)
-                                    .put("actor_lease_epoch", actorLeaseEpoch))
+                                    .put("actor_lease_epoch", actorLeaseEpoch)
+                                    .put("stream_started_unix_ms", 0))
                             .put("provider", new JSONObject().put("state", gameState)
                                     .put("connector_evidence", "VERIFIED")
                                     .put("reason", "none"))
@@ -571,8 +572,10 @@ public class PlayniteTransitionGatewayTest {
                             .put("process", idle || processPending
                                     ? new JSONObject().put("evidence", idle ? "ABSENT" : "PENDING")
                                             .put("process_id", 0).put("process_token", "")
+                                            .put("started_unix_ms", 0)
                                     : new JSONObject().put("evidence", "VERIFIED")
-                                            .put("process_id", 42).put("process_token", PROCESS_TOKEN))
+                                            .put("process_id", 42).put("process_token", PROCESS_TOKEN)
+                                            .put("started_unix_ms", 0))
                             .put("window", idle || processPending
                                     ? new JSONObject().put("evidence", idle ? "ABSENT" : "PENDING")
                                             .put("ready", false).put("target_kind", "game")

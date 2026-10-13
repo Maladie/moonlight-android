@@ -531,10 +531,6 @@ public final class PlayniteTransitionGateway {
         return client.verifyPlayniteInstallation(connection, gameId);
     }
 
-    public void ensureInstalledGameTarget(String gameId, String name) throws IOException {
-        client.ensureVibepolloPlayniteApp(connection, gameId, name);
-    }
-
     public SuspendAcceptance suspendSession(String suspendId, int sunshineAppId,
                                              String playniteGameId, String title)
             throws IOException {

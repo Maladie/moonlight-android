@@ -26,8 +26,8 @@ kept. After adding a profile, use **Integracje** in Host Control to enter the
 Discord application data and either paste or automatically request a Vibepollo
 token. Automatic token creation uses
 `bridges\vibepollo\moonwaker-token-scopes.example.json`; this includes `GET`
-and `POST` access to `/api/apps` for automatic Playnite app creation plus
-scoped `DELETE` access to `/api/apps/*` for Playnite-ID deduplication.
+and `POST` access to `/api/apps` for the neutral `MoonWaker Stream` application.
+The Bridge deletes no streamer application and the token grants no `DELETE`.
 
 An elevated service-only uninstall preserves profiles, Gateway pairing, and LSA
 credentials:

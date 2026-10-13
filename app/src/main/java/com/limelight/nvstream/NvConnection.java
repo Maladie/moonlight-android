@@ -55,6 +55,11 @@ public class NvConnection implements StreamInput {
     private final ControlBinding controlBinding;
     private final String controlBootstrapOperationId = "control-" + UUID.randomUUID();
     private volatile long controlGeneration;
+    private volatile boolean startAbandoned;
+    // Written and read on the start thread only.
+    private boolean startReleased;
+    // The Gateway refused this start's acquire: no permit, no effect sent.
+    private boolean startRefused;
     private final NativeStartGate startGate = new NativeStartGate(connectionAllowed);
 
     public static final class ControlBinding {
@@ -132,6 +137,28 @@ public class NvConnection implements StreamInput {
     
     private static int generateRiKeyId() {
         return new SecureRandom().nextInt();
+    }
+
+    /**
+     * The user cancelled this start: a permit whose effect was not sent yet is handed back to
+     * the host instead of being used. A start already sent completes and is closed by its
+     * listener.
+     */
+    public void abandonStart() {
+        startAbandoned = true;
+    }
+
+    /** Best effort: the host ends a permit it cannot hear about by itself, only later. */
+    private ControlOperationClient.Result abandonControlStart(String operationId, int appId,
+                                                              long generation) {
+        try {
+            return controlBinding.client.abandon(controlBinding.connection, operationId,
+                    controlBinding.streamSessionId, appId, controlBinding.childSessionId,
+                    generation);
+        } catch (IOException unresolved) {
+            LimeLog.warning("Abandoned start was not released: " + unresolved.getMessage());
+            return null;
+        }
     }
 
     public void stop() {
@@ -373,24 +400,59 @@ public class NvConnection implements StreamInput {
                     intent, controlBinding.streamSessionId, app.getAppId(),
                     controlBinding.expectedGeneration, currentAppId,
                     controlBinding.childSessionId);
-        } catch (GatewayTransport.GatewayException rejected) {
-            // A received Gateway rejection is authoritative. Reconciliation is
-            // only for an unknown outcome after transport loss.
-            throw rejected;
         } catch (IOException unavailable) {
-            ControlOperationClient.Result reconciled = controlBinding.client.reconcile(
-                    controlBinding.connection, operationId, controlBinding.streamSessionId,
-                    app.getAppId(), currentAppId);
-            if (!reconciled.succeeded()) throw unavailable;
+            int refusedStatus = unavailable instanceof GatewayTransport.GatewayException
+                    ? ((GatewayTransport.GatewayException) unavailable).statusCode() : 0;
+            if (refusedStatus >= 400 && refusedStatus < 500) {
+                // Only a 4xx is the host's refusal: nothing was permitted. A 5xx or an
+                // unreadable answer may follow a granted permit, like a lost transport.
+                startRefused = true;
+                throw unavailable;
+            }
+            ControlOperationClient.Result reconciled = null;
+            IOException unresolved = unavailable;
+            try {
+                reconciled = controlBinding.client.reconcile(
+                        controlBinding.connection, operationId, controlBinding.streamSessionId,
+                        app.getAppId(), currentAppId);
+            } catch (IOException rejected) {
+                unresolved = rejected;
+            }
+            if (reconciled == null || !reconciled.succeeded()) {
+                // The answer was lost, so the permit may exist without an owner: no effect
+                // was sent under it, and the host releases it on this declaration.
+                ControlOperationClient.Result abandoned =
+                        abandonControlStart(operationId, app.getAppId(), 0L);
+                if (abandoned != null && abandoned.succeeded()) {
+                    // The host found it started all the same: closed like a cancelled start.
+                    context.connListener.startLeftOnHost(abandoned.generation);
+                }
+                throw abandoned != null && !abandoned.succeeded() ? unavailable : unresolved;
+            }
             permit = controlBinding.client.acquire(controlBinding.connection,
                     controlBootstrapOperationId, "reconnect",
                     controlBinding.streamSessionId, app.getAppId(),
                     reconciled.generation, currentAppId, controlBinding.childSessionId);
         }
-        if (permit.succeeded()) {
+        boolean replayed = permit.succeeded();
+        if (replayed) {
             permit = controlBinding.client.acquireBootstrapAfterReplay(
                     controlBinding.connection, controlBootstrapOperationId,
                     permit, currentAppId, controlBinding.childSessionId);
+        }
+        if (startAbandoned && currentAppId == 0 && !replayed) {
+            // Cancelled before the effect of a fresh start: nothing is sent. The host releases
+            // the permit, or names the generation of a stream it found started, which the
+            // listener closes. A start onto an application already running on the host goes
+            // on instead: only its completed generation lets the listener close that stream.
+            ControlOperationClient.Result abandoned =
+                    abandonControlStart(permit.operationId, app.getAppId(), permit.generation);
+            if (abandoned != null && abandoned.succeeded()) {
+                controlGeneration = abandoned.generation;
+                return true;
+            }
+            startReleased = true;
+            return false;
         }
         boolean succeeded = false;
         try {
@@ -518,7 +580,8 @@ public class NvConnection implements StreamInput {
 
                 try {
                     if (!startApp()) {
-                        context.connListener.stageFailed(appName, 0, 0);
+                        // A cancelled start that sent nothing has no failure to report.
+                        if (!startReleased) context.connListener.stageFailed(appName, 0, 0);
                         return;
                     }
                     context.connListener.stageComplete(appName);
@@ -529,10 +592,14 @@ public class NvConnection implements StreamInput {
                     return;
                 } catch (XmlPullParserException | IOException e) {
                     e.printStackTrace();
-                    if (e instanceof GatewayTransport.GatewayException
-                            && ((GatewayTransport.GatewayException) e).statusCode() == 409) {
+                    if (e instanceof GatewayTransport.GatewayException && (startRefused
+                            || ((GatewayTransport.GatewayException) e).statusCode() == 409)) {
+                        int status = ((GatewayTransport.GatewayException) e).statusCode();
                         String reason = ((GatewayTransport.GatewayException) e).reason();
-                        context.connListener.controlRejected(appName, reason == null ? "" : reason);
+                        // A pairing or grant refusal carries no reason; its status names it.
+                        if (reason == null) reason = status == 401 ? "unauthorized"
+                                : status == 403 ? "forbidden" : "";
+                        context.connListener.controlRejected(appName, reason, startRefused);
                         return;
                     }
                     context.connListener.displayMessage(e.getMessage());

@@ -51,19 +51,6 @@ public final class AndroidStreamRuntime {
                 new AndroidPlatform(app, new Intent(launchIntent)));
     }
 
-    /**
-     * A failed close of an abandoned launch is told to the user, unless the host says the
-     * stream is not this generation's: a newer session took it over, so nothing was left.
-     */
-    static boolean reportsAbandonedLaunchClose(HostSessionTermination.Outcome outcome) {
-        return outcome != HostSessionTermination.Outcome.OTHER_STREAM;
-    }
-
-    private static void reportAbandonedLaunchClose(Context app,
-                                                   HostSessionTermination.Outcome outcome) {
-        if (reportsAbandonedLaunchClose(outcome)) Game.reportGameLeftOnHost(app, outcome, true);
-    }
-
     /** Publishes the presentation's latest launch record for reconnect and host termination. */
     public static void publishLaunchRecord(StreamRuntime runtime, Intent launchIntent) {
         if (runtime != null && runtime.platform() instanceof AndroidPlatform) {
@@ -88,6 +75,7 @@ public final class AndroidStreamRuntime {
         }
         @Override public void stop() { connection.stop(); }
         @Override public long controlGeneration() { return connection.getControlGeneration(); }
+        @Override public void abandonStart() { connection.abandonStart(); }
         @Override public boolean reauthorizeControlGeneration(long expected, long generation) {
             return connection.reauthorizeControlGeneration(expected, generation);
         }
@@ -292,7 +280,10 @@ public final class AndroidStreamRuntime {
                     record.getBooleanExtra(Game.EXTRA_CHILD_PROFILE, false)
                     ? PlayniteTransitionGateway.ActorContext.child(profileId, executionProfileId)
                     : PlayniteTransitionGateway.ActorContext.parent(profileId);
-            new Thread(() -> reportAbandonedLaunchClose(app, HostSessionTermination.run(
+            // Any close that left something of this start is told to the user; a host a
+            // newer generation or another owner took over is silent.
+            new Thread(() -> Game.reportGameLeftOnHost(app,
+                    HostSessionTermination.closeAbandonedStart(
                     app, record.getStringExtra(Game.EXTRA_PC_UUID),
                     record.getStringExtra(Game.EXTRA_HOST),
                     record.getIntExtra(Game.EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
@@ -302,7 +293,7 @@ public final class AndroidStreamRuntime {
                     // No game id: this attempt has no verified game identity, so the close stops
                     // no game; one still running reports CLOSED_GAME_UNVERIFIED, told to the user.
                     streamSessionId, record.getIntExtra(Game.EXTRA_APP_ID, 0), "",
-                    controlGeneration, actor)),
+                    controlGeneration, actor), true),
                     "MoonWaker-CloseAbandonedLaunch").start();
         }
 

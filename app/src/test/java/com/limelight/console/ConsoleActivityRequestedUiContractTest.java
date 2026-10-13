@@ -170,7 +170,7 @@ public class ConsoleActivityRequestedUiContractTest {
         String state = source.substring(source.indexOf("private String playniteStateChipLabel("),
                 source.indexOf("private void stylePlayniteStateChip("));
         String stateStyle = source.substring(source.indexOf("private void stylePlayniteStateChip("),
-                source.indexOf("private boolean isVibepolloEnsureInFlight("));
+                source.indexOf("private String playniteInstallKey(String hostUuid, PlayniteDashboardItem"));
         String expanded = source.substring(source.indexOf("expandedGameDescription = text("),
                 source.indexOf("details.addView(expandedGameTitle"));
 

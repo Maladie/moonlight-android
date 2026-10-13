@@ -457,6 +457,41 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual({"revision": "catalog-1"}, events[1]["payload"])
         self.assertEqual({}, events[2]["payload"])
 
+    def test_child_reads_a_process_start_only_for_its_own_time_session_game(self):
+        def running(game_id):
+            return (True, {
+                "game": {"evidence": "VERIFIED", "state": "running", "id": game_id},
+                "process": {"evidence": "VERIFIED", "process_id": 77,
+                            "process_token": "a" * 64,
+                            "started_unix_ms": 1_700_000_000_000,
+                            "running_games": []}})
+
+        def started(actor, game_id, ordinal):
+            self.state.request_context.actor_profile_id = actor
+            self.state.request_context.execution_profile_id = "parent"
+            self.state.proxy = mock.Mock(return_value=running(game_id))
+            status, observation = self.state.playnite_observation(ordinal, "")
+            self.assertEqual(200, status)
+            # No extra provider read decides it.
+            self.state.proxy.assert_called_once()
+            return observation["process"]["started_unix_ms"]
+
+        self.state.child_time_session = None
+        self.assertEqual(1_700_000_000_000, started("parent", "steam:999", 1))
+        # Without its own time session a child learns no start, shared game or not.
+        self.assertEqual(0, started("kid", "steam:123", 2))
+        self.assertEqual(0, started("kid", "steam:999", 3))
+        self.state.child_time_session = {
+            "session_id": "01234567-89ab-cdef-0123-456789abcdef", "client_id": "tv",
+            "actor_profile_id": "kid", "execution_profile_id": "parent",
+            "game_id": "steam:123", "provider_game_id": "steam:123"}
+        self.assertEqual(1_700_000_000_000, started("kid", "steam:123", 4))
+        # Another game running in the parent profile stays without a start for the child.
+        self.assertEqual(0, started("kid", "steam:999", 5))
+        self.state.child_time_session["actor_profile_id"] = "other-kid"
+        self.assertEqual(0, started("kid", "steam:123", 6))
+        self.state.child_time_session = None
+
     def test_start_phase_reasons_reach_the_client_unchanged(self):
         # Start reasons are not mapped by the Gateway: the observation and the
         # shared game's lifecycle event carry the provider reason verbatim.
