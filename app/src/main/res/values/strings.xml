@@ -1211,6 +1211,7 @@
     <string name="console_terminate_session_game_unverified">The game on the host could not be verified. Try again.</string>
     <string name="console_terminate_session_game_left">Stream closed. The game could not be verified and may still be running on the host.</string>
     <string name="transition_host_session_left_open">The host session could not be closed — the game and stream may still be running on the host.</string>
+    <string name="session_closed_on_host">The session was closed on the host.</string>
     <string name="console_terminate_session_other_stream">The host is running a stream MoonWaker does not own. Close it on the host.</string>
     <string name="console_close_session">Close session</string>
     <string name="console_replace_session_title">Replace the current session?</string>

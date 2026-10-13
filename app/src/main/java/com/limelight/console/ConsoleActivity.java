@@ -103,6 +103,7 @@ import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.stream.BackgroundStreamPreferences;
 import com.limelight.stream.BackgroundStreamService;
 import com.limelight.session.HostSleepStateStore;
+import com.limelight.session.HostStreamRecord;
 import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionResumeManager;
@@ -808,6 +809,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private int sessionProjectionRequestGeneration;
     private final Map<String, Integer> lastFreshRunningAppIds = new LinkedHashMap<>();
     private final Map<String, String> lastFreshStreamSessionIds = new LinkedHashMap<>();
+    /** Host/profile entries whose Gateway stream record was read since the last onPause. */
+    private final Set<String> hostStreamReconciled = new HashSet<>();
     private final Set<String> sessionProjectionRefreshInFlight =
             Collections.synchronizedSet(new HashSet<>());
     private String lastCarouselGameId = "";
@@ -877,6 +880,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             hosts.put(copy.uuid, copy);
             if (fresh && active && copy.uuid.equals(selectedHostUuid)) {
                 refreshSessionProjection(copy, null);
+                reconcileHostStreamRecord(copy);
             }
             queueConsoleUpdates(ConsoleUpdateChannels.diff(
                     previous, copy, selectedHostUuid));
@@ -1390,6 +1394,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             // Back on screen (for example from a stream): the last known state stays until the
             // host's session is read now, past the poll cadence; nothing polls while hidden.
             refreshSessionProjection(selected, accepted -> { });
+            reconcileHostStreamRecord(selected);
         }
         if (refreshSessionOnResume) {
             refreshSessionOnResume = false;
@@ -1835,6 +1840,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     protected void onPause() {
+        // Each return to the screen is a new host entry: its stream record is read again.
+        hostStreamReconciled.clear();
         childEligibilityLaunchToken++;
         synchronized (childIdentityBindingLock) {
             childIdentityBindingLifecycleToken++;
@@ -4318,6 +4325,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         refreshUsbMicrophoneIndicator();
         loadPlayniteForHost(host);
         refreshSessionProjection(host, null);
+        reconcileHostStreamRecord(host);
     }
 
     private boolean changeSelectedProfile(ComputerDetails host, String profileId) {
@@ -7436,6 +7444,108 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             BackgroundStreamService.dismiss(this, sessionId);
         }
         return stopped;
+    }
+
+    /**
+     * Once per host entry (until the next onPause), reads the Gateway's stream record of this
+     * TV and the selected profile's execution profile beside the local reconnect record
+     * ({@link HostStreamRecord}): a stream the host kept for this actor while the app was gone
+     * becomes a reconnect record, so it reads as paused and Play reconnects it; a record of a
+     * stream the host no longer holds ends. A live local transport owns its stream itself.
+     */
+    private void reconcileHostStreamRecord(ComputerDetails host) {
+        if (host == null || managerBinder == null || hostSelectionVisible
+                || profileGateHostUuid != null || host.activeAddress == null
+                || !ConsoleActionCatalog.isOnline(host) || !ConsoleActionCatalog.isPaired(host)) {
+            return;
+        }
+        HostProfileKey key = selectedProfileKey(host.uuid);
+        SessionModel.Snapshot retained = sessionModel.snapshot();
+        if (host.uuid.equalsIgnoreCase(retained.hostId)
+                && retained.state != SessionModel.State.NONE
+                && retained.state != SessionModel.State.RECONNECT_REQUIRED) return;
+        String local = ownReconnectRecord(host.uuid, key);
+        // ponytail: one reconnect record slot; another host's record stays and nothing is
+        // adopted beside it.
+        if (local == null || !hostStreamReconciled.add(key.cacheKey())) return;
+        GatewayConnection gateway = hostGatewayStore.loadForHost(
+                host.uuid, host.activeAddress.address, key.profileId);
+        if (gateway == null) return;
+        String hostId = host.uuid;
+        executor.execute(() -> {
+            ControlOperationClient.Permit owned;
+            try {
+                owned = new ControlOperationClient(new GatewayTransport()).ownedStream(gateway);
+            } catch (IOException | RuntimeException unknown) {
+                return;
+            }
+            mainHandler.post(() -> applyHostStreamRecord(hostId, key, local, owned));
+        });
+    }
+
+    /** The reconnect record's stream of this host and profile, "" for none, null for another's. */
+    private String ownReconnectRecord(String hostId, HostProfileKey key) {
+        SessionResumeManager.PendingSession pending = sessionModel.records().pending;
+        if (pending == null) return "";
+        return hostId.equalsIgnoreCase(pending.hostUuid) && executionProfileId(
+                hostId, key.profileId).equals(pending.executionProfileId)
+                ? pending.streamSessionId : null;
+    }
+
+    private void applyHostStreamRecord(String hostId, HostProfileKey key, String local,
+                                       ControlOperationClient.Permit owned) {
+        ComputerDetails host = currentHost(hostId);
+        // Records or selection that changed meanwhile are read again at a later entry.
+        if (host == null || isDestroyed() || !key.equals(selectedProfileKey(hostId))
+                || !local.equals(ownReconnectRecord(hostId, key))) return;
+        switch (HostStreamRecord.decide(owned, key.profileId, local)) {
+            case RETIRE:
+                // A stream that ended while it was watched tells the user itself (Game).
+                sessionModel.post(SessionEvent.Cleared.byHost(local));
+                sessionModel.post(new SessionEvent.ReconnectCleared(local));
+                BackgroundStreamService.dismiss(this, local);
+                break;
+            case ADOPT:
+                Intent record = adoptedStreamRecord(host, key, owned);
+                if (record != null) {
+                    sessionModel.post(new SessionEvent.ReconnectSaved(
+                            record, owned.streamSessionId, false));
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    /**
+     * Reconnect material for the host's stream {@code owned}: what the stream screen records
+     * once connected, with the host's generation, so Play reconnects it like any saved session.
+     */
+    private Intent adoptedStreamRecord(ComputerDetails host, HostProfileKey key,
+                                       ControlOperationClient.Permit owned) {
+        NvApp app = PlayniteTargetResolver.findById(loadApps(host, true), owned.sunshineAppId);
+        if (app == null || host.activeAddress == null || managerBinder == null) return null;
+        LaunchTransitionSpec transition = LaunchTransitionSpec.create(host.uuid, key.profileId,
+                owned.providerGameId.isEmpty() ? LaunchTransitionType.GENERIC
+                        : LaunchTransitionType.GAME_CONNECTION,
+                app.getAppId(), owned.providerGameId, System.currentTimeMillis());
+        HostGatewayClient.IntegrationProfile actor = integrationProfile(host.uuid, key.profileId);
+        return ServerHelper.createStartIntent(this, app, host, managerBinder, null, true)
+                .putExtra(Game.EXTRA_CONSOLE_LOADING, true)
+                .putExtra(Game.EXTRA_CONSOLE_REDUCED_MOTION, reducedMotion)
+                .putExtra(Game.EXTRA_TRANSITION_ID, transition.id)
+                .putExtra(Game.EXTRA_TRANSITION_TYPE, transition.type.name())
+                .putExtra(Game.EXTRA_TRANSITION_HOST_ID, transition.hostId)
+                .putExtra(Game.EXTRA_TRANSITION_PLAYNITE_GAME_ID, transition.playniteGameId)
+                .putExtra(Game.EXTRA_TRANSITION_CREATED_AT, transition.createdAtMillis)
+                .putExtra(Game.EXTRA_PROFILE_ID, key.profileId)
+                .putExtra(Game.EXTRA_EXECUTION_PROFILE_ID,
+                        executionProfileId(host.uuid, key.profileId))
+                .putExtra(Game.EXTRA_CHILD_PROFILE, actor != null && actor.isChild())
+                .putExtra(Game.EXTRA_CONTROL_GENERATION, owned.generation)
+                .putExtra(Game.EXTRA_STREAM_TARGET_NAME, app.getAppName())
+                .putExtra(Game.EXTRA_NEUTRAL_STREAM_TARGET,
+                        PlayniteTargetResolver.isNeutralStream(app));
     }
 
     private long knownControlGeneration(String hostId, String profileId) {

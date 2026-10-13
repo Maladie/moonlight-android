@@ -341,9 +341,10 @@ public class GameTransitionCancelContractTest {
         assertTrue(text.contains("WholeSessionTermination.Owner wholeSessionTermination"));
         assertTrue(terminated.indexOf("if (wholeSessionTermination.isRunning())")
                 < terminated.indexOf("cleanupUnrevealedProviderLaunch("));
+        // The guard ends where a host-ended stream is checked against the host's record.
         String verifiedGuard = terminated.substring(terminated.indexOf(
                 "if (wholeSessionTermination.isRunning())"), terminated.indexOf(
-                "cleanupUnrevealedProviderLaunch("));
+                "// The host ended the stream"));
         assertTrue(verifiedGuard.contains("stopConnection()"));
         assertFalse(verifiedGuard.contains("finish()"));
         assertFalse(verifiedGuard.contains("cleanupUnrevealedProviderLaunch"));

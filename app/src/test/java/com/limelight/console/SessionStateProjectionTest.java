@@ -1,8 +1,10 @@
 package com.limelight.console;
 
+import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionModelDriver;
+import com.limelight.session.SessionResumeManager;
 import com.limelight.session.SuspendedSessionStore;
 
 
@@ -76,6 +78,44 @@ public class SessionStateProjectionTest {
         assertEquals(SessionSnapshot.ObservationState.PENDING, snapshot.observationState);
         assertEquals("", snapshot.playniteGameId);
         assertEquals("suspend-a", snapshot.suspendId);
+    }
+
+    @Test public void hostAdoptedStreamRecordReadsAsPausedAndPlayReconnectsIt() {
+        // The record the console writes for a stream the host kept for this actor while the
+        // app was gone: autoResume false, so it counts only while the host runs its app.
+        SessionResumeManager.PendingSession adopted = SessionModelDriver.reconnectRecord(
+                "adopted-stream", "host", "child", "parent", 42, "game", false);
+        ComputerDetails host = new ComputerDetails();
+        host.uuid = "host";
+        host.runningGameId = 42;
+        long ordinal = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot-a", ordinal), m.snapshot(), 0L));
+
+        SessionSnapshot paused = owner.current(m.snapshot(), SessionStateResolver.LocalFacts
+                .forHost(host, "parent", null, false, adopted, false, false, false), 0L);
+
+        assertEquals(SessionSnapshot.State.RECONNECT_REQUIRED, paused.state);
+        assertFalse(paused.retainedTransport);
+        assertTrue(ConsoleHostPresentation.holdsPausedSession(
+                ConsoleHostPresentation.State.ONLINE, paused));
+        SessionOrchestrator.State play = SessionOrchestrator.State.forPlay(paused,
+                false, false, false, false, true, true, false, true, true);
+        assertEquals(SessionOrchestrator.ActionKind.RECONNECT, SessionOrchestrator.transition(
+                play, SessionOrchestrator.UserIntent.play(PlayIntent.playniteGame(
+                        "host", "child", 42, "Game", false, "game", "game"))).kind);
+
+        // Once the host no longer runs it, the record names nothing to resume.
+        host.runningGameId = 0;
+        assertFalse(owner.current(m.snapshot(), SessionStateResolver.LocalFacts.forHost(
+                host, "parent", null, false, adopted, false, false, false), 0L)
+                .isReconnectRequired());
+        // Another execution profile's record is never this profile's session.
+        host.runningGameId = 42;
+        SessionResumeManager.PendingSession foreign = SessionModelDriver.reconnectRecord(
+                "foreign-stream", "host", "other", "other", 42, "game", false);
+        assertFalse(owner.current(m.snapshot(), SessionStateResolver.LocalFacts.forHost(
+                host, "parent", null, false, foreign, false, false, false), 0L)
+                .isReconnectRequired());
     }
 
     @Test public void acceptReturnsTheProjectionOfItsOwnObservationNotALaterOne() {

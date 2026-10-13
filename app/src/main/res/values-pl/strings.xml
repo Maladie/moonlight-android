@@ -1123,6 +1123,7 @@
     <string name="console_terminate_session_game_unverified">Nie udało się potwierdzić gry na hoście. Spróbuj ponownie.</string>
     <string name="console_terminate_session_game_left">Stream zamknięty. Nie udało się potwierdzić gry — mogła zostać uruchomiona na hoście.</string>
     <string name="transition_host_session_left_open">Nie udało się zamknąć sesji na hoście — gra i stream mogły na nim zostać.</string>
+    <string name="session_closed_on_host">Sesję zamknięto na hoście.</string>
     <string name="console_terminate_session_other_stream">Na hoście działa stream spoza MoonWakera. Zamknij go na hoście.</string>
     <string name="console_close_session">Zamknij sesję</string>
     <string name="console_replace_session_title">Zastąpić bieżącą sesję?</string>

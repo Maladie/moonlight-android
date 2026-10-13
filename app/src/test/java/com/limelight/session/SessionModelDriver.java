@@ -28,6 +28,22 @@ public final class SessionModelDriver {
     public final SessionModel model = new SessionModel(modelQueue::add, mainQueue::add,
             () -> false, resume, suspended, sleep);
 
+    /** A stored reconnect record as the model reads it back. */
+    public static SessionResumeManager.PendingSession reconnectRecord(
+            String streamSessionId, String hostId, String profileId, String executionProfileId,
+            int appId, String gameId, boolean autoResume) {
+        java.util.Map<String, Object> stored = new java.util.HashMap<>();
+        stored.put("pending", true);
+        stored.put("autoResume", autoResume);
+        stored.put("streamSessionId", streamSessionId);
+        stored.put("pcUuid", hostId);
+        stored.put("profileId", profileId);
+        stored.put(com.limelight.Game.EXTRA_EXECUTION_PROFILE_ID, executionProfileId);
+        stored.put("appId", appId);
+        stored.put("transitionGameId", gameId);
+        return SessionResumeManager.read(stored);
+    }
+
     /** Runs model events first, then main-thread work, until both queues are empty. */
     public int drain() {
         int ran = 0;

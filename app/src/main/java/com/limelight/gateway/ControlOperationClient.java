@@ -65,9 +65,29 @@ public final class ControlOperationClient {
 
     /** Read the server-owned binding when an explicit quit has no local resume record. */
     public Permit ownedSession(GatewayConnection connection) throws IOException {
+        Permit owned = ownedStream(connection);
+        if (owned == null) throw new IOException("Gateway could not identify an owned stream.");
+        return owned;
+    }
+
+    /**
+     * The host's stream record of this TV and execution profile, or null when the host
+     * confirms it has none: no record at all, or one of another TV or execution profile.
+     * Any other answer, and no answer, is an {@link IOException}: unknown.
+     */
+    public Permit ownedStream(GatewayConnection connection) throws IOException {
         String requestId = "control-status-" + UUID.randomUUID();
-        JSONObject body = poster.post(connection, "/api/v1/control/operation/status",
-                new JSONObject(), requestId, TIMEOUT_MS);
+        JSONObject body;
+        try {
+            body = poster.post(connection, "/api/v1/control/operation/status",
+                    new JSONObject(), requestId, TIMEOUT_MS);
+        } catch (GatewayTransport.GatewayException refused) {
+            if (refused.statusCode() == 409 && ("managed_stream_unavailable".equals(
+                    refused.reason()) || "stream_owner_mismatch".equals(refused.reason()))) {
+                return null;
+            }
+            throw refused;
+        }
         if (body == null || !body.optBoolean("ok") || !"owned".equals(body.optString("state"))) {
             throw new IOException("Gateway could not identify an owned stream.");
         }
@@ -78,9 +98,12 @@ public final class ControlOperationClient {
         if (session.isEmpty() || app <= 0 || generation <= 0 || epoch <= 0) {
             throw new IOException("Gateway returned an incomplete owned stream.");
         }
-        return new Permit(requestId, session, app, generation, epoch, "owned", "none",
+        Permit owned = new Permit(requestId, session, app, generation, epoch, "owned", "none",
                 body.optString("provider_game_id"), body.optString("process_token"),
                 body.optInt("process_id"));
+        owned.actorProfileId = body.optString("actor_profile_id").trim();
+        owned.childSessionId = body.optString("child_session_id").trim();
+        return owned;
     }
 
     public static String operationId(String intent, String streamSessionId,
@@ -213,6 +236,9 @@ public final class ControlOperationClient {
         public final String providerGameId;
         public final String processToken;
         public final int processId;
+        /** Of a host stream record ({@link #ownedStream}) only; empty otherwise. */
+        public String actorProfileId = "";
+        public String childSessionId = "";
 
         Permit(String operationId, String streamSessionId, int sunshineAppId,
                long generation, long actorLeaseEpoch, String state, String reason,

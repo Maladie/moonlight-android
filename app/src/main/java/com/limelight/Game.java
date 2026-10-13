@@ -56,6 +56,7 @@ import com.limelight.ui.GameGestures;
 import com.limelight.ui.StreamView;
 import com.limelight.ui.overlay.CustomCommand;
 import com.limelight.ui.overlay.OverlayMenuView;
+import com.limelight.session.HostStreamRecord;
 import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionResumeManager;
@@ -5049,6 +5050,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             });
             return;
         }
+        // The host ended the stream; a lost network never terminates it gracefully.
+        if (errorCode == MoonBridge.ML_ERROR_GRACEFUL_TERMINATION && !userInitiatedDisconnect) {
+            confirmClosedOnHost();
+        }
         if (cleanupUnrevealedProviderLaunch(
                 "stream-terminated-before-reveal:" + errorCode)
                 && !hasAutoWarmUpTransportIdentity()) return;
@@ -8247,6 +8252,52 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private int autoWarmUpAppId() {
         return getIntent().getIntExtra(
                 EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
+    }
+
+    /**
+     * After the host ended this stream: once its Gateway confirms it holds no record of it,
+     * the session was closed on the host (tray, shortcut, idle close), so its records end and
+     * the user is told. Anything else, an unreachable Gateway included, changes nothing.
+     */
+    private void confirmClosedOnHost() {
+        String sessionId = streamSessionId;
+        String hostId = getIntent().getStringExtra(EXTRA_PC_UUID);
+        String address = getIntent().getStringExtra(EXTRA_HOST);
+        String actor = currentProfileId();
+        Context application = getApplicationContext();
+        SessionModel model = sessionModel;
+        if (sessionId == null || sessionId.isEmpty()) return;
+        new Thread(() -> {
+            GatewayConnection gateway = new HostGatewayStore(application).loadForHost(
+                    hostId, address, actor);
+            if (gateway == null) return;
+            ControlOperationClient control =
+                    new ControlOperationClient(new GatewayTransport());
+            // ponytail: three reads 2 s apart, while the host's own close finishes; a close
+            // that takes longer leaves the records to the console's next host entry.
+            for (int attempt = 0; attempt < 3; attempt++) {
+                HostStreamRecord.Action action;
+                try {
+                    action = HostStreamRecord.decide(
+                            control.ownedStream(gateway), actor, sessionId);
+                } catch (IOException | RuntimeException unknown) {
+                    return;
+                }
+                if (action == HostStreamRecord.Action.RETIRE) {
+                    model.post(SessionEvent.Cleared.byHost(sessionId));
+                    model.post(new SessionEvent.ReconnectCleared(sessionId));
+                    BackgroundStreamService.dismiss(application, sessionId);
+                    new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(application,
+                            R.string.session_closed_on_host, Toast.LENGTH_LONG).show());
+                    return;
+                }
+                try {
+                    Thread.sleep(2_000L);
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
+            }
+        }, "MoonWaker-HostClosedCheck").start();
     }
 
     private String currentProfileId() {

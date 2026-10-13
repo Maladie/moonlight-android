@@ -1,5 +1,7 @@
 package com.limelight.gateway;
 
+import com.limelight.session.HostStreamRecord;
+
 import org.json.JSONObject;
 import org.json.JSONException;
 import org.junit.Test;
@@ -10,7 +12,9 @@ import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ControlOperationClientTest {
     private final GatewayConnection connection = new GatewayConnection(
@@ -187,6 +191,56 @@ public class ControlOperationClientTest {
         new ControlOperationClient((connection, path, body, requestId, timeout) ->
                 response("another-op", "stream-1", 7, 4, 3, "failed"))
                 .abandon(connection, "op-1", "stream-1", 7, "", 0L);
+    }
+
+    private ControlOperationClient.Permit hostRecord(String reason, String session,
+                                                    String actor, String child)
+            throws IOException {
+        return new ControlOperationClient((connection, path, body, requestId, timeout) -> {
+            assertEquals("/api/v1/control/operation/status", path);
+            try {
+                if (reason != null) {
+                    throw new GatewayTransport.GatewayException(reason, 409, 0,
+                            new JSONObject().put("ok", false).put("reason", reason));
+                }
+                return response(requestId, session, 7, 9, 8, "owned").put("ok", true)
+                        .put("actor_profile_id", actor).put("child_session_id", child);
+            } catch (JSONException impossible) {
+                throw new IOException(impossible);
+            }
+        }).ownedStream(connection);
+    }
+
+    @Test public void hostConfirmedAbsenceIsNoRecordAndAnyOtherRefusalIsUnknown()
+            throws Exception {
+        assertNull(hostRecord("managed_stream_unavailable", null, null, null));
+        assertNull(hostRecord("stream_owner_mismatch", null, null, null));
+        try {
+            hostRecord("gateway_busy", null, null, null);
+            fail("an unknown refusal says nothing of the stream");
+        } catch (GatewayTransport.GatewayException expected) {
+            assertEquals("gateway_busy", expected.reason());
+        }
+        ControlOperationClient.Permit owned = hostRecord(null, "s-1", "parent", "");
+        assertEquals("parent", owned.actorProfileId);
+        assertEquals(7, owned.sunshineAppId);
+    }
+
+    @Test public void hostStreamRecordDecidesAdoptionAndRetirement() throws Exception {
+        ControlOperationClient.Permit own = hostRecord(null, "s-1", "parent", "");
+        // Closed on the host (tray, shortcut, idle close): the local record ends.
+        assertEquals(HostStreamRecord.Action.RETIRE, HostStreamRecord.decide(null, "parent", "s-1"));
+        assertEquals(HostStreamRecord.Action.KEEP, HostStreamRecord.decide(null, "parent", ""));
+        // The host holds this very stream.
+        assertEquals(HostStreamRecord.Action.KEEP, HostStreamRecord.decide(own, "parent", "s-1"));
+        // A newer stream of this TV replaced the local one.
+        assertEquals(HostStreamRecord.Action.RETIRE, HostStreamRecord.decide(own, "parent", "s-0"));
+        // Adopted by the host after the app was gone: this actor's, so it is resumable.
+        assertEquals(HostStreamRecord.Action.ADOPT, HostStreamRecord.decide(own, "parent", ""));
+        // Another actor on this TV's execution profile, or a child's time-bound stream.
+        assertEquals(HostStreamRecord.Action.KEEP, HostStreamRecord.decide(own, "child", ""));
+        assertEquals(HostStreamRecord.Action.KEEP, HostStreamRecord.decide(
+                hostRecord(null, "s-1", "parent", "child-session"), "parent", ""));
     }
 
     private static JSONObject response(String operation, String session, int app,
