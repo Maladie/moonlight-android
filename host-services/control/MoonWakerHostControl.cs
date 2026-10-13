@@ -529,10 +529,13 @@ namespace MoonWaker.HostControl
                 case "game_stop_unconfirmed":
                     return "Gra nie potwierdziła zamknięcia. Stream pozostał otwarty.";
                 case "streamer_identity_unconfirmed":
-                    return "Streamer uruchamia aplikację, której MoonWaker nie uruchomił. Pozostawiono ją.";
+                    return "W streamerze działa aplikacja albo klient spoza tej sesji MoonWaker. Niczego nie zamknięto: gra i stream pozostały.";
+                case "game_closed_stream_unconfirmed":
+                    return "Zamknięto grę, ale streamer nie potwierdził zamknięcia streamu — stream mógł pozostać otwarty.";
                 case "streamer_close_unconfirmed":
-                case "streamer_snapshot_unavailable":
                     return "Streamer nie potwierdził zamknięcia streamu.";
+                case "streamer_snapshot_unavailable":
+                    return "Nie udało się odczytać stanu streamera. Niczego nie zamknięto.";
                 case "child_cleanup_required":
                     return "Nie udało się dokończyć zamykania sesji dziecka. Spróbuj ponownie.";
                 case "gateway_not_responding":

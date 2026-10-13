@@ -7538,12 +7538,18 @@ class GatewayState:
                 and held.get("operation_id") == operation_id else {}
         game_unconfirmed = held.get("game_unconfirmed") is True
         closed, reason = False, "host_close_failed"
+        trace: dict[str, Any] = {}
         try:
             stopped = True
             if idle_only and held.get("provider_idle_confirmed") is not True:
                 # A game started, or cannot be ruled out, since the idle observation.
                 stopped, reason = False, "provider_not_idle"
             elif game_id:
+                # The streamer decision comes first: a stream the close would leave keeps
+                # its game too, so the answer is never "refused" over a stopped game.
+                stopped, reason = StreamerControlOperation.closable(
+                    self.proxy, profile_id, stream, trace, host_held=True)
+            if stopped and game_id:
                 ok, result = self._child_time_control_call(stream, lambda:
                     self.provider_control_operation.execute(
                         client, operation_id, "/game/stop-verified", {
@@ -7555,9 +7561,12 @@ class GatewayState:
                 if not stopped:
                     reason = "game_stop_unconfirmed"
             if stopped:
-                trace: dict[str, Any] = {}
                 closed, reason = StreamerControlOperation.close(
-                    self.proxy, profile_id, stream, trace=trace)
+                    self.proxy, profile_id, stream, trace=trace, host_held=True)
+                if not closed and game_id:
+                    # Only a streamer change since the decision above leaves this state.
+                    reason = "game_closed_stream_unconfirmed"
+            if trace:
                 DIAGNOSTICS.record(
                     "host-close-streamer-close", level="INFO" if closed else "WARN",
                     operation_id=operation_id, generation=permit["generation"],
@@ -7565,7 +7574,7 @@ class GatewayState:
                     stream_session_id=str(stream.get("stream_session_id") or ""),
                     execution_profile_id=profile_id, **trace)
         except Exception as error:
-            closed = False
+            closed, reason = False, "host_close_failed"
             DIAGNOSTICS.record("host-close-failed", level="WARN", error=error,
                                operation_id=operation_id, include_frames=True)
         body = {"operation_id": operation_id, "generation": permit["generation"],
@@ -7632,6 +7641,9 @@ class GatewayState:
             self._control_save_locked()
         game_stopped, own_app, closed, failure = False, False, False, "none"
         try:
+            # Decided before the game stops and read under the permit: no MoonWaker start
+            # can change the streamer meanwhile.
+            own_app = self._host_close_own_streamer_app(profile_id)
             if game_id:
                 ok, result = self.proxy_json("game_provider", "/game/stop-verified", {
                     "force": False, "game_id": game_id, "expected_process_token": token,
@@ -7639,11 +7651,8 @@ class GatewayState:
                 }, timeout=25.0, profile_id=profile_id)
                 game_stopped = bool(ok) and isinstance(result, dict) \
                     and result.get("accepted") is True
-            if game_stopped or not game_id:
-                # Read under the permit: no MoonWaker start can change the streamer meanwhile.
-                own_app = self._host_close_own_streamer_app(profile_id)
-                closed = own_app and StreamerControlOperation.force_close(
-                    self.proxy, profile_id)
+            if own_app and (game_stopped or not game_id):
+                closed = StreamerControlOperation.force_close(self.proxy, profile_id)
         except Exception as error:
             failure = "host_close_failed"
             DIAGNOSTICS.record("host-close-failed", level="WARN", error=error,
@@ -7651,7 +7660,8 @@ class GatewayState:
         if game_id and not game_stopped:
             failure = "game_stop_unconfirmed"
         elif own_app and not closed and failure == "none":
-            failure = "streamer_close_unconfirmed"
+            failure = "game_closed_stream_unconfirmed" if game_stopped \
+                else "streamer_close_unconfirmed"
         with self.control_condition:
             # A hard reset meanwhile replaced the permit; its record is not this one's.
             if self.control_state.get("active") is operation:

@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import wakeplay_gateway
 from control_operation_policy import ControlOperationPolicy
@@ -43,6 +44,8 @@ class HostCloseTest(unittest.TestCase):
         self.game = None        # the provider's verified running game, or None when idle
         self.running_app = ""   # UUID of the application the streamer runs
         self.connected = False  # the TV's transport
+        self.attributed = True  # the snapshot names the TV's UUID for its transport
+        self.close_ignored = False  # the streamer accepts close-app and keeps running
         self.observation = None  # None: derived from self.game; False: the Bridge is down
         self.stop_refused = False
         self.calls = []
@@ -75,12 +78,14 @@ class HostCloseTest(unittest.TestCase):
         if name == "vibepollo" and path == "/snapshot?force=1":
             return True, {
                 **control_evidence(int(self.connected), bool(self.running_app)),
-                "clients": [{"uuid": VIBE_UUID, "connected": self.connected}],
+                "clients": [{"uuid": VIBE_UUID,
+                             "connected": self.connected and self.attributed}],
                 "apps": [{"app_id": app_id, "uuid": uuid, "running": uuid == self.running_app}
                          for app_id, uuid in ((7, MOONWAKER_STREAM_APP_UUID),
                                               (99, FOREIGN_UUID))]}
         if name == "vibepollo" and path == "/action/close-app":
-            self.running_app, self.connected = "", False
+            if not self.close_ignored:
+                self.running_app, self.connected = "", False
             return True, {"ok": True}
         return False, {"error": "fixture_offline"}
 
@@ -380,6 +385,9 @@ class HostCloseTest(unittest.TestCase):
         self.assert_result("refused", "streamer_identity_unconfirmed")
         self.assertEqual([], self.closes())
         self.assertEqual(FOREIGN_UUID, self.running_app)
+        # Decided before the game stops: a refused close leaves the game too.
+        self.assertEqual([], self.stops)
+        self.assertIsNotNone(self.game)
         self.assertIsNone(self.state.control_state["active"])
         self.assertEqual(generation, self.state.control_state["stream"]["generation"])
         # The owner can still close its record afterwards.
@@ -387,11 +395,66 @@ class HostCloseTest(unittest.TestCase):
         status, permit = self.acquire("owner-close", "full_quit", generation, 7)
         self.assertEqual((200, "permitted"), (status, permit["state"]))
 
+    def test_unattributed_session_of_the_own_app_is_closed_by_the_host(self):
+        # Lab: the TV streams (session count 1) but no client is marked connected.
+        self.start_stream()
+        self.attributed = False
+        self.write_request()
+        self.poll()
+
+        self.assert_result("completed", "stream_and_game_closed")
+        self.assertIsNone(self.game)
+        self.assertEqual("", self.running_app)
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_streamer_that_does_not_close_after_the_game_says_both(self):
+        self.start_stream()
+        self.close_ignored = True
+        self.write_request()
+        self.poll()
+
+        self.assert_result("refused", "game_closed_stream_unconfirmed")
+        self.assertIsNone(self.game)
+        self.assertEqual(MOONWAKER_STREAM_APP_UUID, self.running_app)
+        self.assertIsNotNone(self.state.control_state["stream"])
+        self.assertEqual("failed", self.state.control_state["completed"][
+            "host-close:" + REQUEST]["state"])
+
+    def test_host_rule_ignores_missing_attribution_but_not_a_foreign_app_or_client(self):
+        stream = {"sunshine_app_id": 7, "vibepollo_client_uuid": VIBE_UUID}
+
+        def snapshot(count, clients, app_id=7):
+            return {**control_evidence(count, True), "clients": clients,
+                    "apps": [{"app_id": item, "running": item == app_id}
+                             for item in (7, 99)]}
+
+        host = ControlOperationPolicy.host_streamer_close_allowed
+        client = ControlOperationPolicy.streamer_close_allowed
+        lab = snapshot(1, [{"uuid": VIBE_UUID, "connected": False}])
+        self.assertTrue(host(lab, stream))
+        self.assertFalse(client(lab, stream))
+        own = snapshot(1, [{"uuid": VIBE_UUID, "connected": True}])
+        self.assertTrue(host(own, stream))
+        self.assertTrue(client(own, stream))
+        for case, value in (
+                ("foreign_app", snapshot(1, [{"uuid": VIBE_UUID, "connected": False}], 99)),
+                ("foreign_client", snapshot(1, [{"uuid": FOREIGN_UUID, "connected": True}])),
+                ("more_clients_than_sessions", snapshot(0, [
+                    {"uuid": VIBE_UUID, "connected": True}])),
+                ("not_authoritative", {**lab, "control_fresh": False}),
+                ("malformed_clients", {**lab, "clients": [{"uuid": VIBE_UUID}]})):
+            with self.subTest(case=case):
+                self.assertFalse(host(value, stream))
+                self.assertFalse(client(value, stream))
+
     def test_expired_and_overlong_requests_are_refused(self):
         self.start_stream()
         for request_id, ttl in (("1" * 32, -1), ("2" * 32, 0), ("3" * 32, 61)):
-            self.write_request(request_id, ttl)
-            self.poll()
+            # One frozen wall clock for the request and the Gateway: a second boundary
+            # between writing and reading would otherwise make 61 s fit the 60 s limit.
+            with mock.patch.object(time, "time", return_value=float(int(time.time()))):
+                self.write_request(request_id, ttl)
+                self.poll()
             self.assert_result("refused", "request_expired", request_id)
             self.assertEqual("{}", self.request_path.read_text(encoding="utf-8"))
         self.assertEqual([], self.stops)

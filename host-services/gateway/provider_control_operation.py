@@ -173,8 +173,32 @@ class StreamerControlOperation:
         return StreamerControlOperation._await_idle(proxy, profile_id, trace=trace)
 
     @staticmethod
-    def close(proxy, profile_id, stream, trace=None):
+    def close(proxy, profile_id, stream, trace=None, host_held=False):
         """Caller holds the exact Gateway permit through observation and effect."""
+        def result(closed, reason, stage):
+            if trace is not None:
+                trace.update({"reason": reason, "close_stage": stage})
+            return closed, reason
+
+        allowed, reason = StreamerControlOperation.closable(
+            proxy, profile_id, stream, trace, host_held)
+        if not allowed or reason == "streamer_already_idle":
+            return allowed, reason
+        # An accepted close is asynchronous, and Vibepollo can also return HTTP
+        # 500 after closing or lose the response.  In every case, keep the same
+        # permit until fresh physical evidence confirms the postcondition.
+        if StreamerControlOperation.force_close(proxy, profile_id, trace=trace):
+            return result(True, "streamer_idle_after_close", "idle_confirmed")
+        return result(False, "streamer_close_unconfirmed", "observe_idle")
+
+    @staticmethod
+    def closable(proxy, profile_id, stream, trace=None, host_held=False):
+        """The decision `close` acts on, without its effect: (True, "streamer_already_idle"
+        | "streamer_close_allowed") or (False, refusal). A host-held close of the Gateway's
+        own record uses `host_streamer_close_allowed`, every other close the client rule."""
+        allowed_by = ControlOperationPolicy.host_streamer_close_allowed if host_held \
+            else ControlOperationPolicy.streamer_close_allowed
+
         def result(closed, reason, stage):
             if trace is not None:
                 trace.update({"reason": reason, "close_stage": stage})
@@ -213,15 +237,9 @@ class StreamerControlOperation:
             if ok and ControlOperationPolicy.streamer_idle(observed):
                 return result(True, "streamer_already_idle", "idle_confirmed")
             if ok and ControlOperationPolicy.streamer_snapshot_authoritative(observed):
-                if not ControlOperationPolicy.streamer_close_allowed(observed, stream):
+                if not allowed_by(observed, stream):
                     return result(False, "streamer_identity_unconfirmed", "identity_rejected")
-                break
+                return True, "streamer_close_allowed"
             if time.monotonic() >= observation_deadline:
                 return result(False, "streamer_snapshot_unavailable", "observe_authority")
             time.sleep(0.25)
-        # An accepted close is asynchronous, and Vibepollo can also return HTTP
-        # 500 after closing or lose the response.  In every case, keep the same
-        # permit until fresh physical evidence confirms the postcondition.
-        if StreamerControlOperation.force_close(proxy, profile_id, trace=trace):
-            return result(True, "streamer_idle_after_close", "idle_confirmed")
-        return result(False, "streamer_close_unconfirmed", "observe_idle")

@@ -114,20 +114,51 @@ class ControlOperationPolicy:
 
     @staticmethod
     def streamer_close_allowed(snapshot: Any, stream: Any) -> bool:
+        """A client's close: the record's app is the only one running and every session
+        is the record's client, attributed by UUID."""
+        observed = ControlOperationPolicy._own_app_transport(snapshot, stream)
+        if observed is None:
+            return False
+        count, connected = observed
+        if count != len(connected):
+            return False
+        if len(connected) == 1:
+            return bool(stream.get("vibepollo_client_uuid")) and str(
+                connected[0].get("uuid") or "").lower() == str(
+                stream.get("vibepollo_client_uuid")).lower()
+        return not connected
+
+    @staticmethod
+    def host_streamer_close_allowed(snapshot: Any, stream: Any) -> bool:
+        """The host's close of its own record (`host_held`: tray, idle close): the record's
+        app is the only one running. A session no client is attributed to is not a foreign
+        client; a connected client other than the record's is."""
+        observed = ControlOperationPolicy._own_app_transport(snapshot, stream)
+        if observed is None:
+            return False
+        count, connected = observed
+        uuid = str(stream.get("vibepollo_client_uuid") or "").lower()
+        return len(connected) <= count and all(
+            uuid and str(item.get("uuid") or "").lower() == uuid for item in connected)
+
+    @staticmethod
+    def _own_app_transport(snapshot: Any, stream: Any) -> tuple[int, list[dict]] | None:
+        """(session count, connected clients) while the streamer authoritatively runs the
+        record's application and nothing else, else None."""
         session = ControlOperationPolicy._authoritative_session(snapshot)
         if session is None or not isinstance(stream, dict):
-            return False
+            return None
         clients = ControlOperationPolicy._snapshot_items(snapshot.get("clients"))
         if clients is None or any(not isinstance(item, dict) or
                                  not isinstance(item.get("connected"), bool)
                                  for item in clients):
-            return False
+            return None
         connected = [item for item in clients if isinstance(item, dict)
                      and item.get("connected") is True]
         apps = ControlOperationPolicy._snapshot_items(snapshot.get("apps"))
         if apps is None or any(not isinstance(item, dict) or
                               not isinstance(item.get("running"), bool) for item in apps):
-            return False
+            return None
         running = [item for item in apps if isinstance(item, dict)
                    and item.get("running") is True]
         try:
@@ -135,15 +166,11 @@ class ControlOperationPolicy:
                 if len(running) == 1 else 0
             expected_app = int(stream.get("sunshine_app_id") or 0)
         except (TypeError, ValueError):
-            return False
+            return None
         if expected_app <= 0 or len(running) != 1 or observed_app != expected_app \
-                or session["app_running"] is not True or session["count"] != len(connected):
-            return False
-        if len(connected) == 1:
-            return bool(stream.get("vibepollo_client_uuid")) and str(
-                connected[0].get("uuid") or "").lower() == str(
-                stream.get("vibepollo_client_uuid")).lower()
-        return not connected
+                or session["app_running"] is not True:
+            return None
+        return session["count"], connected
 
     @staticmethod
     def streamer_start_effect(snapshot: Any, operation: Any) -> str:
