@@ -19,7 +19,7 @@ using Timer = System.Windows.Forms.Timer;
 
 [assembly: AssemblyVersion("0.7.133.0")]
 [assembly: AssemblyFileVersion("0.7.133.0")]
-[assembly: AssemblyInformationalVersion("0.7.133+2026.10.13-host-close")]
+[assembly: AssemblyInformationalVersion("0.7.133+2026.10.13-child-close")]
 
 namespace MoonWaker.HostControl
 {
