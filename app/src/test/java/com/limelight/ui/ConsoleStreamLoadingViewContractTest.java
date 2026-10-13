@@ -243,6 +243,53 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(text.contains("defaultContent.setVisibility(VISIBLE)"));
     }
 
+    @Test public void coverTakenOverFromAnotherWindowStartsAsThatOneLooks() throws IOException {
+        String text = source();
+        String constructor = text.substring(text.indexOf(
+                        "public ConsoleStreamLoadingView(Context context, String title,"),
+                text.indexOf("public void setActions("));
+        String apply = text.substring(text.indexOf("private void applySplashArtwork("),
+                text.indexOf("private void showSplashMessageImmediately()"));
+        String decode = text.substring(text.indexOf("private Bitmap decodeSplashArtwork("),
+                text.indexOf("public void configureForPlaynite("));
+
+        // The message shown by the other window stays; no new one is drawn at once.
+        assertTrue(constructor.contains(
+                "handedOver = initialMessage != null && !initialMessage.trim().isEmpty();"));
+        assertTrue(constructor.contains("messageView = text(handedOver ? initialMessage"));
+        assertTrue(constructor.contains("if (handedOver) {\n"
+                + "            lastMessageIndex = Arrays.asList(messages).indexOf(initialMessage);\n"
+                + "            if (!reducedMotion) handler.postDelayed(rotateMessage,"
+                + " MESSAGE_INTERVAL_MS);\n"
+                + "            requestDefaultActionFocus();\n"
+                + "        } else {\n"
+                + "            scheduleLoadingMessage(false);"));
+        assertTrue(apply.contains("if (!handedOver) showSplashMessageImmediately();"));
+        // Its artwork is the bitmap already decoded and is there in the first frame.
+        assertTrue(apply.contains("artwork.setAlpha(handedOver ? 1f : 0f);"));
+        assertTrue(apply.contains("if (!handedOver) {\n"
+                + "            artwork.animate().alpha(1f)"));
+        assertFalse(text.contains("recycle()"));
+        assertTrue(decode.contains(
+                "if (decodedSplash != null && path.equals(decodedSplashPath)) return decodedSplash;"));
+        // Once attached it is an ordinary cover again.
+        assertTrue(constructor.contains("protected void onAttachedToWindow() {\n"
+                + "        super.onAttachedToWindow();"));
+        assertTrue(constructor.contains("handedOver = false;"));
+        // The default backdrop does not depend on when the view was built.
+        assertFalse(text.contains("SystemClock"));
+
+        String game = gameSource();
+        assertTrue(game.contains(
+                "getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),\n"));
+    }
+
+    @Test public void seeThroughCoverDrawsNoBackground() throws IOException {
+        String text = source();
+        assertTrue(text.contains("public void setSeeThrough(boolean seeThrough) {\n"
+                + "        setBackgroundColor(seeThrough ? Color.TRANSPARENT : Color.BLACK);"));
+    }
+
     private static String source() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
         if (!Files.exists(source)) {

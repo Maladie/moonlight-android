@@ -1758,10 +1758,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (expandedLibraryMode) {
             focusExpandedLibrary();
         } else {
-            View target = firstFocusableChild(appRow);
-            if (target != null) target.requestFocus();
-            if (portraitLayout) appVerticalScroll.scrollTo(0, 0);
-            else appScroll.scrollTo(0, 0);
+            // A warm-up's Home replaces the console that opened it: that console's card and
+            // scroll position, both saved when it paused.
+            View inherited = warmUpClientAttempt > 0L ? carouselCard(lastCarouselGameId) : null;
+            View target = inherited != null ? inherited : firstFocusableChild(appRow);
+            if (target != null && !target.isFocused()) {
+                int scroll = inherited == null ? 0
+                        : preferences.getInt("app_scroll." + host.uuid, 0);
+                // Scrolled first: the scroll view then only moves to keep the card in view.
+                if (portraitLayout) appVerticalScroll.scrollTo(0, scroll);
+                else appScroll.scrollTo(scroll, 0);
+                target.requestFocus();
+            }
         }
         return true;
     }
@@ -2325,6 +2333,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && loadingArtworkKey == null
                 && (displayedArtworkKey != null || settledBackdropTag.equals(tag))), match());
         if (introView != null) {
+            // A host prepared under the intro opens its stream screen once the intro is over;
+            // posted, so that an ending by onPause finds its preparation cancelled.
+            introView.whenEnded(() -> mainHandler.post(() -> {
+                if (sessionOrchestrator != null) sessionOrchestrator.openPreparedHost();
+            }));
             introView.carouselCards(() -> firstPendingCarouselCard() != null, () -> {
                 View pending = firstPendingCarouselCard();
                 if (pending == null) return;
@@ -12913,6 +12926,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         readyAppId == 0);
             }
 
+            @Override public boolean mayOpenPreparedHost() {
+                // Starting the stream screen blocks the main thread: never under the intro.
+                return introView == null || !introView.running();
+            }
+
             @Override public void launchPreparedHost(
                     SessionOrchestrator.PreparedWarmUp prepared,
                     PlayIntent pendingGame, long request) {
@@ -13642,7 +13660,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         streamLoadingEpoch = SystemClock.uptimeMillis();
         streamLoadingView = new ConsoleStreamLoadingView(
-                this, appDisplayName(appName), null, streamLoadingEpoch, reducedMotion);
+                this, appDisplayName(appName), null, reducedMotion);
         streamLoadingView.setSplashArtwork(loadingArtworkPath);
         loadingLayer.addView(streamLoadingView, match());
         streamLoadingView.configureForPlaynite(

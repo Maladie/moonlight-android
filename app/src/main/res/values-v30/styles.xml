@@ -1,0 +1,12 @@
+<resources>
+
+    <!--
+      Game covers what is under it only once a frame of its own is ready: it starts
+      see-through and Game.coverScreen() makes it opaque (Activity.setTranslucent, API 30).
+    -->
+    <style name="StreamBaseTheme" parent="AppBaseTheme">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+
+</resources>

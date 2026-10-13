@@ -284,6 +284,30 @@ public class ConsoleIntroEntranceContractTest {
         }
     }
 
+    @Test public void aPreparedHostOpensItsStreamScreenOnlyAfterTheIntro() throws IOException {
+        String activity = source("ConsoleActivity.java");
+        String intro = source("ConsoleIntroView.java");
+        // One decision: the orchestrator holds the prepared launch while the intro is on.
+        assertTrue(between(activity, "@Override public boolean mayOpenPreparedHost() {",
+                "@Override public void launchPreparedHost(")
+                .contains("return introView == null || !introView.running();"));
+        // The preparation itself starts with the host entry, as before.
+        assertTrue(between(activity, "private void prepareSelectedHost(",
+                "private void dispatchPendingHostPreparation()")
+                .contains("sessionOrchestrator.prepareHost(host.uuid,"));
+        // The intro's end opens it on a later turn: onPause ends the intro before it cancels
+        // the preparation, and must not start a stream screen.
+        assertTrue(activity.contains("introView.whenEnded(() -> mainHandler.post(() -> {\n"
+                + "                if (sessionOrchestrator != null)"
+                + " sessionOrchestrator.openPreparedHost();"));
+        String pause = between(activity, "protected void onPause()", "protected void onDestroy()");
+        assertTrue(pause.indexOf("if (introView != null) introView.end();")
+                < pause.indexOf("cancelCurrentPreparation(childStreamHandoff);"));
+        String end = between(intro, "    void end() {", "private void focusCarousel()");
+        assertTrue(end.indexOf("boolean wasRunning = running;") < end.indexOf("running = false;"));
+        assertTrue(end.indexOf("runEntered();") < end.indexOf("if (wasRunning) ended.run();"));
+    }
+
     private static String between(String source, String from, String to) {
         int start = source.indexOf(from);
         assertTrue(from, start >= 0);
