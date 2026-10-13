@@ -319,18 +319,37 @@ public class ConsoleActivityRequestedUiContractTest {
                         "private void requestPendingInitialGameFocus("),
                 source.indexOf("private int maxCarouselGameCount("));
 
-        // A warm-up's Home takes over the card and scroll position of the console under it,
-        // from what that console saved when it paused; any other Home starts on the first.
-        assertTrue(prepared.contains("View inherited = warmUpClientAttempt > 0L"
-                + " ? carouselCard(lastCarouselGameId) : null;"));
+        // A warm-up's Home takes over the focused element and scroll position of the console
+        // under it, from what that console saved when it paused; any other Home starts on the
+        // first card.
+        assertTrue(prepared.contains("preferences.getString(\"home_focus.\" + host.uuid, \"\")"));
+        assertTrue(prepared.contains("? homeContent.findViewWithTag(focusTag) : null;"));
+        assertFalse(prepared.contains("lastCarouselGameId"));
+        String saved = source.substring(source.indexOf("private void saveScrollPositions()"),
+                source.indexOf("private void restoreHostLibraryState("));
+        assertTrue(saved.contains("isDescendant(homeContent, focus) ? focus.getTag() : null"));
+        assertTrue(saved.contains("editor.putString(\"home_focus.\" + selectedHostUuid,"));
+        // The focused card's backdrop, title and description are in the same first frame.
+        assertTrue(prepared.contains(
+                "if (target != null && !carouselSelectionSettled(target)) return false;"));
+        String settled = source.substring(source.indexOf(
+                        "private boolean carouselSelectionSettled("),
+                source.indexOf("protected final void completeInitialCarouselFrame("));
+        assertTrue(settled.contains("settledBackdropTag.equals(playniteArtworkTag(item))"));
+        assertTrue(settled.contains("pendingArtworkKey == null && loadingArtworkKey == null"));
+        assertTrue(source.contains("return reducedMotion || suppressInitialCarouselMotion;"));
+        String header = source.substring(source.indexOf("private void bindGameMetadataHeader("),
+                source.indexOf("private void bindGameMetadataDescription("));
+        assertFalse(header.contains("reducedMotion"));
+        assertTrue(header.contains("if (!instantMetadata()) {"));
         assertTrue(prepared.contains(
                 "View target = inherited != null ? inherited : firstFocusableChild(appRow)"));
         assertTrue(prepared.contains("int scroll = inherited == null ? 0\n"
                 + "                        : preferences.getInt(\"app_scroll.\" + host.uuid, 0);"));
         assertTrue(prepared.indexOf("appScroll.scrollTo(scroll, 0)")
                 < prepared.indexOf("target.requestFocus()"));
-        assertTrue(prepared.contains(
-                "if (inherited != null && appRow.isLayoutRequested()) return false;"));
+        // The frame never waits for the card's layout: a held first frame leaves no focused window.
+        assertFalse(prepared.contains("isLayoutRequested()"));
         String pause = source.substring(source.indexOf("protected void onPause()"),
                 source.indexOf("protected void onDestroy()"));
         assertTrue(pause.contains("flushPendingPlayniteSelection();"));

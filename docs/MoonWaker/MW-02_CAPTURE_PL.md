@@ -127,9 +127,6 @@ gotowości.” + „Żaden port streamingu nie odpowiedział w ciągu 90 sekund�
 | `switch.provider_stop_timeout` | Host nie zdążył zatrzymać poprzedniej gry, bo ta nie miała jeszcze procesu. | `switchRetainedProviderGame`, powód `game_stop_timeout` | B |
 | `switch.failed` | Przełączenie gry nie powiodło się z innego powodu; powód jest w polu `detail`. | `switchRetainedProviderGame`, powód z `Game` | A |
 | `uncertain.recovery_required` | Host wymaga odzyskania sesji, a wybrana gra nie jest tą, która działa. | `SessionOrchestrator.evaluate`, pierwszy warunek | C |
-| `uncertain.preparing_not_switchable` | Trwa przygotowanie streamu w tle bez gry, ale nie da się do niego przełączyć wybranej gry. | `SessionOrchestrator.evaluate`, gałąź `PREPARING` | C |
-| `uncertain.preparing_refresh_failed` | Trwa przygotowanie streamu z grą, a odświeżenie stanu z hosta się nie udało. | `SessionOrchestrator.evaluate`, gałąź `PREPARING` | C |
-| `uncertain.preparing_not_switchable_after_refresh` | Po odświeżeniu stanu z hosta przełączenie przygotowywanego streamu nadal nie jest możliwe. | `SessionOrchestrator.evaluate`, gałąź `PREPARING` | C |
 | `uncertain.refresh_failed` | Stan sesji był niepewny, a odświeżenie z hosta się nie udało. | `SessionOrchestrator.awaitFreshSession` | C |
 | `uncertain.still_uncertain_after_refresh` | Odświeżenie się udało, ale stan nadal był niepewny. | `SessionOrchestrator.awaitFreshSession` | C |
 | `uncertain.terminating` | Poprzednia sesja zaczęła się zamykać już po podniesieniu ekranu ładowania dla tego Play. | `SessionOrchestrator.evaluate`, gałąź `TERMINATING` pod warstwą ładowania | C |

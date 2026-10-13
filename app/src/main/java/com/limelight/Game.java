@@ -5742,7 +5742,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 snapshot.overlayVisible, snapshot.revealAuthorized);
         if (shouldShowOpaque) consoleLoadingView.showOpaque();
         if (snapshot.overlayVisible) {
-            if (usesClosingPresentation(snapshot)) {
+            if (snapshot.closingPresentation()) {
                 boolean gameEnded = snapshot.state == LaunchTransitionState.GAME_STOPPING
                         || snapshot.state == LaunchTransitionState.PLAYNITE_RETURNING
                         || snapshot.spec.type == LaunchTransitionType.GAME_CONNECTION
@@ -5815,6 +5815,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     ? R.string.transition_playnite_fullscreen_failed
                     : R.string.transition_playnite_failed)
                     : R.string.transition_game_failed;
+            // A preceding closing screen offers no action; the failure brings its actions back.
+            consoleLoadingView.showFullTransitionAppearance();
             consoleLoadingView.showError(getString(title),
                     snapshot.detail.isEmpty()
                             ? getString(R.string.transition_readiness_unconfirmed)
@@ -5853,17 +5855,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         PlayHistory.recordGame(getSharedPreferences("console_dashboard", MODE_PRIVATE),
                 snapshot.spec.hostId, snapshot.spec.sunshineAppId,
                 snapshot.spec.playniteGameId, System.currentTimeMillis());
-    }
-
-    private static boolean usesClosingPresentation(LaunchTransitionSnapshot snapshot) {
-        LaunchTransitionState state = snapshot.state;
-        return state == LaunchTransitionState.GAME_STOPPING
-                || state == LaunchTransitionState.PLAYNITE_RETURNING
-                || state == LaunchTransitionState.PLAYNITE_STOPPING
-                || state == LaunchTransitionState.CLOSING_STREAM
-                || state == LaunchTransitionState.RETURNING_TO_DASHBOARD
-                || snapshot.spec.type == LaunchTransitionType.GAME_CONNECTION
-                && snapshot.spec.playniteGameId.isEmpty();
     }
 
     static boolean shouldShowTransitionOverlay(boolean wasOverlayVisible,
@@ -5915,8 +5906,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             else persistRevealedTransitionForRecovery();
             transitionController.revealCompleted(transitionSpec.id);
             RetainedSwitch operation = retainedSwitch;
-            if (operation != null && operation.newSpec != null
-                    && operation.newSpec.id.equals(transitionSpec.id)) {
+            // Revealed over an offered authorization retry, the neutral stream is the choice:
+            // the retry is not offered again, so the switch ends here.
+            if (operation != null && (operation.authorizationRetryOffered
+                    || operation.newSpec != null
+                    && operation.newSpec.id.equals(transitionSpec.id))) {
                 finishRetainedSwitch(operation);
             }
             showOverlayMenuHint();

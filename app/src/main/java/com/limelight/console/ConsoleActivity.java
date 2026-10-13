@@ -811,6 +811,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final Set<String> initialCarouselArtworkLoads = new HashSet<>();
     private int initialCarouselArtworkGeneration;
     private boolean suppressInitialCarouselMotion;
+    /**
+     * The carousel row's resize animation. Its animators start only with a drawn frame, and
+     * until then the row skips its layouts: a Home holding its first frame installs it after.
+     */
+    private LayoutTransition carouselTransition;
     /** Tag prefix of a carousel position whose card a later frame builds. */
     private static final String PENDING_CARD_TAG = "playnite.pending:";
     private static final long CAROUSEL_CARD_BUILD_GAP_MS = 100L;
@@ -1758,9 +1763,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (expandedLibraryMode) {
             focusExpandedLibrary();
         } else {
-            // A warm-up's Home replaces the console that opened it: that console's card and
-            // scroll position, both saved when it paused.
-            View inherited = warmUpClientAttempt > 0L ? carouselCard(lastCarouselGameId) : null;
+            // A warm-up's Home replaces the console that opened it: that console's focused
+            // element and carousel scroll position, both saved when it paused.
+            String focusTag = preferences.getString("home_focus." + host.uuid, "");
+            View inherited = warmUpClientAttempt > 0L && !focusTag.isEmpty()
+                    ? homeContent.findViewWithTag(focusTag) : null;
             View target = inherited != null ? inherited : firstFocusableChild(appRow);
             if (target != null && !target.isFocused()) {
                 int scroll = inherited == null ? 0
@@ -1770,12 +1777,30 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 else appScroll.scrollTo(scroll, 0);
                 target.requestFocus();
             }
+            // The focused card's backdrop, title and description belong to the same frame.
+            if (target != null && !carouselSelectionSettled(target)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Whether a focused carousel card shows its selection at rest: its backdrop request ended
+     * (art shown, or none to show). Its title and description steps were queued before it.
+     */
+    private boolean carouselSelectionSettled(View card) {
+        if (card.getParent() != appRow || !card.isFocused()) return true;
+        for (PlayniteDashboardItem item : renderedPlayniteItems) {
+            if (!("playnite:" + item.stableId()).equals(card.getTag())) continue;
+            if (!playniteCardArtworkSpec(item.game).available()) return true;
+            return settledBackdropTag.equals(playniteArtworkTag(item))
+                    && pendingArtworkKey == null && loadingArtworkKey == null;
         }
         return true;
     }
 
     protected final void completeInitialCarouselFrame() {
         suppressInitialCarouselMotion = false;
+        if (carouselTransition != null) appRow.setLayoutTransition(carouselTransition);
         resetInitialCarouselArtworkWarmup();
         libraryTransitionCoordinator.setReducedMotion(reducedMotion);
         if (deferInitialHostProfileRefresh) {
@@ -2119,7 +2144,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         appRow = horizontalRow();
         if (CONSOLE_UI_V2 && !portraitLayout) {
             appRow.setGravity(Gravity.TOP);
-            LayoutTransition carouselTransition = new LayoutTransition();
+            carouselTransition = new LayoutTransition();
             carouselTransition.disableTransitionType(LayoutTransition.APPEARING);
             carouselTransition.disableTransitionType(LayoutTransition.DISAPPEARING);
             carouselTransition.disableTransitionType(LayoutTransition.CHANGE_APPEARING);
@@ -2127,7 +2152,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             carouselTransition.enableTransitionType(LayoutTransition.CHANGING);
             carouselTransition.setDuration(LayoutTransition.CHANGING,
                     getResources().getInteger(R.integer.console_motion_focus_ms));
-            appRow.setLayoutTransition(carouselTransition);
+            if (!requiresPreparedInitialCarouselFrame()) {
+                appRow.setLayoutTransition(carouselTransition);
+            }
         }
         carouselStage = CONSOLE_UI_V2 && !portraitLayout
                 ? new FrameLayout(this) : null;
@@ -10028,7 +10055,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void prepareGameMetadataTransition() {
-        if (reducedMotion) return;
+        if (instantMetadata()) return;
         prepareMetadataViewsForTransition(selectedGameTitle, selectedGameFactsRow,
                 selectedGameDescription);
         prepareMetadataViewsForTransition(expandedGameTitle, expandedGameFacts,
@@ -10042,6 +10069,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             view.animate().alpha(0f).translationY(dp(3))
                     .setStartDelay(0L).setDuration(80L).start();
         }
+    }
+
+    /** Without motion, or on a Home's first frame, which shows the console's at rest. */
+    private boolean instantMetadata() {
+        return reducedMotion || suppressInitialCarouselMotion;
     }
 
     private void showGameMetadataDescription(PlayniteDashboardItem item) {
@@ -10070,28 +10102,28 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         title.animate().cancel();
         factsView.animate().cancel();
-        if (!reducedMotion) {
+        if (!instantMetadata()) {
             title.setAlpha(0f);
             title.setTranslationY(dp(4));
             factsView.setAlpha(0f);
             factsView.setTranslationY(dp(3));
         }
         title.animate().alpha(1f).translationY(0f)
-                .setDuration(reducedMotion ? 0L : 150L).start();
+                .setDuration(instantMetadata() ? 0L : 150L).start();
         factsView.animate().alpha(1f).translationY(0f)
-                .setDuration(reducedMotion ? 0L : 170L).start();
+                .setDuration(instantMetadata() ? 0L : 170L).start();
     }
 
     private void bindGameMetadataDescription(TextView target, String value) {
         if (target == null) return;
         target.setText(value);
         target.animate().cancel();
-        if (!reducedMotion) {
+        if (!instantMetadata()) {
             target.setAlpha(0f);
             target.setTranslationY(dp(3));
         }
         target.animate().alpha(1f).translationY(0f)
-                .setDuration(reducedMotion ? 0L : 180L).start();
+                .setDuration(instantMetadata() ? 0L : 180L).start();
         if (target == expandedGameDescription && expandedDescriptionScroll != null) {
             expandedDescriptionScroll.scrollTo(0, 0);
             startExpandedDescriptionAutoScroll();
@@ -11937,7 +11969,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         if (artworkScrimAnimator != null) artworkScrimAnimator.cancel();
-        if (reducedMotion || Math.abs(target - artworkScrimLuminance) < .015f) {
+        if (instantArtwork() || Math.abs(target - artworkScrimLuminance) < .015f) {
             artworkScrimLuminance = target;
             artworkScrim.setBackground(artworkScrimDrawable(target));
             return;
@@ -12624,6 +12656,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 refreshSessionProjection(host, intent.profileKey, accepted -> {
                     if (!cancelled.getAsBoolean()) completion.accept(accepted);
                 });
+            }
+
+            @Override public void awaitPrepared(BooleanSupplier cancelled, Runnable settled) {
+                SessionModel.Listener waiter = new SessionModel.Listener() {
+                    @Override public void onSnapshot(SessionModel.Snapshot snapshot) {
+                        boolean stop = cancelled.getAsBoolean();
+                        if (!stop && snapshot.state == SessionModel.State.PREPARING) return;
+                        sessionModel.unsubscribe(this);
+                        if (!stop) settled.run();
+                    }
+                };
+                waiter.onSnapshot(sessionModel.subscribe(waiter));
             }
 
             @Override public HostLaunchPreflight.Result preflight(
@@ -15501,6 +15545,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ? appVerticalScroll.getScrollY()
                     : appScroll != null ? appScroll.getScrollX() : 0;
             editor.putInt("app_scroll." + selectedHostUuid, appPosition);
+            // The focused home element, which a warm-up's Home focuses in this console's place.
+            View focus = getCurrentFocus();
+            Object focusTag = focus != null && homeContent != null
+                    && isDescendant(homeContent, focus) ? focus.getTag() : null;
+            editor.putString("home_focus." + selectedHostUuid,
+                    focusTag instanceof String ? (String) focusTag : "");
             libraryViewStateStore.saveExpandedMode(selectedHostUuid, expandedLibraryMode);
         }
         editor.apply();

@@ -35,6 +35,11 @@ final class ConsoleAudioEngine {
     /** Ambience gain at stepper 1 and 10; the asset itself peaks at 0 dBFS (RMS about -15). */
     static final float AMBIENT_MIN_DB = -42f;
     static final float AMBIENT_MAX_DB = -10f;
+    /**
+     * Where the menu ambience stopped. One loop plays across the consoles of this process: the
+     * next console's player continues it instead of starting the track over.
+     */
+    private static int ambientPositionMs;
 
     private final Context context;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -243,10 +248,13 @@ final class ConsoleAudioEngine {
                 ? ambientGain(hostSelectionVisible ? hostSelectionVolume : menuVolume) : 0f;
         int generation = ++fadeGeneration;
         float start = ambientVolume;
-        if (target > 0f && !ambientPlayer.isPlaying()) ambientPlayer.start();
+        if (target > 0f && !ambientPlayer.isPlaying()) {
+            ambientPlayer.seekTo(ambientPositionMs);
+            ambientPlayer.start();
+        }
         if (immediate) {
             setAmbientVolume(target);
-            if (target == 0f && ambientPlayer.isPlaying()) ambientPlayer.pause();
+            if (target == 0f && ambientPlayer.isPlaying()) pauseAmbient();
             return;
         }
         for (int step = 1; step <= FADE_STEPS; step++) {
@@ -261,8 +269,13 @@ final class ConsoleAudioEngine {
         float fraction = step / (float) FADE_STEPS;
         setAmbientVolume(start + (target - start) * fraction);
         if (step == FADE_STEPS && target == 0f && ambientPlayer.isPlaying()) {
-            ambientPlayer.pause();
+            pauseAmbient();
         }
+    }
+
+    private void pauseAmbient() {
+        ambientPositionMs = ambientPlayer.getCurrentPosition();
+        ambientPlayer.pause();
     }
 
     private void setAmbientVolume(float volume) {

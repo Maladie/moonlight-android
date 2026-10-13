@@ -36,6 +36,50 @@ public class LaunchTransitionControllerTest {
         controller.videoFrameRendered("transition-1");
     }
 
+    /**
+     * The TV dead end: a neutral stream settling back to the dashboard got a failure (an
+     * offered authorization retry). The failure must not stay the passive closing screen.
+     */
+    @Test
+    public void failureOverANeutralStreamReturningToTheDashboardOffersItsWayOut() {
+        LaunchTransitionController controller = new LaunchTransitionController(null);
+        controller.begin(new LaunchTransitionSpec("neutral", HOST,
+                LaunchTransitionType.GAME_CONNECTION, 42, "", 1000L));
+        controller.overlayRendered("neutral");
+        controller.surfaceReady("neutral");
+        controller.inputPipelineReady("neutral");
+        controller.streamConnected("neutral");
+        controller.returningToDashboard("neutral");
+        assertTrue(controller.snapshot().closingPresentation());
+
+        controller.error("neutral", "authorization pending");
+        LaunchTransitionSnapshot failed = controller.snapshot();
+        assertEquals(LaunchTransitionState.ERROR, failed.state);
+        assertTrue("the cover keeps the input for its own actions", failed.inputBlocked);
+        assertFalse("a failure always shows its actions", failed.closingPresentation());
+
+        controller.videoFrameRendered("neutral");
+        assertTrue(controller.snapshot().manualRevealAvailable);
+        assertFalse(controller.snapshot().closingPresentation());
+        controller.showStreamAnyway("neutral");
+        controller.revealCompleted("neutral");
+        assertFalse(controller.snapshot().inputBlocked);
+        assertFalse(controller.snapshot().overlayVisible);
+    }
+
+    @Test
+    public void timeoutIsNeverThePassiveClosingScreen() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        controller.closingStream("transition-1");
+        assertTrue(controller.snapshot().closingPresentation());
+        controller.streamClosingFailed("transition-1", "close failed");
+        assertEquals(LaunchTransitionState.ERROR, controller.snapshot().state);
+        assertFalse(controller.snapshot().closingPresentation());
+        controller.begin(spec(LaunchTransitionType.GAME));
+        controller.timedOut("transition-1", "slow");
+        assertFalse(controller.snapshot().closingPresentation());
+    }
+
     @Test
     public void playniteRequiresFullscreenReadinessAndTransport() {
         LaunchTransitionController controller = started(LaunchTransitionType.PLAYNITE);

@@ -134,6 +134,19 @@ public class SessionTransitionTableTest {
         assertEquals(ActionKind.DECLINE_AUTHORIZATION_RETRY, cancel(state));
     }
 
+    /** The TV state: an authorization retry offered over the live neutral warm-up stream. */
+    @Test public void offeredAuthorizationRetryOverTheNeutralStreamAlwaysHasAWayOut() {
+        State state = covered(LaunchTransitionType.GAME_CONNECTION, false);
+        state.connected = true;
+        state.controlGranted = true;
+        state.retainedSwitch = true;
+        state.authorizationRetryOffered = true;
+        state.retainedHomeLive = true;
+        assertEquals(ActionKind.CANCEL_ON_COVER, back(state));
+        assertEquals(ActionKind.DECLINE_AUTHORIZATION_RETRY, cancel(state));
+        assertEquals(ActionKind.ACCEPT_AUTHORIZATION_RETRY, retry(state));
+    }
+
     // ---------------------------------------------------------------- Back
 
     @Test public void backOnTheCoverIsTheCoversCancel() {
@@ -433,24 +446,21 @@ public class SessionTransitionTableTest {
         assertTrue(launch.ownsFreshSunshineSession);
     }
 
-    @Test public void playDuringAWarmUpReusesItsNeutralStreamOrFails() {
+    @Test public void playDuringAWarmUpWaitsForItBeforeAnyHostOperation() {
         SessionSnapshot preparing = snapshot(SessionSnapshot.State.PREPARING, 77, "");
+        assertEquals(ActionKind.SHOW_LOADING,
+                play(preparing, game(), false, false, false).kind);
         State state = playState(preparing, true, false, false);
-        assertEquals(SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE,
-                SessionOrchestrator.transition(state, UserIntent.play(game())).failure);
-        state.canSwitchRetained = true;
-        assertEquals(ActionKind.REUSE_STREAM,
-                SessionOrchestrator.transition(state, UserIntent.play(game())).kind);
-        state.reuseOnly = true;
-        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED,
-                SessionOrchestrator.transition(state, UserIntent.play(game())).preflight);
-        state.targetPrepared = true;
-        assertEquals(ActionKind.CLOSE_COMPETING,
-                SessionOrchestrator.transition(state, UserIntent.play(game())).kind);
-
+        // Switchable or not, neutral or observing a game: nothing runs beside its start.
+        for (boolean switchable : new boolean[] {false, true}) {
+            state.canSwitchRetained = switchable;
+            assertEquals(ActionKind.AWAIT_PREPARED,
+                    SessionOrchestrator.transition(state, UserIntent.play(game())).kind);
+        }
         State named = playState(snapshot(SessionSnapshot.State.PREPARING, 77, "other"),
                 true, false, false);
-        assertEquals(ActionKind.REFRESH_PREPARING,
+        named.canSwitchRetained = true;
+        assertEquals(ActionKind.AWAIT_PREPARED,
                 SessionOrchestrator.transition(named, UserIntent.play(game())).kind);
     }
 

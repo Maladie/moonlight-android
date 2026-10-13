@@ -45,4 +45,22 @@ public final class LaunchTransitionSnapshot {
         this.notice = notice == null ? "" : notice;
         this.manuallyRevealed = manuallyRevealed;
     }
+
+    /**
+     * The cover is the passive "returning to the library" screen, without any action. Never a
+     * failure: a cover holding the input there always offers its way out (Cancel, Retry, an
+     * available "Reveal now"), even over a neutral stream that settles back to the dashboard.
+     */
+    public boolean closingPresentation() {
+        if (state == LaunchTransitionState.ERROR || state == LaunchTransitionState.TIMED_OUT) {
+            return false;
+        }
+        return state == LaunchTransitionState.GAME_STOPPING
+                || state == LaunchTransitionState.PLAYNITE_RETURNING
+                || state == LaunchTransitionState.PLAYNITE_STOPPING
+                || state == LaunchTransitionState.CLOSING_STREAM
+                || state == LaunchTransitionState.RETURNING_TO_DASHBOARD
+                || spec.type == LaunchTransitionType.GAME_CONNECTION
+                && spec.playniteGameId.isEmpty();
+    }
 }

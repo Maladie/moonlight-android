@@ -37,7 +37,7 @@ public class GameStreamingAutopilotCalibrationContractTest {
                 "private void updateStreamingAutopilotCalibrationProgress(");
         String transition = between(game,
                 "private void applyTransitionSnapshot(",
-                "private static boolean usesClosingPresentation(");
+                "static boolean shouldShowTransitionOverlay(");
 
         assertTrue(arm.contains("!streamEverRevealed"));
         assertTrue(arm.contains("playniteGame && !autopilotGameReadySeen"));

@@ -136,7 +136,7 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("AtomicBoolean finished = new AtomicBoolean();",
                         text.indexOf("private void endCancelledTransition(")));
         String apply = text.substring(text.indexOf("private void applyTransitionSnapshot("),
-                text.indexOf("private static boolean usesClosingPresentation("));
+                text.indexOf("static boolean shouldShowTransitionOverlay("));
 
         assertTrue(text.contains("runOnUiThread(() -> applyTransitionSnapshot(snapshot))"));
         assertTrue(cancel.indexOf("transitionController.cancel(transitionSpec.id)")

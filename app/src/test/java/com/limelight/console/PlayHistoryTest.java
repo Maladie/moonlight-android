@@ -76,7 +76,7 @@ public class PlayHistoryTest {
         String game = source("com/limelight/Game.java");
         String console = source("com/limelight/console/ConsoleActivity.java");
         String record = game.substring(game.indexOf("private void recordGamePlayed("),
-                game.indexOf("private static boolean usesClosingPresentation("));
+                game.indexOf("static boolean shouldShowTransitionOverlay("));
         String reuse = game.substring(game.indexOf("private void signalRetainedSwitchReuse("),
                 game.indexOf("private void finishRetainedSwitch("));
 

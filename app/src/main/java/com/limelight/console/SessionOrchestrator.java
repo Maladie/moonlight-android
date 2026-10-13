@@ -89,6 +89,11 @@ public final class SessionOrchestrator implements AutoCloseable {
         void showLoading(PlayIntent intent, LaunchTransitionType type, Runnable opaqueFrameReady);
         void refreshSession(PlayIntent intent, BooleanSupplier cancelled,
                             Consumer<Boolean> completion);
+        /**
+         * Runs {@code settled} once this client's retained stream is no longer PREPARING (at
+         * once when it is not); never after {@code cancelled}. Runs on the main thread.
+         */
+        void awaitPrepared(BooleanSupplier cancelled, Runnable settled);
         HostLaunchPreflight.Result preflight(PlayIntent intent, HostLaunchPreflight.Action action,
                                              long orchestrationId,
                                              BooleanSupplier cancelled);
@@ -410,11 +415,10 @@ public final class SessionOrchestrator implements AutoCloseable {
         /** Refresh an unresolved observation once; the pass it produces decides. */
         REFRESH_OBSERVATION,
         REFRESH_SESSION,
-        REFRESH_PREPARING,
+        /** Wait until this client's warm-up stream leaves PREPARING; the pass after decides. */
+        AWAIT_PREPARED,
         /** Wake the host and wait for it; the pass after it answers decides. */
         WAKE_HOST,
-        /** Decide again, allowed only to reuse the retained stream. */
-        REUSE_STREAM,
         PREFLIGHT,
         CLOSE_COMPETING,
         LAUNCH,
@@ -575,17 +579,10 @@ public final class SessionOrchestrator implements AutoCloseable {
                 return Action.step(ActionKind.SHOW_LOADING, LaunchTransitionType.GAME, null,
                         s.replacementAuthorized, s.reuseOnly);
             }
-            if (!s.reuseOnly && snapshot.playniteGameId.isEmpty()) {
-                return s.canSwitchRetained ? Action.of(ActionKind.REUSE_STREAM)
-                        : Action.failing(ActionKind.FAIL,
-                        SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE);
-            }
-            if (!s.reuseOnly) return Action.of(ActionKind.REFRESH_PREPARING);
-            if (!s.targetPrepared) {
-                return Action.step(ActionKind.PREFLIGHT, null,
-                        HostLaunchPreflight.Action.SWITCH_RETAINED, false, true);
-            }
-            return Action.step(ActionKind.CLOSE_COMPETING, null, null, false, true);
+            // The warm-up stream is still starting on the host: a switch now would run beside
+            // that start and be refused. One operation at a time: the pass after it settles
+            // decides (a live warm-up is switched, a failed one launched fresh).
+            return Action.of(ActionKind.AWAIT_PREPARED);
         }
         if (snapshot.state == SessionSnapshot.State.UNCERTAIN) {
             if (game) {
@@ -802,15 +799,15 @@ public final class SessionOrchestrator implements AutoCloseable {
                 awaitFreshSession(request, intent, action.replacementAuthorized,
                         action.reuseOnly, preparedTarget, pass);
                 break;
-            case REFRESH_PREPARING:
-                refreshPreparing(request, intent, preparedTarget, pass);
+            case AWAIT_PREPARED:
+                effects.awaitPrepared(() -> !current(request), () -> dispatcher.post(() -> {
+                    if (current(request)) evaluate(request, intent, replacementAuthorized,
+                            reuseOnly, true, preparedTarget, pass + 1);
+                }));
                 break;
             case WAKE_HOST:
                 awaitHost(request, intent, action.replacementAuthorized,
                         action.reuseOnly, preparedTarget, pass);
-                break;
-            case REUSE_STREAM:
-                evaluate(request, intent, false, true, true, preparedTarget, pass + 1);
                 break;
             case PREFLIGHT:
                 awaitPreflight(request, intent, action.replacementAuthorized,
@@ -850,26 +847,6 @@ public final class SessionOrchestrator implements AutoCloseable {
             default:
                 throw new IllegalStateException("Not a Play action: " + action.kind);
         }
-    }
-
-    private void refreshPreparing(long request, PlayIntent intent,
-                                  NvApp preparedTarget, int pass) {
-        effects.refreshSession(intent, () -> !current(request), success ->
-                dispatcher.post(() -> {
-                    if (!current(request)) return;
-                    if (!success) {
-                        fail(request, intent,
-                                SessionFailure.UNCERTAIN_PREPARING_REFRESH_FAILED, "");
-                        return;
-                    }
-                    if (!effects.canAttemptRetainedSwitch(intent)) {
-                        fail(request, intent, SessionFailure
-                                .UNCERTAIN_PREPARING_NOT_SWITCHABLE_AFTER_REFRESH, "");
-                        return;
-                    }
-                    evaluate(request, intent, false, true,
-                            true, preparedTarget, pass + 1);
-                }));
     }
 
     private void awaitOpaque(long request, PlayIntent intent, LaunchTransitionType type,
