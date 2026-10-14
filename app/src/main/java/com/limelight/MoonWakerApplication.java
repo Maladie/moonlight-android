@@ -178,6 +178,8 @@ public final class MoonWakerApplication extends Application implements
     @Override public void onActivityCreated(Activity activity, Bundle state) { }
     @Override public void onActivityStarted(Activity activity) {
         STARTED_ACTIVITIES.incrementAndGet();
+        // The user is back: a pending close-and-exit no longer ends MoonWaker.
+        com.limelight.console.MoonWakerExit.withdraw();
     }
 
     @Override public void onActivityStopped(Activity activity) {

@@ -86,5 +86,10 @@ final class PendingRetainedSwitch {
         boolean submitted() {
             return submitted;
         }
+
+        /** A target waits to be submitted or a submitted switch has not completed yet. */
+        boolean busy() {
+            return pending != null || submitted;
+        }
     }
 }

@@ -258,7 +258,7 @@ final class SessionStateResolver {
             this.hostId = SessionSnapshot.normalize(hostId);
             this.actorProfileId = GatewayConnection.normalizeProfileId(actorProfileId);
             this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
-            this.observedTerminationEpoch = model.snapshot().terminationEpoch;
+            this.observedTerminationEpoch = model.snapshot().terminationEpoch(this.hostId);
         }
 
         synchronized long nextRequestOrdinal() {
@@ -381,7 +381,7 @@ final class SessionStateResolver {
         synchronized SessionSnapshot rendered(SessionModel.Snapshot retained,
                                               LocalFacts local, long nowMs) {
             return project(retained, local, nowMs, "",
-                    retained.terminationEpoch != observedTerminationEpoch);
+                    retained.terminationEpoch(hostId) != observedTerminationEpoch);
         }
 
         /**
@@ -423,8 +423,10 @@ final class SessionStateResolver {
 
         private void retireObservationAtTerminationBoundary(
                 SessionModel.Snapshot retained) {
-            if (retained == null || retained.terminationEpoch == observedTerminationEpoch) return;
-            retireObservationAtTerminationBoundary(retained.terminationEpoch);
+            long terminationEpoch = retained == null ? observedTerminationEpoch
+                    : retained.terminationEpoch(hostId);
+            if (terminationEpoch == observedTerminationEpoch) return;
+            retireObservationAtTerminationBoundary(terminationEpoch);
             closingConfirmationArmed = retained.state != SessionModel.State.TERMINATING;
             closingConfirmationUntilMs = 0L;
         }

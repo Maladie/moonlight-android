@@ -1,5 +1,7 @@
 package com.limelight.session;
 
+import com.limelight.gateway.GatewayConnection;
+
 import org.junit.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
@@ -7,6 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -701,6 +704,114 @@ public class SessionModelTest {
         assertEquals(0L, snapshot.attempt);
         assertFalse(m.completePreparing(
                 owner, SESSION_A, "host", 7, "transition-a", 1L));
+    }
+
+    /**
+     * Owner decision 2026-10-14: a marker is resume metadata. A warm-up reconnects it on its
+     * stream identity alone, and the host's current game (or none) replaces the marker's game.
+     */
+    @Test public void warmUpReconnectTakesTheHostsCurrentGameOverTheMarkersGame() {
+        for (String current : new String[] {"game-b", ""}) {
+            SessionModelDriver model = new SessionModelDriver();
+            FakeController owner = new FakeController();
+            model.enterHome(owner, SESSION_A, "host", 7, "game-a");
+            model.markReconnectRequired(SESSION_A);
+
+            assertTrue(model.beginPreparing(owner, SESSION_A, "host", 7, current, "t", 1L));
+            SessionModel.Snapshot snapshot = model.snapshot();
+            assertEquals(SessionModel.State.PREPARING, snapshot.state);
+            assertEquals(current, snapshot.playniteGameId);
+        }
+    }
+
+    @Test public void warmUpNeverReconnectsAMarkerOfAnotherStream() {
+        String[][] others = {
+                {"other-session", "host", GatewayConnection.DEFAULT_PROFILE_ID, "7"},
+                {SESSION_A, "other-host", GatewayConnection.DEFAULT_PROFILE_ID, "7"},
+                {SESSION_A, "host", "other-profile", "7"},
+                {SESSION_A, "host", GatewayConnection.DEFAULT_PROFILE_ID, "8"}};
+        for (String[] other : others) {
+            SessionModelDriver model = new SessionModelDriver();
+            FakeController owner = new FakeController();
+            model.enterHome(owner, SESSION_A, "host", 7, "game-a");
+            model.markReconnectRequired(SESSION_A);
+
+            assertFalse(model.beginPreparing(owner, other[0], other[1], other[2],
+                    Integer.parseInt(other[3]), "game-a", "t", 1L));
+            assertEquals(SessionModel.State.RECONNECT_REQUIRED, model.snapshot().state);
+            assertEquals("game-a", model.snapshot().playniteGameId);
+        }
+    }
+
+    /** Review finding 5: a child on a parent's Windows profile never inherits a host game. */
+    @Test public void childWarmUpOnAParentsProfileNeverReconnectsAMarkerOfAnotherGame() {
+        for (String actor : new String[] {"parent", "child"}) {
+            SessionModelDriver model = new SessionModelDriver();
+            FakeController owner = new FakeController();
+            owner.origin = "parent";
+            model.enterHome(owner, SESSION_A, "host", actor, 7, "");
+            model.markReconnectRequired(SESSION_A);
+
+            boolean own = actor.equals("parent");
+            assertEquals(own, model.beginPreparing(owner, SESSION_A, "host", actor, 7,
+                    "game-b", "t", 1L));
+            assertEquals(own ? SessionModel.State.PREPARING
+                    : SessionModel.State.RECONNECT_REQUIRED, model.snapshot().state);
+            assertEquals(own ? "game-b" : "", model.snapshot().playniteGameId);
+        }
+    }
+
+    @Test public void intentionalCloseClearsOnlyTheOwnersLiveRecord() {
+        FakeController owner = new FakeController();
+        m.enterHome(owner, SESSION_A, "host", 7, "");
+        m.seedReconnectRecord(SESSION_A);
+
+        assertTrue(m.closedIntentionally(owner, SESSION_A));
+
+        assertEquals(SessionModel.State.NONE, m.state());
+        assertFalse(m.hasReconnectRecord());
+    }
+
+    /** Review finding 1: End session on Home or a game switch keeps owning the session. */
+    @Test public void intentionalCloseKeepsATerminationOrASwitchInFlight() {
+        for (boolean terminating : new boolean[] {true, false}) {
+            SessionModelDriver model = new SessionModelDriver();
+            FakeController owner = new FakeController();
+            owner.completeTermination = false;
+            model.enterHome(owner, SESSION_A, "host", 7, "game-a");
+            model.seedReconnectRecord(SESSION_A);
+            if (terminating) {
+                assertEquals(SessionModel.TerminationResult.STARTED,
+                        model.terminate(SESSION_A, null));
+            } else {
+                assertEquals(SessionModel.SwitchResult.STARTED, model.switchGame("host", 7,
+                        "game-b", "B", "B", "", () -> false, null));
+            }
+            SessionModel.State before = model.state();
+
+            assertFalse(model.closedIntentionally(owner, SESSION_A));
+
+            assertEquals(before, model.state());
+            assertTrue(model.hasReconnectRecord());
+        }
+    }
+
+    /** Review findings 3 and 4: a lost transport's marker and another owner's record stay. */
+    @Test public void intentionalCloseKeepsAReconnectMarkerAndAnotherOwnersRecord() {
+        FakeController owner = new FakeController();
+        m.enterHome(owner, SESSION_A, "host", 7, "game-a");
+        m.seedReconnectRecord(SESSION_A);
+        m.post(new SessionEvent.TransportLost(owner, SESSION_A));
+
+        assertFalse(m.closedIntentionally(owner, SESSION_A));
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED, m.state());
+        assertTrue(m.hasReconnectRecord());
+
+        FakeController reconnected = new FakeController();
+        m.enterHome(reconnected, SESSION_A, "host", 7, "game-a");
+        assertFalse(m.closedIntentionally(owner, SESSION_A));
+        assertTrue(m.ownsLiveOrParkedSession(reconnected, SESSION_A, "host", 7));
+        assertTrue(m.hasReconnectRecord());
     }
 
     @Test public void stalePreparingParkCannotMutateAReplacementAttempt() {

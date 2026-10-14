@@ -167,6 +167,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.lang.ref.WeakReference;
 import java.security.cert.X509Certificate;
 
 /** TV-first dashboard adapted from Wake & Play and backed by Moonlight's internal APIs. */
@@ -906,9 +907,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostSleepStateStore.State sleep = sessionModel.records().hostSleep(host.uuid);
         if (sleep != null && host.state != ComputerDetails.State.ONLINE
                 && sleep.sleepObservedAt == 0L) {
-            sessionModel.post(new SessionEvent.HostSleepObserved(host.uuid, sleep));
+            sessionModel.post(new SessionEvent.HostSleepObserved(host.uuid, sleep.requestedAt));
         } else if (sleep != null && host.state == ComputerDetails.State.ONLINE
-                && sleep.sleepObservedAt > 0L) {
+                && (sleep.sleepObservedAt > 0L || HostReadiness.sleepRequestExpired(
+                sleep.requestedAt, System.currentTimeMillis()))) {
             sessionModel.post(new SessionEvent.HostSleepCleared(host.uuid, sleep.requestedAt));
         }
 
@@ -4797,12 +4799,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         // A sleep this client requested is known at once and names the whole host, unless a
         // live session or a game being closed still has its own status to show.
         if (showsHostSleep(snapshot)) {
-            if (host.state != ComputerDetails.State.ONLINE) {
-                return getString(R.string.console_status_asleep);
-            }
-            if (!snapshot.hostSleepObserved) {
-                return getString(R.string.console_status_suspending_short);
-            }
+            // An observed sleep holds until a fresh poll finds the host online again; a state
+            // remembered from before the sleep does not make it "going to sleep" again.
+            return getString(hostAsleep(host, snapshot) ? R.string.console_status_asleep
+                    : R.string.console_status_suspending_short);
         }
         int warmUp = sessionSubscriber.warmUpStatus(host.uuid, snapshot.neutralStreamTarget);
         if (warmUp != 0) return getString(warmUp);
@@ -4921,13 +4921,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && !snapshot.endingGame;
     }
 
+    private static boolean hostAsleep(ComputerDetails host, SessionSnapshot snapshot) {
+        return snapshot.hostSleepObserved || host.state != ComputerDetails.State.ONLINE;
+    }
+
     private ConsoleHostPresentation.State consoleHostState(
             ComputerDetails host, SessionSnapshot snapshot) {
         // Same order as hostStatus: a sleep this client requested comes first.
         if (showsHostSleep(snapshot)) {
-            return host.state == ComputerDetails.State.ONLINE
-                    ? ConsoleHostPresentation.State.CONNECTING
-                    : ConsoleHostPresentation.State.ASLEEP;
+            return hostAsleep(host, snapshot) ? ConsoleHostPresentation.State.ASLEEP
+                    : ConsoleHostPresentation.State.CONNECTING;
         }
         if (snapshot.state == SessionSnapshot.State.TERMINATING) {
             return ConsoleHostPresentation.State.CONNECTING;
@@ -7075,36 +7078,41 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (host.uuid.equals(selectedHostUuid)) updateHostSelector();
         ConsoleUiFeedback.makeText(this, getString(R.string.console_sleep_request, host.name),
                 Toast.LENGTH_SHORT).show();
-        executor.execute(() -> {
+        // Its own thread on app-scoped state only, not this Activity's executor: leaving
+        // MoonWaker neither interrupts the request nor leaves the host "going to sleep"; the
+        // host's real state settles the record.
+        ComputerDetails target = new ComputerDetails(host);
+        HostGatewayClient client = hostGatewayClient;
+        SessionModel model = sessionModel;
+        Handler main = mainHandler;
+        WeakReference<ConsoleActivity> console = new WeakReference<>(this);
+        new Thread(() -> {
+            boolean accepted;
             try {
-                JSONObject response = hostGatewayClient.sleepHost(connection);
-                if (!response.optBoolean("accepted", false)) {
-                    throw new IOException("Host rejected sleep request.");
-                }
-                mainHandler.post(() -> {
-                    if (suspendedRequest != null) {
-                        sessionModel.post(new SessionEvent.SuspendedSaved(suspendedRequest));
-                        renderHostSelection();
-                        if (host.uuid.equals(selectedHostUuid)) updateHostSelector();
-                    }
-                    ConsoleUiFeedback.makeText(this,
-                            getString(R.string.console_sleep_accepted, host.name),
-                            Toast.LENGTH_LONG).show();
-                });
+                accepted = client.sleepHost(connection).optBoolean("accepted", false);
             } catch (IOException | RuntimeException error) {
-                mainHandler.post(() -> {
-                    if (sleepRequestedAt != 0L) {
-                        sessionModel.post(new SessionEvent.HostSleepCleared(
-                                host.uuid, sleepRequestedAt));
-                    }
-                    renderHostSelection();
-                    updateHostSelector();
-                    ConsoleUiFeedback.makeText(this,
-                            getString(R.string.console_sleep_failed, host.name),
-                            Toast.LENGTH_LONG).show();
-                });
+                accepted = false;
             }
-        });
+            long acceptedAt = System.currentTimeMillis();
+            HostReadiness.sleepAnswered(model, target.uuid, sleepRequestedAt, suspendedRequest,
+                    accepted, acceptedAt);
+            boolean sent = accepted;
+            main.post(() -> {
+                ConsoleActivity shown = console.get();
+                if (shown == null || shown.isDestroyed()) return;
+                shown.renderHostSelection();
+                if (!sent || target.uuid.equals(shown.selectedHostUuid)) {
+                    shown.updateHostSelector();
+                }
+                ConsoleUiFeedback.makeText(shown, shown.getString(sent
+                        ? R.string.console_sleep_accepted : R.string.console_sleep_failed,
+                        target.name), Toast.LENGTH_LONG).show();
+            });
+            if (accepted) {
+                HostReadiness.settleSleep(model, target.uuid, acceptedAt, suspendedRequest,
+                        HostReadiness.awaitDown(() -> target, () -> false));
+            }
+        }, "MoonWaker-HostSleep").start();
     }
     private void wakeHost(ComputerDetails host) {
         if (host.state == ComputerDetails.State.ONLINE) {
@@ -7420,45 +7428,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private HostSessionTermination.Outcome terminateKnownControlPlane(ComputerDetails host,
             String profileId, String providerGameId) {
+        return knownControlPlaneTermination(host, profileId, providerGameId).get();
+    }
+
+    /**
+     * Resolves this console's facts of the close now; the returned close (blocking, off the main
+     * thread) needs only app-scoped state, so it may run after this Activity is gone.
+     */
+    private Supplier<HostSessionTermination.Outcome> knownControlPlaneTermination(
+            ComputerDetails host, String profileId, String providerGameId) {
         HostSessionTermination.Outcome failed = HostSessionTermination.Outcome.FAILED;
-        if (host == null || managerBinder == null) return failed;
+        if (host == null || managerBinder == null) return () -> failed;
         String profile = GatewayConnection.normalizeProfileId(profileId);
         String executionProfile = executionProfileId(host.uuid, profile);
-        SessionModel.Snapshot retained =
-                sessionModel.snapshot();
-        SessionResumeManager.PendingSession pending =
-                sessionModel.records().pending;
-        String sessionId = "";
-        int appId = 0;
-        long generation = 0L;
-        if (host.uuid.equalsIgnoreCase(retained.hostId)
-                && executionProfile.equals(retained.executionProfileId)
-                && retained.controlGeneration > 0L) {
-            sessionId = retained.streamSessionId;
-            appId = retained.appId;
-            generation = retained.controlGeneration;
-        } else if (pending != null && host.uuid.equalsIgnoreCase(pending.hostUuid)
-                && executionProfile.equals(pending.executionProfileId)
-                && pending.controlGeneration > 0L) {
-            sessionId = pending.streamSessionId;
-            appId = pending.appId;
-            generation = pending.controlGeneration;
-        }
-        if (sessionId.isEmpty() || appId <= 0 || generation <= 0L) {
-            try {
-                GatewayConnection gateway = new HostGatewayStore(this).loadForHost(
-                        host.uuid, ServerHelper.getCurrentAddressFromComputer(host).address, profile);
-                if (gateway == null) return failed;
-                ControlOperationClient.Permit owned = new ControlOperationClient(
-                        new GatewayTransport()).ownedSession(gateway);
-                sessionId = owned.streamSessionId;
-                appId = owned.sunshineAppId;
-                generation = owned.generation;
-            } catch (IOException error) {
-                LimeLog.warning("Host ownership recovery failed: " + error.getMessage());
-                return failed;
-            }
-        }
         HostGatewayClient.IntegrationProfile actor = integrationProfile(host.uuid, profile);
         PlayniteTransitionGateway.ActorContext actorContext = actor != null && actor.isChild()
                 ? PlayniteTransitionGateway.ActorContext.child(
@@ -7470,20 +7452,59 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             address = ServerHelper.getCurrentAddressFromComputer(host);
             certificate = host.serverCert == null ? null : host.serverCert.getEncoded();
         } catch (Exception error) {
-            return failed;
+            return () -> failed;
         }
-        HostSessionTermination.Outcome stopped = HostSessionTermination.run(
-                getApplicationContext(), host.uuid,
-                address.address, address.port, host.httpsPort, managerBinder.getUniqueId(),
-                certificate, sessionId, appId, normalizeId(providerGameId), generation,
-                actorContext);
-        // The stream records end with the stream; callers decide on any game left behind.
-        if (stopped.streamClosed()) {
-            sessionModel.post(new SessionEvent.Cleared(sessionId));
-            sessionModel.post(new SessionEvent.ReconnectCleared(sessionId));
-            BackgroundStreamService.dismiss(this, sessionId);
-        }
-        return stopped;
+        String hostId = host.uuid;
+        int httpsPort = host.httpsPort;
+        String uniqueId = managerBinder.getUniqueId();
+        String gameId = normalizeId(providerGameId);
+        Context app = getApplicationContext();
+        SessionModel model = sessionModel;
+        return () -> {
+            SessionModel.Snapshot retained = model.snapshot();
+            SessionResumeManager.PendingSession pending = model.records().pending;
+            String sessionId = "";
+            int appId = 0;
+            long generation = 0L;
+            if (hostId.equalsIgnoreCase(retained.hostId)
+                    && executionProfile.equals(retained.executionProfileId)
+                    && retained.controlGeneration > 0L) {
+                sessionId = retained.streamSessionId;
+                appId = retained.appId;
+                generation = retained.controlGeneration;
+            } else if (pending != null && hostId.equalsIgnoreCase(pending.hostUuid)
+                    && executionProfile.equals(pending.executionProfileId)
+                    && pending.controlGeneration > 0L) {
+                sessionId = pending.streamSessionId;
+                appId = pending.appId;
+                generation = pending.controlGeneration;
+            }
+            if (sessionId.isEmpty() || appId <= 0 || generation <= 0L) {
+                try {
+                    GatewayConnection gateway = new HostGatewayStore(app).loadForHost(
+                            hostId, address.address, profile);
+                    if (gateway == null) return failed;
+                    ControlOperationClient.Permit owned = new ControlOperationClient(
+                            new GatewayTransport()).ownedSession(gateway);
+                    sessionId = owned.streamSessionId;
+                    appId = owned.sunshineAppId;
+                    generation = owned.generation;
+                } catch (IOException error) {
+                    LimeLog.warning("Host ownership recovery failed: " + error.getMessage());
+                    return failed;
+                }
+            }
+            HostSessionTermination.Outcome stopped = HostSessionTermination.run(app, hostId,
+                    address.address, address.port, httpsPort, uniqueId, certificate, sessionId,
+                    appId, gameId, generation, actorContext);
+            // The stream records end with the stream; callers decide on any game left behind.
+            if (stopped.streamClosed()) {
+                model.post(new SessionEvent.Cleared(sessionId));
+                model.post(new SessionEvent.ReconnectCleared(sessionId));
+                BackgroundStreamService.dismiss(app, sessionId);
+            }
+            return stopped;
+        };
     }
 
     /**
@@ -12682,7 +12703,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 reconnectSavedSessionForActor(intent);
             }
             @Override public boolean warmUpCarriesGame() { SessionModel.Snapshot s =
-                    sessionModel.snapshot(); return warmUpCarriesPendingGame(s.records.pending, s.state); }
+                    sessionModel.snapshot(); return warmUpCarriesPendingGame(
+                    warmUpClientAttempt, warmUpClientHostId, s.records.pending, s); }
             @Override public void reject(SessionOrchestrator.Rejection reason) {
                 int message;
                 switch (reason) {
@@ -13375,6 +13397,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void applyWarmUpIntent(Intent intent, LaunchTransitionSpec transition,
                                    PlayIntent pendingGame, long request) {
+        // A saved record's presentation belongs to its game; the warm-up's game is the host's.
+        boolean recordGame = !transition.playniteGameId.isEmpty()
+                && transition.playniteGameId.equalsIgnoreCase(normalizeId(intent.getStringExtra(
+                Game.EXTRA_TRANSITION_PLAYNITE_GAME_ID)));
         intent.putExtra(Game.EXTRA_AUTO_WARM_UP_ATTEMPT, request);
         intent.putExtra(EXTRA_WARM_UP_ATTEMPT, request);
         intent.putExtra(Game.EXTRA_NEUTRAL_STREAM_TARGET, true);
@@ -13389,11 +13415,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         intent.putExtra(Game.EXTRA_TRANSITION_CREATED_AT, transition.createdAtMillis);
         intent.putExtra(Game.EXTRA_TRANSITION_START_BEFORE_STREAM,
                 transition.startProviderBeforeStream);
-        if (transition.playniteGameId.isEmpty()) {
-            intent.putExtra(Game.EXTRA_APP_NAME,
-                    PlayniteTargetResolver.MOONWAKER_STREAM_NAME);
+        if (!recordGame) {
+            // The host's current game as this profile's library lists it; otherwise neutral.
+            String hostGame = libraryGameName(transition.playniteGameId);
+            String artwork = hostGame == null ? null : cachedLoadingArtworkPath(
+                    transition.hostId, transition.profileId, transition.playniteGameId);
+            intent.putExtra(Game.EXTRA_APP_NAME, hostGame != null ? hostGame
+                    : PlayniteTargetResolver.MOONWAKER_STREAM_NAME);
             intent.removeExtra(Game.EXTRA_QUICK_LAUNCH_APP_KEY);
-            intent.removeExtra(Game.EXTRA_CONSOLE_LOADING_ARTWORK);
+            if (artwork != null) intent.putExtra(Game.EXTRA_CONSOLE_LOADING_ARTWORK, artwork);
+            else intent.removeExtra(Game.EXTRA_CONSOLE_LOADING_ARTWORK);
         }
         if (pendingGame != null) {
             intent.putExtra(EXTRA_WARM_UP_PENDING_GAME_ID, pendingGame.playniteGameId);
@@ -13713,7 +13744,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 || !retained.executionProfileId.equals(pending.executionProfileId)
                 || retained.appId != pending.appId
                 || !retained.streamSessionId.equals(pending.streamSessionId))) return "retained_mismatch";
-        if (warmUpCarriesPendingGame(pending, retained.state)) applyWarmUpIntent(resume, LaunchTransitionSpec.create(
+        if (warmUpCarriesPendingGame(warmUpClientAttempt, warmUpClientHostId, pending, retained))
+            applyWarmUpIntent(resume, LaunchTransitionSpec.create(
                 pending.hostUuid, intent.profileId, LaunchTransitionType.GENERIC,
                 pending.appId, "", System.currentTimeMillis()), intent, warmUpClientAttempt);
         if (binding != null) binding.handedToPlayer = true;
@@ -13723,12 +13755,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return null;
     }
 
-    /** The live warm-up attempt carries the intent's game into this saved neutral stream. */
-    private boolean warmUpCarriesPendingGame(SessionResumeManager.PendingSession pending,
-                                             SessionModel.State retained) {
-        return warmUpClientAttempt > 0L && pending != null && pending.neutralStreamTarget
-                && warmUpClientHostId.equalsIgnoreCase(pending.hostUuid)
-                && retained == SessionModel.State.RECONNECT_REQUIRED;
+    /**
+     * The live warm-up attempt carries the intent's game into this saved neutral stream: only
+     * into a marker that names no game. Play of another game over a marker still naming a game
+     * is a replacement, not a reconnect.
+     */
+    static boolean warmUpCarriesPendingGame(long warmUpAttempt, String warmUpHostId,
+                                            SessionResumeManager.PendingSession pending,
+                                            SessionModel.Snapshot retained) {
+        return warmUpAttempt > 0L && pending != null && pending.neutralStreamTarget
+                && warmUpHostId.equalsIgnoreCase(pending.hostUuid)
+                && retained.state == SessionModel.State.RECONNECT_REQUIRED
+                && retained.playniteGameId.isEmpty();
     }
 
     private void failClosedActorHandoff(PlayIntent intent,
@@ -15073,43 +15111,51 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         moveTaskToBack(true);
     }
 
+    /**
+     * MoonWaker leaves at once; the close runs on owners that outlive this Activity (the model and
+     * stream runtime, or its own thread) and nothing here is finished before it completes.
+     */
     private void terminateRetainedSessionAndExit() {
         final String expectedStreamSessionId = currentRetainedStreamSessionId();
         if (expectedStreamSessionId.isEmpty()) {
             exitMoonWaker();
             return;
         }
-        AtomicInteger failureMessage = new AtomicInteger(
-                R.string.console_terminate_session_failed);
-        SessionModel.TerminationCallback complete = terminationOutcome(outcome -> {
-            // The stream closed, but the game may still run: say so and stay, do not exit.
-            if (outcome == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED) {
-                failureMessage.set(R.string.console_terminate_session_game_left);
+        // From here on app-scoped state only: the close may complete after this Activity is gone.
+        Context app = getApplicationContext();
+        SessionModel model = sessionModel;
+        Handler main = mainHandler;
+        WeakReference<ConsoleActivity> console = new WeakReference<>(this);
+        long exit = MoonWakerExit.request();
+        SessionModel.TerminationCallback complete = terminationOutcome(outcome -> main.post(() -> {
+            if (!mayCompleteTermination(model, expectedStreamSessionId)) return;
+            // Still away: this close ends MoonWaker. Back meanwhile: it no longer does.
+            boolean away = MoonWakerExit.take(exit);
+            if (!outcome.closed()) {
+                // The stream closed, but the game may still run, or the close failed: say so,
+                // in the console when the user is back in it.
+                ConsoleActivity shown = console.get();
+                ConsoleUiFeedback.makeText(away || shown == null || shown.isDestroyed()
+                                ? app : shown,
+                        outcome == HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED
+                                ? R.string.console_terminate_session_game_left
+                                : R.string.console_terminate_session_failed,
+                        Toast.LENGTH_LONG).show();
+                return;
             }
-            mainHandler.post(() -> {
-                if (!mayCompleteTermination(expectedStreamSessionId)) return;
-                if (!outcome.closed()) {
-                    hideSidePanel();
-                    ConsoleUiFeedback.makeText(this, failureMessage.get(),
-                            Toast.LENGTH_LONG).show();
-                    return;
-                }
-                sessionModel.post(new SessionEvent.Cleared(expectedStreamSessionId));
-                sessionModel.post(new SessionEvent.ReconnectCleared(expectedStreamSessionId));
-                BackgroundStreamService.dismiss(this, expectedStreamSessionId);
-                exitMoonWaker();
-            });
-        });
+            model.post(new SessionEvent.Cleared(expectedStreamSessionId));
+            model.post(new SessionEvent.ReconnectCleared(expectedStreamSessionId));
+            BackgroundStreamService.dismiss(app, expectedStreamSessionId);
+            if (away) MoonWakerExit.finishTasks(app);
+        }));
         sessionModel.dispatch(new SessionEvent.TerminateRequested(expectedStreamSessionId,
                 "", complete), result -> {
-            if (result == SessionModel.TerminationResult.STARTED) {
-                showSidePanelBusy(getString(R.string.console_title),
-                        getString(R.string.console_close_game_and_moonwaker),
-                        getString(R.string.console_closing_game_and_moonwaker));
-            } else if (result == SessionModel.TerminationResult.NO_CONTROLLER) {
+            if (result == SessionModel.TerminationResult.NO_CONTROLLER) {
                 closeRecordedSessionAndExit(expectedStreamSessionId, complete);
             }
         });
+        // Backgrounded, not finished: finishing would end the presentation the close may run in.
+        moveTaskToBack(true);
     }
 
     private void closeRecordedSessionAndExit(String expectedStreamSessionId,
@@ -15127,21 +15173,24 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             complete.complete(providerGameId.isEmpty());
             return;
         }
-        String terminationProfileId = target.profileId;
-
-        showSidePanelBusy(getString(R.string.console_title),
-                getString(R.string.console_close_game_and_moonwaker),
-                getString(R.string.console_closing_game_and_moonwaker));
-        executor.execute(() -> {
-            if (!mayCompleteTermination(expectedStreamSessionId)) return;
-            boolean success = terminateKnownControlPlane(host, terminationProfileId,
-                    providerGameId).closed();
-            mainHandler.post(() -> {
-                if (success) sessionModel.post(new SessionEvent.Cleared(expectedStreamSessionId));
-                refreshSessionState(host.uuid);
+        Supplier<HostSessionTermination.Outcome> close =
+                knownControlPlaneTermination(host, target.profileId, providerGameId);
+        SessionModel model = sessionModel;
+        Handler main = mainHandler;
+        WeakReference<ConsoleActivity> console = new WeakReference<>(this);
+        String hostId = host.uuid;
+        // Its own thread on app-scoped state, not this Activity's executor: onDestroy neither
+        // interrupts the request nor leaves it without what it needs.
+        new Thread(() -> {
+            if (!mayCompleteTermination(model, expectedStreamSessionId)) return;
+            boolean success = close.get().closed();
+            main.post(() -> {
+                if (success) model.post(new SessionEvent.Cleared(expectedStreamSessionId));
+                ConsoleActivity shown = console.get();
+                if (shown != null && !shown.isDestroyed()) shown.refreshSessionState(hostId);
                 complete.complete(success);
             });
-        });
+        }, "MoonWaker-CloseAndExit").start();
     }
 
     private void exitMoonWaker() {
@@ -15161,13 +15210,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return pending == null ? "" : pending.streamSessionId;
     }
 
-    private boolean mayCompleteTermination(String expectedStreamSessionId) {
-        SessionModel.Snapshot retained =
-                sessionModel.snapshot();
+    private static boolean mayCompleteTermination(SessionModel model,
+                                                  String expectedStreamSessionId) {
+        SessionModel.Snapshot retained = model.snapshot();
         if (!retained.streamSessionId.isEmpty()
                 && !expectedStreamSessionId.equals(retained.streamSessionId)) return false;
-        SessionResumeManager.PendingSession pending =
-                sessionModel.records().pending;
+        SessionResumeManager.PendingSession pending = model.records().pending;
         return pending == null || pending.matches(expectedStreamSessionId);
     }
     private void showScrollableDetailsSidePanel(String eyebrow, String title,

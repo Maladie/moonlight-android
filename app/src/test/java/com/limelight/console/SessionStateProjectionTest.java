@@ -1082,6 +1082,40 @@ public class SessionStateProjectionTest {
         assertEquals("", rendered.playniteGameId);
     }
 
+    @Test public void closingOneHostsStreamShowsClosingOnlyOnThatHost() {
+        SessionStateResolver.ProjectionOwner other =
+                SessionStateResolver.owner(m.model, "other-host", "child", "parent");
+        assertEquals(SessionSnapshot.State.UNCERTAIN, other.current(m.snapshot(), 0L).state);
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "host", "child", 42, "game");
+        assertTrue(m.bindControlGeneration(controller, "session", 1L));
+
+        assertTrue(m.markTerminating("session", "host", 42, "game"));
+        assertEquals(SessionSnapshot.State.TERMINATING, owner.rendered(m.snapshot(),
+                SessionStateResolver.LocalFacts.NONE, 1L).state);
+        assertEquals(SessionSnapshot.State.UNCERTAIN, other.rendered(m.snapshot(),
+                SessionStateResolver.LocalFacts.NONE, 1L).state);
+
+        clearRetainedTransport();
+        assertEquals(SessionSnapshot.State.TERMINATING,
+                owner.current(m.snapshot(), 2L).state);
+        assertEquals(SessionSnapshot.State.UNCERTAIN, other.current(m.snapshot(), 2L).state);
+    }
+
+    /** Host ids differ in case between records and polls: one host, one termination epoch. */
+    @Test public void terminationEpochIsPerHostWhateverTheIdsCase() {
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "Host-A", "child", 42, "game");
+        assertTrue(m.bindControlGeneration(controller, "session", 1L));
+        assertEquals(0L, m.snapshot().terminationEpoch("host-a"));
+
+        assertTrue(m.markTerminating("session", "Host-A", 42, "game"));
+        SessionModel.Snapshot closing = m.snapshot();
+        assertEquals(1L, closing.terminationEpoch("host-a"));
+        assertEquals(1L, closing.terminationEpoch(" HOST-A "));
+        assertEquals(0L, closing.terminationEpoch("other-host"));
+    }
+
     @Test public void liveReconnectOfTheMarkedRecordReplacesItsStaleCorrelation() {
         Controller controller = new Controller();
         m.enterHome(controller, "other", "host", "child", 42, "game");
@@ -1129,6 +1163,34 @@ public class SessionStateProjectionTest {
         assertTrue(m.call(new SessionEvent.ReconnectRelinquished(m.snapshot())));
         assertEquals(SessionSnapshot.ObservationState.READY,
                 owner.current(m.snapshot(), 2L).observationState);
+    }
+
+    /**
+     * TV 2026-10-14: after a cancel marked the retained stream RECONNECT_REQUIRED, a launch
+     * the host turned into "resume" attached a new stream session. The marker must yield to
+     * it, or every observation of the live stream stays uncorrelated.
+     */
+    @Test public void liveStreamOfANewSessionSupersedesTheMarkerOfItsHost() {
+        Controller controller = new Controller();
+        m.enterHome(controller, "session", "host", "parent", 42, "game");
+        assertTrue(m.bindControlGeneration(controller, "session", 1L));
+        m.markReconnectRequired("session");
+        SessionModel.Snapshot marked = m.snapshot();
+        long ordinal = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(readyForNextPlay("boot", ordinal), m.snapshot(), 0L));
+        assertEquals("observation_correlation_mismatch",
+                owner.current(m.snapshot(), 1L).observationReason);
+
+        assertFalse("another host's stream does not", marked.reconnectMarkerSupersededBy(
+                "other-host", "parent"));
+        assertFalse("another execution profile's stream does not",
+                marked.reconnectMarkerSupersededBy("host", "child"));
+        assertTrue(marked.reconnectMarkerSupersededBy("HOST", "parent"));
+
+        assertTrue(m.call(new SessionEvent.ReconnectRelinquished(marked)));
+        SessionSnapshot live = owner.current(m.snapshot(), 2L);
+        assertTrue(live.observationCorrelated);
+        assertEquals(SessionSnapshot.ObservationState.READY, live.observationState);
     }
 
     private static final long HOST_NOW = 1_700_000_000_000L;

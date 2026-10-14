@@ -150,8 +150,8 @@ public final class SessionModel {
         public final long attempt;
         public final long controlGeneration;
         public final long transportGeneration;
-        /** Advances each time the session enters or leaves TERMINATING, seen or not. */
-        public final long terminationEpoch;
+        /** Per host: advances each time its session enters or leaves TERMINATING, seen or not. */
+        private final Map<String, Long> terminationEpochs;
         /**
          * Advances each time a presentation shows the stream again. A park request carries the
          * epoch its presenter saw; a newer one means another presenter took over.
@@ -181,7 +181,7 @@ public final class SessionModel {
             this.attempt = m.attempt;
             this.controlGeneration = m.controlGeneration;
             this.transportGeneration = m.transportGeneration;
-            this.terminationEpoch = m.terminationEpoch;
+            this.terminationEpochs = m.terminationEpochs;
             this.presentationEpoch = m.presentationEpoch;
             this.records = records;
             this.controller = m.controller;
@@ -194,6 +194,26 @@ public final class SessionModel {
             this.sequence = sequence;
         }
 
+        /** Termination boundaries of {@code hostId}'s session; another host's close is none. */
+        public long terminationEpoch(String hostId) {
+            Long epoch = terminationEpochs.get(epochKey(hostId));
+            return epoch == null ? 0L : epoch;
+        }
+
+        /**
+         * A RECONNECT_REQUIRED marker that a live stream to {@code liveHostId} and
+         * {@code liveExecutionProfileId} supersedes: the host holds one stream per execution
+         * profile, so the marked transport is gone whatever control intent or stream session
+         * the live one used.
+         */
+        public boolean reconnectMarkerSupersededBy(String liveHostId,
+                                                   String liveExecutionProfileId) {
+            return state == State.RECONNECT_REQUIRED
+                    && hostId.equalsIgnoreCase(normalize(liveHostId))
+                    && executionProfileId.equals(
+                    GatewayConnection.normalizeProfileId(liveExecutionProfileId));
+        }
+
         boolean sameAs(Snapshot other) {
             return other != null && state == other.state
                     && streamSessionId.equals(other.streamSessionId)
@@ -203,7 +223,7 @@ public final class SessionModel {
                     && transitionId.equals(other.transitionId) && attempt == other.attempt
                     && controlGeneration == other.controlGeneration
                     && transportGeneration == other.transportGeneration
-                    && terminationEpoch == other.terminationEpoch
+                    && terminationEpochs == other.terminationEpochs
                     && records == other.records;
         }
     }
@@ -282,7 +302,8 @@ public final class SessionModel {
 
     // ---- model-thread-confined state ----------------------------------------------------------
     State state = State.NONE;
-    long terminationEpoch;
+    /** Copied on write: a snapshot shares the map it was published with. */
+    private Map<String, Long> terminationEpochs = Collections.emptyMap();
     long presentationEpoch;
     Controller controller;
     String streamSessionId = "";
@@ -758,13 +779,26 @@ public final class SessionModel {
         }
         if (profileId.equals(profile) && matchesPreparing(owner, sessionId, host,
                 preparingAppId, transition, preparingAttempt)) return true;
+        // The marker is resume metadata: its stream identity must match, its game does not. The
+        // host's current observation names the game, and replaces the marker's below. An actor
+        // using another profile's Windows session (a child on a parent's) never inherits a game
+        // it did not have: there the marker's game must match too.
+        boolean ownProfile = origin(owner, profile).equals(profile);
         boolean exactReconnect = state == State.RECONNECT_REQUIRED
                 && streamSessionId.equals(sessionId)
                 && hostId.equalsIgnoreCase(host)
                 && profileId.equals(profile)
                 && appId == preparingAppId
-                && playniteGameId.equalsIgnoreCase(normalize(preparingPlayniteGameId));
-        if (state != State.NONE && !exactReconnect) return false;
+                && (ownProfile
+                || playniteGameId.equalsIgnoreCase(normalize(preparingPlayniteGameId)));
+        if (state != State.NONE && !exactReconnect) {
+            MoonWakerDiagnostics.record("WARN", "android.retained-stream",
+                    "preparing.refused", "state", state.name(),
+                    "stream_session_id", sessionId, "host_id", host, "profile_id", profile,
+                    "app_id", preparingAppId, "transition_id", transition,
+                    "attempt", preparingAttempt);
+            return false;
+        }
         if (!exactReconnect) establishTransportGeneration(owner, sessionId);
         if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
         controller = owner;
@@ -1458,6 +1492,23 @@ public final class SessionModel {
         return true;
     }
 
+    /**
+     * {@code owner} closed its stream on purpose and the transport stopped. Only the record that
+     * owner holds live goes, with the session's reconnect material; a termination, a switch in
+     * flight, a reconnect marker or another owner's record keeps both. Without a record of the
+     * session, only its reconnect material goes.
+     */
+    boolean clearAfterIntentionalClose(Controller owner, String expectedStreamSessionId) {
+        if (owner == null || normalize(expectedStreamSessionId).isEmpty()) return false;
+        if (matches(streamSessionId, expectedStreamSessionId)) {
+            if ((state != State.HOME_LIVE && state != State.PARKED_LIVE)
+                    || controller != owner || switchOwner != null) return false;
+            clear();
+        }
+        clearReconnect(expectedStreamSessionId);
+        return true;
+    }
+
     boolean relinquishReconnect(Snapshot preparing) {
         if (state != State.RECONNECT_REQUIRED
                 || !streamSessionId.equals(preparing.streamSessionId)
@@ -1660,7 +1711,12 @@ public final class SessionModel {
         if (state == next) return;
         State previous = state;
         state = next;
-        if (previous == State.TERMINATING || next == State.TERMINATING) terminationEpoch++;
+        if (previous == State.TERMINATING || next == State.TERMINATING) {
+            // Both edges run with the session's host still set (clear() resets it afterwards).
+            Map<String, Long> epochs = new HashMap<>(terminationEpochs);
+            epochs.merge(epochKey(hostId), 1L, Long::sum);
+            terminationEpochs = Collections.unmodifiableMap(epochs);
+        }
         MoonWakerDiagnostics.record("INFO", "android.retained-stream",
                 "retained_stream.state_changed",
                 "from", previous.name(), "to", next.name(), "state", next.name(),
@@ -1671,6 +1727,10 @@ public final class SessionModel {
 
     static String normalize(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static String epochKey(String hostId) {
+        return normalize(hostId).toLowerCase(java.util.Locale.ROOT);
     }
 
     /** Process identity a provider handoff must still match when its result arrives. */

@@ -2038,6 +2038,30 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if ((backgroundStreamParked || decoderDetachedBySurfaceLoss) && surfaceCreated) {
             restoreParkedStream(streamView.getHolder());
         }
+        if (returningFromStreamHome) returnFromStreamHome();
+    }
+
+    /**
+     * The user is back on this stream from the Home. SessionOrchestrator decides whether a
+     * retained hidden warm-up becomes theirs; asked again when its PREPARING start completes
+     * or a requested switch is released. This executes the answer: the stream stops being
+     * hidden exactly as a Play on it would make it (see applyRetainedTransition).
+     */
+    private void returnFromStreamHome() {
+        if (isFinishing() || isDestroyed()
+                || SessionOrchestrator.transition(transitionState(),
+                SessionOrchestrator.UserIntent.RETURN_FROM_HOME).kind
+                != SessionOrchestrator.ActionKind.TAKE_OVER_WARM_UP) return;
+        clearAutoWarmUpIdentity();
+        if (consoleLoadingView != null) consoleLoadingView.showFullTransitionAppearance();
+        if (runtime != null) runtime.setAudioVolume(attachment, 1f);
+        if (controllerHandler != null) controllerHandler.enableSensors();
+        MoonWakerDiagnostics.record("INFO", "android.stream", "warm_up.taken_over",
+                "stream_session_id", streamSessionId);
+        // The cover now belongs to the user: arm its post-readiness frame and offer its actions.
+        if (transitionController != null) {
+            applyTransitionSnapshot(transitionController.snapshot());
+        }
     }
 
     @Override
@@ -4319,12 +4343,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             else childLifecycle.providerGameStopped();
             return;
         }
-        if (!isTransportConnected() || userInitiatedDisconnect
-                || !getIntent().getBooleanExtra(EXTRA_NEUTRAL_STREAM_TARGET, false)
-                || targetName == null || targetName.trim().isEmpty()) {
-            LimeLog.warning("Neutral retain failed transition=" + transitionId
-                    + " reason=transport_or_target");
-            closeStreamWithPrivacy(false);
+        String unretainable = !isTransportConnected() ? "transport"
+                : userInitiatedDisconnect ? "user_disconnect"
+                : !getIntent().getBooleanExtra(EXTRA_NEUTRAL_STREAM_TARGET, false)
+                ? "not_neutral_target"
+                : targetName == null || targetName.trim().isEmpty() ? "target_name" : "";
+        if (!unretainable.isEmpty()) {
+            // A lost transport or a close already under way owns the stream's end and its
+            // reconnect material; this observation must not close it again as an intentional one.
+            if (unretainable.equals("transport") || unretainable.equals("user_disconnect")) {
+                MoonWakerDiagnostics.record("INFO", "android.stream", "neutral_retain.skipped",
+                        "transition_id", transitionId, "stream_session_id", streamSessionId,
+                        "reason", unretainable);
+                return;
+            }
+            closeAfterFailedNeutralRetain(transitionId, unretainable);
             return;
         }
         Runnable settle = () -> {
@@ -4337,9 +4370,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
             if (transitionCoordinator == null
                     || !transitionCoordinator.detachAfterConfirmedGameStop()) {
-                LimeLog.warning("Neutral retain failed transition=" + transitionId
-                        + " reason=provider_owner");
-                closeStreamWithPrivacy(false);
+                closeAfterFailedNeutralRetain(transitionId, "provider_owner");
                 return;
             }
             String hostId = transitionSpec.hostId;
@@ -4348,9 +4379,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     streamSessionId, hostId, appId, gameId), retained -> {
                 if (isFinishing() || isDestroyed()) return;
                 if (!retained) {
-                    LimeLog.warning("Neutral retain failed transition=" + transitionId
-                            + " reason=retained_session");
-                    closeStreamWithPrivacy(false);
+                    closeAfterFailedNeutralRetain(transitionId, "retained_session");
                     return;
                 }
                 sessionModel.post(new SessionEvent.ActorBound(runtime, streamSessionId,
@@ -4363,6 +4392,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         };
         if (backgroundStreamParked) settle.run();
         else consoleLoadingView.doAfterNextFrame(settle);
+    }
+
+    /** A natural game stop whose neutral stream cannot be kept closes it; the reason is kept. */
+    private void closeAfterFailedNeutralRetain(String transitionId, String reason) {
+        MoonWakerDiagnostics.record("WARN", "android.stream", "neutral_retain.failed",
+                "transition_id", transitionId, "stream_session_id", streamSessionId,
+                "reason", reason);
+        closeStreamWithPrivacy(false);
     }
 
     private boolean rearmFailedNewGameObservation(RetainedSwitch operation,
@@ -4774,6 +4811,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         retainedRestoreAwaitingFrame = true;
+        // A frame armed on the detached decoder never renders: the replacement arms anew.
+        armedVideoFrameTransitionId.set("");
         decoderRenderer = replacement;
         backgroundStreamParked = false;
         decoderDetachedBySurfaceLoss = false;
@@ -4857,16 +4896,35 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         userInitiatedDisconnect = true;
         if (transitionController == null || consoleLoadingView == null) {
-            stopConnection(this::finish);
+            closeConnection(this::finish);
             return;
         }
         transitionController.closingStream(transitionSpec.id);
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> {
-            stopConnection(() -> {
+            closeConnection(() -> {
                 transitionController.returningToDashboard(transitionSpec.id);
                 finish();
             });
+        });
+    }
+
+    /**
+     * Stops the transport of an intentional close. The record this stream holds live (a
+     * taken-over warm-up, a kept neutral stream) and its reconnect material go once it STOPPED,
+     * before {@code afterClosed}: left behind, the record would read onDestroy's presentation
+     * loss as an unprotected one and mark RECONNECT_REQUIRED (TV 2026-10-14).
+     */
+    private void closeConnection(Runnable afterClosed) {
+        StreamRuntime captured = runtime;
+        if (captured == null) {
+            runOnUiThread(afterClosed);
+            return;
+        }
+        captured.closeIntentionally(cleared -> {
+            // The stop ended the service while the record stood: its notification goes too.
+            if (cleared) BackgroundStreamService.dismiss(this, captured.streamSessionId());
+            afterClosed.run();
         });
     }
 
@@ -5261,24 +5319,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     /**
-     * A live reconnect of exactly the marked record supersedes its RECONNECT_REQUIRED marker,
-     * whose stale control generation could never correlate with the host again. An actor
-     * handoff ("reauthorize") counts too: the host authorized the new actor before the
-     * connection started and advanced the generation the same way. The model re-checks the
-     * marker and the record when it applies the event.
+     * This live stream supersedes its host's RECONNECT_REQUIRED marker, whichever control
+     * intent (reconnect, reauthorize, a launch the host turned into "resume") or stream
+     * session it used. Kept beside the live stream, the marker's stale stream session and
+     * generation would fail every observation's correlation (TV 2026-10-14: game exit and
+     * End game lost). The model re-checks the marker when it applies the event.
      */
     private void relinquishReconnectedMarker() {
-        String control = getIntent().getStringExtra(EXTRA_CONTROL_INTENT);
-        if (!getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)
-                || !"reconnect".equals(control) && !"reauthorize".equals(control)) return;
         SessionModel.Snapshot marked = sessionModel.snapshot();
-        if (marked.state != SessionModel.State.RECONNECT_REQUIRED
-                || !marked.streamSessionId.equals(streamSessionId)
-                || !marked.hostId.equalsIgnoreCase(
-                        normalizeOpaqueId(getIntent().getStringExtra(EXTRA_PC_UUID)))
-                || marked.appId != getIntent().getIntExtra(
-                        EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID)
-                || !marked.playniteGameId.equalsIgnoreCase(currentSessionGameId())) return;
+        if (!marked.reconnectMarkerSupersededBy(
+                getIntent().getStringExtra(EXTRA_PC_UUID), getExecutionProfileId())) return;
         sessionModel.post(new SessionEvent.ReconnectRelinquished(marked));
     }
 
@@ -5794,13 +5844,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 consoleLoadingView.setManualRevealAvailable(
                         !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             }
-            boolean waitingForPostTargetFrame = !snapshot.revealAuthorized
-                    && (snapshot.state == LaunchTransitionState.GAME_READY
-                    || snapshot.state == LaunchTransitionState.PLAYNITE_FULLSCREEN_READY);
-            if (!isOwnedHiddenAutoWarmUp()
-                    && (shouldShowOpaque || waitingForPostTargetFrame) && decoderRenderer != null
-                    && snapshot.state != LaunchTransitionState.CLOSING_STREAM
-                    && snapshot.state != LaunchTransitionState.RETURNING_TO_DASHBOARD) {
+            if (!isOwnedHiddenAutoWarmUp() && snapshot.awaitingVideoFrame) {
                 armNextVideoFrameForTransition(snapshot.spec.id, "transition-gate");
             }
         }
@@ -5861,6 +5905,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 revealTransitionNow();
             }
         }
+        if (coverWithdrawn(lastTransitionOverlayVisible, snapshot.overlayVisible,
+                snapshot.revealAuthorized)) {
+            // A failed stop or close restored the stream revealed before it.
+            revealUncoveredStream();
+        }
         lastTransitionOverlayVisible = snapshot.overlayVisible;
         lastTransitionRevealAuthorized = snapshot.revealAuthorized;
         maybeArmStreamingAutopilotCalibration();
@@ -5879,6 +5928,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         PlayHistory.recordGame(getSharedPreferences("console_dashboard", MODE_PRIVATE),
                 snapshot.spec.hostId, snapshot.spec.sunshineAppId,
                 snapshot.spec.playniteGameId, System.currentTimeMillis());
+    }
+
+    /**
+     * The controller removed its cover without a reveal flow (a failed stop or close restored
+     * a revealed stream); a completed reveal keeps its authorization and is not this.
+     */
+    static boolean coverWithdrawn(boolean wasOverlayVisible, boolean overlayVisible,
+                                  boolean revealAuthorized) {
+        return wasOverlayVisible && !overlayVisible && !revealAuthorized;
     }
 
     static boolean shouldShowTransitionOverlay(boolean wasOverlayVisible,
@@ -6153,6 +6211,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && sessionModel.ownsLiveOrParkedSession(
                 runtime, streamSessionId, transitionSpec.hostId,
                 transitionSpec.sunshineAppId, transitionSpec.playniteGameId);
+        state.resumed = presentationResumed;
+        state.hiddenWarmUp = isOwnedHiddenAutoWarmUp();
+        state.warmUpPreparing = isExactAutoWarmUpPreparing(sessionModel.snapshot());
+        state.switchRequested = pendingRetainedSwitch.busy();
         return state;
     }
 
@@ -6307,6 +6369,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             if (SessionOrchestrator.transition(transitionState(), intent).kind
                     == SessionOrchestrator.ActionKind.COVER_AND_SHOW_HOME) {
                 openConsoleHome();
+            } else if (!transitionController.snapshot().overlayVisible) {
+                // Decided otherwise at effect time: the stream the controller shows comes back.
+                revealUncoveredStream();
+            }
+        });
+    }
+
+    /** The cover the controller no longer holds comes off; the stream gets the input back. */
+    private void revealUncoveredStream() {
+        consoleLoadingView.showFullTransitionAppearance();
+        consoleLoadingView.revealStream(() -> {
+            if (!isFinishing() && !isDestroyed() && isTransportConnected()) {
+                streamView.requestFocus();
             }
         });
     }
@@ -6696,6 +6771,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             });
             return;
         }
+        // Mirrors connectionStarted: the live transport supersedes a stale reconnect marker.
+        relinquishReconnectedMarker();
         announceAttachedTransport();
     }
 
@@ -6760,6 +6837,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     if (outcome == SessionModel.SwitchOutcome.FAILED) {
                         LimeLog.warning("Pending retained switch failed: " + error);
                     }
+                    returnFromStreamHome();
                 })), started -> {
             recordPendingRetainedSwitch("console.retained_switch.submission_result",
                     "switch_submit", pending, started.name());
@@ -6769,6 +6847,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     "pending_switch.not_eligible", "stream_session_id", streamSessionId);
             Toast.makeText(this, R.string.console_stream_home_switch_blocked,
                     Toast.LENGTH_LONG).show();
+            returnFromStreamHome();
         });
     }
 
@@ -7394,11 +7473,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void endManagedGameKeepingStream() {
         if (!canEndManagedGame() || providerEndGameInFlight
                 || transitionSpec == null || transitionSpec.playniteGameId.isEmpty()) return;
-        stopChildMonitoring();
         LaunchTransitionSpec expected = transitionSpec;
+        // The controller covers the stop and, if it fails, restores what was shown before. A
+        // stop it refuses is no stop of this presentation: nothing is covered or started.
+        if (!transitionController.gameStopping(
+                expected.id, expected.hostId, expected.playniteGameId)) return;
+        stopChildMonitoring();
         PlayniteTransitionGateway.ActorContext actorContext = currentGatewayActorContext();
         providerEndGameInFlight = true;
-        consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> new Thread(() -> {
             String stage = "connect";
             String failureReason = "operation_failed";
@@ -7462,6 +7544,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     if (isFinishing() || isDestroyed()
                             || !providerEndGameInFlight || transitionSpec != expected) return;
                     providerEndGameInFlight = false;
+                    if (providerStopConfirmed) {
+                        // The host stopped the game before this failed; its one stop report
+                        // was held back for this End game and is settled as the natural stop.
+                        retainNeutralStreamAfterNaturalGameStop(
+                                expected.id, expected.playniteGameId);
+                        return;
+                    }
+                    transitionController.streamClosingFailed(expected.id,
+                            getString(R.string.overlay_menu_end_game_failed));
                     if (prepareChildSession() && !childSessionId.isEmpty()) startChildMonitoring();
                     retryLiveObservation();
                     new android.app.AlertDialog.Builder(Game.this)
@@ -7498,8 +7589,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     Game.this, expected.hostId, host, actorContext);
             if (gateway == null) {
                 runOnUiThread(() -> {
-                    transitionController.cancel(expected.id);
-                    consoleLoadingView.stopAndHide();
+                    transitionController.streamClosingFailed(expected.id,
+                            getString(R.string.overlay_menu_suspend_unavailable));
                     displayTransientMessage(getString(R.string.overlay_menu_suspend_unavailable));
                 });
                 return;
@@ -7528,8 +7619,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 runOnUiThread(() -> closeStreamWithPrivacy(false));
             } catch (Exception error) {
                 runOnUiThread(() -> {
-                    transitionController.cancel(expected.id);
-                    consoleLoadingView.stopAndHide();
+                    transitionController.streamClosingFailed(expected.id,
+                            getString(R.string.overlay_menu_suspend_failed));
                     displayTransientMessage(getString(R.string.overlay_menu_suspend_failed));
                 });
             }
@@ -7834,6 +7925,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 autoWarmUpRetained = true;
             }
             done.accept(completed);
+            // The user may have left the Home while this start was still PREPARING.
+            if (completed) returnFromStreamHome();
         });
     }
 

@@ -23,13 +23,19 @@ public final class LaunchTransitionSnapshot {
     public final String detail;
     /** The game start passed the local soft threshold while still not ready; never a failure. */
     public final boolean startTakingLonger;
+    /**
+     * The cover is up and readiness (automatic or manual) still needs a frame rendered after
+     * the latest readiness edge: the presentation must arm one, or "Reveal now" never appears.
+     */
+    public final boolean awaitingVideoFrame;
 
     LaunchTransitionSnapshot(LaunchTransitionSpec spec, LaunchTransitionState state,
                              int step, boolean overlayVisible, boolean inputBlocked,
                              boolean operationAuthorized, boolean revealAuthorized,
                              boolean manualRevealAvailable, boolean uncertain, String detail,
                              boolean startTakingLonger, boolean revealPreferred,
-                             String notice, boolean manuallyRevealed) {
+                             String notice, boolean manuallyRevealed,
+                             boolean awaitingVideoFrame) {
         this.spec = spec;
         this.state = state;
         this.step = step;
@@ -44,6 +50,7 @@ public final class LaunchTransitionSnapshot {
         this.revealPreferred = revealPreferred;
         this.notice = notice == null ? "" : notice;
         this.manuallyRevealed = manuallyRevealed;
+        this.awaitingVideoFrame = awaitingVideoFrame;
     }
 
     /**

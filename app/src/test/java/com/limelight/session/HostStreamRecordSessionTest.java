@@ -2,7 +2,9 @@ package com.limelight.session;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /** A host record read while this host's own session moves never adopts or retires its records. */
@@ -32,5 +34,23 @@ public class HostStreamRecordSessionTest {
         // A reconnect record waits for the host record to adopt or retire it.
         assertTrue(driver.markPreparingReconnectRequired(owner, "s", "host", 7, "t1", 1L));
         assertFalse(HostStreamRecord.sessionOwnsRecords("host", driver.snapshot()));
+    }
+
+    /** Resume metadata is not a stream: a marker the host no longer holds ends with its record. */
+    @Test public void markerTheHostNoLongerHoldsIsRetiredWithItsRecord() {
+        Owner owner = new Owner();
+        driver.enterHome(owner, "s", "host", "parent", 7, "steam:952060");
+        driver.markReconnectRequired("s");
+        driver.resume.edit().putBoolean("pending", true).putString("streamSessionId", "s")
+                .putString("pcUuid", "host").putString("profileId", "parent").apply();
+        assertFalse(HostStreamRecord.sessionOwnsRecords("host", driver.snapshot()));
+
+        // What ConsoleActivity.applyHostStreamRecord posts for RETIRE.
+        assertEquals(HostStreamRecord.Action.RETIRE, HostStreamRecord.decide(null, "parent", "s"));
+        assertTrue(driver.clearAfterAuthoritativeEndIfMatches("s"));
+        assertTrue(driver.call(new SessionEvent.ReconnectCleared("s")));
+
+        assertEquals(SessionModel.State.NONE, driver.state());
+        assertNull(driver.model.records().pending);
     }
 }

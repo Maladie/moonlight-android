@@ -32,7 +32,16 @@ public final class SessionModelDriver {
     public static SessionResumeManager.PendingSession reconnectRecord(
             String streamSessionId, String hostId, String profileId, String executionProfileId,
             int appId, String gameId, boolean autoResume) {
+        return reconnectRecord(streamSessionId, hostId, profileId, executionProfileId, appId,
+                gameId, autoResume, false);
+    }
+
+    /** A stored reconnect record; {@code neutral}: of the neutral MoonWaker stream. */
+    public static SessionResumeManager.PendingSession reconnectRecord(
+            String streamSessionId, String hostId, String profileId, String executionProfileId,
+            int appId, String gameId, boolean autoResume, boolean neutral) {
         java.util.Map<String, Object> stored = new java.util.HashMap<>();
+        stored.put("neutralStreamTarget", neutral);
         stored.put("pending", true);
         stored.put("autoResume", autoResume);
         stored.put("streamSessionId", streamSessionId);
@@ -323,6 +332,14 @@ public final class SessionModelDriver {
     public boolean clearAfterAuthoritativeEndIfMatches(String sessionId) {
         return call(SessionEvent.Cleared.byHost(sessionId));
     }
+    public boolean closedIntentionally(Controller owner, String sessionId) {
+        return call(new SessionEvent.ClosedIntentionally(owner, sessionId));
+    }
+    public void seedReconnectRecord(String sessionId) {
+        resume.edit().putBoolean("pending", true).putString("streamSessionId", sessionId)
+                .putString("pcUuid", "host").putString("profileId", "p").apply();
+    }
+    public boolean hasReconnectRecord() { drain(); return resume.getBoolean("pending", false); }
     public boolean hardResetIfHostMatches(String hostId) {
         return call(new SessionEvent.HardReset(hostId));
     }

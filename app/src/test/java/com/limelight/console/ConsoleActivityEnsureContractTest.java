@@ -87,8 +87,11 @@ public class ConsoleActivityEnsureContractTest {
         String exit = source.substring(source.indexOf(
                         "private void terminateRetainedSessionAndExit()"),
                 source.indexOf("private void closeRecordedSessionAndExit("));
-        assertTrue(exit.indexOf("failureMessage.set(R.string.console_terminate_session_game_left)")
-                < exit.indexOf("if (!outcome.closed()) {"));
+        int notClosed = exit.indexOf("if (!outcome.closed()) {");
+        assertTrue(notClosed >= 0);
+        assertTrue(exit.indexOf("HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED")
+                > notClosed);
+        assertTrue(exit.indexOf("R.string.console_terminate_session_game_left") > notClosed);
         String replacement = source.substring(source.indexOf(
                         "private Boolean terminateLiveRetainedForReplacement("),
                 source.indexOf("private void beginInstallationSupportStream("));
@@ -127,11 +130,64 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("private String currentRetainedStreamSessionId()"));
 
         assertTrue(method.contains("new SessionEvent.TerminateRequested("));
-        assertTrue(method.contains("terminateKnownControlPlane(host, terminationProfileId"));
+        assertTrue(method.contains("knownControlPlaneTermination(host, target.profileId"));
         assertTrue(method.contains("providerGameId)"));
         assertTrue(method.contains("complete.complete(success)"));
         assertFalse(method.contains("stopActiveProviderGame("));
         assertFalse(method.contains("quitApp("));
+    }
+
+    @Test public void closeAndExitLeavesAtOnceAndTheCloseOutlivesTheActivity() throws IOException {
+        String source = consoleActivitySource();
+        String exit = source.substring(source.indexOf(
+                        "private void terminateRetainedSessionAndExit()"),
+                source.indexOf("private void closeRecordedSessionAndExit("));
+        int request = exit.indexOf("new SessionEvent.TerminateRequested(");
+        int leave = exit.indexOf("moveTaskToBack(true);");
+        // Leaves right after asking, never waiting for the result; only the process-scoped exit
+        // request (MoonWakerExitTest) decides whether the completed close ends MoonWaker.
+        assertTrue(request >= 0 && leave > request);
+        int token = exit.indexOf("MoonWakerExit.request()");
+        assertTrue(token >= 0 && token < request);
+        assertTrue(exit.contains("MoonWakerExit.take(exit)"));
+        assertTrue(exit.contains("if (away) MoonWakerExit.finishTasks(app);"));
+        assertFalse(exit.substring(request).contains("finishAffinity()"));
+        assertFalse(exit.contains("active"));
+        assertFalse(exit.contains("showSidePanelBusy("));
+        assertFalse(exit.substring(request).contains("exitMoonWaker()"));
+        String recorded = source.substring(source.indexOf(
+                        "private void closeRecordedSessionAndExit("),
+                source.indexOf("private void exitMoonWaker()"));
+        int thread = recorded.indexOf("new Thread(() -> {");
+        // The close is resolved before the thread and runs on app-scoped state only.
+        assertTrue(thread > recorded.indexOf("knownControlPlaneTermination("));
+        assertTrue(recorded.indexOf("close.get()") > thread);
+        assertFalse(recorded.substring(thread).contains("terminateKnownControlPlane("));
+        assertFalse(recorded.contains("executor.execute("));
+        assertFalse(recorded.contains("showSidePanelBusy("));
+    }
+
+    @Test public void hostSleepSettlesOutsideTheActivityAndAnObservedSleepReadsAsleep()
+            throws IOException {
+        String source = consoleActivitySource();
+        String sleep = source.substring(source.indexOf("private void requestHostSleep("),
+                source.indexOf("private void wakeHost("));
+        int thread = sleep.indexOf("new Thread(() -> {");
+        // The decisions live in HostReadiness (HostReadinessTest); here only that the thread
+        // routes through them and touches no Activity state but through a weak reference.
+        assertTrue(thread >= 0 && sleep.indexOf("client.sleepHost(") > thread);
+        assertTrue(sleep.indexOf("HostReadiness.sleepAnswered(") > thread);
+        assertTrue(sleep.indexOf("HostReadiness.settleSleep(model, target.uuid, acceptedAt,")
+                > thread);
+        assertFalse(sleep.substring(thread).contains("sessionModel"));
+        assertFalse(sleep.substring(thread).contains("hostGatewayClient"));
+        assertFalse(sleep.contains("executor.execute("));
+        assertTrue(source.contains("return snapshot.hostSleepObserved "
+                + "|| host.state != ComputerDetails.State.ONLINE;"));
+        String reconcile = source.substring(source.indexOf(
+                        "private void reconcileFreshSessionFacts("),
+                source.indexOf("private void reconcileAuthoritativeSession("));
+        assertTrue(reconcile.contains("HostReadiness.sleepRequestExpired("));
     }
 
     @Test public void freshZeroReconcilesOnlyExactLostRetainedSession() throws IOException {

@@ -648,6 +648,56 @@ public class StreamRuntimeTest {
         assertEquals(1, platform.locksReleased.get());
     }
 
+    /**
+     * TV 2026-10-14: a warm-up the user took over (HOME_LIVE) was closed on purpose. Without the
+     * close recorded, the destroyed Activity's presentation loss marked it RECONNECT_REQUIRED;
+     * with it (Game.closeStreamWithPrivacy) nothing is left to reconnect.
+     */
+    @Test public void intentionallyClosedRetainedStreamLeavesNoReconnectMarker() {
+        for (boolean recorded : new boolean[] {false, true}) {
+            StreamRuntime.resetForTests();
+            TransportStopCoordinator.resetForTests();
+            platform = new FakePlatform();
+            m = platform.driver;
+            StreamRuntime runtime = connected("s1", new FakeTransport());
+            m.enterHome(runtime, "s1", "host", "p", 7, "steam:952060");
+            m.seedReconnectRecord("s1");
+            StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
+
+            AtomicReference<Boolean> closed = new AtomicReference<>();
+            if (recorded) runtime.closeIntentionally(closed::set);
+            else runtime.stop(r -> { });
+            m.drain();
+            // Game finishes in the close's answer: onDestroy's presentation loss comes after it.
+            if (recorded) assertEquals(Boolean.TRUE, closed.get());
+            runtime.presentationLost(attachment, true);
+
+            assertEquals(recorded ? SessionModel.State.NONE
+                    : SessionModel.State.RECONNECT_REQUIRED, m.state());
+            assertEquals(recorded, platform.reconnectSaved.isEmpty());
+            assertEquals(!recorded, m.hasReconnectRecord());
+        }
+    }
+
+    /** A stop that did not complete leaves the transport live: its record and marker stay. */
+    @Test public void failedIntentionalCloseKeepsTheLiveStreamsRecord() {
+        FakeTransport transport = new FakeTransport();
+        transport.failStop = true;
+        StreamRuntime runtime = connected("s1", transport);
+        m.enterHome(runtime, "s1", "host", "p", 7, "steam:952060");
+        m.seedReconnectRecord("s1");
+
+        AtomicReference<Boolean> closed = new AtomicReference<>();
+        runtime.closeIntentionally(closed::set);
+        m.drain();
+
+        assertNull("the presentation is not finished", closed.get());
+        assertEquals(SessionModel.State.HOME_LIVE, m.state());
+        assertTrue(m.ownsLiveOrParkedSession(runtime, "s1", "host", 7));
+        assertTrue(m.hasReconnectRecord());
+    }
+
+
     @Test public void destroyExplicitStopAndNewStartShareOneStopResult() {
         QueueExecutor stops = new QueueExecutor();
         platform.stopExecutor = stops;

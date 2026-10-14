@@ -76,6 +76,7 @@ public final class LaunchTransitionController {
         gatewayReady = targetAlreadyRunning;
         targetProcessRunning = targetAlreadyRunning;
         targetWindowReady = targetAlreadyRunning;
+        streamWasRevealedBeforeClosing = false;
         uncertain = false;
         startTakingLonger = false;
         gameReadyConfirmed = false;
@@ -328,8 +329,13 @@ public final class LaunchTransitionController {
         publish();
     }
 
-    public synchronized void gameStopping(String transitionId, String hostId, String gameId) {
-        if (!acceptTarget(transitionId, hostId, LaunchTransitionType.GAME, gameId)) return;
+    /** Returns whether this transition's game stop is now covered (false: refused). */
+    public synchronized boolean gameStopping(String transitionId, String hostId, String gameId) {
+        if (!acceptTarget(transitionId, hostId, LaunchTransitionType.GAME, gameId)) return false;
+        // A failed stop restores this presentation (streamClosingFailed).
+        if (state != LaunchTransitionState.GAME_STOPPING) {
+            streamWasRevealedBeforeClosing = revealCompleted;
+        }
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
@@ -339,6 +345,7 @@ public final class LaunchTransitionController {
         videoFrameReady = false;
         state = LaunchTransitionState.GAME_STOPPING;
         publish();
+        return true;
     }
 
     public synchronized void playniteReturning(String transitionId, String hostId) {
@@ -382,6 +389,11 @@ public final class LaunchTransitionController {
         publish();
     }
 
+    /**
+     * A close or game stop under the cover failed: a stream revealed before it is shown again
+     * (a manual reveal keeps its override), otherwise the failure keeps "Reveal now" for a live
+     * stream. Returns whether the stream was revealed before.
+     */
     public synchronized boolean streamClosingFailed(String transitionId, String reason) {
         if (!accept(transitionId, null)) return false;
         revealAuthorized = false;
@@ -402,6 +414,7 @@ public final class LaunchTransitionController {
             revealCompleted = false;
             state = LaunchTransitionState.ERROR;
             terminalFailureState = LaunchTransitionState.ERROR;
+            manualRevealAvailable = transportReady();
             detail = reason == null ? "" : reason;
         }
         publish();
@@ -621,7 +634,9 @@ public final class LaunchTransitionController {
                 overlayVisible, inputBlocked, operationAuthorized, revealAuthorized,
                 manualRevealAvailable, uncertain, detail,
                 startTakingLonger && isGameStartPending(state), revealPreferred, notice,
-                manualRevealOverride);
+                manualRevealOverride,
+                overlayVisible && !videoFrameReady && !rejectsLateTargetSignal()
+                        && state != LaunchTransitionState.CANCELLED);
     }
 
     static int stepForState(LaunchTransitionState state) {
