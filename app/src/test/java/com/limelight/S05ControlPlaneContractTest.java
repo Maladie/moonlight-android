@@ -240,7 +240,7 @@ public class S05ControlPlaneContractTest {
                 "\"reauthorize\".equals(controlBinding.intent) ? \"reauthorize\""));
         assertTrue(start.contains("acquireBootstrapAfterReplay("));
         assertTrue(game.contains("SessionEvent.SuspendedEnded.forExecution("));
-        assertTrue(console.contains("records().recentlyEndedForExecution("));
+        assertTrue(console.contains("records.recentlyEndedForExecution("));
         String compensation = between(console, "private void failClosedActorHandoff(",
                 "private SessionOrchestrator.CloseResult switchRetainedProviderGame(");
         assertTrue(compensation.indexOf("releaseNewChildTimeAttachmentAndWait(newBinding)")

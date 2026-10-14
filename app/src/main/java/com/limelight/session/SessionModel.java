@@ -7,21 +7,30 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 
+import com.limelight.console.HostGatewayClient;
 import com.limelight.console.LocalHostRecords;
+import com.limelight.console.SessionSnapshot;
+import com.limelight.console.SessionStateResolver;
+import com.limelight.console.SessionStateResolver.FrozenProjection;
+import com.limelight.console.SessionStateResolver.ProjectionOwner;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
+import com.limelight.gateway.ControlOperationClient;
 import com.limelight.gateway.GatewayConnection;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 
 /**
  * The process-scoped owner of session state and the persistent session records. Every state
@@ -138,6 +147,67 @@ public final class SessionModel {
         }
     }
 
+    /** A Gateway observation read the model admitted for dispatch. */
+    public static final class ObservationRequest {
+        public final long ordinal;
+        /** The model's transition this read correlates with; empty for another session. */
+        public final String transitionId;
+
+        ObservationRequest(long ordinal, String transitionId) {
+            this.ordinal = ordinal;
+            this.transitionId = transitionId;
+        }
+    }
+
+    /** What the model made of one Gateway observation. */
+    public static final class ObservationResult {
+        /** The projection of exactly this observation; null when it was rejected. */
+        public final SessionSnapshot accepted;
+        /** The projection now: {@link #accepted}, or the held one when rejected. */
+        public final SessionSnapshot projection;
+        /** Rejected only because a newer read was dispatched or accepted meanwhile. */
+        public final boolean lostDispatchOrdering;
+        /** Same scope and a producer boot that is not retired (control-permit evidence). */
+        public final boolean admitsPermitEvidence;
+
+        ObservationResult(SessionSnapshot accepted, SessionSnapshot projection,
+                          boolean lostDispatchOrdering, boolean admitsPermitEvidence) {
+            this.accepted = accepted;
+            this.projection = projection;
+            this.lostDispatchOrdering = lostDispatchOrdering;
+            this.admitsPermitEvidence = admitsPermitEvidence;
+        }
+    }
+
+    /** What a fresh host poll ended locally; the caller applies only its UI effects. */
+    public static final class PollOutcome {
+        static final PollOutcome NONE = new PollOutcome("", false, "");
+
+        /** A reconnect marker the host's 0 ended: its transport is gone. */
+        public final String lostStreamSessionId;
+        /** The host's running app went to 0 after a poll that saw it. */
+        public final boolean ended;
+        /** The stream that app belonged to; empty when none was known. */
+        public final String endedStreamSessionId;
+
+        PollOutcome(String lostStreamSessionId, boolean ended, String endedStreamSessionId) {
+            this.lostStreamSessionId = lostStreamSessionId;
+            this.ended = ended;
+            this.endedStreamSessionId = endedStreamSessionId;
+        }
+    }
+
+    /** The last fresh poll of one host: its running app and the stream that app belonged to. */
+    private static final class PolledApp {
+        final int runningAppId;
+        final String streamSessionId;
+
+        PolledApp(int runningAppId, String streamSessionId) {
+            this.runningAppId = runningAppId;
+            this.streamSessionId = streamSessionId;
+        }
+    }
+
     public static final class Snapshot {
         public final State state;
         public final String streamSessionId;
@@ -159,6 +229,8 @@ public final class SessionModel {
         public final long presentationEpoch;
         /** Persistent records, mirrored from the stores the model alone writes. */
         public final Records records;
+        /** Frozen host projections by {@link SessionStateResolver#key}; render-only. */
+        private final Map<String, FrozenProjection> projections;
         // Model-internal bindings: visible to the model's readers, not to listeners.
         final Controller controller;
         final Controller switchOwner;
@@ -184,6 +256,7 @@ public final class SessionModel {
             this.terminationEpochs = m.terminationEpochs;
             this.presentationEpoch = m.presentationEpoch;
             this.records = records;
+            this.projections = m.frozenProjections;
             this.controller = m.controller;
             this.switchOwner = m.switchOwner;
             this.switchSessionId = m.switchSessionId;
@@ -192,6 +265,11 @@ public final class SessionModel {
             this.acceptedHomeTransitionId = m.acceptedHomeTransitionId;
             this.acceptedHomeAttempt = m.acceptedHomeAttempt;
             this.sequence = sequence;
+        }
+
+        /** The frozen projection of {@code key}, or null when the model holds none. */
+        public FrozenProjection projection(String key) {
+            return projections.get(key);
         }
 
         /** Termination boundaries of {@code hostId}'s session; another host's close is none. */
@@ -224,7 +302,7 @@ public final class SessionModel {
                     && controlGeneration == other.controlGeneration
                     && transportGeneration == other.transportGeneration
                     && terminationEpochs == other.terminationEpochs
-                    && records == other.records;
+                    && records == other.records && projections == other.projections;
         }
     }
 
@@ -331,10 +409,21 @@ public final class SessionModel {
     private TerminationOperation terminationOperation;
     private Records records;
     private boolean recordsChanged;
+    /** Host observation and projection per {@link SessionStateResolver#key}. */
+    private final Map<String, ProjectionOwner> projections = new LinkedHashMap<>();
+    private Map<String, FrozenProjection> frozenProjections = Collections.emptyMap();
+    private boolean projectionsChanged;
+    /** Per host (normalized): the last fresh poll's running app. */
+    private final Map<String, PolledApp> polledApps = new HashMap<>();
+    /** Forgotten hosts (normalized) until a new read or close of them starts again. */
+    private final Set<String> forgottenHosts = new HashSet<>();
 
     private final Executor modelThread;
     private final Executor mainThread;
     private final BooleanSupplier onMainThread;
+    /** Monotonic milliseconds of the projections' liveness, expiry and closing bounds. */
+    private final LongSupplier clock;
+    private final SessionStateResolver.DiagnosticSink diagnostics;
     private final Stores stores;
     private final List<Runnable> afterCommit = new ArrayList<>();
     private volatile Thread runningThread;
@@ -351,18 +440,25 @@ public final class SessionModel {
      * @param modelThread single-threaded executor; every transition runs on it
      * @param mainThread executor for replies, completions, controller effects and delivery
      * @param onMainThread true while the caller runs on the main thread (await guard)
+     * @param clock monotonic milliseconds of the host projections
+     * @param diagnostics writer of the projections' diagnostic records
      */
     public SessionModel(Executor modelThread, Executor mainThread, BooleanSupplier onMainThread,
+                        LongSupplier clock, SessionStateResolver.DiagnosticSink diagnostics,
                         SharedPreferences resume, SharedPreferences suspended,
                         SharedPreferences sleep) {
-        this(modelThread, mainThread, onMainThread, new Stores(resume, suspended, sleep));
+        this(modelThread, mainThread, onMainThread, clock, diagnostics,
+                new Stores(resume, suspended, sleep));
     }
 
     private SessionModel(Executor modelThread, Executor mainThread, BooleanSupplier onMainThread,
+                         LongSupplier clock, SessionStateResolver.DiagnosticSink diagnostics,
                          Stores stores) {
         this.modelThread = modelThread;
         this.mainThread = mainThread;
         this.onMainThread = onMainThread;
+        this.clock = clock;
+        this.diagnostics = diagnostics;
         this.stores = stores;
         // Process start: restore persistent records; the transport is NONE and the host game
         // unknown until the first observation. A reconnect record is not a live connection.
@@ -379,6 +475,7 @@ public final class SessionModel {
         Handler main = new Handler(Looper.getMainLooper());
         return new SessionModel(model::post, main::post,
                 () -> Looper.getMainLooper().isCurrentThread(),
+                android.os.SystemClock::uptimeMillis, MoonWakerDiagnostics::record,
                 new Stores(SessionResumeManager.prefs(application),
                         SuspendedSessionStore.prefs(application),
                         HostSleepStateStore.prefs(application)));
@@ -411,6 +508,16 @@ public final class SessionModel {
      * for the model, and the model never waits for anything.
      */
     public <R> R await(SessionEvent<R> event) {
+        try {
+            return awaitInterruptibly(event);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted waiting for the session model");
+        }
+    }
+
+    /** {@link #await} for a worker that maps an interrupt to its own cancellation. */
+    public <R> R awaitInterruptibly(SessionEvent<R> event) throws InterruptedException {
         if (onMainThread.getAsBoolean() || Thread.currentThread() == modelThreadOwner) {
             throw new IllegalStateException("SessionModel.await on the main or model thread");
         }
@@ -420,12 +527,7 @@ public final class SessionModel {
             result.set(value);
             done.countDown();
         }, Runnable::run));
-        try {
-            done.await();
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted waiting for the session model");
-        }
+        done.await();
         return result.get();
     }
 
@@ -711,6 +813,23 @@ public final class SessionModel {
         if (recordsChanged) {
             records = stores.read();
             recordsChanged = false;
+        }
+        if (!projections.isEmpty()) {
+            // A termination boundary retires each of its host's observations in the same
+            // transition that crossed it.
+            Snapshot crossing = current();
+            long now = clock.getAsLong();
+            for (ProjectionOwner owner : projections.values()) {
+                projectionsChanged |= owner.settleTerminationBoundary(crossing, now);
+            }
+        }
+        if (projectionsChanged) {
+            Map<String, FrozenProjection> frozen = new LinkedHashMap<>();
+            for (Map.Entry<String, ProjectionOwner> entry : projections.entrySet()) {
+                frozen.put(entry.getKey(), entry.getValue().freeze());
+            }
+            frozenProjections = Collections.unmodifiableMap(frozen);
+            projectionsChanged = false;
         }
         Snapshot next = new Snapshot(this, records, sequence);
         boolean changed = !next.sameAs(delivered);
@@ -1521,6 +1640,7 @@ public final class SessionModel {
 
     boolean hardResetIfHostMatches(String expectedHostId) {
         String expected = normalize(expectedHostId);
+        polledApps.remove(epochKey(expected));
         if (expected.isEmpty() || !expected.equalsIgnoreCase(hostId)) return false;
         Snapshot preparing = state == State.PREPARING
                 ? new Snapshot(this, records, sequence) : null;
@@ -1551,7 +1671,244 @@ public final class SessionModel {
         LocalHostRecords.sweep(stores.suspended, host);
         LocalHostRecords.sweep(stores.sleep, host);
         recordsChanged = true;
+        // A forgotten host keeps no projection (nor its close or observation state).
+        projectionsChanged |= projections.values()
+                .removeIf(owner -> owner.hostId().equals(epochKey(host)));
+        // Polls and replies already in flight for it are late: only a new read or close of
+        // this host (ObservationDispatched, LocalCloseBegun) starts its state again.
+        forgottenHosts.add(epochKey(host));
         return true;
+    }
+
+    // ---- host observation (model thread only) --------------------------------------------------
+
+    private Snapshot current() {
+        return new Snapshot(this, records, sequence);
+    }
+
+    /**
+     * The projection a new read or close starts from: the only events that may create one.
+     * Marked changed before the caller mutates it, so a transition that throws midway still
+     * publishes a fresh frozen copy instead of leaving the published one behind the owner.
+     */
+    private ProjectionOwner startProjection(String host, String actor, String execution) {
+        forgottenHosts.remove(epochKey(host));
+        String key = SessionStateResolver.key(host, actor, execution);
+        ProjectionOwner owner = projections.get(key);
+        if (owner == null) {
+            owner = new ProjectionOwner(diagnostics, host, actor, execution,
+                    current().terminationEpoch(host));
+            projections.put(key, owner);
+        }
+        projectionsChanged = true;
+        return owner;
+    }
+
+    /** The projection a reply or completion continues; null when none (a forgotten host). */
+    private ProjectionOwner heldProjection(String host, String actor, String execution) {
+        ProjectionOwner owner = projections.get(SessionStateResolver.key(host, actor, execution));
+        if (owner != null) projectionsChanged = true;
+        return owner;
+    }
+
+    ObservationRequest observationDispatched(String host, String actor, String execution) {
+        long ordinal = startProjection(host, actor, execution).nextRequestOrdinal(current());
+        boolean ownSession = hostId.equalsIgnoreCase(normalize(host))
+                && executionProfileId.equals(GatewayConnection.normalizeProfileId(execution));
+        return new ObservationRequest(ordinal, ownSession ? transitionId : "");
+    }
+
+    /**
+     * One Gateway observation. Only an observation the projection admits (its dispatch, scope
+     * and producer revision current) changes anything: a stale or foreign one is rejected here.
+     * The Gateway's verified running game ends a suspended session of another game. Null when
+     * the model holds no projection to continue (its host was forgotten meanwhile).
+     */
+    ObservationResult hostObserved(String host, String actor, String execution,
+                                   HostGatewayClient.SessionObservation observation) {
+        ProjectionOwner owner = heldProjection(host, actor, execution);
+        if (owner == null) return null;
+        long now = clock.getAsLong();
+        SessionSnapshot accepted = owner.accept(observation, current(), now);
+        if (accepted == null) {
+            boolean lost = owner.lostDispatchOrdering(observation);
+            return new ObservationResult(null, owner.current(current(), now),
+                    lost, owner.admitsPermitEvidence(observation));
+        }
+        String running = owner.observedRunningGameId();
+        SuspendedSessionStore.Session suspended =
+                records.suspendedForExecution(host,
+                        GatewayConnection.normalizeProfileId(execution));
+        if (!running.isEmpty() && suspended != null && suspended.resumedAt == 0L
+                && !suspended.playniteGameId.isEmpty()
+                && !running.equalsIgnoreCase(suspended.playniteGameId)) {
+            SuspendedSessionStore.markSessionEndedIfMatches(suspendedStore(), host,
+                    suspended.profileId, suspended.suspendId);
+        }
+        return new ObservationResult(accepted, accepted, false,
+                owner.admitsPermitEvidence(observation));
+    }
+
+    /** Null when the model holds no projection to continue (its host was forgotten). */
+    SessionSnapshot observationUnavailable(String host, String actor, String execution,
+                                           long ordinal, String reason) {
+        ProjectionOwner owner = heldProjection(host, actor, execution);
+        return owner == null ? null
+                : owner.unavailable(ordinal, current(), clock.getAsLong(), reason);
+    }
+
+    long localCloseBegun(String host, String actor, String execution, boolean endsGame) {
+        ProjectionOwner owner = startProjection(host, actor, execution);
+        long token = owner.beginLocalClose(clock.getAsLong(), endsGame);
+        owner.current(current(), clock.getAsLong());
+        return token;
+    }
+
+    /** A close of a forgotten host ends nothing: its projection is gone with it. */
+    void localCloseFinished(String host, String actor, String execution, long token,
+                            boolean closed) {
+        ProjectionOwner owner = heldProjection(host, actor, execution);
+        if (owner == null) return;
+        owner.finishLocalClose(token, closed);
+        owner.current(current(), clock.getAsLong());
+    }
+
+    /**
+     * A fresh poll of {@code host} for the selected actor. Sunshine's running app decides here:
+     * its 0 retires a reconnect marker of that host (transport lost); a nonzero app is matched
+     * by app id to the model's own stream or reconnect record, remembered per host, and its
+     * later 0 ends that stream (and a suspended session it resumed). Keyed on the remembered
+     * identity, not on the model's state at the edge: the stream may have left the model by
+     * then and must still end. A poll of a forgotten host still in flight changes nothing.
+     */
+    PollOutcome hostPolled(String host, String actor, String execution, boolean online,
+                           boolean offline, int runningAppId, long wallNowMs) {
+        String polledHost = epochKey(host);
+        if (polledHost.isEmpty() || forgottenHosts.contains(polledHost)) return PollOutcome.NONE;
+        SuspendedSessionStore.Session suspended = records.suspendedForExecution(host, execution);
+        if (suspended != null && suspended.resumedAt == 0L && !online
+                && suspended.sleepObservedAt == 0L) {
+            SuspendedSessionStore.markSleepObservedIfMatches(suspendedStore(), suspended);
+        }
+        HostSleepStateStore.State sleep = records.hostSleep(host);
+        if (sleep != null && !online && sleep.sleepObservedAt == 0L) {
+            HostSleepStateStore.markObserved(sleepStore(), host, sleep.requestedAt);
+        } else if (sleep != null && online && (sleep.sleepObservedAt > 0L
+                || HostSleepStateStore.requestExpired(sleep.requestedAt, wallNowMs))) {
+            HostSleepStateStore.clearIfMatches(sleepStore(), host, sleep.requestedAt);
+        }
+        if (offline) {
+            // An unreachable host runs nothing this client may still describe.
+            projectionsChanged = true;
+            for (ProjectionOwner owner : projections.values()) {
+                if (owner.hostId().equals(polledHost)) owner.forgetDisplay();
+            }
+        }
+
+        boolean sameHost = polledHost.equals(epochKey(hostId));
+        SessionResumeManager.PendingSession pending = records.pending;
+        String lost = "";
+        if (online && runningAppId == 0 && sameHost && state == State.RECONNECT_REQUIRED
+                && !streamSessionId.isEmpty()) {
+            lost = streamSessionId;
+            clearIfMatches(lost);
+            clearReconnect(lost);
+            if (pending != null && pending.matches(lost)) pending = null;
+        }
+        boolean retainedLive = polledHost.equals(epochKey(hostId))
+                && (state == State.HOME_LIVE || state == State.PARKED_LIVE);
+        if (suspended != null && suspended.resumedAt == 0L && retainedLive
+                && (appId != suspended.sunshineAppId
+                || (!suspended.playniteGameId.isEmpty() && !playniteGameId.isEmpty()
+                && !suspended.playniteGameId.equals(playniteGameId)))) {
+            // The live stream replaced the suspended session.
+            SuspendedSessionStore.markSessionEndedIfMatches(suspendedStore(), host,
+                    suspended.profileId, suspended.suspendId);
+        }
+
+        PolledApp previous = polledApps.get(polledHost);
+        String runningSession = previous == null ? "" : previous.streamSessionId;
+        if (runningAppId == 0) {
+            runningSession = "";
+        } else if (sameHost && appId == runningAppId && !streamSessionId.isEmpty()) {
+            runningSession = streamSessionId;
+        } else if (pending != null && polledHost.equals(epochKey(pending.hostUuid))
+                && pending.appId == runningAppId) {
+            runningSession = pending.streamSessionId;
+        }
+        polledApps.put(polledHost, new PolledApp(runningAppId, runningSession));
+        boolean ended = previous != null && previous.runningAppId != 0 && runningAppId == 0;
+        String endedSession = ended ? previous.streamSessionId : "";
+        if (!endedSession.isEmpty()) {
+            SuspendedSessionStore.Session resumed =
+                    records.suspendedForExecution(host, execution);
+            if (resumed != null && resumed.resumedAt > 0L
+                    && endedSession.equals(resumed.resumedStreamSessionId)) {
+                SuspendedSessionStore.markSessionEndedIfMatches(suspendedStore(), host,
+                        resumed.profileId, resumed.suspendId);
+            }
+            clearAfterAuthoritativeEndIfMatches(endedSession);
+            clearReconnect(endedSession);
+        }
+        if (ended) {
+            MoonWakerDiagnostics.record("INFO", "android.session-model", "host.session_ended",
+                    "host_id", host, "previous_app_id", previous.runningAppId,
+                    "stream_session_id", endedSession);
+        }
+        // The poll publishes the host's projections (their diagnostics follow expiry); readers
+        // render expiry from the time they render, so this alone delivers no new snapshot.
+        Snapshot polled = current();
+        long now = clock.getAsLong();
+        for (ProjectionOwner owner : projections.values()) {
+            if (owner.hostId().equals(polledHost)) owner.current(polled, now);
+        }
+        return new PollOutcome(lost, ended, endedSession);
+    }
+
+    /**
+     * The Gateway's stream record of this TV and {@code execution} beside the reconnect record
+     * the caller read ({@code expectedLocal}): the host's stream becomes a reconnect record, or
+     * a record of a stream the host no longer holds ends. A session of the host the model owns
+     * now, or a record that changed since the read, keeps everything.
+     */
+    HostStreamRecord.Action hostStreamRecordObserved(String host, String actor, String execution,
+                                                     String expectedLocal,
+                                                     ControlOperationClient.Permit owned,
+                                                     Intent adoption) {
+        SessionResumeManager.PendingSession pending = records.pending;
+        String local = pending == null ? "" : host.equalsIgnoreCase(pending.hostUuid)
+                && GatewayConnection.normalizeProfileId(execution)
+                .equals(pending.executionProfileId) ? pending.streamSessionId : null;
+        HostStreamRecord.Action action = HostStreamRecord.sessionOwnsRecords(host, current())
+                || local == null || !local.equals(normalize(expectedLocal))
+                ? HostStreamRecord.Action.KEEP : HostStreamRecord.decide(owned, actor, local);
+        if (action == HostStreamRecord.Action.ADOPT && adoption == null) {
+            action = HostStreamRecord.Action.KEEP;
+        }
+        if (action == HostStreamRecord.Action.RETIRE) {
+            clearAfterAuthoritativeEndIfMatches(local);
+            clearReconnect(local);
+        } else if (action == HostStreamRecord.Action.ADOPT) {
+            saveReconnect(adoption, owned.streamSessionId, false);
+        }
+        MoonWakerDiagnostics.record("INFO", "android.session-model", "host_stream_record.applied",
+                "host_id", host, "profile_id", actor, "action", action.name(),
+                "local_stream_session_id", normalize(expectedLocal),
+                "host_stream_session_id", owned == null ? "" : owned.streamSessionId,
+                "provider_game_id", owned == null ? "" : owned.providerGameId,
+                "adopted", action == HostStreamRecord.Action.ADOPT);
+        return action;
+    }
+
+    /** Boundary sample of every projection the model holds; -1 for an invalid marker. */
+    int projectionsSampled(String marker) {
+        if (!SessionStateResolver.validMarker(marker)) return -1;
+        long now = clock.getAsLong();
+        int queued = 0;
+        for (ProjectionOwner owner : projections.values()) {
+            if (owner.sample(marker, now)) queued++;
+        }
+        return queued;
     }
 
     // ---- persistent records (model thread only) ------------------------------------------------

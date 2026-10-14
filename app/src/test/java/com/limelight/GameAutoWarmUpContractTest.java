@@ -59,7 +59,7 @@ public class GameAutoWarmUpContractTest {
 
         // The parked decoder is restored first: the taken-over cover arms a frame on it.
         assertOrdered(resume, "restoreParkedStream(",
-                "if (returningFromStreamHome) returnFromStreamHome();");
+                "if (returningFromStreamHome) {", "returnFromStreamHome();");
         // SessionOrchestrator decides; this only executes its answer.
         assertOrdered(takeOver, "SessionOrchestrator.UserIntent.RETURN_FROM_HOME",
                 "ActionKind.TAKE_OVER_WARM_UP", "clearAutoWarmUpIdentity()",
@@ -73,6 +73,21 @@ public class GameAutoWarmUpContractTest {
         // The controller says when the cover needs a fresh frame; the presentation arms it.
         assertTrue(snapshot.contains("snapshot.awaitingVideoFrame"));
         assertFalse(snapshot.contains("waitingForPostTargetFrame"));
+    }
+
+    /**
+     * TV 2026-10-14 16:32 (after host sleep): Play of the game a warm-up already resumed took
+     * that warm-up over and its cover fell from the game's artwork to "MoonWaker Stream". The
+     * warm-up carries the host game's title and artwork; the takeover shows that artwork.
+     */
+    /** The lookup itself: PlayniteSessionPresentationTest.takenOverWarmUpKeepsItsGamesTitleAndArtwork. */
+    @Test public void takenOverWarmUpShowsTheCoverItCarries() throws IOException {
+        String takeOver = between(source(), "private void returnFromStreamHome()",
+                "protected void onStop()");
+        assertOrdered(takeOver, "clearAutoWarmUpIdentity()",
+                "consoleLoadingView.setSplashArtwork(",
+                "getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_ARTWORK)",
+                "showFullTransitionAppearance()");
     }
 
     /**
@@ -428,7 +443,7 @@ public class GameAutoWarmUpContractTest {
         String newGame = between(source(), "private void beginNewRetainedGameAttempt(",
                 "private void adoptPreparingObservedGame(");
 
-        assertTrue(newGame.indexOf("operation.request.cancelled.getAsBoolean()")
+        assertTrue(newGame.indexOf("operation.cancelled()")
                 < newGame.indexOf("transitionCoordinator.start()"));
     }
 
@@ -553,7 +568,7 @@ public class GameAutoWarmUpContractTest {
     }
 
     /** Each part is present, and after the previous one. */
-    static void assertOrdered(String source, String... parts) {
+    public static void assertOrdered(String source, String... parts) {
         int at = -1;
         for (String part : parts) {
             int next = source.indexOf(part, at + 1);

@@ -907,6 +907,29 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.returned);
     }
 
+    /**
+     * Owner 2026-10-14: a child over its parent's running game on the live stream switches on
+     * that stream like the parent would: no confirmation, no close, no fresh launch.
+     */
+    @Test public void childOverAParentGameSwitchesOnTheLiveStreamWithoutConfirmation() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42, "parent-game");
+        effects.canSwitch = true;
+        effects.closeResult = SessionOrchestrator.CloseResult.REUSED;
+        PlayIntent child = PlayIntent.playniteGame("host", "child", 42, "Game", false,
+                "child-game", "child-game");
+
+        orchestrator(effects).play(child);
+
+        assertNull(effects.confirmation);
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, effects.preflightAction);
+        assertEquals(1, effects.closes);
+        assertEquals(Boolean.FALSE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.returned);
+        assertEquals(0, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
     @Test public void lostReuseEligibilityRequiresConfirmationBeforeDestructiveClose() {
         Fake effects = competing();
         effects.canSwitch = true;
@@ -1714,7 +1737,7 @@ public class SessionOrchestratorTest {
         final Queue<Runnable> opaqueCallbacks = new ArrayDeque<>();
         SessionOrchestrator.PreparedWarmUp preparedWarmUp =
                 new SessionOrchestrator.PreparedWarmUp(
-                        new NvApp("MoonWaker Stream", 77, false), "", null, false);
+                        new NvApp("MoonWaker Stream", 77, false), null, false);
         BooleanSupplier prepareCancelled = () -> false;
         long prepareRequest;
         int preparedLaunches;
@@ -1736,6 +1759,7 @@ public class SessionOrchestratorTest {
         int launches;
         LaunchTransitionType launchType;
         NvApp launchedTarget;
+        PlayIntent launchedIntent;
         String launchedSourceSuspendId;
         boolean launchedOwnsFreshSunshineSession;
 
@@ -1775,6 +1799,10 @@ public class SessionOrchestratorTest {
         }
         @Override public boolean canAttemptRetainedSwitch(PlayIntent intent) {
             return canSwitch;
+        }
+        boolean retainedGameUnproven;
+        @Override public boolean retainedGameUnproven(PlayIntent intent) {
+            return retainedGameUnproven;
         }
         @Override public void showLoading(PlayIntent intent, LaunchTransitionType type,
                                           Runnable opaqueFrameReady) {
@@ -1846,6 +1874,7 @@ public class SessionOrchestratorTest {
                                      LaunchTransitionType type, String sourceSuspendId,
                                      boolean ownsFreshSunshineSession) {
             launches++;
+            launchedIntent = intent;
             launchType = type;
             launchedTarget = target;
             launchedSourceSuspendId = sourceSuspendId;

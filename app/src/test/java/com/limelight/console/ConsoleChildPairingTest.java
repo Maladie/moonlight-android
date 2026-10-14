@@ -37,7 +37,7 @@ public class ConsoleChildPairingTest {
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
                 StandardCharsets.UTF_8).replace("\r\n", "\n");
         String failure = between(source, "private String childLaunchFailureMessage(",
-                "private static final class WarmUpBridgeProbe");
+                "private void refreshWarmUpObservation(");
         String pairHost = between(source, "private void pairHost(ComputerDetails host)",
                 "private void pairGatewayAndStream(");
         String automatic = between(source,

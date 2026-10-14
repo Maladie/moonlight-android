@@ -437,6 +437,104 @@ public class SessionTransitionTableTest {
         assertTrue(reuse.reuseOnly);
     }
 
+    /**
+     * TV 2026-10-14 13:54: a neutral warm-up stream (no game of its own) while the host runs a
+     * verified game. Play of exactly that game switches (the stream adopts it); Play of another
+     * one is a replacement the user confirms, never a switch that ends in switch.failed.
+     */
+    @Test public void neutralStreamOverARunningGameSwitchesOnlyToThatGame() {
+        SessionSnapshot runsGame = verifiedRunning("game");
+        State same = playState(runsGame, true, false, false);
+        same.canSwitchRetained = ConsoleActivity.switchKeepsHostGame("", runsGame, "game");
+        Action preflight = SessionOrchestrator.transition(same, UserIntent.play(game()));
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, preflight.preflight);
+        assertTrue(preflight.reuseOnly);
+
+        SessionSnapshot runsOther = verifiedRunning("other");
+        State other = playState(runsOther, true, false, false);
+        other.canSwitchRetained = ConsoleActivity.switchKeepsHostGame("", runsOther, "game");
+        assertEquals(ActionKind.CONFIRM_REPLACEMENT,
+                SessionOrchestrator.transition(other, UserIntent.play(game())).kind);
+        other.replacementAuthorized = true;
+        other.targetPrepared = true;
+        Action replace = SessionOrchestrator.transition(other, UserIntent.play(game()));
+        assertEquals(ActionKind.CLOSE_COMPETING, replace.kind);
+        assertTrue(replace.replacementAuthorized);
+        assertFalse(replace.reuseOnly);
+
+        // A stream carrying its own game still switches away from it (it stops what it owns).
+        assertTrue(ConsoleActivity.switchKeepsHostGame("other", runsOther, "game"));
+        assertTrue(ConsoleActivity.switchKeepsHostGame("",
+                snapshot(SessionSnapshot.State.ACTIVE, 42, "", true, true), "game"));
+    }
+
+    /**
+     * Review K5 round 2 (3): a neutral stream while the host names a game without process
+     * proof (a stale Z, or the very game X unproven). Never a replacement naming Z (its close
+     * would end whatever runs now), never a switch that can only fail: refreshed once, then the
+     * uncertain refusal.
+     */
+    @Test public void neutralStreamOverAnUnprovenNamedGameRefreshesInsteadOfReplacing() {
+        for (String named : new String[] {"stale-z", "game"}) {
+            SessionSnapshot unproven = snapshot(SessionSnapshot.State.ACTIVE, 42, named,
+                    true, true);
+            State state = playState(unproven, true, false, false);
+            state.canSwitchRetained = ConsoleActivity.switchKeepsHostGame("", unproven, "game");
+            state.retainedGameUnproven = ConsoleActivity.retainedGameUnproven("", unproven);
+            assertFalse(named, state.canSwitchRetained);
+            assertEquals(named, ActionKind.REFRESH_OBSERVATION,
+                    SessionOrchestrator.transition(state, UserIntent.play(game())).kind);
+            state.observationRefreshed = true;
+            Action refused = SessionOrchestrator.transition(state, UserIntent.play(game()));
+            assertEquals(named, ActionKind.FAIL, refused.kind);
+            assertEquals(named, SessionFailure.UNCERTAIN_AFTER_REFRESH, refused.failure);
+        }
+        // A stream carrying its own game, or one whose host proves the game: no refresh.
+        SessionSnapshot unproven = snapshot(SessionSnapshot.State.ACTIVE, 42, "game", true, true);
+        assertFalse(ConsoleActivity.retainedGameUnproven("game", unproven));
+        assertFalse(ConsoleActivity.retainedGameUnproven("", verifiedRunning("other")));
+    }
+
+    /**
+     * Owner 2026-10-14: a child on its parent's Windows profile may replace the parent's running
+     * game. It is asked like any actor (CONFIRM_REPLACEMENT), then the session closes and the
+     * child's own game starts; it never adopts the parent's game (see gamelessSwitch).
+     */
+    @Test public void childReplacesAParentGameAfterConfirmation() {
+        SessionSnapshot parentRuns = verifiedRunning("parent-y");
+        State child = playState(parentRuns, true, true, false);
+        child.canSwitchRetained = ConsoleActivity.switchKeepsHostGame("", parentRuns, "game");
+        assertFalse("the parent's game is never adopted", child.canSwitchRetained);
+        assertEquals(ActionKind.CONFIRM_REPLACEMENT,
+                SessionOrchestrator.transition(child, UserIntent.play(game())).kind);
+        child.replacementAuthorized = true;
+        Action close = SessionOrchestrator.transition(child, UserIntent.play(game()));
+        assertEquals(ActionKind.CLOSE_COMPETING, close.kind);
+        assertTrue(close.replacementAuthorized);
+        assertFalse(close.reuseOnly);
+    }
+
+    private static final class NoopController implements com.limelight.session.SessionModel.Controller {
+        @Override public boolean isRetainedTransportLive() { return true; }
+        @Override public com.limelight.session.SessionModel.ParkOutcome parkRetainedTransport() {
+            return com.limelight.session.SessionModel.ParkOutcome.PARKED;
+        }
+        @Override public void disconnectRetainedStream(
+                com.limelight.session.SessionModel.TerminationCallback completion) { }
+        @Override public void terminateRetainedSession(
+                String gameId, com.limelight.session.SessionModel.TerminationCallback completion) { }
+        @Override public void switchGame(com.limelight.session.SessionModel.SwitchRequest request,
+                                         com.limelight.session.SessionModel.SwitchCallback completion) { }
+    }
+
+    /** The warm-up carries the game the projection proves running (TV 13:54:36 projection). */
+    @Test public void warmUpCarriesOnlyAGameWithACorrelatedProcessProof() {
+        assertEquals("steam:952060",
+                verifiedRunning("steam:952060").verifiedRunningGameId());
+        assertEquals("", snapshot(SessionSnapshot.State.ACTIVE, 42, "steam:952060", true, true)
+                .verifiedRunningGameId());
+    }
+
     @Test public void playOnAnUncertainSessionRefreshesAGameAndLaunchesAnApp() {
         SessionSnapshot uncertain = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
         assertEquals(ActionKind.SHOW_LOADING,
@@ -479,6 +577,26 @@ public class SessionTransitionTableTest {
                 SessionSnapshot.ObservationState.RECOVERY_REQUIRED, true, false);
         assertEquals(SessionFailure.UNCERTAIN_RECOVERY_REQUIRED,
                 play(namesOther, game(), true, false, false).failure);
+    }
+
+    /**
+     * TV 2026-10-14: a windowed RE3 never got its window proof, so its episode expired to
+     * RECOVERY_REQUIRED while the host still proved its exact process. A switch stops that
+     * process by its proof; the window never gates it.
+     */
+    @Test public void playOverAWindowedGameWithItsProcessProvenSwitchesIt() {
+        SessionSnapshot windowed = new SessionSnapshot("host", "default", "default",
+                SessionSnapshot.State.ACTIVE, 42, "steam:952060",
+                true, false, false, false, false, "",
+                false, SessionSnapshot.ObservationState.RECOVERY_REQUIRED, true,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "VERIFIED", 7368, "627d3413cbb0", "PENDING", "target_not_fullscreen", 0,
+                false);
+        State state = playState(windowed, true, false, false);
+        state.canSwitchRetained = true;
+        Action action = SessionOrchestrator.transition(state, UserIntent.play(game()));
+        assertEquals(ActionKind.PREFLIGHT, action.kind);
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, action.preflight);
     }
 
     @Test public void playOverASavedNeutralStreamCarriesReplacesOrConfirms() {
@@ -740,6 +858,15 @@ public class SessionTransitionTableTest {
     private static SessionSnapshot snapshot(SessionSnapshot.State state, int appId,
                                             String gameId) {
         return snapshot(state, appId, gameId, false, false);
+    }
+
+    /** A live neutral stream whose correlated host observation proves {@code gameId} running. */
+    private static SessionSnapshot verifiedRunning(String gameId) {
+        return new SessionSnapshot("host", "default", "default", SessionSnapshot.State.ACTIVE,
+                42, gameId, true, false, false, false, false, "", true,
+                SessionSnapshot.ObservationState.PENDING, true,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "VERIFIED", 7368, "token", "PENDING", "target_not_fullscreen", 42, false);
     }
 
     private static SessionSnapshot snapshot(SessionSnapshot.State state, int appId,

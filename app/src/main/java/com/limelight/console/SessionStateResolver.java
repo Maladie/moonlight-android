@@ -2,7 +2,6 @@ package com.limelight.console;
 
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
-import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionResumeManager;
 import com.limelight.session.SuspendedSessionStore;
@@ -15,8 +14,11 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-/** Single owner of the versioned host observation and its local session projection. */
-final class SessionStateResolver {
+/**
+ * The versioned host observation and its local session projection: the state machine the
+ * session model holds per host, actor and execution profile, and the pure render of it.
+ */
+public final class SessionStateResolver {
     static final long OBSERVATION_LIVENESS_MS = 15_000L;
     /**
      * After a local close, an unresolved host observation still reads as closing for at most
@@ -33,76 +35,67 @@ final class SessionStateResolver {
     static final long STATUS_DISPLAY_MS = 3 * OBSERVATION_LIVENESS_MS;
     /** A longer stream or game duration is not shown. */
     static final long MAX_STATUS_DURATION_MS = 7L * 24L * 60L * 60_000L;
-    private static final Map<String, ProjectionOwner> OWNERS = new LinkedHashMap<>();
-
-    static synchronized ProjectionOwner owner(SessionModel model, String hostId,
-                                              String actorProfileId, String executionProfileId) {
-        String key = SessionSnapshot.normalize(hostId) + "|"
-                + GatewayConnection.normalizeProfileId(actorProfileId) + "|"
-                + GatewayConnection.normalizeProfileId(executionProfileId);
-        ProjectionOwner owner = OWNERS.get(key);
-        if (owner == null) {
-            owner = new ProjectionOwner(model, hostId, actorProfileId, executionProfileId);
-            OWNERS.put(key, owner);
-        }
-        return owner;
-    }
-
-    /** A forgotten host keeps no projection owner (nor its close or observation state). */
-    static synchronized void forgetHost(String hostId) {
-        String normalized = SessionSnapshot.normalize(hostId);
-        OWNERS.values().removeIf(owner -> owner.hostId.equals(normalized));
-    }
-
-    /** An unreachable host runs nothing this client may still describe. */
-    static synchronized void hostUnreachable(String hostId) {
-        String normalized = SessionSnapshot.normalize(hostId);
-        for (ProjectionOwner owner : OWNERS.values()) {
-            if (owner.hostId.equals(normalized)) owner.forgetDisplay();
-        }
-    }
-
-    static synchronized void resetProjectionOwnersForTests() {
-        OWNERS.clear();
-        diagnosticSink = MoonWakerDiagnostics::record;
-    }
-
-    /** Diagnostic writer; returns whether the record was queued. Replaced only in tests. */
-    interface DiagnosticSink {
+    /** Diagnostic writer; returns whether the record was queued. */
+    public interface DiagnosticSink {
         boolean record(String level, String component, String event, Object... fields);
     }
 
-    static DiagnosticSink diagnosticSink = MoonWakerDiagnostics::record;
     private static final java.util.regex.Pattern SAMPLE_MARKER =
             java.util.regex.Pattern.compile("[A-Za-z0-9._:-]{1,64}");
 
+    private SessionStateResolver() { }
+
+    /** The session model's key of one host, actor and execution profile projection. */
+    public static String key(String hostId, String actorProfileId, String executionProfileId) {
+        return SessionSnapshot.normalize(hostId) + "|"
+                + GatewayConnection.normalizeProfileId(actorProfileId) + "|"
+                + GatewayConnection.normalizeProfileId(executionProfileId);
+    }
+
+    public static boolean validMarker(String marker) {
+        return marker != null && SAMPLE_MARKER.matcher(marker).matches();
+    }
+ 
     /**
-     * Records the currently published projection of every owner under an explicit boundary
-     * marker, including unchanged state, so an external observer can sample phase boundaries.
-     * Returns the number of owners whose sample was queued, or -1 for an invalid marker.
+     * After a boundary sample (the session model records one per projection it holds),
+     * confirms persistence: drains the diagnostic writer and records the post-drain loss count
+     * under the same marker. A missing confirmation or a changed count means the boundary
+     * evidence is unavailable. Must not run on the main or model thread.
      */
-    /**
-     * After a boundary sample, confirms persistence: drains the diagnostic writer and records
-     * the post-drain loss count under the same marker. A missing confirmation or a changed
-     * count means the boundary evidence is unavailable. Must not run on the main thread.
-     */
-    static boolean confirmSamples(String marker) {
-        if (marker == null || !SAMPLE_MARKER.matcher(marker).matches()) return false;
+    public static boolean confirmSamples(DiagnosticSink sink, String marker) {
+        if (!validMarker(marker)) return false;
         long dropped = MoonWakerDiagnostics.drainAndCount();
-        return diagnosticSink.record("INFO", "android.session", "projection.sample_drained",
+        return sink.record("INFO", "android.session", "projection.sample_drained",
                 "sample_marker", marker, "status", dropped >= 0L ? "drained" : "not_drained",
                 "dropped", dropped);
     }
 
-    static synchronized int sampleAll(String marker, long nowMs) {
-        if (marker == null || !SAMPLE_MARKER.matcher(marker).matches()) return -1;
-        int queued = 0;
-        for (ProjectionOwner owner : OWNERS.values()) {
-            if (owner.sample(marker, nowMs)) queued++;
-        }
-        return queued;
+    /**
+     * Render-only projection for {@code session}'s holder of this key (or a blank one when the
+     * model holds no observation for it yet). Pure: publishes and changes nothing.
+     */
+    static SessionSnapshot render(SessionModel.Snapshot session, String hostId,
+                                  String actorProfileId, String executionProfileId,
+                                  LocalFacts local, long nowMs) {
+        FrozenProjection frozen = session.projection(
+                key(hostId, actorProfileId, executionProfileId));
+        if (frozen != null) return frozen.state.rendered(session, local, nowMs);
+        return new ProjectionOwner((level, component, event, fields) -> false, hostId,
+                actorProfileId, executionProfileId, session.terminationEpoch(hostId))
+                .rendered(session, local, nowMs);
     }
 
+    /**
+     * One projection as a published model snapshot holds it: a private copy that readers can
+     * only render; no reader reaches the model's owner or any mutator.
+     */
+    public static final class FrozenProjection {
+        private final ProjectionOwner state;
+
+        private FrozenProjection(ProjectionOwner state) {
+            this.state = state;
+        }
+    }
     /**
      * Allowlisted correlators of one published projection. The process token is reported
      * only as a short SHA-256 fingerprint; no payloads or credentials are included.
@@ -152,60 +145,46 @@ final class SessionStateResolver {
         }
     }
 
-    static final class LocalFacts {
-        static final LocalFacts NONE = new LocalFacts(null, false, false, null,
+    public static final class LocalFacts {
+        public static final LocalFacts NONE = new LocalFacts(null, false, null,
                 false, false, false, 0);
 
         final SuspendedSessionStore.Session suspended;
         final boolean recentlyEnded;
-        final boolean pendingReconnect;
         final SessionResumeManager.PendingSession pending;
         final boolean hostSleepRequested;
         final boolean hostSleepObserved;
         final boolean neutralStreamTarget;
+        /**
+         * Sunshine's running app of the host's poll, carried unchanged into the projection.
+         * Not display-only: {@code ConsoleActivity} still decides on it (~:4990, 6077, 6976,
+         * 7109, 12682, 12786, 13033, 13202; the reads ~:6860, 11565, 11861 only render) — the
+         * {@code Effects} reads move in K5.2, the others wait for an owner decision. The
+         * model's own decisions on it are in {@code SessionModel.hostPolled}.
+         */
         final int hostRunningAppId;
 
         LocalFacts(SuspendedSessionStore.Session suspended, boolean recentlyEnded,
-                   boolean pendingReconnect, SessionResumeManager.PendingSession pending,
+                   SessionResumeManager.PendingSession pending,
                    boolean hostSleepRequested, boolean hostSleepObserved,
                    boolean neutralStreamTarget, int hostRunningAppId) {
             this.suspended = suspended;
             this.recentlyEnded = recentlyEnded;
-            this.pendingReconnect = pendingReconnect;
             this.pending = pending;
             this.hostSleepRequested = hostSleepRequested;
             this.hostSleepObserved = hostSleepObserved;
             this.neutralStreamTarget = neutralStreamTarget;
             this.hostRunningAppId = hostRunningAppId;
         }
-
-        /**
-         * Local facts beside {@code host}'s latest poll. A pending reconnect record counts when
-         * it auto-resumes or names the app that poll sees running for its execution profile.
-         */
-        static LocalFacts forHost(ComputerDetails host, String executionProfileId,
-                                  SuspendedSessionStore.Session suspended,
-                                  boolean recentlyEnded,
-                                  SessionResumeManager.PendingSession pending,
-                                  boolean hostSleepRequested, boolean hostSleepObserved,
-                                  boolean neutralStreamTarget) {
-            boolean pendingMatchesRunningSession = pending != null
-                    && host.uuid.equalsIgnoreCase(pending.hostUuid)
-                    && executionProfileId.equals(pending.executionProfileId)
-                    && host.runningGameId != 0
-                    && host.runningGameId == pending.appId;
-            boolean pendingReconnect = pending != null
-                    && (pending.autoResume || pendingMatchesRunningSession)
-                    && PlayniteIdentityResolutionPolicy.allowsPendingReconnect(
-                            "unknown", pending.playniteGameId);
-            return new LocalFacts(suspended, recentlyEnded, pendingReconnect, pending,
-                    hostSleepRequested, hostSleepObserved, neutralStreamTarget,
-                    host.runningGameId);
-        }
     }
 
-    static final class ProjectionOwner {
-        private final SessionModel model;
+    /**
+     * One host, actor and execution profile's observation and projection state. Held only by
+     * the session model and changed only by its transitions on the model thread; readers get a
+     * {@link FrozenProjection} in the published model snapshot and can only render it.
+     */
+    public static final class ProjectionOwner {
+        private final DiagnosticSink diagnosticSink;
         private final String hostId;
         private final String actorProfileId;
         private final String executionProfileId;
@@ -251,19 +230,72 @@ final class SessionStateResolver {
         private long displayStreamStartedHostMs;
         /** Host wall clock minus this client's clock at the last accepted observation. */
         private long hostClockOffsetMs;
+        /** This actor's game the last accepted observation verified running; "" otherwise. */
+        private String observedRunningGameId = "";
 
-        private ProjectionOwner(SessionModel model, String hostId, String actorProfileId,
-                                String executionProfileId) {
-            this.model = model;
+        public ProjectionOwner(DiagnosticSink diagnosticSink, String hostId,
+                               String actorProfileId, String executionProfileId,
+                               long terminationEpoch) {
+            this.diagnosticSink = diagnosticSink;
             this.hostId = SessionSnapshot.normalize(hostId);
             this.actorProfileId = GatewayConnection.normalizeProfileId(actorProfileId);
             this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
-            this.observedTerminationEpoch = model.snapshot().terminationEpoch(this.hostId);
+            this.observedTerminationEpoch = terminationEpoch;
         }
 
-        synchronized long nextRequestOrdinal() {
+        /** A frozen copy for readers of one published model snapshot. */
+        public FrozenProjection freeze() {
+            ProjectionOwner copy = new ProjectionOwner(diagnosticSink, hostId, actorProfileId,
+                    executionProfileId, observedTerminationEpoch);
+            copy.retiredBoots.addAll(retiredBoots);
+            copy.nextRequestOrdinal = nextRequestOrdinal;
+            copy.lastAcceptedOrdinal = lastAcceptedOrdinal;
+            copy.closingConfirmationArmed = closingConfirmationArmed;
+            copy.closingConfirmationUntilMs = closingConfirmationUntilMs;
+            copy.localCloseToken = localCloseToken;
+            copy.nextLocalCloseToken = nextLocalCloseToken;
+            copy.localCloseStartedAtMs = localCloseStartedAtMs;
+            copy.localCloseEndsGame = localCloseEndsGame;
+            copy.producerBootId = producerBootId;
+            copy.producerRevision = producerRevision;
+            copy.observation = observation;
+            copy.observationAcceptedAtMs = observationAcceptedAtMs;
+            copy.lastResolvedAtMs = lastResolvedAtMs;
+            copy.episodeKey = episodeKey;
+            copy.episodeDeadlineMs = episodeDeadlineMs;
+            copy.published = published;
+            copy.publishedGameEvidence = publishedGameEvidence;
+            copy.publishedAtMs = publishedAtMs;
+            copy.diagnosticSignature = diagnosticSignature;
+            copy.diagnosticEvents = diagnosticEvents;
+            copy.displayGameId = displayGameId;
+            copy.displayGameStartedHostMs = displayGameStartedHostMs;
+            copy.displayGameSeenAtMs = displayGameSeenAtMs;
+            copy.displayStreamSessionId = displayStreamSessionId;
+            copy.displayStreamStartedHostMs = displayStreamStartedHostMs;
+            copy.hostClockOffsetMs = hostClockOffsetMs;
+            copy.observedRunningGameId = observedRunningGameId;
+            return new FrozenProjection(copy);
+        }
+
+        public String hostId() { return hostId; }
+
+        public String observedRunningGameId() { return observedRunningGameId; }
+
+        /**
+         * Applies a termination boundary {@code session} passed since this owner's last
+         * transition and publishes the result. Returns whether anything changed.
+         */
+        public boolean settleTerminationBoundary(SessionModel.Snapshot session, long nowMs) {
+            if (session.terminationEpoch(hostId) == observedTerminationEpoch) return false;
+            retireObservationAtTerminationBoundary(session);
+            published = publish(project(session, LocalFacts.NONE, nowMs, "", false), nowMs);
+            return true;
+        }
+
+        public long nextRequestOrdinal(SessionModel.Snapshot session) {
             // A boundary that passed before this dispatch must not reject this very request.
-            retireObservationAtTerminationBoundary(model.snapshot());
+            retireObservationAtTerminationBoundary(session);
             if (nextRequestOrdinal == Long.MAX_VALUE) nextRequestOrdinal = 0L;
             return ++nextRequestOrdinal;
         }
@@ -273,7 +305,7 @@ final class SessionStateResolver {
          * permit: same scope and a producer boot that is not retired. Only the dispatch and
          * revision ordering of the published projection rejected it.
          */
-        synchronized boolean admitsPermitEvidence(HostGatewayClient.SessionObservation candidate) {
+        public boolean admitsPermitEvidence(HostGatewayClient.SessionObservation candidate) {
             return candidate != null
                     && actorProfileId.equals(candidate.actorProfileId)
                     && executionProfileId.equals(candidate.executionProfileId)
@@ -285,7 +317,7 @@ final class SessionStateResolver {
          * producer boot, but a newer request was dispatched or accepted meanwhile (the dashboard
          * polls the same owner). A fresh read is expected to be admitted.
          */
-        synchronized boolean lostDispatchOrdering(HostGatewayClient.SessionObservation candidate) {
+        public boolean lostDispatchOrdering(HostGatewayClient.SessionObservation candidate) {
             return admitsPermitEvidence(candidate)
                     && (candidate.requestOrdinal != nextRequestOrdinal
                     || candidate.requestOrdinal <= lastAcceptedOrdinal);
@@ -296,9 +328,8 @@ final class SessionStateResolver {
          * boundary check reads one immutable model snapshot, so the result is the one a
          * termination boundary published after that snapshot would retire on the next call.
          */
-        synchronized SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
-                                            SessionModel.Snapshot caller, long nowMs) {
-            SessionModel.Snapshot retained = liveSnapshot(caller);
+        public SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
+                                      SessionModel.Snapshot retained, long nowMs) {
             retireObservationAtTerminationBoundary(retained);
             if (candidate == null || candidate.requestOrdinal != nextRequestOrdinal
                     || candidate.requestOrdinal <= lastAcceptedOrdinal
@@ -340,9 +371,8 @@ final class SessionStateResolver {
             return published;
         }
 
-        synchronized SessionSnapshot unavailable(
-                long failedOrdinal, SessionModel.Snapshot caller, long nowMs, String reason) {
-            SessionModel.Snapshot retained = liveSnapshot(caller);
+        public SessionSnapshot unavailable(long failedOrdinal, SessionModel.Snapshot retained,
+                                           long nowMs, String reason) {
             retireObservationAtTerminationBoundary(retained);
             if (failedOrdinal != nextRequestOrdinal || failedOrdinal <= lastAcceptedOrdinal) {
                 return project(retained, LocalFacts.NONE, nowMs, "", false);
@@ -360,37 +390,21 @@ final class SessionStateResolver {
             return published;
         }
 
-        synchronized SessionSnapshot current(SessionModel.Snapshot retained, long nowMs) {
-            return current(retained, LocalFacts.NONE, nowMs);
-        }
-
-        synchronized SessionSnapshot current(SessionModel.Snapshot caller, LocalFacts local,
-                                             long nowMs) {
-            SessionModel.Snapshot retained = liveSnapshot(caller);
+        /** Publishes the projection of {@code retained} now (expiry and closing bounds). */
+        public SessionSnapshot current(SessionModel.Snapshot retained, long nowMs) {
             retireObservationAtTerminationBoundary(retained);
-            published = publish(project(retained, local == null ? LocalFacts.NONE : local,
-                    nowMs, "", false), nowMs);
+            published = publish(project(retained, LocalFacts.NONE, nowMs, "", false), nowMs);
             return published;
         }
 
         /**
-         * Render-only projection of a delivered, possibly older, model snapshot. It
-         * publishes nothing and changes no owner state; an observation the owner holds across
-         * a termination boundary from that snapshot is not shown.
+         * Render-only projection of a published, possibly older, model snapshot. It publishes
+         * nothing and changes no owner state; an observation the owner holds across a
+         * termination boundary from that snapshot is not shown.
          */
-        synchronized SessionSnapshot rendered(SessionModel.Snapshot retained,
-                                              LocalFacts local, long nowMs) {
+        SessionSnapshot rendered(SessionModel.Snapshot retained, LocalFacts local, long nowMs) {
             return project(retained, local, nowMs, "",
                     retained.terminationEpoch(hostId) != observedTerminationEpoch);
-        }
-
-        /**
-         * A caller's snapshot may predate blocking I/O, so a publication always projects the
-         * model's current immutable snapshot and never a state older than one already
-         * published; a newer model at most fails an observation's correlation.
-         */
-        private SessionModel.Snapshot liveSnapshot(SessionModel.Snapshot retained) {
-            return retained == null ? null : model.snapshot();
         }
 
         /**
@@ -399,7 +413,7 @@ final class SessionStateResolver {
          * session reads as closing; a game stop beside a live matching stream reads as ending
          * the game instead and keeps the stream. Returns its token.
          */
-        synchronized long beginLocalClose(long nowMs, boolean endsGame) {
+        public long beginLocalClose(long nowMs, boolean endsGame) {
             if (nextLocalCloseToken == Long.MAX_VALUE) nextLocalCloseToken = 0L;
             localCloseToken = ++nextLocalCloseToken;
             localCloseStartedAtMs = nowMs;
@@ -412,7 +426,7 @@ final class SessionStateResolver {
          * close is a termination boundary: observations gathered before it no longer count, and
          * the session reads as closing until the host confirms it free (or the bound passes).
          */
-        synchronized void finishLocalClose(long token, boolean closed) {
+        public void finishLocalClose(long token, boolean closed) {
             if (token == 0L) return;
             if (token == localCloseToken) localCloseToken = 0L;
             if (!closed) return;
@@ -420,7 +434,6 @@ final class SessionStateResolver {
             closingConfirmationArmed = true;
             closingConfirmationUntilMs = 0L;
         }
-
         private void retireObservationAtTerminationBoundary(
                 SessionModel.Snapshot retained) {
             long terminationEpoch = retained == null ? observedTerminationEpoch
@@ -466,6 +479,8 @@ final class SessionStateResolver {
                     || seen.processStartedUnixMs > 0L;
             boolean running = own && seen.gameEvidence == HostGatewayClient.Evidence.VERIFIED
                     && "running".equals(seen.gameState);
+            observedRunningGameId = running
+                    && seen.processEvidence == HostGatewayClient.Evidence.VERIFIED ? gameId : "";
             if (running && seen.processEvidence == HostGatewayClient.Evidence.VERIFIED) {
                 displayGameId = gameId;
                 displayGameStartedHostMs = seen.processStartedUnixMs;
@@ -479,7 +494,7 @@ final class SessionStateResolver {
             }
         }
 
-        synchronized void forgetDisplay() {
+        public void forgetDisplay() {
             displayGameId = "";
             displayGameStartedHostMs = 0L;
             displayStreamSessionId = "";
@@ -508,7 +523,7 @@ final class SessionStateResolver {
                     : Math.max(0L, elapsedMs) / 60_000L;
         }
 
-        synchronized long diagnosticEventsForTests() { return diagnosticEvents; }
+        long diagnosticEventsForTests() { return diagnosticEvents; }
 
         /**
          * Records each distinct published projection; a record that could not be queued is
@@ -548,7 +563,7 @@ final class SessionStateResolver {
         }
 
         /** Boundary sample of the published projection (or its absence), even if unchanged. */
-        synchronized boolean sample(String marker, long nowMs) {
+        public boolean sample(String marker, long nowMs) {
             Object[] projection = published == null
                     ? new Object[] {"host_id", hostId, "profile_id", actorProfileId,
                             "execution_profile_id", executionProfileId,
@@ -620,9 +635,14 @@ final class SessionStateResolver {
                     && hostId.equals(SessionSnapshot.normalize(local.suspended.hostId))
                     && executionProfileId.equals(local.suspended.executionProfileId)
                     && local.suspended.resumedAt == 0L;
-            boolean pending = local.pendingReconnect && local.pending != null
+            // A reconnect record is resume material, not a live stream: it counts when it
+            // auto-resumes or the Gateway's last word names its stream as held for this actor.
+            boolean pending = local.pending != null
                     && hostId.equals(SessionSnapshot.normalize(local.pending.hostUuid))
-                    && executionProfileId.equals(local.pending.executionProfileId);
+                    && executionProfileId.equals(local.pending.executionProfileId)
+                    && (local.pending.autoResume || (observed != null
+                    && !local.pending.streamSessionId.isEmpty()
+                    && local.pending.streamSessionId.equals(observed.streamSessionId)));
             boolean localClosing = localCloseToken != 0L
                     && nowMs - localCloseStartedAtMs < CLOSING_CONFIRMATION_MS;
             boolean endingGame = localClosing && localCloseEndsGame;

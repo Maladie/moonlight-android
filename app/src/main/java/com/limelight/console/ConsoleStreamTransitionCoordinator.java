@@ -264,7 +264,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     public void detachForRecreation() {
         synchronized (PROVIDER_OWNERS_LOCK) {
             ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
-            if (owner != null && owner.matches(transitionSpec) && owner.holder == this) {
+            // An observation owner a switch or recovery transferred has no holder yet: this
+            // presentation is its custodian, so its exact process survives the recreation.
+            if (owner != null && owner.matches(transitionSpec) && (owner.holder == this
+                    || (owner.holder == null && owner.custodian == null))) {
                 owner.holder = null;
                 owner.custodian = this;
             }
@@ -305,6 +308,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             ProviderOwner owner = PROVIDER_OWNERS.get(normalizeOwnerPart(hostId));
             if (owner == null || owner.holder != null || owner.custodian == null
                     || owner.cleanupClaimed) return;
+            // A committed launch is never stopped for its transport: its owner simply ends.
+            if (!owner.pending && !owner.starting && owner.custodian.providerLaunchCommitted()) {
+                PROVIDER_OWNERS.remove(normalizeOwnerPart(hostId));
+                return;
+            }
             // No presentation remains to observe: cleanup may bind the exact process from one
             // authenticated snapshot of this attempt.
             owner.bindOnCleanup = true;
@@ -474,8 +482,35 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             if (closed) return;
             closed = true;
         }
+        settleClosedOwner();
         stop();
         executor.shutdown();
+    }
+
+    /**
+     * A closed presentation that holds its settled owner (committed launch, or an observation
+     * that starts none) leaves nothing to stop or adopt: the entry would otherwise outlive the
+     * stream and refuse every later switch of a reconnected or taken-over stream. A committed
+     * start still in flight is released when it returns (completeReservedStart). An unrevealed
+     * launch closed without its cleanup becomes holderless with this as its custodian: a
+     * presentation of the same attempt adopts it, otherwise the transport's end stops it
+     * (endDetachedOwner). A recreation detach clears the holder first, so its owner stays.
+     */
+    private void settleClosedOwner() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            String key = providerOwnerKey();
+            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            if (owner == null || !owner.matches(transitionSpec) || owner.pending
+                    || owner.cleanupClaimed) return;
+            boolean held = owner.holder == this;
+            if (!held && (owner.holder != null || owner.custodian != null)) return;
+            if (providerLaunchCommitted()) {
+                if (!owner.starting) PROVIDER_OWNERS.remove(key);
+            } else if (held && !providerCleanupRequested()) {
+                owner.holder = null;
+                owner.custodian = this;
+            }
+        }
     }
 
     public boolean isInstallationConfirmationStream() {
@@ -556,6 +591,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
         OwnerState ownerState = ownerState();
         if (ownerState == OwnerState.STARTED) {
+            holdStartedOwner();
             synchronized (this) {
                 if (!isCurrent(actionEpoch) || providerCleanupRequested) return;
                 providerStartInvoked = true;
@@ -1214,6 +1250,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
     }
 
+    private synchronized boolean isClosed() {
+        return closed;
+    }
+
     private synchronized boolean isCurrent(long capturedEpoch) {
         return !closed && !stopped && epoch == capturedEpoch;
     }
@@ -1302,6 +1342,17 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
     }
 
+    /** The same attempt reused by a later presentation takes a holderless owner's custody. */
+    private void holdStartedOwner() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+            if (owner == null || !owner.matches(transitionSpec) || owner.starting
+                    || owner.pending || owner.cleanupClaimed || owner.holder != null) return;
+            owner.holder = this;
+            owner.custodian = this;
+        }
+    }
+
     /** Reserves the exact owner in STARTING before the one external start call. */
     private boolean reserveProviderStart(long actionEpoch) {
         synchronized (PROVIDER_OWNERS_LOCK) {
@@ -1337,6 +1388,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 if (owner.cleanupAfterStart) {
                     owner.cleanupAfterStart = false;
                     compensate = owner.custodian;
+                    holder = null;
+                } else if (holder != null && holder.isClosed()) {
+                    // A closed holder gets no result: a committed start is settled now, any
+                    // other stays with its custodian (settleClosedOwner).
+                    if (holder.providerLaunchCommitted()) PROVIDER_OWNERS.remove(key);
+                    else owner.holder = null;
                     holder = null;
                 }
             } else {

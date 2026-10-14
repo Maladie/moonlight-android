@@ -23,23 +23,19 @@ public final class SessionOrchestrator implements AutoCloseable {
     static final class PreparedWarmUp {
         final HostProfileKey profileKey;
         final NvApp target;
-        final String activeGameId;
         final ComputerDetails host;
         final boolean ownsFreshSunshineSession;
 
-        PreparedWarmUp(NvApp target, String activeGameId, ComputerDetails host,
-                       boolean ownsFreshSunshineSession) {
-            this(target, activeGameId, host,
+        PreparedWarmUp(NvApp target, ComputerDetails host, boolean ownsFreshSunshineSession) {
+            this(target, host,
                     host == null ? null : new HostProfileKey(host.uuid,
                             com.limelight.gateway.GatewayConnection.DEFAULT_PROFILE_ID),
                     ownsFreshSunshineSession);
         }
 
-        PreparedWarmUp(NvApp target, String activeGameId, ComputerDetails host,
-                       HostProfileKey profileKey,
+        PreparedWarmUp(NvApp target, ComputerDetails host, HostProfileKey profileKey,
                        boolean ownsFreshSunshineSession) {
             this.target = target;
-            this.activeGameId = SessionSnapshot.normalize(activeGameId);
             this.host = host;
             this.profileKey = profileKey;
             this.ownsFreshSunshineSession = ownsFreshSunshineSession;
@@ -86,6 +82,8 @@ public final class SessionOrchestrator implements AutoCloseable {
         void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
         boolean canAttemptRetainedSwitch(PlayIntent intent);
+        /** The live stream carries no game and the host names one without process proof. */
+        boolean retainedGameUnproven(PlayIntent intent);
         void showLoading(PlayIntent intent, LaunchTransitionType type, Runnable opaqueFrameReady);
         void refreshSession(PlayIntent intent, BooleanSupplier cancelled,
                             Consumer<Boolean> completion);
@@ -338,6 +336,8 @@ public final class SessionOrchestrator implements AutoCloseable {
         SessionSnapshot session;
         /** The retained stream can take this game without being closed. */
         boolean canSwitchRetained;
+        /** The live stream carries no game and the host names one without process proof. */
+        boolean retainedGameUnproven;
         /** A live warm-up attempt carries the game into the resumed neutral stream. */
         boolean warmUpCarriesGame;
         boolean replacementAuthorized;
@@ -582,8 +582,11 @@ public final class SessionOrchestrator implements AutoCloseable {
             return Action.failing(ActionKind.REFUSE_CLOSING,
                     s.opaqueReady ? SessionFailure.UNCERTAIN_TERMINATING : null);
         }
+        // A game whose exact process the host proves is stopped by that proof alone: an episode
+        // that expired only on its window (a windowed game, TV 2026-10-14) never blocks a switch.
         if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
-                && !intent.matches(snapshot)) {
+                && !intent.matches(snapshot)
+                && snapshot.verifiedRunningGameId().isEmpty()) {
             // Only correlated evidence naming another game refuses, and only under the loading
             // layer. An uncorrelated observation (the hole between two host polls) decides
             // nothing: it is refreshed and the request is evaluated on the fresh one, which
@@ -629,6 +632,20 @@ public final class SessionOrchestrator implements AutoCloseable {
             return Action.launch(ActionKind.LAUNCH, fresh, "", true);
         }
 
+        // The live stream carries no game and the host names one without its process proof: the
+        // name may be stale, so it is neither switched to, returned to nor replaced (a close of
+        // it would end whatever runs now). Refreshed once; still unproven, the request fails.
+        if (game && s.retainedGameUnproven) {
+            if (!s.opaqueReady) {
+                return Action.step(ActionKind.SHOW_LOADING, fresh, null,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+            if (!s.observationRefreshed) {
+                return Action.step(ActionKind.REFRESH_OBSERVATION, null, null,
+                        s.replacementAuthorized, s.reuseOnly);
+            }
+            return Action.failing(ActionKind.FAIL, SessionFailure.UNCERTAIN_AFTER_REFRESH);
+        }
         boolean matches = intent.matches(snapshot) && !s.canSwitchRetained;
         if (snapshot.state == SessionSnapshot.State.ACTIVE && matches) {
             return snapshot.retainedTransport ? Action.of(ActionKind.RETURN_TO_STREAM)
@@ -683,6 +700,9 @@ public final class SessionOrchestrator implements AutoCloseable {
         }
         boolean authorized = s.replacementAuthorized || orphaned;
         boolean reuseOnly = s.reuseOnly || !authorized && s.canSwitchRetained;
+        // Any actor, a child included (owner 2026-10-14), replaces what the host runs: on the
+        // live stream by a switch without asking, otherwise once the user confirmed. A child
+        // starts only its own entitled game (host gates).
         if (!authorized && !reuseOnly) return Action.of(ActionKind.CONFIRM_REPLACEMENT);
         if (!s.opaqueReady) {
             return Action.step(ActionKind.SHOW_LOADING, fresh, null,
@@ -794,11 +814,13 @@ public final class SessionOrchestrator implements AutoCloseable {
 
         SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
-        Action action = transition(State.forPlay(snapshot,
+        State state = State.forPlay(snapshot,
                 effects.canAttemptRetainedSwitch(intent), effects.warmUpCarriesGame(),
                 replacementAuthorized, reuseOnly, opaqueReady, preparedTarget != null,
                 evaluatesRefresh(request, pass), effects.isHostOnline(intent.hostId),
-                effects.isPaired(intent.hostId)), UserIntent.play(intent));
+                effects.isPaired(intent.hostId));
+        state.retainedGameUnproven = effects.retainedGameUnproven(intent);
+        Action action = transition(state, UserIntent.play(intent));
         switch (action.kind) {
             case REFUSE_UNPAIRED:
                 diagnostic("WARN", "orchestration.rejected", request, intent,

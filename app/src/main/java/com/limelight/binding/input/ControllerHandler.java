@@ -35,9 +35,11 @@ import android.widget.Toast;
 
 import com.limelight.LimeLog;
 import com.limelight.R;
+import com.limelight.binding.input.StreamGamepadPolicy.DeviceKind;
 import com.limelight.binding.input.driver.AbstractController;
 import com.limelight.binding.input.driver.UsbDriverListener;
 import com.limelight.binding.input.driver.UsbDriverService;
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.StreamInput;
 import com.limelight.nvstream.input.ControllerPacket;
 import com.limelight.nvstream.input.MouseButtonPacket;
@@ -186,7 +188,14 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     private volatile boolean inputSuppressed;
 
     private final PreferenceConfiguration prefConfig;
-    private short currentControllers, initialControllers;
+    // MoonWaker: controller numbers and remote-vs-pad routing are owned by StreamGamepadPolicy.
+    private final StreamGamepadPolicy gamepadPolicy = new StreamGamepadPolicy(MAX_GAMEPADS);
+    // Written by the USB driver thread, read by the main-thread presence refresh.
+    private volatile int usbPadCount;
+    private long lastLocalOnlyRecordMs;
+    private int localOnlyKeysSinceRecord;
+    private String overlayHoldSource = "pad_shortcut";
+    private static final long LOCAL_ONLY_RECORD_INTERVAL_MS = 10_000;
 
     public boolean pendingApplicationQuit = false;
     private ControllerInputListener controllerInputListener = null;
@@ -281,9 +290,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
         // Get the initially attached set of gamepads. As each gamepad receives
         // its initial InputEvent, we will move these from this set onto the
-        // currentControllers set which will allow them to properly unplug
+        // reserved controller set which will allow them to properly unplug
         // if they are removed.
-        initialControllers = getAttachedControllerMask(activityContext);
+        gamepadPolicy.setInitialMask(getAttachedControllerMask(activityContext));
+        refreshRealPadPresence();
 
         // Register ourselves for input device notifications
         inputManager.registerInputDeviceListener(this, null);
@@ -305,6 +315,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     @Override
     public void onInputDeviceAdded(int deviceId) {
         trackInputDeviceIfGamepad(InputDevice.getDevice(deviceId));
+        refreshRealPadPresence();
     }
 
     @Override
@@ -312,10 +323,36 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         InputDeviceContext context = inputDeviceContexts.get(deviceId);
         if (context != null) {
             LimeLog.info("Removed controller: "+context.name+" ("+deviceId+")");
-            releaseControllerNumber(context);
+            releaseControllerNumber(context, "device_removed");
             context.destroy();
             inputDeviceContexts.remove(deviceId);
         }
+        refreshRealPadPresence();
+    }
+
+    private static DeviceKind classifyDevice(InputDevice dev) {
+        return StreamGamepadPolicy.classify(dev.getSources(), hasJoystickAxes(dev));
+    }
+
+    // MoonWaker: re-evaluates remote routing; a remote holding a number yields it to a new pad.
+    // Main thread only: it owns inputDeviceContexts (USB callbacks post here).
+    private void refreshRealPadPresence() {
+        if (stopped) return;
+        boolean present = usbPadCount > 0;
+        for (int id : InputDevice.getDeviceIds()) {
+            InputDevice dev = InputDevice.getDevice(id);
+            if (dev != null && classifyDevice(dev) == DeviceKind.REAL_PAD) {
+                present = true;
+                break;
+            }
+        }
+        java.util.List<InputDeviceContext> holders = new java.util.ArrayList<>();
+        for (int i = 0; i < inputDeviceContexts.size(); i++) holders.add(inputDeviceContexts.valueAt(i));
+        gamepadPolicy.updateRealPadPresence(present, holders);
+    }
+
+    private boolean isStreamGamepad(GenericControllerContext context) {
+        return gamepadPolicy.isStreamGamepad(context.deviceKind);
     }
 
     // This can happen when gaining/losing input focus with some devices.
@@ -339,6 +376,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         InputDeviceContext newContext = createInputDeviceContextForDevice(device);
         newContext.migrateContext(existingContext);
         inputDeviceContexts.put(deviceId, newContext);
+        refreshRealPadPresence();
     }
 
     /**
@@ -683,15 +721,20 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         return mask;
     }
 
-    private void releaseControllerNumber(GenericControllerContext context) {
+    private void releaseControllerNumber(GenericControllerContext context, String reason) {
         // If we reserved a controller number, remove that reservation
         if (context.reservedControllerNumber) {
             LimeLog.info("Controller number "+context.controllerNumber+" is now available");
-            currentControllers &= ~(1 << context.controllerNumber);
+            gamepadPolicy.release(context.controllerNumber);
+        }
+        if (context.assignedControllerNumber) {
+            MoonWakerDiagnostics.record("INFO", "android.input", "controller.released",
+                    "kind", context.deviceKind.name(), "controller_number", context.controllerNumber,
+                    "reason", reason);
         }
 
         // If this device sent data as a gamepad, zero the values before removing.
-        // We must do this after clearing the currentControllers entry so this
+        // We must do this after releasing the reserved number so this
         // causes the device to be removed on the server PC.
         if (context.assignedControllerNumber) {
             conn.sendControllerInput(context.controllerNumber, getActiveControllerMask(),
@@ -727,10 +770,25 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         return true;
     }
 
+    private void reserveControllerNumber(GenericControllerContext context) {
+        context.controllerNumber = 0;
+        if (!prefConfig.multiController) {
+            // Only player 1 exists; every stream pad intentionally shares it.
+            LimeLog.info("Not reserving a controller number");
+            return;
+        }
+        short number = gamepadPolicy.reserve();
+        // ponytail: all 16 slots taken shares 0 like upstream; unreachable on a TV.
+        if (number < 0) return;
+        context.controllerNumber = number;
+        context.reservedControllerNumber = true;
+    }
+
     // Called before sending input but after we've determined that this
     // is definitely a controller (not a keyboard, mouse, or something else)
     private void assignControllerNumberIfNeeded(GenericControllerContext context) {
-        if (context.assignedControllerNumber) {
+        // MoonWaker: a local-only remote never receives a protocol controller number.
+        if (context.assignedControllerNumber || !isStreamGamepad(context)) {
             return;
         }
 
@@ -738,27 +796,13 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             InputDeviceContext devContext = (InputDeviceContext) context;
 
             LimeLog.info(devContext.name+" ("+context.id+") needs a controller number assigned");
-            if (!devContext.external) {
-                LimeLog.info("Built-in buttons hardcoded as controller 0");
-                context.controllerNumber = 0;
+            if (!devContext.external || devContext.deviceKind == DeviceKind.REMOTE
+                    || devContext.deviceKind == DeviceKind.KEYBOARD) {
+                // MoonWaker: built-in buttons/remotes take a pool number, never a shared hardcoded 0.
+                reserveControllerNumber(context);
             }
             else if (prefConfig.multiController && devContext.hasJoystickAxes) {
-                context.controllerNumber = 0;
-
-                LimeLog.info("Reserving the next available controller number");
-                for (short i = 0; i < MAX_GAMEPADS; i++) {
-                    if ((currentControllers & (1 << i)) == 0) {
-                        // Found an unused controller value
-                        currentControllers |= (1 << i);
-
-                        // Take this value out of the initial gamepad set
-                        initialControllers &= ~(1 << i);
-
-                        context.controllerNumber = i;
-                        context.reservedControllerNumber = true;
-                        break;
-                    }
-                }
+                reserveControllerNumber(context);
             }
             else if (!devContext.hasJoystickAxes) {
                 // If this device doesn't have joystick axes, it may be an input device associated
@@ -809,32 +853,13 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             }
         }
         else {
-            if (prefConfig.multiController) {
-                context.controllerNumber = 0;
-
-                LimeLog.info("Reserving the next available controller number");
-                for (short i = 0; i < MAX_GAMEPADS; i++) {
-                    if ((currentControllers & (1 << i)) == 0) {
-                        // Found an unused controller value
-                        currentControllers |= (1 << i);
-
-                        // Take this value out of the initial gamepad set
-                        initialControllers &= ~(1 << i);
-
-                        context.controllerNumber = i;
-                        context.reservedControllerNumber = true;
-                        break;
-                    }
-                }
-            }
-            else {
-                LimeLog.info("Not reserving a controller number");
-                context.controllerNumber = 0;
-            }
+            reserveControllerNumber(context);
         }
 
         LimeLog.info("Assigned as controller "+context.controllerNumber);
         context.assignedControllerNumber = true;
+        MoonWakerDiagnostics.record("INFO", "android.input", "controller.assigned",
+                "kind", context.deviceKind.name(), "controller_number", context.controllerNumber);
 
         // Report attributes of this new controller to the host
         context.sendControllerArrival();
@@ -999,6 +1024,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         context.name = devName;
         context.id = dev.getId();
         context.external = isExternal(dev);
+        context.deviceKind = classifyDevice(dev);
+        MoonWakerDiagnostics.record("INFO", "android.input", "controller.context_created",
+                "kind", context.deviceKind.name());
 
         context.vendorId = dev.getVendorId();
         context.productId = dev.getProductId();
@@ -1344,7 +1372,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     private short getActiveControllerMask() {
         if (prefConfig.multiController) {
-            return (short)(currentControllers | initialControllers | (prefConfig.onscreenController ? 1 : 0));
+            return (short)(gamepadPolicy.activeMask() | (prefConfig.onscreenController ? 1 : 0));
         }
         else {
             // Only Player 1 is active with multi-controller disabled
@@ -1407,6 +1435,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                             controllerNumber, percentage),
                     Toast.LENGTH_LONG).show());
         }
+    }
+
+    private void recordLocalOnlyKey(GenericControllerContext context) {
+        localOnlyKeysSinceRecord++;
+        long now = android.os.SystemClock.uptimeMillis();
+        if (lastLocalOnlyRecordMs != 0 && now - lastLocalOnlyRecordMs < LOCAL_ONLY_RECORD_INTERVAL_MS) {
+            return;
+        }
+        MoonWakerDiagnostics.record("INFO", "android.input", "remote_key.local_only",
+                "kind", context.deviceKind.name(), "local_key_count", localOnlyKeysSinceRecord);
+        lastLocalOnlyRecordMs = now;
+        localOnlyKeysSinceRecord = 0;
     }
 
     // This must not be called on the main thread due to risk of ANRs!
@@ -1531,6 +1571,11 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     private void sendControllerInputPacket(GenericControllerContext originalContext) {
         if (inputSuppressed) return;
+        if (!isStreamGamepad(originalContext)) {
+            // MoonWaker: remote keys stay local (overlay/shortcuts) while a real pad is connected.
+            if (originalContext.inputMap != 0) recordLocalOnlyKey(originalContext);
+            return;
+        }
         assignControllerNumberIfNeeded(originalContext);
 
         // Take the context's controller number and fuse all inputs with the same number
@@ -2700,7 +2745,11 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                     releaseAllControllerInputs();
 
                     if (pendingHoldAction == HoldAction.HOME) overlayMenuListener.onHomeShortcut();
-                    else overlayMenuListener.onOverlayMenuOpen();
+                    else {
+                        MoonWakerDiagnostics.record("INFO", "android.input", "overlay.opened",
+                                "source", overlayHoldSource);
+                        overlayMenuListener.onOverlayMenuOpen();
+                    }
                 }
             }
         };
@@ -2745,6 +2794,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
      * @param isRemoteBack True if triggered by remote control back button
      */
     private void checkOverlayTrigger(InputDeviceContext context, int buttonFlag, long eventTime, boolean isRemoteBack) {
+        overlayHoldSource = isRemoteBack ? "remote_key"
+                : StreamGamepadPolicy.overlaySource(context.deviceKind);
         if (isRemoteBack && buttonFlag == ControllerPacket.BACK_FLAG) {
             overlayTriggeredByRemoteBack = true;
             startOverlayMenuHoldDetection(eventTime, HoldAction.OVERLAY);
@@ -3416,10 +3467,12 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         UsbDeviceContext context = usbDeviceContexts.get(controller.getControllerId());
         if (context != null) {
             LimeLog.info("Removed controller: "+controller.getControllerId());
-            releaseControllerNumber(context);
+            releaseControllerNumber(context, "device_removed");
             context.destroy();
             usbDeviceContexts.remove(controller.getControllerId());
         }
+        usbPadCount = usbDeviceContexts.size();
+        mainThreadHandler.post(this::refreshRealPadPresence);
     }
 
     @Override
@@ -3430,9 +3483,12 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
         UsbDeviceContext context = createUsbDeviceContextForDevice(controller);
         usbDeviceContexts.put(controller.getControllerId(), context);
+        usbPadCount = usbDeviceContexts.size();
+        // USB driver thread: the refresh runs where the input contexts live.
+        mainThreadHandler.post(this::refreshRealPadPresence);
     }
 
-    class GenericControllerContext {
+    class GenericControllerContext implements StreamGamepadPolicy.Holder {
         public int id;
         public boolean external;
 
@@ -3443,9 +3499,20 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         public float rightStickDeadzoneRadius;
         public float triggerDeadzone;
 
+        // MoonWaker: USB and unknown-device contexts behave as real pads.
+        public DeviceKind deviceKind = DeviceKind.REAL_PAD;
         public boolean assignedControllerNumber;
         public boolean reservedControllerNumber;
         public short controllerNumber;
+
+        @Override public DeviceKind kind() { return deviceKind; }
+        @Override public boolean assigned() { return assignedControllerNumber; }
+        @Override public void releaseNeutral() {
+            resetControllerInput(this);
+            releaseControllerNumber(this, "real_pad_connected");
+            assignedControllerNumber = false;
+            reservedControllerNumber = false;
+        }
 
         public int inputMap = 0;
         public byte leftTrigger = 0x00;

@@ -1,6 +1,7 @@
 package com.limelight.console;
 
-import com.limelight.session.SessionModelDriver;
+import com.limelight.session.MemoryPreferences;
+import com.limelight.session.SessionModel;
 
 import com.limelight.gateway.GatewayConnection;
 
@@ -23,7 +24,20 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class PlayniteTransitionGatewayTest {
-    private final SessionModelDriver m = new SessionModelDriver();
+    /** A model on its own thread: the gateway awaits it like a worker in production. */
+    private final java.util.concurrent.ExecutorService modelThread =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.atomic.AtomicInteger published =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private final SessionModel model = new SessionModel(modelThread::execute, Runnable::run,
+            () -> false, () -> 0L, (level, component, event, fields) -> {
+                if ("projection.published".equals(event)) published.incrementAndGet();
+                return true;
+            }, new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
+
+    @org.junit.After public void stopModelThread() {
+        modelThread.shutdownNow();
+    }
     private static final String FINGERPRINT =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     private static final String PROCESS_TOKEN =
@@ -35,7 +49,7 @@ public class PlayniteTransitionGatewayTest {
                 PlayniteTransitionGateway.ActorContext.child("kid", "parent");
         GatewayConnection connection = connection("kid");
         PlayniteTransitionGateway gateway =
-                new PlayniteTransitionGateway(m.model, connection, actor, client);
+                new PlayniteTransitionGateway(model, connection, actor, client);
 
         PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
         gateway.stopGame("steam:123", PROCESS_TOKEN);
@@ -58,7 +72,7 @@ public class PlayniteTransitionGatewayTest {
 
     @Test public void parentSnapshotRetainsHealthAndGameplayRoutes() throws Exception {
         RecordingClient client = new RecordingClient();
-        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, connection("parent"),
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(model, connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), client);
 
         PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
@@ -74,9 +88,8 @@ public class PlayniteTransitionGatewayTest {
     }
 
     @Test public void rejectedObservationDoesNotLeakRawStateToConsumers() throws Exception {
-        SessionStateResolver.resetProjectionOwnersForTests();
         RecordingClient client = new RecordingClient();
-        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, connection("parent"),
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(model, connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), client);
 
         client.revision = 2L;
@@ -90,16 +103,14 @@ public class PlayniteTransitionGatewayTest {
         assertEquals("unknown", rejected.gameState);
         assertEquals("UNAVAILABLE", rejected.gameEvidence);
         assertEquals(2, client.parsedObservations);
-        SessionStateResolver.resetProjectionOwnersForTests();
     }
 
     @Test public void snapshotReadsAgainWhenADashboardPollWinsTheDispatch() throws Exception {
         // Lab formal133: the retained switch's read lost the owner's ordering to the dashboard
         // poll and the switch decided on the owner's evidence-free projection.
-        SessionStateResolver.resetProjectionOwnersForTests();
         RecordingClient client = new RecordingClient();
-        PlayniteTransitionGateway switching = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
-        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway switching = new PlayniteTransitionGateway(model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
         client.beforeReturn = () -> {
             try {
                 dashboard.snapshot();
@@ -114,20 +125,15 @@ public class PlayniteTransitionGatewayTest {
         assertEquals(3L, snapshot.sessionSnapshot.requestOrdinal);
         assertTrue(snapshot.hasVerifiedProcessFor("steam:123"));
         assertEquals(PROCESS_TOKEN, snapshot.processToken);
-        SessionStateResolver.resetProjectionOwnersForTests();
     }
 
     @Test public void cancelledReadPropagatesWithoutPublishingUnavailability() throws Exception {
-        SessionStateResolver.resetProjectionOwnersForTests();
-        SessionStateResolver.diagnosticSink = (level, component, event, fields) -> true;
         RecordingClient client = new RecordingClient();
-        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, "host",
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(model, "host",
                 connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"),
                 client, () -> 0L);
-        SessionStateResolver.ProjectionOwner owner =
-                SessionStateResolver.owner(m.model, "host", "parent", "parent");
         gateway.snapshot();
-        long published = owner.diagnosticEventsForTests();
+        int before = published.get();
         client.failure = new java.io.InterruptedIOException("interrupted");
         try {
             for (int read = 0; read < 2; read++) {
@@ -138,11 +144,46 @@ public class PlayniteTransitionGatewayTest {
                 } catch (java.io.InterruptedIOException expected) {
                     assertTrue(Thread.interrupted());
                 }
-                assertEquals(published, owner.diagnosticEventsForTests());
+                assertEquals(before, published.get());
             }
         } finally {
             Thread.interrupted();
-            SessionStateResolver.resetProjectionOwnersForTests();
+        }
+    }
+
+    @Test public void failedOrInterruptedModelWaitIsAnUnavailableRead() throws Exception {
+        SessionModel failing = new SessionModel(modelThread::execute, Runnable::run,
+                () -> false, () -> 0L, (level, component, event, fields) -> {
+                    throw new IllegalStateException("transition failed");
+                }, new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
+        // The read fails without a cancellation: the model is told it is unavailable.
+        HostGatewayClient down = new HostGatewayClient() {
+            @Override SessionObservation getSessionObservation(GatewayConnection connection,
+                    String executionProfileId, long requestOrdinal, String transitionId)
+                    throws IOException {
+                throw new IOException("down");
+            }
+        };
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(failing, "host",
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"),
+                down, () -> 0L);
+        try {
+            gateway.snapshot();
+            fail("a failed model transition must not be read as a projection");
+        } catch (IOException expected) {
+            assertEquals("session_model_failed", expected.getMessage());
+        }
+
+        Thread.currentThread().interrupt();
+        try {
+            new PlayniteTransitionGateway(model, "host", connection("parent"),
+                    PlayniteTransitionGateway.ActorContext.parent("parent"),
+                    new RecordingClient(), () -> 0L).snapshot();
+            fail("an interrupted wait must propagate");
+        } catch (java.io.InterruptedIOException expected) {
+            assertTrue(Thread.interrupted());
+        } finally {
+            Thread.interrupted();
         }
     }
 
@@ -159,13 +200,12 @@ public class PlayniteTransitionGatewayTest {
 
     @Test public void controlSnapshotExposesEvidenceOnlyForTheCallersExactPermit()
             throws Exception {
-        SessionStateResolver.resetProjectionOwnersForTests();
         RecordingClient client = new RecordingClient();
         client.operationId = "control-full-quit-1";
         client.streamSessionId = "session-1";
         client.controlGeneration = 2L;
         client.actorLeaseEpoch = 3L;
-        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(m.model, connection("parent"),
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(model, connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), client);
 
         PlayniteTransitionGateway.Snapshot fenced = gateway.snapshotWithinControl(
@@ -184,21 +224,19 @@ public class PlayniteTransitionGatewayTest {
             assertEquals("", closed.processToken);
             assertEquals("unknown", closed.gameState);
         }
-        SessionStateResolver.resetProjectionOwnersForTests();
     }
 
     @Test public void controlSnapshotKeepsPermitEvidenceWhenADashboardPollWinsTheDispatch()
             throws Exception {
         // Lab F-S06-6: "Close game and stream" returns to the dashboard, whose poll takes a
         // newer ordinal while the full-quit read is in flight; the owner then rejects that read.
-        SessionStateResolver.resetProjectionOwnersForTests();
         RecordingClient client = new RecordingClient();
         client.operationId = "control-full-quit-1";
         client.streamSessionId = "session-1";
         client.controlGeneration = 2L;
         client.actorLeaseEpoch = 3L;
-        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
-        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
         client.beforeReturn = () -> {
             try {
                 dashboard.snapshot();
@@ -224,21 +262,19 @@ public class PlayniteTransitionGatewayTest {
         PlayniteTransitionGateway.Snapshot other = termination.snapshotWithinControl(
                 permit("control-full-quit-other", "session-1", 2L, 3L));
         assertFalse(other.hasVerifiedProcessFor("steam:123"));
-        SessionStateResolver.resetProjectionOwnersForTests();
     }
 
     @Test public void stopEvidenceWaitsOutAStaleRunningScanUnderTheSamePermit() throws Exception {
         // Lab diag146b: the dashboard's library refresh made the provider's running scan stale
         // while the full-quit read was in flight; the game was verified, its process pending,
         // so the close completed as failed (effect_rejected) and the game kept running.
-        SessionStateResolver.resetProjectionOwnersForTests();
         RecordingClient client = new RecordingClient();
         client.operationId = "control-full-quit-1";
         client.streamSessionId = "session-1";
         client.controlGeneration = 2L;
         client.actorLeaseEpoch = 3L;
         client.processPending = true;
-        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
         client.beforeReturn = () -> client.processPending = false;
 
         PlayniteTransitionGateway.Snapshot settled = termination.stopEvidenceWithinControl(
@@ -260,21 +296,19 @@ public class PlayniteTransitionGatewayTest {
         PlayniteTransitionGateway.Snapshot pending = termination.stopEvidenceWithinControl(
                 permit("control-full-quit-1", "session-1", 2L, 3L), "steam:123", 300L);
         assertFalse(pending.hasVerifiedProcessFor("steam:123"));
-        SessionStateResolver.resetProjectionOwnersForTests();
     }
 
     @Test public void rejectedIdleControlReadCannotLetFullQuitSkipTheStop() throws Exception {
         // R011 P1: the full-quit read (idle, ordinal N) loses to a newer dashboard read that
         // still shows the permit's game running (N+1). The rejected idle must not read as idle.
-        SessionStateResolver.resetProjectionOwnersForTests();
         RecordingClient client = new RecordingClient();
         client.operationId = "control-full-quit-1";
         client.streamSessionId = "session-1";
         client.controlGeneration = 2L;
         client.actorLeaseEpoch = 3L;
         client.idle = true;
-        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
-        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(m.model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(model, connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
         client.beforeReturn = () -> {
             client.idle = false;
             try {
@@ -291,15 +325,14 @@ public class PlayniteTransitionGatewayTest {
         assertFalse("idle".equalsIgnoreCase(fenced.gameState));
         assertFalse(fenced.hasVerifiedProcessFor("steam:123"));
         assertEquals("", fenced.processToken);
-        SessionStateResolver.resetProjectionOwnersForTests();
     }
 
     @Test public void capturedContextSurvivesDeterministicActorRebindOrdering()
             throws Exception {
         RecordingClient trace = new RecordingClient();
-        PlayniteTransitionGateway child = new PlayniteTransitionGateway(m.model, connection("kid"),
+        PlayniteTransitionGateway child = new PlayniteTransitionGateway(model, connection("kid"),
                 PlayniteTransitionGateway.ActorContext.child("kid", "parent"), trace);
-        PlayniteTransitionGateway parent = new PlayniteTransitionGateway(m.model, connection("parent"),
+        PlayniteTransitionGateway parent = new PlayniteTransitionGateway(model, connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), trace);
 
         child.snapshot();
@@ -315,7 +348,7 @@ public class PlayniteTransitionGatewayTest {
 
     @Test public void connectionCannotBeBoundToAnotherActor() {
         try {
-            new PlayniteTransitionGateway(m.model, connection("parent"),
+            new PlayniteTransitionGateway(model, connection("parent"),
                     PlayniteTransitionGateway.ActorContext.child("kid", "parent"),
                     new RecordingClient());
             fail("Expected actor mismatch rejection");
@@ -337,7 +370,9 @@ public class PlayniteTransitionGatewayTest {
         assertFalse(connect.contains("DEFAULT_PROFILE_ID"));
 
         String game = read(root.resolve("Game.java"));
-        assertEquals(7, occurrences(game, "PlayniteTransitionGateway.connect("));
+        assertEquals(8, occurrences(game, "PlayniteTransitionGateway.connect("));
+        assertTrue(game.contains("ActorContext.child(operation.request.targetProfileId,\n"
+                + "                        operation.request.executionProfileId)"));
         assertTrue(game.contains("currentGatewayActorContext()"));
         assertTrue(game.contains("operation.actorContext"));
         assertTrue(game.contains("ActorContext.child(\n"
@@ -441,7 +476,7 @@ public class PlayniteTransitionGatewayTest {
 
     private PlayniteTransitionGateway unlockGateway(UnlockClient client,
                                                     java.util.function.LongSupplier clock) {
-        return new PlayniteTransitionGateway(m.model, "host", connection("kid"),
+        return new PlayniteTransitionGateway(model, "host", connection("kid"),
                 PlayniteTransitionGateway.ActorContext.child("kid", "parent"), client, clock);
     }
 

@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleStreamTransitionCoordinatorTest {
@@ -1982,6 +1983,186 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         assertTrue(coordinator.detachForSwitch());
         assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void committedLaunchClosedWithItsStreamDoesNotBlockLaterReconnectSwitch() {
+        LaunchTransitionSpec launch = providerSpec("re3-launch", "steam:952060");
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(
+                launch, providerController(launch), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        launched.start();
+        Thread.interrupted();
+        launched.commitProviderLaunch();
+        // The user closed the stream; the game keeps running on the host.
+        launched.close();
+
+        // A later warm-up takeover or reconnect observes the same running game.
+        LaunchTransitionSpec reconnect = new LaunchTransitionSpec("re3-reconnect", HOST,
+                launch.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
+                2_000L, false);
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+                reconnect, providerController(reconnect), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+
+        assertTrue(observer.detachForSwitch());
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void committedLaunchDetachedForRecreationEndsWithItsTransport() {
+        LaunchTransitionSpec launch = providerSpec("re3-recreated", "steam:952060");
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(
+                launch, providerController(launch), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        launched.start();
+        Thread.interrupted();
+        launched.commitProviderLaunch();
+        launched.detachForRecreation();
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);
+
+        LaunchTransitionSpec reconnect = new LaunchTransitionSpec("re3-reconnect-2", HOST,
+                launch.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
+                2_000L, false);
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+                reconnect, providerController(reconnect), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+
+        assertTrue(observer.detachForSwitch());
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void unrevealedLaunchClosedWithoutCleanupIsStoppedWhenItsTransportEnds() {
+        LaunchTransitionSpec launch = providerSpec("unrevealed", "steam:952060");
+        FakeGateway gateway = stoppingObservationGateway();
+        QueuedExecutor provider = new QueuedExecutor();
+        ConsoleStreamTransitionCoordinator launched = coordinator(
+                launch, providerController(launch), gateway, provider);
+        launched.start();
+        provider.runAll();
+        Thread.interrupted();
+        // Closed without its cleanup (destroyed while changing configurations).
+        launched.close();
+
+        LaunchTransitionSpec reconnect = new LaunchTransitionSpec("other", HOST,
+                launch.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
+                2_000L, false);
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+                reconnect, providerController(reconnect), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        assertFalse("the owed cleanup still owns the host", observer.detachForSwitch());
+
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);
+        provider.runAll();
+
+        assertEquals("the unrevealed game is stopped once", 1, gateway.stopGameCalls);
+        assertEquals(PROCESS_TOKEN, gateway.stoppedProcessToken);
+        assertTrue("the host key is free again", observer.detachForSwitch());
+    }
+
+    @Test
+    public void unrevealedLaunchClosedWithoutCleanupIsReusedByItsNextPresentation() {
+        LaunchTransitionSpec launch = providerSpec("unrevealed-reused", "steam:952060");
+        FakeGateway gateway = stoppingObservationGateway();
+        QueuedExecutor provider = new QueuedExecutor();
+        ConsoleStreamTransitionCoordinator launched = coordinator(
+                launch, providerController(launch), gateway, provider);
+        launched.start();
+        provider.runAll();
+        Thread.interrupted();
+        launched.close();
+
+        ConsoleStreamTransitionCoordinator next = coordinator(
+                launch, providerController(launch), gateway, provider);
+        next.start();
+        provider.runAll();
+        Thread.interrupted();
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);  // the old transport ends
+        provider.runAll();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals("the reused attempt is not stopped for the old transport",
+                0, gateway.stopGameCalls);
+        assertEquals(ConsoleStreamTransitionCoordinator.OwnerState.STARTED, next.ownerState());
+    }
+
+    @Test
+    public void committedStartReturningToAClosedHolderReleasesItsOwner() {
+        LaunchTransitionSpec launch = providerSpec("revealed-starting", "steam:952060");
+        ConsoleStreamTransitionCoordinator[] launched = new ConsoleStreamTransitionCoordinator[1];
+        FakeGateway gateway = new FakeGateway() {
+            @Override public void startGame(String gameId) throws IOException {
+                super.startGame(gameId);
+                // Manual reveal while the start is in flight, then the stream closes.
+                launched[0].commitProviderLaunch();
+                launched[0].close();
+            }
+        };
+        gateway.observeStartedProcessThenStop = true;
+        QueuedExecutor provider = new QueuedExecutor();
+        FakeCallbacks callbacks = new FakeCallbacks();
+        launched[0] = new ConsoleStreamTransitionCoordinator(
+                launch, providerController(launch), gateway, new InlineExecutor(), provider,
+                new FakeClock(), 0L, new InterruptingSleeper(), (action, delay) -> { },
+                callbacks);
+        launched[0].start();
+        provider.runAll();
+        Thread.interrupted();
+
+        LaunchTransitionSpec reconnect = new LaunchTransitionSpec("later", HOST,
+                launch.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
+                2_000L, false);
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+                reconnect, providerController(reconnect), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        assertTrue("a later switch is not refused as owner_changed", observer.detachForSwitch());
+        assertEquals("a closed holder gets no result", 0, callbacks.providerStartAcceptedCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void transferredObservationOwnerKeepsItsProcessAcrossRecreation() {
+        LaunchTransitionSpec game = providerSpec("transfer-game", "steam:952060");
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(
+                game, providerController(game), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        launched.start();
+        Thread.interrupted();
+        LaunchTransitionSpec observation = new LaunchTransitionSpec("transfer-observer", HOST,
+                game.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
+                2_000L, false);
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+                observation, providerController(observation), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        assertTrue(launched.transferProviderOwnershipTo(observer));
+        launched.close();
+
+        // Activity recreation with a surviving transport.
+        observer.detachForRecreation();
+        ConsoleStreamTransitionCoordinator recreated = new ConsoleStreamTransitionCoordinator(
+                observation, providerController(observation), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+
+        assertTrue(recreated.adoptRecreatedProviderOwnership());
+        ConsoleStreamTransitionCoordinator.ProviderProcessIdentity identity =
+                recreated.providerProcessIdentityForTransfer();
+        assertNotNull("the exact process survives for a later same-game handoff", identity);
+        assertEquals(PROCESS_TOKEN, identity.processToken);
         assertEquals(0, gateway.stopGameCalls);
     }
 

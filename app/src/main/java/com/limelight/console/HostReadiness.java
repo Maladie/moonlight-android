@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.wol.WakeOnLanSender;
+import com.limelight.session.HostSleepStateStore;
 import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
 import com.limelight.session.SuspendedSessionStore;
@@ -21,7 +22,6 @@ import java.util.function.Supplier;
 final class HostReadiness {
     private static final long TIMEOUT_MS = 90_000L;
     private static final long WAKE_INTERVAL_MS = 5_000L;
-    private static final long DOWN_TIMEOUT_MS = 30_000L;
     /** Failed probes in a row that make a host down; one is a blip. */
     static final int DOWN_PROBES = 3;
 
@@ -117,7 +117,7 @@ final class HostReadiness {
     static boolean awaitDown(Supplier<ComputerDetails> currentHost, BooleanSupplier cancelled,
                              Predicate<ComputerDetails> reachable, LongSupplier clock,
                              BooleanSupplier pause) {
-        long deadline = clock.getAsLong() + DOWN_TIMEOUT_MS;
+        long deadline = clock.getAsLong() + HostSleepStateStore.DOWN_TIMEOUT_MS;
         int failed = 0;
         while (!cancelled.getAsBoolean() && clock.getAsLong() < deadline) {
             ComputerDetails current = currentHost.get();
@@ -162,14 +162,6 @@ final class HostReadiness {
         } else {
             model.post(new SessionEvent.HostSleepObserved(hostId, acceptedAt));
         }
-    }
-
-    /**
-     * A sleep record, timed from the host's acceptance, that no poll saw down within the bound
-     * (or whose follow-up died with the process): an online host then shows as it is.
-     */
-    static boolean sleepRequestExpired(long requestedAtMs, long nowMs) {
-        return nowMs < requestedAtMs || nowMs - requestedAtMs > 2 * DOWN_TIMEOUT_MS;
     }
 
     /** False when the wait was interrupted. */

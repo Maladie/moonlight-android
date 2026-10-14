@@ -681,6 +681,182 @@ public abstract class SessionEvent<R> {
         }
     }
 
+    // ---- host observation ----------------------------------------------------------------------
+
+    /** Base of the events of one host, actor and execution profile projection. */
+    abstract static class ProjectionEvent<R> extends SessionEvent<R> {
+        final String hostId, actorProfileId, executionProfileId;
+
+        ProjectionEvent(String hostId, String actorProfileId, String executionProfileId) {
+            this.hostId = hostId;
+            this.actorProfileId = actorProfileId;
+            this.executionProfileId = executionProfileId;
+        }
+    }
+
+    /** A Gateway observation read is about to be sent; replies its ordinal and transition. */
+    public static final class ObservationDispatched
+            extends ProjectionEvent<SessionModel.ObservationRequest> {
+        public ObservationDispatched(String hostId, String actorProfileId,
+                                     String executionProfileId) {
+            super(hostId, actorProfileId, executionProfileId);
+        }
+
+        @Override void apply(SessionModel m, Reply<SessionModel.ObservationRequest> reply) {
+            reply.accept(m.observationDispatched(hostId, actorProfileId, executionProfileId));
+        }
+    }
+
+    /**
+     * A Gateway observation arrived. Like {@link ObservationDispatched} and
+     * {@link ObservationUnavailable}: a null answer when the transition failed or the model
+     * holds no projection to continue (the host was forgotten meanwhile).
+     */
+    public static final class HostObserved extends ProjectionEvent<SessionModel.ObservationResult> {
+        private final com.limelight.console.HostGatewayClient.SessionObservation observation;
+
+        public HostObserved(String hostId, String actorProfileId, String executionProfileId,
+                            com.limelight.console.HostGatewayClient.SessionObservation observation) {
+            super(hostId, actorProfileId, executionProfileId);
+            this.observation = observation;
+        }
+
+        @Override void apply(SessionModel m, Reply<SessionModel.ObservationResult> reply) {
+            reply.accept(m.hostObserved(hostId, actorProfileId, executionProfileId,
+                    observation));
+        }
+    }
+
+    /** The observation read of {@code ordinal} failed. */
+    public static final class ObservationUnavailable
+            extends ProjectionEvent<com.limelight.console.SessionSnapshot> {
+        private final long ordinal;
+        private final String reason;
+
+        public ObservationUnavailable(String hostId, String actorProfileId,
+                                      String executionProfileId, long ordinal, String reason) {
+            super(hostId, actorProfileId, executionProfileId);
+            this.ordinal = ordinal;
+            this.reason = reason;
+        }
+
+        @Override void apply(SessionModel m, Reply<com.limelight.console.SessionSnapshot> reply) {
+            reply.accept(m.observationUnavailable(hostId, actorProfileId, executionProfileId,
+                    ordinal, reason));
+        }
+    }
+
+    /** A host-API close or a game stop ({@code endsGame}) begins; replies its token. */
+    public static final class LocalCloseBegun extends ProjectionEvent<Long> {
+        private final boolean endsGame;
+
+        public LocalCloseBegun(String hostId, String actorProfileId, String executionProfileId,
+                               boolean endsGame) {
+            super(hostId, actorProfileId, executionProfileId);
+            this.endsGame = endsGame;
+        }
+
+        @Override Long failure() { return 0L; }
+
+        @Override void apply(SessionModel m, Reply<Long> reply) {
+            reply.accept(m.localCloseBegun(hostId, actorProfileId, executionProfileId,
+                    endsGame));
+        }
+    }
+
+    public static final class LocalCloseFinished extends ProjectionEvent<Void> {
+        private final long token;
+        private final boolean closed;
+
+        public LocalCloseFinished(String hostId, String actorProfileId,
+                                  String executionProfileId, long token, boolean closed) {
+            super(hostId, actorProfileId, executionProfileId);
+            this.token = token;
+            this.closed = closed;
+        }
+
+        @Override void apply(SessionModel m, Reply<Void> reply) {
+            m.localCloseFinished(hostId, actorProfileId, executionProfileId, token, closed);
+            reply.accept(null);
+        }
+    }
+
+    /**
+     * A fresh poll of a host for the selected actor. {@code runningAppId} is Sunshine's running
+     * app; see {@link SessionModel#hostPolled} for the decisions the model takes on it.
+     */
+    public static final class HostPolled extends ProjectionEvent<SessionModel.PollOutcome> {
+        private final boolean online, offline;
+        private final int runningAppId;
+        private final long wallNowMs;
+
+        public HostPolled(String hostId, String actorProfileId, String executionProfileId,
+                          boolean online, boolean offline, int runningAppId, long wallNowMs) {
+            super(hostId, actorProfileId, executionProfileId);
+            this.online = online;
+            this.offline = offline;
+            this.runningAppId = runningAppId;
+            this.wallNowMs = wallNowMs;
+        }
+
+        @Override SessionModel.PollOutcome failure() { return SessionModel.PollOutcome.NONE; }
+
+        @Override void apply(SessionModel m, Reply<SessionModel.PollOutcome> reply) {
+            reply.accept(m.hostPolled(hostId, actorProfileId, executionProfileId, online,
+                    offline, runningAppId, wallNowMs));
+        }
+    }
+
+    /**
+     * The Gateway's stream record of this TV ({@code owned}, null when it holds none) beside the
+     * reconnect record {@code expectedLocal} the caller read; {@code adoption} is the reconnect
+     * material for the host's stream, or null when the caller has none.
+     */
+    public static final class HostStreamRecordObserved
+            extends ProjectionEvent<HostStreamRecord.Action> {
+        private final String expectedLocal;
+        private final com.limelight.gateway.ControlOperationClient.Permit owned;
+        private final Intent adoption;
+
+        public HostStreamRecordObserved(String hostId, String actorProfileId,
+                                        String executionProfileId, String expectedLocal,
+                                        com.limelight.gateway.ControlOperationClient.Permit owned,
+                                        Intent adoption) {
+            super(hostId, actorProfileId, executionProfileId);
+            this.expectedLocal = expectedLocal;
+            this.owned = owned;
+            if (adoption != null && owned != null) {
+                adoption.putExtra(Game.EXTRA_STREAM_SESSION_ID,
+                        SessionResumeManager.requireId(owned.streamSessionId));
+                this.adoption = new Intent(adoption);
+            } else {
+                this.adoption = null;
+            }
+        }
+
+        @Override HostStreamRecord.Action failure() { return HostStreamRecord.Action.KEEP; }
+
+        @Override void apply(SessionModel m, Reply<HostStreamRecord.Action> reply) {
+            reply.accept(m.hostStreamRecordObserved(hostId, actorProfileId,
+                    executionProfileId, expectedLocal, owned, adoption));
+        }
+    }
+
+    /** Lab boundary sample of every projection the model holds; -1 for an invalid marker. */
+    public static final class ProjectionsSampled extends SessionEvent<Integer> {
+        private final String marker;
+
+        public ProjectionsSampled(String marker) {
+            this.marker = marker;
+        }
+
+        @Override Integer failure() { return -1; }
+
+        @Override void apply(SessionModel m, Reply<Integer> reply) {
+            reply.accept(m.projectionsSampled(marker));
+        }
+    }
+
     // ---- actor ---------------------------------------------------------------------------------
 
     public static final class ActorBound extends BooleanEvent {

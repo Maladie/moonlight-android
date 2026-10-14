@@ -189,6 +189,30 @@ public class PlayniteSessionPresentationTest {
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
+    /**
+     * A warm-up into the host's running game carries that game's title and cover for the Play
+     * that takes it over, from the transition's own host and profile library only.
+     */
+    @Test public void takenOverWarmUpKeepsItsGamesTitleAndArtwork() {
+        PlayniteDashboardItem game = item("ABC-Game", 42);
+        List<PlayniteDashboardItem> library = Collections.singletonList(game);
+        com.limelight.console.transition.LaunchTransitionSpec warmUp =
+                com.limelight.console.transition.LaunchTransitionSpec.create(
+                        "Host-1", "parent",
+                        com.limelight.console.transition.LaunchTransitionType.GAME_CONNECTION,
+                        42, "abc-game", 1L);
+
+        // One id rule (trimmed, case-insensitive) for title and artwork alike.
+        assertEquals(game, ConsoleActivity.transitionLibraryItem(
+                new HostProfileKey("host-1", "parent"), library, warmUp));
+        // Another profile's (or host's) loaded library never names it: neutral instead.
+        assertEquals(null, ConsoleActivity.transitionLibraryItem(
+                new HostProfileKey("host-1", "child"), library, warmUp));
+        assertEquals(null, ConsoleActivity.transitionLibraryItem(
+                new HostProfileKey("host-2", "parent"), library, warmUp));
+        assertEquals(null, ConsoleActivity.transitionLibraryItem(null, library, warmUp));
+    }
+
     private static PlayniteDashboardItem item(String gameId, int appId) {
         PlayniteLibraryGame game = new PlayniteLibraryGame(gameId, gameId, true,
                 false, 0L, "", "", "", "Steam");
