@@ -191,7 +191,7 @@ public class HostSessionTerminationTest {
                 "if (!outcome.closed()) throw SessionFailure.CLOSE_GAME_LEFT.raise();"));
         assertTrue(console.contains("knownProviderGameId(ready)).closed()) {"));
         assertTrue(console.contains("host, intent.profileId, pending.playniteGameId).closed();"));
-        assertTrue(console.contains("providerGameId).closed();"));
+        assertTrue(console.contains("boolean success = close.get().closed();"));
         // Only the user's explicit close treats a closed stream as done.
         String finish = console.substring(console.indexOf("private void finishTerminateSession("),
                 console.indexOf("private boolean isPairingContextCurrent("));

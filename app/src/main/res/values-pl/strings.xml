@@ -864,7 +864,6 @@
     <string name="console_leave_keep_stream">Wyjdź i zachowaj stream</string>
     <string name="console_return_to_game">Wróć do gry</string>
     <string name="console_close_game_and_moonwaker">Zamknij grę i MoonWaker</string>
-    <string name="console_closing_game_and_moonwaker">Zamykanie gry i zachowanej sesji…</string>
     <string name="console_leave_with_stream_title">Opuścić MoonWaker?</string>
     <string name="console_leave_with_stream_details">Stream gry pozostanie gotowy w tle przez ustawiony czas. Możesz do niego wrócić, ponownie otwierając MoonWaker.</string>
     <string name="console_close_title">Zamknąć MoonWaker?</string>

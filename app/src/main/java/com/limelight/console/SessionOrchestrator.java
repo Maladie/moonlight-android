@@ -299,7 +299,7 @@ public final class SessionOrchestrator implements AutoCloseable {
 
     /** What the user asked for. */
     public static final class UserIntent {
-        public enum Kind { PLAY, BACK, CANCEL, RETRY }
+        public enum Kind { PLAY, BACK, CANCEL, RETRY, RETURN_FROM_HOME }
 
         /** The physical Back / B button on the stream screen. */
         public static final UserIntent BACK = new UserIntent(Kind.BACK, null);
@@ -307,6 +307,12 @@ public final class SessionOrchestrator implements AutoCloseable {
         public static final UserIntent CANCEL = new UserIntent(Kind.CANCEL, null);
         /** The Retry control of the transition cover after a failure. */
         public static final UserIntent RETRY = new UserIntent(Kind.RETRY, null);
+        /**
+         * The user closed the Home over the stream screen and is back on its stream; asked again
+         * when a fact that answer waited for settles.
+         */
+        public static final UserIntent RETURN_FROM_HOME =
+                new UserIntent(Kind.RETURN_FROM_HOME, null);
 
         public final Kind kind;
         final PlayIntent target;
@@ -382,6 +388,14 @@ public final class SessionOrchestrator implements AutoCloseable {
         public boolean retryStarted;
         /** The session model holds exactly this stream as HOME_LIVE. */
         public boolean retainedHomeLive;
+        /** The stream screen is in the foreground. */
+        public boolean resumed;
+        /** The stream is this client's retained auto warm-up, still hidden behind the Home. */
+        public boolean hiddenWarmUp;
+        /** That warm-up's start is still PREPARING on the host. */
+        public boolean warmUpPreparing;
+        /** A Home selection was queued or submitted as a switch of this stream. */
+        public boolean switchRequested;
 
         static State forPlay(SessionSnapshot session, boolean canSwitchRetained,
                              boolean warmUpCarriesGame, boolean replacementAuthorized,
@@ -458,7 +472,10 @@ public final class SessionOrchestrator implements AutoCloseable {
         /** Connects the observation again; the stream stays open and no game is started. */
         RETRY_OBSERVATION,
         /** The transport is gone: a new start of this target with a new request time. */
-        RESTART_STREAM
+        RESTART_STREAM,
+        // ---- Return from the Home ----
+        /** The hidden warm-up becomes the user's stream, as a Play on it would make it. */
+        TAKE_OVER_WARM_UP
     }
 
     /** One decided step; the Play parameters are set only for the kinds that use them. */
@@ -518,8 +535,20 @@ public final class SessionOrchestrator implements AutoCloseable {
             case PLAY: return play(state, intent.target);
             case BACK: return back(state);
             case RETRY: return retry(state);
+            case RETURN_FROM_HOME: return returnFromHome(state);
             default: return cancel(state);
         }
+    }
+
+    /**
+     * Only a settled hidden warm-up on screen becomes the user's. A start still PREPARING is
+     * asked again when it completes; a requested switch retargets the stream itself and must
+     * not have the old target revealed (or given the input) before it applies.
+     */
+    private static Action returnFromHome(State s) {
+        return Action.of(s.hiddenWarmUp && s.resumed && !s.homeVisible && !s.warmUpPreparing
+                && !s.switchRequested && !s.retainedSwitch
+                ? ActionKind.TAKE_OVER_WARM_UP : ActionKind.IGNORE);
     }
 
     private static Action play(State s, PlayIntent intent) {

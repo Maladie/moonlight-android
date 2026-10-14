@@ -622,6 +622,21 @@ public abstract class SessionEvent<R> {
         }
     }
 
+    /** {@code owner} closed its stream on purpose after its transport stopped. */
+    public static final class ClosedIntentionally extends BooleanEvent {
+        private final Controller owner;
+        private final String sessionId;
+
+        public ClosedIntentionally(Controller owner, String sessionId) {
+            this.owner = owner;
+            this.sessionId = sessionId;
+        }
+
+        @Override void apply(SessionModel m, Reply<Boolean> reply) {
+            reply.accept(m.clearAfterIntentionalClose(owner, sessionId));
+        }
+    }
+
     /**
      * Clears the RECONNECT_REQUIRED marker of exactly the given record (stream session, host,
      * app, game); any other state or record is refused. Posted in two cases: after cancelling
@@ -942,17 +957,35 @@ public abstract class SessionEvent<R> {
         }
     }
 
+    /** The host accepted the request timed {@code requestedAt}; the record is retimed. */
+    public static final class HostSleepAccepted extends BooleanEvent {
+        private final String hostId;
+        private final long requestedAt, acceptedAt;
+
+        public HostSleepAccepted(String hostId, long requestedAt, long acceptedAt) {
+            this.hostId = hostId;
+            this.requestedAt = requestedAt;
+            this.acceptedAt = acceptedAt;
+        }
+
+        @Override void apply(SessionModel m, Reply<Boolean> reply) {
+            reply.accept(HostSleepStateStore.accept(m.sleepStore(), hostId, requestedAt,
+                    acceptedAt));
+        }
+    }
+
+    /** The host of the record timed {@code requestedAt} was seen down. */
     public static final class HostSleepObserved extends SessionEvent<HostSleepStateStore.State> {
         private final String hostId;
-        private final HostSleepStateStore.State state;
+        private final long requestedAt;
 
-        public HostSleepObserved(String hostId, HostSleepStateStore.State state) {
+        public HostSleepObserved(String hostId, long requestedAt) {
             this.hostId = hostId;
-            this.state = state;
+            this.requestedAt = requestedAt;
         }
 
         @Override void apply(SessionModel m, Reply<HostSleepStateStore.State> reply) {
-            reply.accept(HostSleepStateStore.markObserved(m.sleepStore(), hostId, state));
+            reply.accept(HostSleepStateStore.markObserved(m.sleepStore(), hostId, requestedAt));
         }
     }
 

@@ -295,6 +295,22 @@ public final class StreamRuntime implements NvConnectionListener,
         }, result -> { });
     }
 
+    /**
+     * The presentation closes this stream on purpose. Only once the transport STOPPED does the
+     * model drop the record this runtime holds live and its reconnect material; then
+     * {@code afterClosed} receives whether they went, on the main thread, after the model
+     * applied it. A stop that did not complete keeps both (the transport may still be live)
+     * and never calls it.
+     */
+    public void closeIntentionally(java.util.function.Consumer<Boolean> afterClosed) {
+        stop(result -> {
+            if (result != TransportStopCoordinator.Result.STOPPED) return;
+            platform.sessionModel().dispatch(
+                    new SessionEvent.ClosedIntentionally(this, streamSessionId),
+                    afterClosed::accept);
+        });
+    }
+
     private void onStopped(TransportStopCoordinator.Result result) {
         List<TransportStopCoordinator.Completion> waiting;
         boolean releaseLocks;

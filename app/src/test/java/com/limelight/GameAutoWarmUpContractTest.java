@@ -45,6 +45,53 @@ public class GameAutoWarmUpContractTest {
                 < accepted.indexOf("startConnectionIfReady("));
     }
 
+    /** TV 2026-10-14: resuming a retained warm-up kept it hidden, a black cover with no action. */
+    @Test public void returningFromHomeTakesOverTheRetainedWarmUp() throws IOException {
+        String game = source();
+        String resume = between(game, "protected void onResume()",
+                "private void returnFromStreamHome()");
+        String takeOver = between(game, "private void returnFromStreamHome()",
+                "protected void onStop()");
+        String snapshot = between(game, "private void applyTransitionSnapshot(",
+                "private void scheduleAutomaticReveal()");
+        String state = between(game, "private SessionOrchestrator.State transitionState()",
+                "private static final java.util.EnumSet<SessionOrchestrator.ActionKind>");
+
+        // The parked decoder is restored first: the taken-over cover arms a frame on it.
+        assertOrdered(resume, "restoreParkedStream(",
+                "if (returningFromStreamHome) returnFromStreamHome();");
+        // SessionOrchestrator decides; this only executes its answer.
+        assertOrdered(takeOver, "SessionOrchestrator.UserIntent.RETURN_FROM_HOME",
+                "ActionKind.TAKE_OVER_WARM_UP", "clearAutoWarmUpIdentity()",
+                "showFullTransitionAppearance()", "setAudioVolume(attachment, 1f)",
+                "enableSensors()", "applyTransitionSnapshot(transitionController.snapshot())");
+        assertFalse(takeOver.contains("isExactAutoWarmUpPreparing("));
+        assertOrdered(state, "state.resumed = presentationResumed",
+                "state.hiddenWarmUp = isOwnedHiddenAutoWarmUp()",
+                "state.warmUpPreparing = isExactAutoWarmUpPreparing(",
+                "state.switchRequested = pendingRetainedSwitch.busy()");
+        // The controller says when the cover needs a fresh frame; the presentation arms it.
+        assertTrue(snapshot.contains("snapshot.awaitingVideoFrame"));
+        assertFalse(snapshot.contains("waitingForPostTargetFrame"));
+    }
+
+    /**
+     * The user left the Home while the warm-up was still PREPARING: the refused takeover is
+     * asked again on completion, and when a requested switch is released without applying.
+     */
+    @Test public void settledWarmUpOrReleasedSwitchAsksForTheTakeoverAgain() throws IOException {
+        String game = source();
+        String complete = between(game, "private void completeAutoWarmUpPreparing(",
+                "private void markAutoWarmUpReconnectRequired(");
+        String submit = between(game, "private void submitPendingRetainedSwitch()",
+                "private void logLaunchMilestone(");
+
+        assertOrdered(complete, "autoWarmUpRetained = true;", "done.accept(completed);",
+                "if (completed) returnFromStreamHome();");
+        assertOrdered(submit, "pendingRetainedSwitch.completed();", "returnFromStreamHome();",
+                "pendingRetainedSwitch.completed();", "returnFromStreamHome();");
+    }
+
     @Test public void warmUpUsesNeutralOpaqueGateAndRestoresGameTransitionUi()
             throws IOException {
         String game = source();
@@ -503,6 +550,16 @@ public class GameAutoWarmUpContractTest {
     private static String between(String source, String start, String end) {
         return source.substring(source.indexOf(start), source.indexOf(end,
                 source.indexOf(start)));
+    }
+
+    /** Each part is present, and after the previous one. */
+    static void assertOrdered(String source, String... parts) {
+        int at = -1;
+        for (String part : parts) {
+            int next = source.indexOf(part, at + 1);
+            assertTrue("missing or out of order: " + part, next > at);
+            at = next;
+        }
     }
 
     private static int occurrences(String source, String value) {

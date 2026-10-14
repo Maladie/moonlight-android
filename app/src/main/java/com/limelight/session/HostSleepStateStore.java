@@ -11,6 +11,7 @@ public final class HostSleepStateStore {
     private static final String PREFS = "moonwaker_host_sleep_states";
 
     public static final class State {
+        /** The record's identity: when it was requested, from the host's acceptance on then. */
         public final long requestedAt;
         public final long sleepObservedAt;
 
@@ -38,11 +39,27 @@ public final class HostSleepStateStore {
         }
     }
 
-    static State markObserved(SharedPreferences prefs, String hostId, State state) {
-        if (state == null || state.sleepObservedAt > 0L) return state;
+    /**
+     * The host accepted the request: the record is timed from that acceptance from now on, so
+     * its bound does not include the request's own round trip. A record cleared or replaced
+     * meanwhile is left alone.
+     */
+    static boolean accept(SharedPreferences prefs, String hostId, long requestedAt,
+                          long acceptedAt) {
         State current = load(prefs.getAll(), hostId);
-        if (current == null || current.requestedAt != state.requestedAt) return current;
-        State updated = new State(state.requestedAt, System.currentTimeMillis());
+        if (current == null || current.requestedAt != requestedAt) return false;
+        prefs.edit().putString(key(hostId), acceptedAt + ":" + current.sleepObservedAt).apply();
+        return true;
+    }
+
+    /** Marks exactly the record timed {@code requestedAt} observed asleep, once. */
+    static State markObserved(SharedPreferences prefs, String hostId, long requestedAt) {
+        State current = load(prefs.getAll(), hostId);
+        if (current == null || current.requestedAt != requestedAt
+                || current.sleepObservedAt > 0L) {
+            return current;
+        }
+        State updated = new State(requestedAt, System.currentTimeMillis());
         prefs.edit().putString(key(hostId),
                 updated.requestedAt + ":" + updated.sleepObservedAt).apply();
         return updated;

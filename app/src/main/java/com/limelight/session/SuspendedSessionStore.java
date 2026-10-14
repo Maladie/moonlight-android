@@ -156,7 +156,8 @@ public final class SuspendedSessionStore {
     static Session markSleepObservedIfMatches(SharedPreferences prefs, Session expected) {
         if (expected == null || expected.sleepObservedAt > 0L) return expected;
         Session current = load(prefs.getAll(), expected.hostId, expected.profileId);
-        if (!matches(current, expected.suspendId)) return current;
+        // A resumed game's host is awake: its sleep is history, not news.
+        if (!matches(current, expected.suspendId) || current.resumedAt > 0L) return current;
         Session updated = new Session(current.suspendId, current.hostId, current.profileId,
                 current.executionProfileId,
                 current.sunshineAppId, current.playniteGameId, current.title,

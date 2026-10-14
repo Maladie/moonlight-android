@@ -5,6 +5,9 @@ import com.limelight.console.SessionOrchestrator.ActionKind;
 import com.limelight.console.SessionOrchestrator.State;
 import com.limelight.console.SessionOrchestrator.UserIntent;
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionModelDriver;
+import com.limelight.session.SessionResumeManager;
 
 import org.junit.Test;
 
@@ -499,6 +502,44 @@ public class SessionTransitionTableTest {
                 play(pending, game(), true, true, true).kind);
     }
 
+    /**
+     * TV 2026-10-14: the marker of a stream whose game the user had quit still named that game.
+     * Only a marker naming no game is carried; over one naming a game, Play of another game
+     * replaces the session.
+     */
+    @Test public void playOfAnotherGameNeverReconnectsAMarkerThatNamesAGame() {
+        SessionModelDriver m = new SessionModelDriver();
+        SessionModel.Controller owner = new SessionModel.Controller() {
+            @Override public boolean isRetainedTransportLive() { return true; }
+            @Override public SessionModel.ParkOutcome parkRetainedTransport() {
+                return SessionModel.ParkOutcome.PARKED;
+            }
+            @Override public void disconnectRetainedStream(
+                    SessionModel.TerminationCallback completion) { }
+            @Override public void terminateRetainedSession(
+                    String gameId, SessionModel.TerminationCallback completion) { }
+            @Override public void switchGame(SessionModel.SwitchRequest request,
+                                             SessionModel.SwitchCallback completion) { }
+        };
+        SessionResumeManager.PendingSession saved = SessionModelDriver.reconnectRecord(
+                "s", "host", "default", "default", 77, "steam:952060", true, true);
+        m.enterHome(owner, "s", "host", "default", 77, "steam:952060");
+        m.markReconnectRequired("s");
+        // The projection names no game for a marker without fresh correlated evidence.
+        SessionSnapshot marker = observed(SessionSnapshot.State.RECONNECT_REQUIRED, 77, "",
+                SessionSnapshot.ObservationState.PENDING, false, true);
+        State state = playState(marker, true, true, true);
+        state.warmUpCarriesGame = ConsoleActivity.warmUpCarriesPendingGame(
+                8L, "host", saved, m.snapshot());
+        assertFalse(state.warmUpCarriesGame);
+        assertEquals(ActionKind.CONFIRM_REPLACEMENT,
+                SessionOrchestrator.transition(state, UserIntent.play(game())).kind);
+        m.clear();
+        m.enterHome(owner, "s", "host", "default", 77, "");
+        m.markReconnectRequired("s");
+        assertTrue(ConsoleActivity.warmUpCarriesPendingGame(8L, "host", saved, m.snapshot()));
+    }
+
     @Test public void playThatNeedsAFreshSessionFirstWakesAHostThatDoesNotAnswer() {
         SessionSnapshot uncertain = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
         SessionSnapshot hole = observed(SessionSnapshot.State.ACTIVE, 42, "",
@@ -577,7 +618,60 @@ public class SessionTransitionTableTest {
         }
     }
 
+    // ---------------------------------------------------------------- Return from the Home
+
+    /** TV 2026-10-14: a settled hidden warm-up the user returned to becomes theirs. */
+    @Test public void returnToASettledHiddenWarmUpTakesItOver() {
+        assertEquals(ActionKind.TAKE_OVER_WARM_UP, returnFromHome(hiddenWarmUpOnScreen()));
+    }
+
+    /**
+     * A Home selection queued or running as a switch retargets the stream: taking the old
+     * warm-up over first would reveal the old target and give it the input.
+     */
+    @Test public void returnWithASwitchPendingOrInFlightLeavesTheWarmUpHidden() {
+        State queued = hiddenWarmUpOnScreen();
+        queued.switchRequested = true;
+        assertEquals(ActionKind.IGNORE, returnFromHome(queued));
+        State running = hiddenWarmUpOnScreen();
+        running.retainedSwitch = true;
+        assertEquals(ActionKind.IGNORE, returnFromHome(running));
+    }
+
+    /** PREPARING -> Back: refused now, taken over when asked again on completion. */
+    @Test public void returnWhileStillPreparingWaitsForItsCompletion() {
+        State preparing = hiddenWarmUpOnScreen();
+        preparing.warmUpPreparing = true;
+        assertEquals(ActionKind.IGNORE, returnFromHome(preparing));
+        preparing.warmUpPreparing = false;
+        assertEquals(ActionKind.TAKE_OVER_WARM_UP, returnFromHome(preparing));
+    }
+
+    @Test public void completionWithTheHomeStillShownOrInTheBackgroundTakesNothingOver() {
+        State home = hiddenWarmUpOnScreen();
+        home.homeVisible = true;
+        assertEquals(ActionKind.IGNORE, returnFromHome(home));
+        State background = hiddenWarmUpOnScreen();
+        background.resumed = false;
+        assertEquals(ActionKind.IGNORE, returnFromHome(background));
+        State visible = hiddenWarmUpOnScreen();
+        visible.hiddenWarmUp = false;
+        assertEquals(ActionKind.IGNORE, returnFromHome(visible));
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private static ActionKind returnFromHome(State state) {
+        return SessionOrchestrator.transition(state, UserIntent.RETURN_FROM_HOME).kind;
+    }
+
+    private static State hiddenWarmUpOnScreen() {
+        State state = covered(LaunchTransitionType.GAME_CONNECTION, false);
+        state.connected = true;
+        state.resumed = true;
+        state.hiddenWarmUp = true;
+        return state;
+    }
 
     private static ActionKind cancel(State state) {
         return SessionOrchestrator.transition(state, UserIntent.CANCEL).kind;

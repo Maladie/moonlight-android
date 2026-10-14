@@ -754,4 +754,130 @@ public class LaunchTransitionControllerTest {
         controller.revealCompleted("transition-1");
         assertFalse(controller.gameReadyConfirmed());
     }
+
+    /**
+     * TV 2026-10-14: a retained warm-up reconnected the running game to GAME_READY without
+     * any frame armed. Taking it over must see that the cover still needs a fresh frame, and
+     * that frame alone brings the automatic reveal.
+     */
+    @Test
+    public void coverAwaitsAFrameAfterTheReadinessEdgeUntilOneRenders() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
+        controller.surfaceReady("transition-1");
+        controller.inputPipelineReady("transition-1");
+        controller.streamConnected("transition-1");
+        controller.gatewayConnected("transition-1", HOST);
+        assertTrue(controller.snapshot().awaitingVideoFrame);
+        controller.videoFrameRendered("transition-1");
+        controller.targetWindowReady("transition-1", HOST, LaunchTransitionType.GAME, GAME);
+
+        LaunchTransitionSnapshot ready = controller.snapshot();
+        assertEquals(LaunchTransitionState.GAME_READY, ready.state);
+        assertFalse(ready.revealAuthorized);
+        assertTrue("the readiness edge needs a later frame", ready.awaitingVideoFrame);
+
+        controller.videoFrameRendered("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
+        assertFalse(controller.snapshot().awaitingVideoFrame);
+    }
+
+    /**
+     * TV 2026-10-14: End game over a manually revealed stream failed at the host. The stream
+     * comes back exactly as it was, input included, and the cover does not return.
+     */
+    @Test
+    public void failedGameStopRestoresAManuallyRevealedStream() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
+        transportReady(controller);
+        controller.showStreamAnyway("transition-1");
+        controller.revealCompleted("transition-1");
+
+        controller.gameStopping("transition-1", HOST, GAME);
+        assertEquals(LaunchTransitionState.GAME_STOPPING, controller.snapshot().state);
+        assertTrue(controller.snapshot().overlayVisible);
+
+        assertTrue(controller.streamClosingFailed("transition-1", "end game failed"));
+        LaunchTransitionSnapshot restored = controller.snapshot();
+        assertEquals(LaunchTransitionState.GAME_RUNNING, restored.state);
+        assertFalse(restored.overlayVisible);
+        assertFalse(restored.inputBlocked);
+        assertFalse(restored.revealAuthorized);
+        assertTrue(restored.manuallyRevealed);
+
+        // A later readiness failure stays a notice over the stream.
+        controller.timedOut("transition-1", "slow");
+        assertFalse(controller.snapshot().overlayVisible);
+    }
+
+    /** A stop failing under a cover keeps the user's way out once the stream renders. */
+    @Test
+    public void failedGameStopUnderTheCoverStillOffersManualReveal() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
+        transportReady(controller);
+        controller.gameStopping("transition-1", HOST, GAME);
+        assertFalse(controller.streamClosingFailed("transition-1", "end game failed"));
+        assertEquals(LaunchTransitionState.ERROR, controller.snapshot().state);
+        assertTrue(controller.snapshot().awaitingVideoFrame);
+        controller.videoFrameRendered("transition-1");
+        assertTrue(controller.snapshot().manualRevealAvailable);
+    }
+
+    /** A close failing under the cover over a stream that already renders offers "Reveal now" at once. */
+    @Test
+    public void failedCloseUnderTheCoverWithARenderedFrameOffersManualRevealAtOnce() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
+        transportReady(controller);
+        controller.closingStream("transition-1");
+        assertFalse(controller.snapshot().manualRevealAvailable);
+
+        assertFalse(controller.streamClosingFailed("transition-1", "suspend failed"));
+        LaunchTransitionSnapshot failed = controller.snapshot();
+        assertEquals(LaunchTransitionState.ERROR, failed.state);
+        assertTrue(failed.overlayVisible);
+        assertTrue(failed.manualRevealAvailable);
+    }
+
+    /** A new transition never inherits the "revealed before closing" of an earlier stop. */
+    @Test
+    public void beginForgetsThePresentationAnEarlierStopWouldRestore() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
+        transportReady(controller);
+        controller.showStreamAnyway("transition-1");
+        controller.revealCompleted("transition-1");
+        assertTrue(controller.gameStopping("transition-1", HOST, GAME));
+
+        controller.begin(spec(LaunchTransitionType.GAME_CONNECTION));
+        controller.overlayRendered("transition-1");
+        assertFalse(controller.streamClosingFailed("transition-1", "close failed"));
+        assertTrue(controller.snapshot().overlayVisible);
+        assertTrue(controller.snapshot().inputBlocked);
+    }
+
+    @Test
+    public void gameStoppingReportsWhetherItCoveredTheStop() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
+        transportReady(controller);
+        assertFalse(controller.gameStopping("transition-1", HOST, "other-game"));
+        assertFalse(controller.snapshot().state == LaunchTransitionState.GAME_STOPPING);
+        assertTrue(controller.gameStopping("transition-1", HOST, GAME));
+        assertEquals(LaunchTransitionState.GAME_STOPPING, controller.snapshot().state);
+    }
+
+    /** Readiness that stays uncertain: the awaited frame is what offers "Reveal now". */
+    @Test
+    public void uncertainReadinessOffersManualRevealOnceTheAwaitedFrameRenders() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
+        controller.surfaceReady("transition-1");
+        controller.inputPipelineReady("transition-1");
+        controller.streamConnected("transition-1");
+        controller.timedOut("transition-1", "no window");
+        assertFalse(controller.snapshot().manualRevealAvailable);
+        assertTrue(controller.snapshot().awaitingVideoFrame);
+
+        controller.videoFrameRendered("transition-1");
+        assertTrue(controller.snapshot().manualRevealAvailable);
+
+        controller.closingStream("transition-1");
+        assertFalse("closing never arms a frame", controller.snapshot().awaitingVideoFrame);
+    }
 }

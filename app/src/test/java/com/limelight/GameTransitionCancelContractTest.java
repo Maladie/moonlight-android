@@ -247,6 +247,26 @@ public class GameTransitionCancelContractTest {
         assertFalse(helper.contains("quitApp("));
     }
 
+    /**
+     * Wiring only; the behaviour is in StreamRuntimeTest and SessionModelTest. An intentional
+     * close stops through the runtime's intentional close (records go only once it STOPPED); a
+     * game stop seen after the transport was lost or a close began never closes it again.
+     */
+    @Test public void intentionalCloseStopsThroughTheRuntimesIntentionalClose() throws IOException {
+        String text = source();
+        String close = text.substring(text.indexOf("private void closeStreamWithPrivacy("),
+                text.indexOf("private void stopConnection(Runnable afterStopped)"));
+        assertFalse(close.contains("stopConnection("));
+        assertFalse(close.contains("SessionEvent.Cleared("));
+        assertTrue(close.contains("captured.closeIntentionally("));
+        String retain = text.substring(
+                text.indexOf("private void retainNeutralStreamAfterNaturalGameStop("),
+                text.indexOf("private void closeAfterFailedNeutralRetain("));
+        assertFalse(retain.contains("closeStreamWithPrivacy(false)"));
+        assertTrue(retain.indexOf("\"neutral_retain.skipped\"")
+                < retain.indexOf("closeAfterFailedNeutralRetain(transitionId, unretainable)"));
+    }
+
     @Test public void normalProviderQuitRunsOnlyInActivityFreePermitOwner() throws IOException {
         String text = source();
         String close = text.substring(text.indexOf("private void closeStreamWithPrivacy("),
@@ -285,10 +305,12 @@ public class GameTransitionCancelContractTest {
         String relinquish = text.substring(
                 text.indexOf("private void relinquishReconnectedMarker()"),
                 text.indexOf("private void onStreamConnected("));
-        assertTrue(relinquish.contains("!\"reconnect\".equals(control) && !\"reauthorize\".equals(control)"));
-        assertTrue(relinquish.contains("marked.state != SessionModel.State.RECONNECT_REQUIRED"));
-        assertTrue(relinquish.contains("marked.streamSessionId.equals(streamSessionId)"));
-        assertTrue(relinquish.contains("marked.playniteGameId.equalsIgnoreCase("));
+        // Any live stream of the marker's host and execution profile supersedes it (TV
+        // 2026-10-14: a launch the host turned into "resume" used a new stream session).
+        assertTrue(relinquish.contains("marked.reconnectMarkerSupersededBy("));
+        assertTrue(relinquish.contains("getExecutionProfileId()"));
+        assertFalse(relinquish.contains("EXTRA_CONTROL_INTENT"));
+        assertFalse(relinquish.contains("marked.streamSessionId.equals(streamSessionId)"));
         assertTrue(relinquish.contains("new SessionEvent.ReconnectRelinquished(marked)"));
     }
 
@@ -885,6 +907,81 @@ public class GameTransitionCancelContractTest {
         assertFalse(stop.contains("stopConnection"));
     }
 
+    /**
+     * TV 2026-10-14: a failed End game left the opaque cover over a revealed stream with no
+     * way out. The controller covers the stop and restores the presentation it replaced.
+     */
+    @Test public void failedEndGameOrSuspendRestoresThePresentationBeforeIt() throws IOException {
+        String text = source();
+        String stop = text.substring(text.indexOf("private void endManagedGameKeepingStream()"),
+                text.indexOf("private void clearResumedSuspendedSession()"));
+        String failure = stop.substring(stop.indexOf("catch (IOException | RuntimeException error)"));
+        String suspend = text.substring(text.indexOf("private void suspendSessionAndSleep()"),
+                text.indexOf("private void applyBitrateAndReconnect("));
+        String snapshot = text.substring(text.indexOf("private void applyTransitionSnapshot("),
+                text.indexOf("private void scheduleAutomaticReveal()"));
+
+        GameAutoWarmUpContractTest.assertOrdered(stop,
+                "if (!transitionController.gameStopping(", "providerEndGameInFlight = true;",
+                "gateway.snapshot()");
+        GameAutoWarmUpContractTest.assertOrdered(failure,
+                "transitionController.streamClosingFailed(expected.id", "AlertDialog.Builder");
+        assertFalse(suspend.contains("transitionController.cancel("));
+        assertFalse(suspend.contains("stopAndHide()"));
+        assertEquals(2, suspend.split("transitionController.streamClosingFailed\\(expected.id",
+                -1).length - 1);
+        assertTrue(snapshot.contains("coverWithdrawn(lastTransitionOverlayVisible"));
+        assertTrue(snapshot.contains("revealUncoveredStream()"));
+        String home = text.substring(text.indexOf("private void coverThenShowHome("),
+                text.indexOf("private void revealUncoveredStream()"));
+        GameAutoWarmUpContractTest.assertOrdered(home, "openConsoleHome()",
+                "revealUncoveredStream()");
+
+        assertTrue(Game.coverWithdrawn(true, false, false));
+        assertFalse("a completed reveal keeps its authorization",
+                Game.coverWithdrawn(true, false, true));
+        assertFalse(Game.coverWithdrawn(false, false, false));
+        assertFalse(Game.coverWithdrawn(true, true, false));
+    }
+
+    /** End game the controller refuses covers nothing and starts nothing. */
+    @Test public void refusedEndGameNeitherCoversNorStops() throws IOException {
+        String text = source();
+        String stop = text.substring(text.indexOf("private void endManagedGameKeepingStream()"),
+                text.indexOf("private void clearResumedSuspendedSession()"));
+        String begin = stop.substring(0, stop.indexOf("new Thread("));
+        GameAutoWarmUpContractTest.assertOrdered(begin,
+                "if (!transitionController.gameStopping(", ")) return;", "stopChildMonitoring();",
+                "providerEndGameInFlight = true;", "doAfterNextFrame(");
+        assertFalse("the controller's snapshot covers the stop", begin.contains("showOpaque()"));
+    }
+
+    /**
+     * The host stopped the game and then End game failed: the stop report it held back is
+     * settled as the natural stop, never a GAME_RUNNING restore of a game that is gone.
+     */
+    @Test public void endGameFailingAfterTheObservedStopSettlesTheNaturalStop()
+            throws IOException {
+        String text = source();
+        String stop = text.substring(text.indexOf("private void endManagedGameKeepingStream()"),
+                text.indexOf("private void clearResumedSuspendedSession()"));
+        String failure = stop.substring(stop.indexOf("catch (IOException | RuntimeException error)"));
+        GameAutoWarmUpContractTest.assertOrdered(failure, "providerEndGameInFlight = false;",
+                "if (providerStopConfirmed) {", "retainNeutralStreamAfterNaturalGameStop(",
+                "return;", "transitionController.streamClosingFailed(expected.id");
+    }
+
+    /** A reattached live runtime supersedes a stale reconnect marker as connectionStarted does. */
+    @Test public void reattachedTransportRelinquishesTheReconnectMarker() throws IOException {
+        String text = source();
+        String resume = text.substring(text.indexOf("private void resumeAttachedTransport()"),
+                text.indexOf("private void announceAttachedTransport()"));
+        String warmUp = resume.substring(0, resume.indexOf("relinquishReconnectedMarker();"));
+        GameAutoWarmUpContractTest.assertOrdered(resume, "completeAutoWarmUpPreparing(",
+                "return;", "relinquishReconnectedMarker();", "announceAttachedTransport();");
+        assertTrue(warmUp.contains("isExactAutoWarmUpPreparing("));
+    }
+
     @Test public void stoppedOldIdentityIsPersistedAsNeutralBeforeNewStart()
             throws IOException {
         String text = source();
@@ -928,7 +1025,7 @@ public class GameTransitionCancelContractTest {
         assertTrue(retained.contains("Neutral retain stale"));
         assertTrue(retained.contains("Neutral retain stale after frame"));
         assertTrue(retained.indexOf("Neutral retain stale after frame")
-                < retained.indexOf("reason=provider_owner"));
+                < retained.indexOf("\"provider_owner\""));
         assertTrue(retained.contains("if (!backgroundStreamParked && !streamHomeVisible)"));
         assertTrue(retained.contains("openConsoleHome()"));
         assertFalse(retained.contains("conn.start"));

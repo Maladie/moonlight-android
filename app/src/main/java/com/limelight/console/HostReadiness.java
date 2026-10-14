@@ -2,6 +2,9 @@ package com.limelight.console;
 
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.wol.WakeOnLanSender;
+import com.limelight.session.SessionEvent;
+import com.limelight.session.SessionModel;
+import com.limelight.session.SuspendedSessionStore;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -14,11 +17,13 @@ import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
-/** Wake-on-LAN and bounded pre-launch port readiness check. */
+/** Wake-on-LAN, bounded pre-launch port readiness check and a requested sleep's outcome. */
 final class HostReadiness {
     private static final long TIMEOUT_MS = 90_000L;
     private static final long WAKE_INTERVAL_MS = 5_000L;
     private static final long DOWN_TIMEOUT_MS = 30_000L;
+    /** Failed probes in a row that make a host down; one is a blip. */
+    static final int DOWN_PROBES = 3;
 
     private HostReadiness() {}
 
@@ -100,7 +105,9 @@ final class HostReadiness {
 
     /**
      * Waits, bounded, for a host that was told to sleep to stop answering, so the wake that
-     * follows is not ended by a host still going down. True once it no longer answers.
+     * follows is not ended by a host still going down. True once it failed {@link #DOWN_PROBES}
+     * probes in a row; a host without an address is no evidence either way (the network, not
+     * the host, may be gone).
      */
     static boolean awaitDown(Supplier<ComputerDetails> currentHost, BooleanSupplier cancelled) {
         return awaitDown(currentHost, cancelled, HostReadiness::isStreamingPortReachable,
@@ -111,15 +118,58 @@ final class HostReadiness {
                              Predicate<ComputerDetails> reachable, LongSupplier clock,
                              BooleanSupplier pause) {
         long deadline = clock.getAsLong() + DOWN_TIMEOUT_MS;
+        int failed = 0;
         while (!cancelled.getAsBoolean() && clock.getAsLong() < deadline) {
             ComputerDetails current = currentHost.get();
-            if (current == null || current.state != ComputerDetails.State.ONLINE
-                    || current.activeAddress == null || !reachable.test(current)) {
-                return true;
+            if (current != null && current.activeAddress != null) {
+                failed = current.state != ComputerDetails.State.ONLINE
+                        || !reachable.test(current) ? failed + 1 : 0;
+                if (failed >= DOWN_PROBES) return true;
             }
             if (!pause.getAsBoolean()) return false;
         }
         return false;
+    }
+
+    /**
+     * What the host's answer leaves in the model, at once: a refused (or failed) request is
+     * dropped; an accepted one keeps its suspended game, or has its record timed from the
+     * acceptance ({@code acceptedAt}), which {@link #settleSleep} then names.
+     */
+    static void sleepAnswered(SessionModel model, String hostId, long requestedAt,
+                              SuspendedSessionStore.Session suspended, boolean accepted,
+                              long acceptedAt) {
+        if (suspended != null) {
+            if (accepted) model.post(new SessionEvent.SuspendedSaved(suspended));
+        } else if (accepted) {
+            model.post(new SessionEvent.HostSleepAccepted(hostId, requestedAt, acceptedAt));
+        } else {
+            model.post(new SessionEvent.HostSleepCleared(hostId, requestedAt));
+        }
+    }
+
+    /**
+     * Settles an accepted sleep from what {@link #awaitDown} saw. Down: the record reads asleep,
+     * so a console that comes back shows it so before any poll. No such evidence: the record
+     * stays for a poll that sees the host down, until it expires. A record cleared or replaced
+     * meanwhile (a wake, a newer request) is left alone by the store.
+     */
+    static void settleSleep(SessionModel model, String hostId, long acceptedAt,
+                            SuspendedSessionStore.Session suspended, boolean down) {
+        if (!down) return;
+        if (suspended != null) {
+            model.post(new SessionEvent.SuspendedSleepObserved(suspended));
+        } else {
+            model.post(new SessionEvent.HostSleepObserved(hostId, acceptedAt));
+        }
+    }
+
+    /**
+     * A sleep record, timed from the host's acceptance, that no poll saw down within the bound
+     * (or whose follow-up died with the process): an online host then shows as it is.
+     */
+    static boolean sleepRequestExpired(long requestedAtMs, long nowMs) {
+        return nowMs < requestedAtMs || nowMs - requestedAtMs > 2 * DOWN_TIMEOUT_MS;
     }
 
     /** False when the wait was interrupted. */
