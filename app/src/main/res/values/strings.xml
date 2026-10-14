@@ -271,8 +271,6 @@
     <string name="console_status_suspending_short">Going to sleep</string>
     <string name="console_status_suspended_short">Asleep · %1$s</string>
     <string name="console_resume_suspended">Resume</string>
-    <string name="console_waking_suspended_session">Waking the PC and restoring the suspended game…</string>
-    <string name="console_suspended_resume_timeout">The PC did not become ready. The suspended game remains available.</string>
     <string name="console_game">Game</string>
     <string name="overlay_menu_toggle_stats">Stats</string>
     <string name="overlay_menu_mouse_emulation">Mouse</string>

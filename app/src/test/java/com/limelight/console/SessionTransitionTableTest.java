@@ -598,7 +598,7 @@ public class SessionTransitionTableTest {
                 SessionSnapshot.State.ACTIVE, 42, "steam:952060",
                 true, false, false, false, false, "",
                 false, SessionSnapshot.ObservationState.RECOVERY_REQUIRED, true,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "VERIFIED", 7368, "627d3413cbb0", "PENDING", "target_not_fullscreen", 0,
                 false);
         State state = playState(windowed, true, false, false);
@@ -1240,7 +1240,7 @@ public class SessionTransitionTableTest {
         return new SessionSnapshot("host", "default", "default", SessionSnapshot.State.ACTIVE,
                 appId, gameId, true, false, false, false, false, "", true,
                 SessionSnapshot.ObservationState.PENDING, proven,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 proven ? "VERIFIED" : "UNAVAILABLE", proven ? 7368 : 0, proven ? "token" : "",
                 "PENDING", "test", appId, false);
     }
@@ -1317,7 +1317,7 @@ public class SessionTransitionTableTest {
         return new SessionSnapshot("host", "default", "default", state, appId, gameId,
                 false, false, false, true, false, "",
                 false, SessionSnapshot.ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
@@ -1339,7 +1339,7 @@ public class SessionTransitionTableTest {
         return new SessionSnapshot("host", "default", "default", SessionSnapshot.State.ACTIVE,
                 42, gameId, true, false, false, false, false, "", true,
                 SessionSnapshot.ObservationState.PENDING, true,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "VERIFIED", 7368, "token", "PENDING", "target_not_fullscreen", 42, false);
     }
 
@@ -1364,7 +1364,7 @@ public class SessionTransitionTableTest {
         return new SessionSnapshot("host", "default", "default", state, appId, gameId,
                 retained, state == SessionSnapshot.State.SUSPENDED, false, false, false, "",
                 neutral, observation, correlated,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 }

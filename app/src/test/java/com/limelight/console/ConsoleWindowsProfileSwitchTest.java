@@ -1,12 +1,12 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Arrays;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -116,9 +116,8 @@ public class ConsoleWindowsProfileSwitchTest {
                 "@Override public SessionOrchestrator.CloseResult switchRetained(",
                 "@Override public void launch(PlayIntent intent");
         assertFalse(menu.contains("boolean childProfile"));
-        assertTrue(new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleHostPanel.java")),
-                StandardCharsets.UTF_8).contains(
+        assertTrue(SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleHostPanel.java")).contains(
                 "Action.DESKTOP, R.string.console_launch_desktop, facts.online && facts.paired"));
         assertFalse(menu.contains("warmUp.setEnabled(!childProfile)"));
         assertFalse(menu.contains("online && paired && !childProfile);\n"
@@ -144,8 +143,8 @@ public class ConsoleWindowsProfileSwitchTest {
                 "private boolean isCurrentWindowsProfileSwitch(",
                 "private void finishWindowsProfileSwitch(");
 
-        assertTrue(finish.indexOf("if (!isCurrentWindowsProfileSwitch(attempt)) return")
-                < finish.indexOf("refreshWindowsProfileStatus(attempt.hostId)"));
+        assertOrdered(finish, "if (!isCurrentWindowsProfileSwitch(attempt)) return",
+                "refreshWindowsProfileStatus(attempt.hostId)");
         assertTrue(finish.contains("console_switch_windows_profile_success"));
         assertTrue(finish.contains("console_switch_windows_profile_attention"));
         assertTrue(finish.contains("console_switch_windows_profile_cancelled"));
@@ -165,9 +164,8 @@ public class ConsoleWindowsProfileSwitchTest {
     }
 
     private static String source() throws Exception {
-        return new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
     }
 
     private static String between(String source, String start, String end) {

@@ -3,8 +3,6 @@ package com.limelight;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -14,7 +12,7 @@ import static org.junit.Assert.assertTrue;
 public class GameChildDiscordContractTest {
     @Test public void childStreamDisablesInheritedDiscordSurfaceAndCalls() throws IOException {
         String game = readProjectFile("src/main/java/com/limelight/Game.java",
-                "app/src/main/java/com/limelight/Game.java");
+                "src/main/java/com/limelight/Game.java");
         String setup = game.substring(game.indexOf("private void configureActorPresentation()"),
                 game.indexOf("private void setupOverlayMenu()"));
         assertTrue(setup.contains("boolean discordEnabled = !isChildSession();"));
@@ -36,7 +34,7 @@ public class GameChildDiscordContractTest {
 
         String overlay = readProjectFile(
                 "src/main/java/com/limelight/ui/overlay/OverlayMenuView.java",
-                "app/src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
+                "src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
         assertTrue(overlay.contains("private boolean discordFeatureEnabled = true;"));
         assertTrue(overlay.contains("return discordFeatureEnabled && shouldShowDiscordCard"));
         assertTrue(overlay.contains("discordContainer.setVisibility(community && canShowDiscordCard()"));
@@ -44,7 +42,6 @@ public class GameChildDiscordContractTest {
 
     private static String readProjectFile(String modulePath, String rootPath) throws IOException {
         Path path = Paths.get(modulePath);
-        if (!Files.exists(path)) path = Paths.get(rootPath);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

@@ -1,13 +1,12 @@
 package com.limelight.stream;
 
+import com.limelight.SourceText;
 import android.content.SharedPreferences;
 
 import org.junit.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Proxy;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
@@ -46,12 +45,12 @@ public class BackgroundStreamPreferencesTest {
     }
 
     @Test public void productionCallersUseTheSinglePreferenceOwner() throws IOException {
-        String service = source("app/src/main/java/com/limelight/stream/BackgroundStreamService.java");
-        String game = source("app/src/main/java/com/limelight/Game.java");
-        String console = source("app/src/main/java/com/limelight/console/ConsoleActivity.java");
+        String service = source("src/main/java/com/limelight/stream/BackgroundStreamService.java");
+        String game = source("src/main/java/com/limelight/Game.java");
+        String console = source("src/main/java/com/limelight/console/ConsoleActivity.java");
 
         assertTrue(service.contains("BackgroundStreamPreferences.DEFAULT_RETENTION_MINUTES"));
-        String runtime = source("app/src/main/java/com/limelight/stream/AndroidStreamRuntime.java");
+        String runtime = source("src/main/java/com/limelight/stream/AndroidStreamRuntime.java");
         assertEquals(1, occurrences(service, "BackgroundStreamPreferences.readMinutes(this)"));
         assertTrue(runtime.contains("return BackgroundStreamPreferences.readMinutes(app);"));
         assertTrue(game.contains("BackgroundStreamPreferences.readMinutes(this)"));
@@ -61,11 +60,11 @@ public class BackgroundStreamPreferencesTest {
     }
 
     @Test public void homeAndHostPickerRetentionRemainUntimed() throws IOException {
-        String game = source("app/src/main/java/com/limelight/Game.java");
+        String game = source("src/main/java/com/limelight/Game.java");
         String openHome = between(game, "private void openConsoleHome()",
                 "private void openPreparingConsoleHome()");
-        String retained = source("app/src/main/java/com/limelight/session/SessionModel.java");
-        String console = source("app/src/main/java/com/limelight/console/ConsoleActivity.java");
+        String retained = source("src/main/java/com/limelight/session/SessionModel.java");
+        String console = source("src/main/java/com/limelight/console/ConsoleActivity.java");
         String hostPicker = between(console, "private void showHostSelection(String focusUuid)",
                 "private void renderHostSelection()");
 
@@ -103,8 +102,7 @@ public class BackgroundStreamPreferencesTest {
 
     private static String source(String relative) throws IOException {
         Path path = Paths.get(relative);
-        if (!Files.exists(path)) path = Paths.get("..").resolve(relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 
     private static String between(String source, String start, String end) {

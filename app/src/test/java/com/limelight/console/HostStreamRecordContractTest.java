@@ -1,13 +1,13 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -15,9 +15,7 @@ import static org.junit.Assert.assertTrue;
 public class HostStreamRecordContractTest {
     private static String source(String file) throws IOException {
         Path path = Paths.get("src/main/java/com/limelight/" + file);
-        if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8)
-                .replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 
     private static String section(String source, String start, String end) {
@@ -39,19 +37,17 @@ public class HostStreamRecordContractTest {
         // Only a stream the user saw is announced, never this client's own cleanup.
         assertTrue(terminated.contains("confirmClosedOnHost(streamEverRevealed\n"
                 + "                    && !freshOwnedFailureCleanupInFlight.get());"));
-        assertTrue(terminated.indexOf("confirmClosedOnHost(")
-                < terminated.indexOf("cleanupUnrevealedProviderLaunch("));
+        assertOrdered(terminated, "confirmClosedOnHost(",
+                "cleanupUnrevealedProviderLaunch(");
         String confirm = section(game, "private void confirmClosedOnHost(boolean announce)",
                 "private String currentProfileId()");
         // The first read waits as well, so the termination path's own saveReconnect lands first.
-        assertTrue(confirm.indexOf("Thread.sleep(2_000L)") >= 0 && confirm.indexOf(
-                "Thread.sleep(2_000L)") < confirm.indexOf("control.ownedStream(gateway)"));
+        assertOrdered(confirm, "Thread.sleep(2_000L)", "control.ownedStream(gateway)");
         assertTrue(confirm.contains("HostStreamRecord.Action.RETIRE"));
         assertTrue(confirm.contains("SessionEvent.Cleared.byHost(sessionId)"));
         assertTrue(confirm.contains("new SessionEvent.ReconnectCleared(sessionId)"));
         assertTrue(confirm.contains("\"host_close.confirmed\""));
-        assertTrue(confirm.indexOf("if (announce)") >= 0 && confirm.indexOf("if (announce)")
-                < confirm.indexOf("R.string.session_closed_on_host"));
+        assertOrdered(confirm, "if (announce)", "R.string.session_closed_on_host");
     }
 
     @Test public void consoleReadsTheRecordOncePerHostEntryAndNeverInItsPollLoop()

@@ -280,17 +280,6 @@ public final class SessionOrchestrator implements AutoCloseable {
         this.dispatcher = dispatcher;
     }
 
-    static boolean shouldSendWarmUpWake(
-            SessionModel.State localState,
-            boolean bridgeResponded, ComputerDetails.State moonlightState) {
-        return localState != SessionModel.State.HOME_LIVE
-                && localState != SessionModel.State.PARKED_LIVE
-                && localState != SessionModel.State.PREPARING
-                && localState != SessionModel.State.TERMINATING
-                && !bridgeResponded
-                && moonlightState == ComputerDetails.State.OFFLINE;
-    }
-
     void play(PlayIntent intent) {
         if (handoffPreparingGame(intent)) return;
         lastIntent = intent;

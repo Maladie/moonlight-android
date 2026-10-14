@@ -1,13 +1,13 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -117,9 +117,8 @@ public class ConsoleProfileGateTest {
 
     @Test public void childRemovalRefreshReturnsToExplicitGateWithoutAdultSelection()
             throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String save = between(source, "private void saveHostProfiles(",
                 "private void showPinEntry(");
         String refresh = between(source, "private void refreshHostProfiles(",
@@ -129,13 +128,13 @@ public class ConsoleProfileGateTest {
         assertTrue(save.contains("after == null"));
         assertTrue(refresh.contains("childWasInvalidated"));
         assertTrue(refresh.contains("showProfileGate(current, true, false)"));
-        assertTrue(refresh.indexOf("showProfileGate(current, true, false)")
-                < refresh.indexOf("HostGatewayStore.ProfileSelection selection"));
+        assertOrdered(refresh, "showProfileGate(current, true, false)",
+                "HostGatewayStore.ProfileSelection selection");
     }
 
     @Test public void endingChildGameKeepsProfileAndLibrary() throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String consume = between(source, "private void consumeChildBindingState(",
                 "private void clearChildLibraryForPolicyChange(");
         assertTrue(consume.contains("binding.sessionId.equals(state.sessionId)"));
@@ -147,9 +146,8 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void hostActivationCannotLoadLibraryBeforeGateResolution() throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String activation = between(source,
                 "private void activateHostFromSelection(String uuid)",
                 "private void resolveProfileGate(ComputerDetails host");
@@ -167,9 +165,8 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void appCardsRenderOnHostEntryNotUnderTheProfileGate() throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String appRender = between(source,
                 "private void renderAppsAsync(ComputerDetails host, boolean focusApps)",
                 "private void runLibraryUpdateWhenNavigationIdle(");
@@ -179,8 +176,8 @@ public class ConsoleProfileGateTest {
                 "private void cancelOwnedWarmUp(");
 
         assertTrue(appRender.contains("if (profileGateHostUuid != null) return;"));
-        assertTrue(entry.indexOf("profileGateHostUuid = null")
-                < entry.indexOf("selectHost(host, focusApps)"));
+        assertOrdered(entry, "profileGateHostUuid = null",
+                "selectHost(host, focusApps)");
         assertTrue(select.contains("renderAppsAsync(host, focusApps)"));
         // A PIN confirmed for the already selected profile enters no host, so it renders itself.
         String apply = between(source, "private void applySelectedProfile(",
@@ -190,9 +187,8 @@ public class ConsoleProfileGateTest {
 
     @Test public void toolbarLeaveReturnsToProfileGateWhenMultipleProfilesExist()
             throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String leave = between(source, "private void leaveHost()",
                 "private void refreshDiscordIndicator(");
 
@@ -202,9 +198,8 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void sameHostProfileChangeInvalidatesOldLibraryBeforeEntry() throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String gate = between(source,
                 "private void resolveProfileGate(ComputerDetails host, boolean focusApps,",
                 "private void enterHostAfterProfileGate(");
@@ -223,9 +218,8 @@ public class ConsoleProfileGateTest {
 
     @Test public void everyProtectedSelectionPathWaitsForVerificationBeforePersisting()
             throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String selection = between(source,
                 "private void selectProfile(ComputerDetails host, String profileId)",
                 "private void applySelectedProfile(");
@@ -237,7 +231,8 @@ public class ConsoleProfileGateTest {
                 "private void renderPinCooldown(");
 
         assertTrue(selection.contains("if (profile.pinRequired)"));
-        assertTrue(selection.indexOf("showPinEntry(") < selection.indexOf("applySelectedProfile("));
+        assertOrdered(selection, "showPinEntry(",
+                "applySelectedProfile(");
         assertFalse(selection.contains("changeSelectedProfile("));
         assertTrue(selectorRefresh.contains("!selection.selected.pinRequired"));
         assertTrue(verification.contains("gatewayError == null && transportError == null"));
@@ -246,9 +241,8 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void pauseClearsOnlySecretAndKeepsPinScreenContext() throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String pause = between(source, "protected void onPause()",
                 "public void onTrimMemory(int level)");
 

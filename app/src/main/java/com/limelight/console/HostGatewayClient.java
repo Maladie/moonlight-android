@@ -516,7 +516,6 @@ public class HostGatewayClient {
         final String actorProfileId;
         final String executionProfileId;
         final long requestOrdinal;
-        final String callerTransitionId;
         final String operationId;
         final String streamSessionId;
         final long controlGeneration;
@@ -554,7 +553,7 @@ public class HostGatewayClient {
                            long observedAtUnixMs, long freshForMs,
                            String stateEpisode, long stateSinceUnixMs,
                            String actorProfileId, String executionProfileId,
-                           long requestOrdinal, String callerTransitionId,
+                           long requestOrdinal,
                            String operationId, String streamSessionId,
                            long controlGeneration, long actorLeaseEpoch,
                            String providerState, Evidence connectorEvidence,
@@ -573,7 +572,6 @@ public class HostGatewayClient {
             this.actorProfileId = actorProfileId;
             this.executionProfileId = executionProfileId;
             this.requestOrdinal = requestOrdinal;
-            this.callerTransitionId = callerTransitionId;
             this.operationId = operationId;
             this.streamSessionId = streamSessionId;
             this.controlGeneration = controlGeneration;
@@ -1849,7 +1847,6 @@ public class HostGatewayClient {
         String actor = requiredString(scope, "actor_profile_id");
         String execution = requiredString(scope, "execution_profile_id");
         long ordinal = requiredLong(correlation, "request_ordinal");
-        String transition = requiredString(correlation, "caller_transition_id");
         String operation = requiredString(correlation, "operation_id");
         String streamSession = requiredString(correlation, "stream_session_id");
         long controlGeneration = requiredLong(correlation, "control_generation");
@@ -1900,7 +1897,7 @@ public class HostGatewayClient {
             }
         }
         SessionObservation parsed = new SessionObservation(boot, revision, observedAt, freshFor,
-                episode, stateSince, actor, execution, ordinal, transition,
+                episode, stateSince, actor, execution, ordinal,
                 operation, streamSession, controlGeneration, actorLeaseEpoch,
                 requiredState(provider, "state"),
                 connectorEvidence,

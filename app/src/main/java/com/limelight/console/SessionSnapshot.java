@@ -43,7 +43,6 @@ public final class SessionSnapshot {
     final long controlGeneration;
     final long actorLeaseEpoch;
     final String operationId;
-    final String transitionId;
     final String streamSessionId;
     final String processEvidence;
     final int processId;
@@ -97,7 +96,7 @@ public final class SessionSnapshot {
                     boolean observationCorrelated,
                     String producerBootId, long producerRevision, long requestOrdinal,
                     long transportGeneration, long controlGeneration,
-                    long actorLeaseEpoch, String operationId, String transitionId,
+                    long actorLeaseEpoch, String operationId,
                     String streamSessionId, String processEvidence, int processId,
                     String processToken, String windowEvidence, String observationReason,
                     int hostRunningAppId, boolean endingGame) {
@@ -106,7 +105,7 @@ public final class SessionSnapshot {
                 hostSleepRequested, hostSleepObserved, suspendId, neutralStreamTarget,
                 observationState, observationCorrelated, producerBootId, producerRevision,
                 requestOrdinal, transportGeneration, controlGeneration, actorLeaseEpoch,
-                operationId, transitionId, streamSessionId, processEvidence, processId,
+                operationId, streamSessionId, processEvidence, processId,
                 processToken, windowEvidence, observationReason, hostRunningAppId,
                 endingGame, Display.NONE);
     }
@@ -120,7 +119,7 @@ public final class SessionSnapshot {
                     boolean observationCorrelated,
                     String producerBootId, long producerRevision, long requestOrdinal,
                     long transportGeneration, long controlGeneration,
-                    long actorLeaseEpoch, String operationId, String transitionId,
+                    long actorLeaseEpoch, String operationId,
                     String streamSessionId, String processEvidence, int processId,
                     String processToken, String windowEvidence, String observationReason,
                     int hostRunningAppId, boolean endingGame, Display display) {
@@ -153,7 +152,6 @@ public final class SessionSnapshot {
         this.controlGeneration = controlGeneration;
         this.actorLeaseEpoch = actorLeaseEpoch;
         this.operationId = operationId == null ? "" : operationId;
-        this.transitionId = transitionId == null ? "" : transitionId;
         this.streamSessionId = streamSessionId == null ? "" : streamSessionId;
         this.processEvidence = processEvidence == null ? "UNAVAILABLE" : processEvidence;
         this.processId = processId;
@@ -169,7 +167,7 @@ public final class SessionSnapshot {
         return new SessionSnapshot(hostId, actorProfileId, executionProfileId,
                 State.UNCERTAIN, 0, "", false, false, false,
                 false, false, "", false, ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "observation_pending", 0, false);
     }
 
@@ -199,7 +197,7 @@ public final class SessionSnapshot {
                 + producerBootId + "|"
                 + producerRevision + "|" + requestOrdinal + "|" + transportGeneration
                 + "|" + controlGeneration + "|" + actorLeaseEpoch + "|" + operationId
-                + "|" + transitionId + "|" + streamSessionId + "|" + processEvidence
+                + "|" + streamSessionId + "|" + processEvidence
                 + "|" + processId + "|" + processToken + "|" + windowEvidence
                 + "|" + observationReason + "|" + endingGame;
     }
@@ -231,7 +229,6 @@ public final class SessionSnapshot {
                 && suspendId.equals(other.suspendId)
                 && producerBootId.equals(other.producerBootId)
                 && operationId.equals(other.operationId)
-                && transitionId.equals(other.transitionId)
                 && streamSessionId.equals(other.streamSessionId)
                 && processEvidence.equals(other.processEvidence)
                 && processToken.equals(other.processToken)
@@ -247,7 +244,7 @@ public final class SessionSnapshot {
                 observationState, observationCorrelated, producerBootId,
                 producerRevision, requestOrdinal,
                 transportGeneration, controlGeneration, actorLeaseEpoch, operationId,
-                transitionId, streamSessionId, processEvidence, processId, processToken,
+                streamSessionId, processEvidence, processId, processToken,
                 windowEvidence, observationReason, endingGame);
     }
 

@@ -1,15 +1,15 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import com.limelight.console.transition.LaunchTransitionState;
 
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -86,10 +86,10 @@ public class PlayHistoryTest {
         assertTrue(record.contains(
                 "PlayHistory.gamePlayed(snapshot.state, snapshot.manuallyRevealed,"));
         assertTrue(record.contains("isOwnedHiddenAutoWarmUp()"));
-        assertTrue(record.indexOf("PlayHistory.recordsNow(")
-                < record.indexOf("gamePlayedTransitionId = snapshot.spec.id;"));
-        assertTrue(record.indexOf("gamePlayedTransitionId = snapshot.spec.id;")
-                < record.indexOf("PlayHistory.recordGame("));
+        assertOrdered(record, "PlayHistory.recordsNow(",
+                "gamePlayedTransitionId = snapshot.spec.id;");
+        assertOrdered(record, "gamePlayedTransitionId = snapshot.spec.id;",
+                "PlayHistory.recordGame(");
         // The reuse signal (retry offer, refused or accepted start) carries no history.
         assertFalse(reuse.contains("PlayHistory"));
         assertFalse(console.contains("PlayHistory.recordGame("));
@@ -99,8 +99,6 @@ public class PlayHistoryTest {
 
     private static String source(String relative) throws IOException {
         Path path = Paths.get("src/main/java/" + relative);
-        if (!Files.exists(path)) path = Paths.get("app/src/main/java/" + relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8)
-                .replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

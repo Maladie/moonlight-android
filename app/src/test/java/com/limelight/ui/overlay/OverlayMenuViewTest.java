@@ -1,5 +1,6 @@
 package com.limelight.ui.overlay;
 
+import com.limelight.SourceText;
 import android.view.KeyEvent;
 
 import com.limelight.R;
@@ -7,12 +8,11 @@ import com.limelight.ui.ControllerGlyphs;
 
 import org.junit.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -57,17 +57,17 @@ public class OverlayMenuViewTest {
             throws Exception {
         String source = readProjectFile(
                 "src/main/java/com/limelight/ui/overlay/OverlayMenuView.java",
-                "app/src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
+                "src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
         String dispatch = source.substring(source.indexOf("public boolean dispatchKeyEvent("),
                 source.indexOf("private boolean handleDiscordRailKey("));
-        assertTrue(dispatch.indexOf("discordShortcutChord.handle(")
-                < dispatch.indexOf("handleFlipFaceButtons(event.getKeyCode())"));
-        assertTrue(dispatch.indexOf("discordShortcutChord.handle(")
-                < dispatch.indexOf("if (overlayMode == OverlayMode.COMMUNITY)"));
+        assertOrdered(dispatch, "discordShortcutChord.handle(",
+                "handleFlipFaceButtons(event.getKeyCode())");
+        assertOrdered(dispatch, "discordShortcutChord.handle(",
+                "if (overlayMode == OverlayMode.COMMUNITY)");
         assertFalse(dispatch.contains("keyCode == discordShortcutKeyCode(discordMuteShortcut)"));
 
         String arrays = readProjectFile("src/main/res/values/arrays.xml",
-                "app/src/main/res/values/arrays.xml");
+                "src/main/res/values/arrays.xml");
         assertTrue(arrays.contains("@string/discord_shortcut_guide_x"));
         assertTrue(arrays.contains("@string/discord_shortcut_guide_r3"));
 
@@ -86,9 +86,7 @@ public class OverlayMenuViewTest {
     @Test
     public void endGameIsASeparateConditionalActionFromQuitSession() throws Exception {
         Path source = Paths.get("src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
-        if (!Files.exists(source)) source = Paths.get(
-                "app/src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String text = SourceText.read(source);
         String menu = text.substring(text.indexOf("public void buildMenu()"),
                 text.indexOf("private void addVerticalButton("));
         String activate = text.substring(text.indexOf("private void activateSelected()"),
@@ -230,9 +228,9 @@ public class OverlayMenuViewTest {
     @Test
     public void discordDockGlassKeepsOpacityOnRootAndTranslucencyInBackground() throws Exception {
         String layout = readProjectFile("src/main/res/layout/activity_game.xml",
-                "app/src/main/res/layout/activity_game.xml");
+                "src/main/res/layout/activity_game.xml");
         String drawable = readProjectFile("src/main/res/drawable/discord_dock_glass.xml",
-                "app/src/main/res/drawable/discord_dock_glass.xml");
+                "src/main/res/drawable/discord_dock_glass.xml");
 
         assertTrue(layout.contains("android:background=\"@drawable/discord_dock_glass\""));
         assertTrue(layout.contains("android:alpha=\"1\""));
@@ -532,7 +530,6 @@ public class OverlayMenuViewTest {
 
     private static String readProjectFile(String modulePath, String rootPath) throws Exception {
         Path path = Paths.get(modulePath);
-        if (!Files.exists(path)) path = Paths.get(rootPath);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

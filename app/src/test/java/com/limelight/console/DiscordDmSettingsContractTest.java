@@ -1,12 +1,11 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -32,7 +31,7 @@ public class DiscordDmSettingsContractTest {
     }
 
     @Test public void bothForegroundHostsInitializeTheSameProcessCoordinator() throws Exception {
-        String game = sourceFrom("app/src/main/java/com/limelight/Game.java");
+        String game = sourceFrom("src/main/java/com/limelight/Game.java");
         String console = source("ConsoleActivity.java");
 
         assertTrue(game.contains("discordDmNotifications.initialize(this)"));
@@ -40,7 +39,7 @@ public class DiscordDmSettingsContractTest {
     }
 
     @Test public void socialSnapshotPublishesBeforeEventsAndAuthStartsBlocked() throws Exception {
-        String social = sourceFrom("app/src/main/java/com/limelight/discord/DiscordSocialClient.java");
+        String social = sourceFrom("src/main/java/com/limelight/discord/DiscordSocialClient.java");
         int pump = social.indexOf("private static void pumpCallbacks()");
         int publish = social.indexOf("publishSnapshot(parsed)", pump);
         int events = social.indexOf("enqueueMessageEvents(messageRecords)", pump);
@@ -64,14 +63,11 @@ public class DiscordDmSettingsContractTest {
     }
 
     private static String source(String name) throws Exception {
-        return sourceFrom("app/src/main/java/com/limelight/console/" + name);
+        return sourceFrom("src/main/java/com/limelight/console/" + name);
     }
 
     private static String sourceFrom(String relative) throws Exception {
         Path path = Paths.get(relative);
-        if (!Files.exists(path) && relative.startsWith("app/")) {
-            path = Paths.get(relative.substring(4));
-        }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

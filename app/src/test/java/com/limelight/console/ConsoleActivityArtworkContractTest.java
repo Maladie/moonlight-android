@@ -1,10 +1,9 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -14,10 +13,7 @@ import static org.junit.Assert.assertTrue;
 public class ConsoleActivityArtworkContractTest {
     @Test public void sunshineLaunchAddsOnlyThePresentationArtworkIdentity() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/console/ConsoleActivity.java");
-        }
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String text = SourceText.read(source);
         String method = text.substring(text.indexOf("private void playSunshineApp"),
                 text.indexOf("private void playPlayniteGame"));
 

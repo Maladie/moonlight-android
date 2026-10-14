@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -9,8 +10,6 @@ import com.limelight.binding.audio.UsbMicrophoneService;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -61,7 +60,6 @@ public class ConsoleUsbMicrophoneContractTest {
 
     private static String source(String relative) throws IOException {
         Path path = Paths.get(relative);
-        if (!Files.exists(path)) path = Paths.get("app").resolve(relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

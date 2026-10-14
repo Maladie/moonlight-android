@@ -1,10 +1,9 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
@@ -345,7 +344,7 @@ public class ConsoleChildProfileUiContractTest {
     }
 
     private static String source(String path) throws Exception {
-        return new String(Files.readAllBytes(Paths.get(path)), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(Paths.get(path));
     }
 
     private static String between(String source, String start, String end) {

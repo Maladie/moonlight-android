@@ -3,11 +3,10 @@ package com.limelight;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -131,7 +130,7 @@ public class GameAutoWarmUpContractTest {
                 "private MediaCodecDecoderRenderer createDecoderRenderer");
         String cover = between(game, "private void coverScreen() {",
                 "private void openPreparingConsoleHome()");
-        String theme = sourceFile("app/src/main/res/values-v30/styles.xml");
+        String theme = sourceFile("src/main/res/values-v30/styles.xml");
 
         // The window is see-through from its start; only Game makes it opaque.
         assertTrue(theme.contains("<style name=\"StreamBaseTheme\" parent=\"AppBaseTheme\">"));
@@ -187,8 +186,8 @@ public class GameAutoWarmUpContractTest {
                 "LaunchTransitionType recoveredType");
         // A warm-up already converted to a selected game keeps its GAME semantics across
         // Activity recreation (the conversion is restored from the intent first).
-        assertTrue(create.indexOf("getBooleanExtra(EXTRA_AUTO_WARM_UP_CONVERTED, false)")
-                < create.indexOf("if (hasAutoWarmUpTransportIdentity() && !autoWarmUpConvertedToGame) {"));
+        assertOrdered(create, "getBooleanExtra(EXTRA_AUTO_WARM_UP_CONVERTED, false)",
+                "if (hasAutoWarmUpTransportIdentity() && !autoWarmUpConvertedToGame) {");
 
         assertTrue(mapping.contains("LaunchTransitionType.GENERIC"));
         assertTrue(mapping.contains("LaunchTransitionType.GAME_CONNECTION"));
@@ -205,25 +204,24 @@ public class GameAutoWarmUpContractTest {
         String connected = between(game, "public void connectionStarted()",
                 "private ConsoleStreamTransitionCoordinator createTransitionCoordinator");
 
-        String runtime = sourceFile("app/src/main/java/com/limelight/stream/StreamRuntime.java");
+        String runtime = sourceFile("src/main/java/com/limelight/stream/StreamRuntime.java");
         String runtimeStarted = between(runtime, "@Override public void connectionStarted()",
                 "@Override public void connectionTerminated(");
         // The one native start is owned by the runtime; Game only requests it once.
         assertEquals(1, occurrences(game, "runtime.start();"));
         assertEquals(1, occurrences(runtime, "transport.start(this)"));
-        assertTrue(start.indexOf("attemptedConnection = true")
-                < start.indexOf("runtime.start();"));
+        assertOrdered(start, "attemptedConnection = true",
+                "runtime.start();");
         assertFalse(stages.contains("completeAutoWarmUpPreparing"));
         // Connected state is the runtime's fact, set only from connectionStarted.
         assertTrue(runtimeStarted.contains("state = State.CONNECTED"));
-        assertTrue(runtimeStarted.indexOf("state = State.CONNECTED")
-                < runtimeStarted.indexOf("p.connectionStarted()"));
+        assertOrdered(runtimeStarted, "state = State.CONNECTED",
+                "p.connectionStarted()");
         assertTrue(connected.contains("completeAutoWarmUpPreparing("));
-        assertTrue(connected.indexOf("spinner.dismiss()")
-                < connected.indexOf("completeAutoWarmUpPreparing("));
-        assertTrue(connected.indexOf(
-                "autoWarmUpTransportStopRequested.compareAndSet(false, true)")
-                < connected.indexOf("stopConnection(() -> finish())"));
+        assertOrdered(connected, "spinner.dismiss()",
+                "completeAutoWarmUpPreparing(");
+        assertOrdered(connected, "autoWarmUpTransportStopRequested.compareAndSet(false, true)",
+                "stopConnection(() -> finish())");
     }
 
     @Test public void warmUpFramesAudioAndInputStayPrivateByExactOwnership()
@@ -264,11 +262,10 @@ public class GameAutoWarmUpContractTest {
         assertTrue(preparingHome.contains("setInputSuppressed(true)"));
         assertTrue(background.contains("isExactAutoWarmUpPreparing(preparing)"));
         assertTrue(background.contains("parkWarmUpWhenConnected = true"));
-        assertTrue(background.indexOf("markAutoWarmUpReconnectRequired(")
-                < background.indexOf("stopConnection(() -> finish())"));
-        assertTrue(background.indexOf(
-                "autoWarmUpTransportStopRequested.compareAndSet(false, true)")
-                < background.indexOf("stopConnection(() -> finish())"));
+        assertOrdered(background, "markAutoWarmUpReconnectRequired(",
+                "stopConnection(() -> finish())");
+        assertOrdered(background, "autoWarmUpTransportStopRequested.compareAndSet(false, true)",
+                "stopConnection(() -> finish())");
         assertFalse(background.contains("quitApp"));
     }
 
@@ -277,16 +274,16 @@ public class GameAutoWarmUpContractTest {
         String cancel = between(source(), "public boolean cancelPreparingTransport(",
                 "public void terminateRetainedSession(");
 
-        assertTrue(cancel.indexOf("isExactAutoWarmUpPreparing(preparing)")
-                < cancel.indexOf("autoWarmUpTransportStopRequested.compareAndSet(false, true)"));
-        assertTrue(cancel.indexOf("autoWarmUpTransportStopRequested.compareAndSet(false, true)")
-                < cancel.indexOf("boolean converted = autoWarmUpConvertedToGame"));
-        assertTrue(cancel.indexOf("markAutoWarmUpReconnectRequired(")
-                < cancel.indexOf("transitionCoordinator.cancel()"));
-        assertTrue(cancel.indexOf("if (converted && transitionCoordinator != null)")
-                < cancel.indexOf("transitionCoordinator.cancel()"));
-        assertTrue(cancel.indexOf("transitionCoordinator.cancel()")
-                < cancel.indexOf("stopConnection(() -> finish())"));
+        assertOrdered(cancel, "isExactAutoWarmUpPreparing(preparing)",
+                "autoWarmUpTransportStopRequested.compareAndSet(false, true)");
+        assertOrdered(cancel, "autoWarmUpTransportStopRequested.compareAndSet(false, true)",
+                "boolean converted = autoWarmUpConvertedToGame");
+        assertOrdered(cancel, "markAutoWarmUpReconnectRequired(",
+                "transitionCoordinator.cancel()");
+        assertOrdered(cancel, "if (converted && transitionCoordinator != null)",
+                "transitionCoordinator.cancel()");
+        assertOrdered(cancel, "transitionCoordinator.cancel()",
+                "stopConnection(() -> finish())");
         assertEquals(1, occurrences(cancel, "transitionCoordinator.cancel()"));
         assertEquals(1, occurrences(cancel, "stopConnection(() -> finish())"));
         assertTrue(cancel.contains("saveReconnect(true)"));
@@ -332,13 +329,12 @@ public class GameAutoWarmUpContractTest {
                 "if (autoWarmUpRetained && isOwnedHiddenAutoWarmUp())",
                 "sessionModel.snapshot()");
 
-        assertTrue(failure.indexOf("if (autoWarmUpTransportStopRequested.get()) return true")
-                < failure.indexOf("sessionModel.snapshot()"));
+        assertOrdered(failure, "if (autoWarmUpTransportStopRequested.get()) return true",
+                "sessionModel.snapshot()");
         assertTrue(completed.contains(
                 "return !autoWarmUpTransportStopRequested.compareAndSet(false, true)"));
-        assertTrue(failure.indexOf(
-                "autoWarmUpTransportStopRequested.compareAndSet(false, true)")
-                < failure.indexOf("markAutoWarmUpReconnectRequired("));
+        assertOrdered(failure, "autoWarmUpTransportStopRequested.compareAndSet(false, true)",
+                "markAutoWarmUpReconnectRequired(");
         assertEquals(1, occurrences(failure, "stopConnection(() -> finish())"));
     }
 
@@ -347,8 +343,8 @@ public class GameAutoWarmUpContractTest {
                 "private ConsoleStreamTransitionCoordinator createTransitionCoordinator()");
 
         assertTrue(connected.contains("if (appName != null && !warmUpConnection)"));
-        assertTrue(connected.indexOf("if (appName != null && !warmUpConnection)")
-                < connected.indexOf("shortcutHelper.reportGameLaunched(computer, app)"));
+        assertOrdered(connected, "if (appName != null && !warmUpConnection)",
+                "shortcutHelper.reportGameLaunched(computer, app)");
     }
 
     @Test public void preparingGameSwitchUsesOpaqueGateAndExistingProviderPaths()
@@ -413,10 +409,10 @@ public class GameAutoWarmUpContractTest {
                 "private boolean handleAutoWarmUpConnectionFailure()",
                 "private void beginAutoWarmUpPreparing(");
 
-        assertTrue(stageFailed.indexOf("cleanupUnrevealedProviderLaunch(")
-                < stageFailed.indexOf("handleAutoWarmUpConnectionFailure()"));
-        assertTrue(terminated.indexOf("cleanupUnrevealedProviderLaunch(")
-                < terminated.indexOf("handleAutoWarmUpConnectionFailure()"));
+        assertOrdered(stageFailed, "cleanupUnrevealedProviderLaunch(",
+                "handleAutoWarmUpConnectionFailure()");
+        assertOrdered(terminated, "cleanupUnrevealedProviderLaunch(",
+                "handleAutoWarmUpConnectionFailure()");
         assertEquals(1, occurrences(failure, "stopConnection(() -> finish())"));
     }
 
@@ -430,10 +426,10 @@ public class GameAutoWarmUpContractTest {
         String completion = between(game, "private void completeAutoWarmUpPreparing(",
                 "private void markAutoWarmUpReconnectRequired(String reason,");
 
-        assertTrue(newGame.indexOf("advancePreparingSwitch(")
-                < newGame.indexOf("applyRetainedTransition("));
-        assertTrue(setup.indexOf("transitionController.begin(next)")
-                < setup.indexOf("autoWarmUpConvertedToGame = true"));
+        assertOrdered(newGame, "advancePreparingSwitch(",
+                "applyRetainedTransition(");
+        assertOrdered(setup, "transitionController.begin(next)",
+                "autoWarmUpConvertedToGame = true");
         assertTrue(completion.contains("new SessionEvent.PreparingCompleted(runtime, preparing)"));
         assertTrue(completion.contains("clearAutoWarmUpIdentity()"));
     }
@@ -443,8 +439,8 @@ public class GameAutoWarmUpContractTest {
         String newGame = between(source(), "private void beginNewRetainedGameAttempt(",
                 "private void adoptPreparingObservedGame(");
 
-        assertTrue(newGame.indexOf("operation.cancelled()")
-                < newGame.indexOf("transitionCoordinator.start()"));
+        assertOrdered(newGame, "operation.cancelled()",
+                "transitionCoordinator.start()");
     }
 
     @Test public void preparingSwitchAlwaysReleasesItsCapturedLock()
@@ -470,8 +466,8 @@ public class GameAutoWarmUpContractTest {
 
         String recovery = between(game, "private void recoverRetainedSwitch(",
                 "private void afterRetainedGameStopped(");
-        assertTrue(recovery.indexOf("completeRetainedSwitch(")
-                < recovery.indexOf("startChildMonitoring()"));
+        assertOrdered(recovery, "completeRetainedSwitch(",
+                "startChildMonitoring()");
     }
 
     @Test public void rejectedRetainedStartNeverClaimsRunningGame() throws IOException {
@@ -482,8 +478,8 @@ public class GameAutoWarmUpContractTest {
                 "@Override public void onInstallationVerified()");
 
         String interaction = failed.substring(failed.indexOf("INTERACTION_REQUIRED"));
-        assertTrue(interaction.indexOf("providerStartRejectedTransitionId = transitionId")
-                < interaction.indexOf("RetainedSwitch operation = retainedSwitch"));
+        assertOrdered(interaction, "providerStartRejectedTransitionId = transitionId",
+                "RetainedSwitch operation = retainedSwitch");
         assertTrue(interaction.contains("persistRejectedProviderTransitionAsNeutral()"));
         assertTrue(interaction.contains("operation.providerStartRejected = true"));
         assertTrue(interaction.contains("signalRetainedSwitchReuse(operation)"));
@@ -535,12 +531,7 @@ public class GameAutoWarmUpContractTest {
 
         Path controllerPath = Paths.get(
                 "src/main/java/com/limelight/binding/input/ControllerHandler.java");
-        if (!Files.exists(controllerPath)) {
-            controllerPath = Paths.get(
-                    "app/src/main/java/com/limelight/binding/input/ControllerHandler.java");
-        }
-        String controller = new String(Files.readAllBytes(controllerPath),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String controller = SourceText.read(controllerPath);
         String announce = between(controller, "public void announceConnectedControllers()",
                 "public void destroy()");
         assertTrue(announce.contains("primeControllerIfNeeded"));
@@ -550,31 +541,16 @@ public class GameAutoWarmUpContractTest {
 
     private static String source() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 
-    private static String sourceFile(String repositoryPath) throws IOException {
-        Path source = Paths.get(repositoryPath.substring("app/".length()));
-        if (!Files.exists(source)) source = Paths.get(repositoryPath);
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+    private static String sourceFile(String modulePath) throws IOException {
+        return SourceText.module(modulePath);
     }
 
     private static String between(String source, String start, String end) {
         return source.substring(source.indexOf(start), source.indexOf(end,
                 source.indexOf(start)));
-    }
-
-    /** Each part is present, and after the previous one. */
-    public static void assertOrdered(String source, String... parts) {
-        int at = -1;
-        for (String part : parts) {
-            int next = source.indexOf(part, at + 1);
-            assertTrue("missing or out of order: " + part, next > at);
-            at = next;
-        }
     }
 
     private static int occurrences(String source, String value) {

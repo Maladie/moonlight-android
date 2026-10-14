@@ -1,14 +1,13 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
-import static com.limelight.GameAutoWarmUpContractTest.assertOrdered;
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -65,8 +64,8 @@ public class ConsoleActivityEnsureContractTest {
                         "private void requestTerminateSession(ComputerDetails host, String"),
                 source.indexOf("private boolean isPairingContextCurrent("));
 
-        assertTrue(method.indexOf("new SessionEvent.TerminateRequested(")
-                < method.indexOf("executor.execute("));
+        assertOrdered(method, "new SessionEvent.TerminateRequested(",
+                "executor.execute(");
         assertTrue(method.contains("terminateKnownControlPlane(host, profileKey.profileId"));
         assertFalse(method.contains("quitApp("));
         assertFalse(method.contains("stopActiveProviderGame("));
@@ -88,22 +87,21 @@ public class ConsoleActivityEnsureContractTest {
         String exit = source.substring(source.indexOf(
                         "private void terminateRetainedSessionAndExit()"),
                 source.indexOf("private void closeRecordedSessionAndExit("));
-        int notClosed = exit.indexOf("if (!outcome.closed()) {");
-        assertTrue(notClosed >= 0);
-        assertTrue(exit.indexOf("HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED")
-                > notClosed);
-        assertTrue(exit.indexOf("R.string.console_terminate_session_game_left") > notClosed);
+        assertOrdered(exit, "if (!outcome.closed()) {",
+                "HostSessionTermination.Outcome.CLOSED_GAME_UNVERIFIED");
+        assertOrdered(exit, "if (!outcome.closed()) {",
+                "R.string.console_terminate_session_game_left");
         String replacement = source.substring(source.indexOf(
                         "private Boolean terminateLiveRetainedForReplacement("),
                 source.indexOf("private void beginInstallationSupportStream("));
-        assertTrue(replacement.indexOf("throw SessionFailure.CLOSE_GAME_LEFT.raise();")
-                < replacement.indexOf("return result.get().closed();"));
+        assertOrdered(replacement, "throw SessionFailure.CLOSE_GAME_LEFT.raise();",
+                "return result.get().closed();");
         String close = source.substring(source.indexOf(
                         "Destructive close path=direct-nonretained"),
                 source.indexOf("@Override public void launch(PlayIntent intent, NvApp app,"));
         assertTrue(close.contains("reconnectTermination, outcome.streamClosed(),"));
-        assertTrue(close.indexOf("SessionEvent.SuspendedEnded.forExecution(")
-                < close.indexOf("if (!outcome.closed()) throw SessionFailure.CLOSE_GAME_LEFT"));
+        assertOrdered(close, "SessionEvent.SuspendedEnded.forExecution(",
+                "if (!outcome.closed()) throw SessionFailure.CLOSE_GAME_LEFT");
         assertEquals(com.limelight.R.string.console_terminate_session_game_left,
                 SessionFailure.CLOSE_GAME_LEFT.details);
     }
@@ -115,8 +113,8 @@ public class ConsoleActivityEnsureContractTest {
                         "private void requestHardTerminateSession("),
                 source.indexOf("private void finishHardTerminate("));
 
-        assertTrue(method.indexOf("clearHardResetSessionState(host, profileKey)")
-                < method.indexOf("executor.execute("));
+        assertOrdered(method, "clearHardResetSessionState(host, profileKey)",
+                "executor.execute(");
         assertTrue(method.contains("ChildLaunchBinding childBinding = selectedProfileIsChild"));
         assertTrue(method.contains("boolean success = hardResetHost(gateway, childSessionId)"));
         assertTrue(method.contains("hostGatewayClient.hardResetSession(gateway, childSessionId)"));
@@ -144,12 +142,10 @@ public class ConsoleActivityEnsureContractTest {
                         "private void terminateRetainedSessionAndExit()"),
                 source.indexOf("private void closeRecordedSessionAndExit("));
         int request = exit.indexOf("new SessionEvent.TerminateRequested(");
-        int leave = exit.indexOf("moveTaskToBack(true);");
         // Leaves right after asking, never waiting for the result; only the process-scoped exit
         // request (MoonWakerExitTest) decides whether the completed close ends MoonWaker.
-        assertTrue(request >= 0 && leave > request);
-        int token = exit.indexOf("MoonWakerExit.request()");
-        assertTrue(token >= 0 && token < request);
+        assertOrdered(exit, "MoonWakerExit.request()", "new SessionEvent.TerminateRequested(",
+                "moveTaskToBack(true);");
         assertTrue(exit.contains("MoonWakerExit.take(exit)"));
         assertTrue(exit.contains("if (away) MoonWakerExit.finishTasks(app);"));
         assertFalse(exit.substring(request).contains("finishAffinity()"));
@@ -161,8 +157,8 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("private void exitMoonWaker()"));
         int thread = recorded.indexOf("new Thread(() -> {");
         // The close is resolved before the thread and runs on app-scoped state only.
-        assertTrue(thread > recorded.indexOf("knownControlPlaneTermination("));
-        assertTrue(recorded.indexOf("close.get()") > thread);
+        assertOrdered(recorded, "knownControlPlaneTermination(", "new Thread(() -> {",
+                "close.get()");
         assertFalse(recorded.substring(thread).contains("terminateKnownControlPlane("));
         assertFalse(recorded.contains("executor.execute("));
         assertFalse(recorded.contains("showSidePanelBusy("));
@@ -176,10 +172,10 @@ public class ConsoleActivityEnsureContractTest {
         int thread = sleep.indexOf("new Thread(() -> {");
         // The decisions live in HostReadiness (HostReadinessTest); here only that the thread
         // routes through them and touches no Activity state but through a weak reference.
-        assertTrue(thread >= 0 && sleep.indexOf("client.sleepHost(") > thread);
-        assertTrue(sleep.indexOf("HostReadiness.sleepAnswered(") > thread);
-        assertTrue(sleep.indexOf("HostReadiness.settleSleep(model, target.uuid, acceptedAt,")
-                > thread);
+        for (String inThread : new String[] {"client.sleepHost(", "HostReadiness.sleepAnswered(",
+                "HostReadiness.settleSleep(model, target.uuid, acceptedAt,"}) {
+            assertOrdered(sleep, "new Thread(() -> {", inThread);
+        }
         assertFalse(sleep.substring(thread).contains("sessionModel"));
         assertFalse(sleep.substring(thread).contains("hostGatewayClient"));
         assertFalse(sleep.contains("executor.execute("));
@@ -208,7 +204,6 @@ public class ConsoleActivityEnsureContractTest {
                         "private void beginInstallationSupportStream(")));
 
         assertTrue(method.contains("terminateKnownControlPlane(ready, transitionProfileId"));
-        assertFalse(source.contains("private boolean closePreviousSession("));
         assertFalse(method.contains("quitApp("));
     }
 
@@ -221,15 +216,14 @@ public class ConsoleActivityEnsureContractTest {
         String close = source.substring(source.indexOf("private void finishTerminateSession("),
                 source.indexOf("private boolean isPairingContextCurrent("));
 
-        assertTrue(destroy.indexOf("active = false;")
-                < destroy.indexOf("executor.shutdownNow()"));
+        assertOrdered(destroy, "active = false;",
+                "executor.shutdownNow()");
         // Late work after teardown is dropped by the pool itself, not guarded per call site.
         assertTrue(source.contains("ExecutorService executor = lifecycleExecutor(3)"));
         assertTrue(source.contains("new ThreadPoolExecutor.DiscardPolicy()"));
         assertFalse(refresh.contains("RejectedExecutionException"));
         assertTrue(close.contains("refreshSessionState(host.uuid)"));
-        int closed = close.indexOf("if (outcome.streamClosed())");
-        assertTrue(closed >= 0 && closed < close.indexOf("refreshSessionState(host.uuid)"));
+        assertOrdered(close, "if (outcome.streamClosed())", "refreshSessionState(host.uuid)");
     }
 
     @Test public void playniteStopKeepsCapturedProfileStateAcrossConfirmationAndCompletion()
@@ -253,9 +247,6 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true"));
         assertTrue(stop.contains("refreshSessionProjection(host, ignored -> { })"));
         assertTrue(hardReset.contains("invalidateSessionProjectionRequest(host.uuid)"));
-        assertFalse(source.contains("publishedSessionSnapshots"));
-        assertFalse(source.contains("RunningGameObservation"));
-        assertFalse(source.contains("getPlayniteCurrentGame("));
     }
 
     @Test public void destructiveReplacementUsesExactRetainedTerminationBeforeFallback()
@@ -350,11 +341,8 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(launch.contains("transition.type != LaunchTransitionType.GAME_CONNECTION"));
         assertFalse(launch.contains("PlayHistory.gameKey("));
         assertFalse(source.contains("PlayHistory.recordGame("));
-        int reused = retainedSwitch.indexOf(
-                "result == SessionModel.SwitchOutcome.REUSED");
-        int cancelled = retainedSwitch.indexOf(
+        assertOrdered(retainedSwitch, "result == SessionModel.SwitchOutcome.REUSED",
                 "result == SessionModel.SwitchOutcome.CANCELLED");
-        assertTrue(reused >= 0 && cancelled > reused);
         assertFalse(retainedSwitch.contains("PlayHistory."));
         assertFalse(retainedSwitch.contains("preferences.edit()"));
         assertTrue(launch.contains("Game.EXTRA_STREAM_TARGET_NAME"));
@@ -492,9 +480,6 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(resolve.contains("gateway.snapshot().sessionSnapshot"));
         // Only the presentation key decides a render; no per-Activity copy of the projection.
         assertTrue(resolve.contains("renderLibraryForSessionChange(currentHost(expectedHostId))"));
-        assertFalse(resolve.contains("publishedSessionSnapshots"));
-        assertFalse(resolve.contains("getPlayniteCurrentGame("));
-        assertFalse(resolve.contains("activePlayniteGameIds"));
     }
 
     @Test public void warmUpCancelAndFailureRemainScopedAndInline() throws IOException {
@@ -543,10 +528,10 @@ public class ConsoleActivityEnsureContractTest {
                 "new SessionEvent.CancelPreparingTransport(preparing)"));
         assertTrue(hostCancel.contains("if (cancelled && relinquishForHostChange)"));
         assertTrue(preparation.contains("warmUpStatus = WARM_UP_ERROR"));
-        assertTrue(preparation.indexOf("renderHosts();")
-                > preparation.indexOf("warmUpStatus = WARM_UP_ERROR"));
-        assertTrue(preparation.indexOf("updateHostSelector();")
-                > preparation.indexOf("warmUpStatus = WARM_UP_ERROR"));
+        assertOrdered(preparation, "warmUpStatus = WARM_UP_ERROR",
+                "renderHosts();");
+        assertOrdered(preparation, "warmUpStatus = WARM_UP_ERROR",
+                "updateHostSelector();");
         assertTrue(failure.contains("streamLoadingView.showError("));
         assertTrue(failure.contains("console_warm_up_fallback_details"));
         assertFalse(failure.contains("console_host_timeout"));
@@ -554,10 +539,10 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(status.contains("sessionSubscriber.reconnectRequired(host.uuid)"));
         assertTrue(status.contains("sessionOrchestrator.hasPreparationForHost(host.uuid)"));
         assertTrue(status.contains("closingStatus(snapshot)"));
-        assertTrue(status.indexOf("closingStatus(snapshot)")
-                < status.indexOf("warmUpStatus == WARM_UP_ERROR"));
-        assertTrue(status.indexOf("ConsoleHostPresentation.State.ACTIVE_SESSION")
-                < status.indexOf("warmUpStatus == WARM_UP_ERROR"));
+        assertOrdered(status, "closingStatus(snapshot)",
+                "warmUpStatus == WARM_UP_ERROR");
+        assertOrdered(status, "ConsoleHostPresentation.State.ACTIVE_SESSION",
+                "warmUpStatus == WARM_UP_ERROR");
         assertTrue(status.contains("if (localWarmUp && preparingHost)"));
         // A sleep this client requested is shown at once, before every session status but
         // that of a live session or a game being closed.
@@ -566,32 +551,32 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(source.contains("                && !snapshot.endingGame;"));
         assertFalse(source.contains("if (snapshot.hostSleepRequested) {"));
         assertFalse(source.contains("|| session.hostSleepRequested"));
-        assertTrue(status.indexOf("if (showsHostSleep(snapshot)) {")
-                < status.indexOf("sessionSubscriber.warmUpStatus("));
-        assertTrue(status.indexOf("R.string.console_status_suspending_short")
-                < status.indexOf("closingStatus(snapshot)"));
+        assertOrdered(status, "if (showsHostSleep(snapshot)) {",
+                "sessionSubscriber.warmUpStatus(");
+        assertOrdered(status, "R.string.console_status_suspending_short",
+                "closingStatus(snapshot)");
         String dot = source.substring(source.indexOf(
                 "private ConsoleHostPresentation.State consoleHostState("),
                 source.indexOf("private ConsoleHostPresentation.Profile consoleProfile("));
-        assertTrue(dot.indexOf("if (showsHostSleep(snapshot)) {")
-                < dot.indexOf("SessionSnapshot.State.TERMINATING"));
+        assertOrdered(dot, "if (showsHostSleep(snapshot)) {",
+                "SessionSnapshot.State.TERMINATING");
         // A saved session on an online host is named from its record (stable between host
         // polls), after every warm-up status and instead of a bare "Online".
         assertTrue(status.contains(
                 "ConsoleHostPresentation.holdsPausedSession(state, snapshot)"));
-        assertTrue(status.indexOf("warmUpStatus == WARM_UP_ERROR")
-                < status.indexOf("ConsoleHostPresentation.holdsPausedSession("));
-        assertTrue(status.indexOf("ConsoleHostPresentation.holdsPausedSession(")
-                < status.indexOf("return getString(ConsoleHostPresentation.status(state));"));
+        assertOrdered(status, "warmUpStatus == WARM_UP_ERROR",
+                "ConsoleHostPresentation.holdsPausedSession(");
+        assertOrdered(status, "ConsoleHostPresentation.holdsPausedSession(",
+                "return getString(ConsoleHostPresentation.status(state));");
         assertTrue(status.contains("sessionModel.records().pending"));
         assertTrue(status.contains("R.string.console_status_paused_stream"));
         // A game running without this client's session is named after every session status
         // and instead of a bare "Online", from the projection owner's display fact and this
         // profile's library only (a child's library lists only its shared games).
-        assertTrue(status.indexOf("ConsoleHostPresentation.holdsPausedSession(")
-                < status.indexOf("ConsoleHostPresentation.showsRunningGame(state, snapshot)"));
-        assertTrue(status.indexOf("ConsoleHostPresentation.showsRunningGame(")
-                < status.indexOf("return getString(ConsoleHostPresentation.status(state));"));
+        assertOrdered(status, "ConsoleHostPresentation.holdsPausedSession(",
+                "ConsoleHostPresentation.showsRunningGame(state, snapshot)");
+        assertOrdered(status, "ConsoleHostPresentation.showsRunningGame(",
+                "return getString(ConsoleHostPresentation.status(state));");
         assertTrue(status.contains("libraryGameName(snapshot.display.runningGameId)"));
         assertTrue(status.contains("getString(R.string.console_status_game_running, name)"));
         String named = status.substring(status.indexOf("private String libraryGameName("),
@@ -682,10 +667,10 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(method.contains("resolveProfileGate(automatic, false, true)"));
         assertFalse(method.contains("selectHost(automatic, false)"));
-        assertTrue(enter.indexOf("selectHost(host, focusApps)")
-                < enter.indexOf("prepareSelectedHost(host)"));
-        assertTrue(method.indexOf("initialHostSelectionResolved = true")
-                < method.indexOf("resolveProfileGate(automatic, false, true)"));
+        assertOrdered(enter, "selectHost(host, focusApps)",
+                "prepareSelectedHost(host)");
+        assertOrdered(method, "initialHostSelectionResolved = true",
+                "resolveProfileGate(automatic, false, true)");
     }
 
     @Test public void retainedHomeStartingWindowIsOpaqueButTranslucent() throws IOException {
@@ -963,25 +948,17 @@ public class ConsoleActivityEnsureContractTest {
 
     private static String consoleActivitySource() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/console/ConsoleActivity.java");
-        }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 
     private static String streamHomeActivitySource() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/StreamHomeActivity.java");
-        if (!Files.exists(source)) {
-            source = Paths.get(
-                    "app/src/main/java/com/limelight/console/StreamHomeActivity.java");
-        }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 
     private static String resourceSource(String name) throws IOException {
         Path source = Paths.get("src/main/res", name);
-        if (!Files.exists(source)) source = Paths.get("app/src/main/res", name);
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 
     private static int occurrences(String source, String value) {

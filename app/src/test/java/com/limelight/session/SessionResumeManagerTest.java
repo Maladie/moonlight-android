@@ -1,10 +1,9 @@
 package com.limelight.session;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
@@ -18,9 +17,7 @@ import static org.junit.Assert.assertTrue;
 public class SessionResumeManagerTest {
     private static String source() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/session/SessionResumeManager.java");
-        if (!Files.exists(source)) source = Paths.get(
-                "app/src/main/java/com/limelight/session/SessionResumeManager.java");
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 
     @Test public void reconnectPreservesChildSessionAndPolicyContext() throws IOException {

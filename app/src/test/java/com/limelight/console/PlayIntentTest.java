@@ -153,7 +153,7 @@ public class PlayIntentTest {
                 SessionSnapshot.State.ACTIVE, appId, gameId,
                 false, false, false, false, false, "", false,
                 SessionSnapshot.ObservationState.READY, true,
-                "test", 1L, 1L, 0L, 0L, 0L, "", "", "",
+                "test", 1L, 1L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 }

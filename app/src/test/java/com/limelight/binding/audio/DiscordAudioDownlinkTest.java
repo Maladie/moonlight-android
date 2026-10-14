@@ -1,12 +1,13 @@
 package com.limelight.binding.audio;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayDeque;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -44,9 +45,9 @@ public class DiscordAudioDownlinkTest {
     }
 
     @Test public void applicationOwnsPresentationAndPlaybackFailureReconnects() throws Exception {
-        String application = source("app/src/main/java/com/limelight/MoonWakerApplication.java");
+        String application = source("src/main/java/com/limelight/MoonWakerApplication.java");
         String downlink = source(
-                "app/src/main/java/com/limelight/binding/audio/DiscordAudioDownlink.java");
+                "src/main/java/com/limelight/binding/audio/DiscordAudioDownlink.java");
         assertTrue(application.contains("!(activity instanceof Game)"));
         assertTrue(application.contains("postDelayed(stopDiscordAudio"));
         assertFalse(application.contains("PREF_ENABLED, false)\n                .start"));
@@ -58,8 +59,8 @@ public class DiscordAudioDownlinkTest {
         assertTrue(downlink.contains("GatewayTransport.DiscordAudioStream opened = null;"));
         assertTrue(downlink.contains("if (closed) return;"));
         assertTrue(downlink.contains("trackReleased.compareAndSet(false, true)"));
-        assertTrue(downlink.indexOf("opened.close();")
-                < downlink.indexOf("ended(this, frames >= STABLE_FRAMES)"));
+        assertOrdered(downlink, "opened.close();",
+                "ended(this, frames >= STABLE_FRAMES)");
     }
 
     private static int sample(byte[] data, int offset) {
@@ -68,7 +69,6 @@ public class DiscordAudioDownlinkTest {
 
     private static String source(String relative) throws Exception {
         Path path = Paths.get(relative);
-        if (!Files.exists(path)) path = Paths.get("..", relative);
-        return new String(Files.readAllBytes(path)).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

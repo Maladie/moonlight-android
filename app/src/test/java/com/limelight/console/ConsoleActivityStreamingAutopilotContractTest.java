@@ -1,10 +1,9 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -64,15 +63,11 @@ public class ConsoleActivityStreamingAutopilotContractTest {
 
     private static String consoleSource(String file) throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/" + file);
-        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/console/" + file);
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return SourceText.read(source);
     }
 
     private static String consoleActivitySource() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/console/ConsoleActivity.java");
-        }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 }

@@ -387,7 +387,7 @@ public class SessionStateProjectionTest {
         // Same episode, provider freshness 5 s (the lab provider value), polled every ~6 s.
         HostGatewayClient.SessionObservation again = new HostGatewayClient.SessionObservation(
                 "boot-ready", 2L, 1_000L, 5_000L, "running", 1_000L, "child", "parent",
-                second, "", "operation", "session", 1L, 1L, "running",
+                second, "operation", "session", 1L, 1L, "running",
                 HostGatewayClient.Evidence.VERIFIED, "running",
                 HostGatewayClient.Evidence.VERIFIED, "game",
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
@@ -473,7 +473,7 @@ public class SessionStateProjectionTest {
                         "running", HostGatewayClient.Evidence.VERIFIED, "game",
                         HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
                         HostGatewayClient.Evidence.VERIFIED, true, "target_window_ready",
-                        "operation", "", "wrong-session"),
+                        "operation", "wrong-session"),
                 m.snapshot(), 0L));
 
         SessionSnapshot snapshot = owner.current(
@@ -571,7 +571,6 @@ public class SessionStateProjectionTest {
                 nextTransport, 16_001L));
         SessionSnapshot nextPlay = owner.current(nextTransport, 16_001L);
         assertEquals("operation-next", nextPlay.operationId);
-        assertEquals("transition-next", nextPlay.transitionId);
         assertEquals(nextTransport.transportGeneration, nextPlay.transportGeneration);
         assertEquals(SessionSnapshot.ObservationState.READY, nextPlay.observationState);
         assertTrue(m.completePreparing(nextController,
@@ -816,7 +815,7 @@ public class SessionStateProjectionTest {
                 newOwner("host", "parent", "parent");
         HostGatewayClient.SessionObservation seen = new HostGatewayClient.SessionObservation(
                 "boot-a", 1L, HOST_NOW, 5_000L, "running",
-                HOST_NOW, "parent", "parent", parent.nextRequestOrdinal(), "", "operation",
+                HOST_NOW, "parent", "parent", parent.nextRequestOrdinal(), "operation",
                 "", 1L, 1L, "running", HostGatewayClient.Evidence.VERIFIED,
                 "running", HostGatewayClient.Evidence.VERIFIED, "game",
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
@@ -1136,7 +1135,7 @@ public class SessionStateProjectionTest {
             long processStarted, long streamStarted) {
         HostGatewayClient.SessionObservation seen = new HostGatewayClient.SessionObservation(
                 "boot-a", revision, HOST_NOW + localNow, 5_000L, "running",
-                HOST_NOW, "child", "parent", ordinal, "", "operation",
+                HOST_NOW, "child", "parent", ordinal, "operation",
                 session, 1L, 1L, "running", HostGatewayClient.Evidence.VERIFIED,
                 "running", HostGatewayClient.Evidence.VERIFIED, gameId,
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
@@ -1150,7 +1149,7 @@ public class SessionStateProjectionTest {
     private static HostGatewayClient.SessionObservation readyAtGeneration(
             String boot, long ordinal, long generation) {
         return new HostGatewayClient.SessionObservation(boot, 1L, 1_000L, 15_000L,
-                "running", 1_000L, "child", "parent", ordinal, "", "operation",
+                "running", 1_000L, "child", "parent", ordinal, "operation",
                 "session", generation, 1L, "running", HostGatewayClient.Evidence.VERIFIED,
                 "running", HostGatewayClient.Evidence.VERIFIED, "game",
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
@@ -1199,7 +1198,7 @@ public class SessionStateProjectionTest {
                 HostGatewayClient.Evidence.VERIFIED, "game",
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
                 HostGatewayClient.Evidence.VERIFIED, true, "target_window_ready",
-                "operation-next", "transition-next", "session-next");
+                "operation-next", "session-next");
     }
 
     private static HostGatewayClient.SessionObservation observation(
@@ -1209,7 +1208,7 @@ public class SessionStateProjectionTest {
             HostGatewayClient.Evidence windowEvidence, boolean windowReady, String reason) {
         return observation(boot, revision, ordinal, episode, gameState,
                 gameEvidence, gameId, processEvidence, processId, processToken,
-                windowEvidence, windowReady, reason, "operation", "", "session");
+                windowEvidence, windowReady, reason, "operation", "session");
     }
 
     private static HostGatewayClient.SessionObservation observation(
@@ -1217,9 +1216,9 @@ public class SessionStateProjectionTest {
             HostGatewayClient.Evidence gameEvidence, String gameId,
             HostGatewayClient.Evidence processEvidence, int processId, String processToken,
             HostGatewayClient.Evidence windowEvidence, boolean windowReady, String reason,
-            String operation, String transition, String session) {
+            String operation, String session) {
         return new HostGatewayClient.SessionObservation(boot, revision, 1_000L, 15_000L,
-                episode, 1_000L, "child", "parent", ordinal, transition, operation,
+                episode, 1_000L, "child", "parent", ordinal, operation,
                 session, "session-next".equals(session) ? 5L : 1L, 1L,
                 gameState, HostGatewayClient.Evidence.VERIFIED,
                 gameState, gameEvidence, gameId, processEvidence, processId, processToken,

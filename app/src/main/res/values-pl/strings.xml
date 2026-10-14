@@ -238,8 +238,6 @@
     <string name="console_status_suspending_short">Usypianie</string>
     <string name="console_status_suspended_short">Uśpiony · %1$s</string>
     <string name="console_resume_suspended">Wznów</string>
-    <string name="console_waking_suspended_session">Wybudzam komputer i przywracam wstrzymaną grę…</string>
-    <string name="console_suspended_resume_timeout">Komputer nie zgłosił gotowości. Wstrzymana gra pozostaje dostępna.</string>
     <string name="console_game">Gra</string>
     <string name="overlay_menu_toggle_stats">Statystyki</string>
     <string name="overlay_menu_mouse_emulation">Mysz</string>

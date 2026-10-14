@@ -1,13 +1,13 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -212,23 +212,23 @@ public class ConsoleIntroEntranceContractTest {
                 "private PlayniteLibraryCache.Entry readCachedLibrary(");
         // Whichever of the two answers second renders: the app list result when the library
         // is in memory by then, the cached library only when this host's app list already is.
-        assertTrue(apps.indexOf("initialLocalAppsHostId = uuid;")
-                < apps.indexOf("renderPlayniteLibrary(latestHost, apps);"));
+        assertOrdered(apps, "initialLocalAppsHostId = uuid;",
+                "renderPlayniteLibrary(latestHost, apps);");
         assertTrue(load.contains(
                 "} else if (cached != null && host.uuid.equals(initialLocalAppsHostId)) {\n"
                 + "                    // Without this host's app list yet, its result renders the library: once.\n"
                 + "                    renderLibraryAfterIntroEntrance(host.uuid);"));
         assertEquals(1, load.split("renderLibraryAfterIntroEntrance\\(", -1).length - 1);
         // A library emptied for a new load is not "the same library": the app list renders it.
-        assertTrue(load.indexOf("playniteInitialLoadPending = true;")
-                < load.indexOf("renderedSunshineAppsKey = \"\";"));
-        assertTrue(load.indexOf("renderedSunshineAppsKey = \"\";")
-                < load.indexOf("playniteRequest = playniteExecutor.submit("));
+        assertOrdered(load, "playniteInitialLoadPending = true;",
+                "renderedSunshineAppsKey = \"\";");
+        assertOrdered(load, "renderedSunshineAppsKey = \"\";",
+                "playniteRequest = playniteExecutor.submit(");
         // Every entry resets the app list fact before both reads start.
         String select = between(activity, "private void selectHost(ComputerDetails host, boolean focusApps)",
                 "private void cancelOwnedWarmUp(");
-        assertTrue(select.indexOf("initialLocalAppsHostId = \"\";")
-                < select.indexOf("renderAppsAsync(host, focusApps);"));
+        assertOrdered(select, "initialLocalAppsHostId = \"\";",
+                "renderAppsAsync(host, focusApps);");
         // A profile applied in place publishes the app list itself.
         assertTrue(between(activity, "private void applySelectedProfile(",
                 "private boolean changeSelectedProfile(").contains(
@@ -318,9 +318,6 @@ public class ConsoleIntroEntranceContractTest {
 
     private static String source(String file) throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/" + file);
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/console/" + file);
-        }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 }

@@ -1,5 +1,6 @@
 package com.limelight.discord;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -10,8 +11,6 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -25,10 +24,7 @@ public class DiscordSocialClientTest {
     @Test
     public void nativeSnapshotConvertsUtf8ToUtf16BeforeCreatingJavaStrings() throws IOException {
         Path source = Paths.get("src/main/jni/discord-social/discord-social-jni.cpp");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/jni/discord-social/discord-social-jni.cpp");
-        }
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String text = SourceText.read(source);
         assertTrue(text.contains("env->NewString("));
         assertTrue(text.contains("codePoint > 0x10ffff"));
         assertTrue(text.contains("codePoint >= 0xd800"));

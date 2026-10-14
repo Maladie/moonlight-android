@@ -1,18 +1,16 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import static com.limelight.GameAutoWarmUpContractTest.assertOrdered;
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.*;
 
 public class ConsoleHostPreparationContractTest {
     @Test public void automaticPairingWaitsForBridgeAndReportsItsFailureStage() throws Exception {
         Path path = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
-        if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(path);
         String pairing = section(source, "private void beginAutomaticHostPairing(",
                 "private void cancelPendingPairing(");
 
@@ -31,8 +29,7 @@ public class ConsoleHostPreparationContractTest {
 
     @Test public void savedPairOnlyAuthorizesPreparationAndBinderJoinIsConsumedOnce() throws Exception {
         Path path = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
-        if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(path);
         String prepare = section(source, "private void prepareSelectedHost(",
                 "private void dispatchPendingHostPreparation()");
         assertTrue(prepare.contains("ConsoleActionCatalog.isRememberedPaired(host)"));
@@ -131,8 +128,7 @@ public class ConsoleHostPreparationContractTest {
 
     private static String source(String relative) throws Exception {
         Path path = Paths.get(relative);
-        if (!Files.exists(path)) path = Paths.get("app").resolve(relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 
     private static String section(String source, String begin, String end) {
