@@ -182,7 +182,6 @@ New-Item -ItemType Directory -Path $InstallDirectory, $sourceDirectory,
     $stateDirectory, $windowsLoginDirectory -Force | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $bridgeSource "discord") -Destination $sourceDirectory -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $bridgeSource "vibepollo") -Destination $sourceDirectory -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $bridgeSource "playnite") -Destination $sourceDirectory -Recurse -Force
 Remove-Item -LiteralPath (Join-Path $sourceDirectory "playnite\PlayniteBridge.py") `
     -Force -ErrorAction SilentlyContinue
@@ -203,7 +202,6 @@ if (Test-Path -LiteralPath $profilesDirectory -PathType Container) {
             -Destination (Join-Path $_.FullName "moonwaker-version.json") -Force
         foreach ($component in @(
                 @{ source = "discord"; destination = "discord" },
-                @{ source = "vibepollo"; destination = "vibepollo" },
                 @{ source = "playnite"; destination = "game-provider" })) {
             $destination = Join-Path $_.FullName $component.destination
             if (Test-Path -LiteralPath $destination -PathType Container) {

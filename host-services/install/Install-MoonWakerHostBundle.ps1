@@ -6,13 +6,11 @@ param(
     [string]$ProfileName = "",
     [int]$GatewayPort = 8785,
     [int]$DiscordPort = 0,
-    [int]$VibepolloPort = 0,
     [int]$GameProviderPort = 0,
     [int]$PlaynitePort = 0,
     [string]$InstallDirectory = "C:\Tools\WakePlayHost",
     [string]$PlayniteDirectory = "",
     [switch]$SkipDiscord,
-    [switch]$SkipVibepollo,
     [switch]$SkipPlaynite,
     [switch]$ProfileOnly,
     [switch]$InitializeMachineData,
@@ -53,14 +51,13 @@ function Get-PortFromEndpoint {
 
 function Resolve-ProfilePorts {
     param([string]$ConfigPath)
-    $defaults = @(8765, 8775, 8780)
+    $defaults = @(8765, 8780)
     if ($ProfileId -eq "default") {
         return @(
             $(if ($DiscordPort) { $DiscordPort } else { $defaults[0] }),
-            $(if ($VibepolloPort) { $VibepolloPort } else { $defaults[1] }),
             $(if ($GameProviderPort) { $GameProviderPort } elseif ($PlaynitePort) {
                 $PlaynitePort
-            } else { $defaults[2] }))
+            } else { $defaults[1] }))
     }
     $gateway = $null
     if (Test-Path -LiteralPath $ConfigPath) {
@@ -73,7 +70,6 @@ function Resolve-ProfilePorts {
         $entry = $existing.Value
         return @(
             $(if ($DiscordPort) { $DiscordPort } else { Get-PortFromEndpoint $entry "discord_bridge" }),
-            $(if ($VibepolloPort) { $VibepolloPort } else { Get-PortFromEndpoint $entry "vibepollo_bridge" }),
             $(if ($GameProviderPort) { $GameProviderPort } elseif ($PlaynitePort) {
                 $PlaynitePort
             } else {
@@ -84,8 +80,7 @@ function Resolve-ProfilePorts {
     $used = [Collections.Generic.HashSet[int]]::new()
     if ($gateway -and $gateway.profiles) {
         foreach ($property in $gateway.profiles.PSObject.Properties) {
-            foreach ($name in @("discord_bridge", "vibepollo_bridge",
-                    "game_provider_bridge", "playnite_bridge")) {
+            foreach ($name in @("discord_bridge", "game_provider_bridge", "playnite_bridge")) {
                 $port = Get-PortFromEndpoint $property.Value $name
                 if ($port) { [void]$used.Add($port) }
             }
@@ -97,17 +92,14 @@ function Resolve-ProfilePorts {
         # op_Multiply on System.Object[].
         $candidate = @(
             ($defaults[0] + (100 * $slot)),
-            ($defaults[1] + (100 * $slot)),
-            ($defaults[2] + (100 * $slot))
+            ($defaults[1] + (100 * $slot))
         )
-        if (-not $used.Contains($candidate[0]) -and -not $used.Contains($candidate[1]) -and
-            -not $used.Contains($candidate[2])) {
+        if (-not $used.Contains($candidate[0]) -and -not $used.Contains($candidate[1])) {
             return @(
                 $(if ($DiscordPort) { $DiscordPort } else { $candidate[0] }),
-                $(if ($VibepolloPort) { $VibepolloPort } else { $candidate[1] }),
                 $(if ($GameProviderPort) { $GameProviderPort } elseif ($PlaynitePort) {
                     $PlaynitePort
-                } else { $candidate[2] }))
+                } else { $candidate[1] }))
         }
     }
     throw "No free Bridge port set was found for the new profile."
@@ -207,72 +199,6 @@ function Initialize-MachineDiscordApplication {
     throw "Shared Discord application data is required once for this computer. Enter Client ID and Client Secret."
 }
 
-function New-MoonWakerVibepolloToken {
-    $baseUrl = [string]$env:MOONWAKER_VIBEPOLLO_URL
-    $username = [string]$env:MOONWAKER_VIBEPOLLO_ADMIN_USERNAME
-    $password = [string]$env:MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD
-    if ([string]::IsNullOrWhiteSpace($baseUrl)) { $baseUrl = "https://127.0.0.1:47990" }
-    $uri = $null
-    if (-not [uri]::TryCreate($baseUrl, [UriKind]::Absolute, [ref]$uri) -or
-        $uri.Scheme -ne "https" -or $uri.Host -notin @("127.0.0.1", "localhost")) {
-        throw "Vibepollo automatic token creation is restricted to its local HTTPS API."
-    }
-    if ([string]::IsNullOrWhiteSpace($username) -or [string]::IsNullOrWhiteSpace($password)) {
-        throw "Vibepollo administrator username and password are required to create a token."
-    }
-    $transport = Join-Path $packageRoot "bridges\vibepollo\VibepolloTransport.py"
-    $scopePath = Join-Path $packageRoot "bridges\vibepollo\moonwaker-token-scopes.example.json"
-    if (-not (Test-Path -LiteralPath $transport) -or -not (Test-Path -LiteralPath $scopePath)) {
-        throw "The Vibepollo token helper payload is incomplete."
-    }
-    $scopeDocument = Get-Content -LiteralPath $scopePath -Raw | ConvertFrom-Json
-    $appsScope = @($scopeDocument.scopes | Where-Object { $_.path -eq "/api/apps" }) |
-        Select-Object -First 1
-    if ($null -eq $appsScope -or "GET" -notin @($appsScope.methods) -or
-        "POST" -notin @($appsScope.methods)) {
-        throw "The Vibepollo token scope must allow GET and POST /api/apps."
-    }
-    $pinScope = @($scopeDocument.scopes | Where-Object { $_.path -eq "/api/pin" }) |
-        Select-Object -First 1
-    $clientUpdateScope = @($scopeDocument.scopes | Where-Object {
-        $_.path -eq "/api/clients/update"
-    }) | Select-Object -First 1
-    if ($null -eq $pinScope -or "POST" -notin @($pinScope.methods) -or
-        $null -eq $clientUpdateScope -or "POST" -notin @($clientUpdateScope.methods)) {
-        throw "The Vibepollo token scope must allow automatic client pairing and permission updates."
-    }
-    $request = [ordered]@{
-        base_url = $baseUrl.TrimEnd('/')
-        path = "/api/token"
-        method = "POST"
-        username = $username
-        password = $password
-        body = @{ scopes = @($scopeDocument.scopes) }
-    } | ConvertTo-Json -Depth 20 -Compress
-    try {
-        $raw = $request | & python.exe $transport
-        $transportResult = $raw | ConvertFrom-Json
-        if (-not $transportResult.ok) {
-            throw "Vibepollo rejected token creation (HTTP $($transportResult.status)). Check administrator credentials."
-        }
-        $content = [string]$transportResult.content
-        try { $response = $content | ConvertFrom-Json } catch { $response = $content.Trim() }
-        $token = if ($response -is [string]) { [string]$response } `
-            elseif ($response.PSObject.Properties["token"]) { [string]$response.token } `
-            elseif ($response.PSObject.Properties["access_token"]) { [string]$response.access_token } `
-            else { "" }
-        if ([string]::IsNullOrWhiteSpace($token)) {
-            throw "Vibepollo created no readable token in its response."
-        }
-        $env:MOONWAKER_VIBEPOLLO_TOKEN = $token
-        Write-Host "Created a least-privilege Vibepollo token for the MoonWaker profile."
-    } finally {
-        $password = $null
-        $request = $null
-        $env:MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD = $null
-    }
-}
-
 $script:IsAdministrator = Test-IsAdministrator
 if ($script:IsAdministrator -and -not $ProfileOnly) { Assert-InteractiveAdministrator }
 if (-not (Get-Command "python.exe" -ErrorAction SilentlyContinue)) {
@@ -367,9 +293,6 @@ if (-not $SkipDiscord) {
         Initialize-MachineDiscordApplication
     }
 }
-if (-not $SkipVibepollo -and $env:MOONWAKER_VIBEPOLLO_CREATE_TOKEN -eq "1") {
-    New-MoonWakerVibepolloToken
-}
 $resolvedPlaynite = if ($SkipPlaynite) { "" } else { Resolve-PlayniteInstall }
 $playniteEnabled = -not $SkipPlaynite -and (
     -not [string]::IsNullOrWhiteSpace($resolvedPlaynite) -or
@@ -394,10 +317,10 @@ try {
     Write-Host "Installing integration profile '$ProfileId'..."
     & $profileInstaller -ProfileId $ProfileId -ProfileName $ProfileName `
         -InstallRoot $profilesRoot `
-        -DiscordPort $ports[0] -VibepolloPort $ports[1] -GameProviderPort $ports[2] `
+        -DiscordPort $ports[0] -GameProviderPort $ports[1] `
         -GatewayConfigPath $gatewayConfig -SkipDiscord:$SkipDiscord `
         -GatewayDirectory $gatewayDirectory -HostControlExecutable (Join-Path $hostRoot "control\MoonWakerHostControl.exe") `
-        -SkipVibepollo:$SkipVibepollo -SkipPlaynite:(-not $playniteEnabled) `
+        -SkipPlaynite:(-not $playniteEnabled) `
         -NonInteractiveConfiguration
 
     if ($playniteEnabled -and -not [string]::IsNullOrWhiteSpace($resolvedPlaynite)) {
@@ -460,9 +383,8 @@ try {
         gateway_directory = $gatewayDirectory
         install_directory = $hostRoot
         discord_port = if ($SkipDiscord) { 0 } else { $ports[0] }
-        vibepollo_port = if ($SkipVibepollo) { 0 } else { $ports[1] }
-        game_provider_port = $ports[2]
-        playnite_port = $ports[2]
+        game_provider_port = $ports[1]
+        playnite_port = $ports[1]
         playnite_enabled = $playniteEnabled
         restart_required = $false
         version = [string]$expectedVersion.version
@@ -470,6 +392,4 @@ try {
     } | ConvertTo-Json -Compress | ForEach-Object { "MOONWAKER_INSTALL_RESULT=$_" }
 } finally {
     $env:MOONWAKER_DISCORD_CLIENT_SECRET = $null
-    $env:MOONWAKER_VIBEPOLLO_TOKEN = $null
-    $env:MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD = $null
 }

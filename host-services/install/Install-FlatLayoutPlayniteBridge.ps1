@@ -4,17 +4,14 @@ param(
     [string]$BridgeDirectory = "C:\Tools\PlayniteBridge",
     [string]$GatewayDirectory = "C:\Tools\WakePlayGateway",
     [int]$PlaynitePort = 8780,
-    [int]$VibepolloPort = 8775,
     [switch]$SkipScheduledTask,
     [switch]$SkipStart
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-if ($PlaynitePort -lt 1024 -or $PlaynitePort -gt 65535 -or
-    $VibepolloPort -lt 1024 -or $VibepolloPort -gt 65535 -or
-    $PlaynitePort -eq $VibepolloPort) {
-    throw "Bridge ports must be distinct values between 1024 and 65535."
+if ($PlaynitePort -lt 1024 -or $PlaynitePort -gt 65535) {
+    throw "The Bridge port must be between 1024 and 65535."
 }
 
 $hostServicesRoot = Split-Path -Parent $PSScriptRoot
@@ -48,7 +45,6 @@ if ($PSCmdlet.ShouldProcess($BridgeDirectory, "Install profile-scoped Game Provi
     foreach ($entry in @{
         listen_host = "127.0.0.1"
         listen_port = $PlaynitePort
-        vibepollo_bridge = "http://127.0.0.1:$VibepolloPort"
     }.GetEnumerator()) {
         if ($null -eq $config.PSObject.Properties[$entry.Key]) {
             $config | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value

@@ -12,7 +12,7 @@ MoonWaker is a console-oriented Android TV client built on Moonlight. It coordin
 - Vibepollo for stream host integration;
 - Playnite as the game library and lifecycle source;
 - MoonWaker Gateway as the authenticated client-facing host API;
-- per-profile host Bridges for Playnite, Vibepollo, and Discord;
+- per-profile host Bridges for Playnite and Discord;
 - host-side control, installation, repair, and lifecycle tooling.
 
 The architecture should preserve Moonlight's streaming core and isolate MoonWaker-specific orchestration around it.
@@ -344,6 +344,14 @@ Keep:
 
 Do not expose a generic arbitrary Bridge proxy.
 
+The Gateway owns the machine's single Vibepollo connection in process
+(`vibepollo_client.py`): one token per computer in `gateway\vibepollo-api.json`
+(Administrators, SYSTEM, read for the service; written only by the elevated
+Configurator), the HTTPS certificate pinned to the one in Vibepollo's
+configuration directory, control snapshots, the `MoonWaker Stream` application,
+Moonlight pairing, identity proofs and repair actions. There is no Vibepollo
+Bridge.
+
 ### 5.2 Host profiles and paired-client grants
 
 The machine profile registry owns non-secret definitions keyed by a stable,
@@ -394,7 +402,7 @@ Selecting or refreshing an app profile has no Windows-session side effect.
 The Profile Bridge supervisor already owns:
 
 - per-user process lifecycle;
-- Playnite/Vibepollo health checks;
+- Playnite and Discord health checks;
 - restart behavior;
 - profile ownership;
 - runtime status;

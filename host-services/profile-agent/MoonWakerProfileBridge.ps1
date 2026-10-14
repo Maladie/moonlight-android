@@ -129,7 +129,7 @@ function Write-AgentDiagnosticEvent([string]$Event, [hashtable]$Fields = @{}, [E
                 if ($value -in @("startup", "start_components", "authority", "process_check", "health_check", "state_write", "loop_wait")) { $record[$key] = $value }
             } elseif ($key -eq "error_line") {
                 if (($value -is [int] -or $value -is [long]) -and $value -gt 0 -and $value -le 1000000) { $record[$key] = $value }
-            } elseif ($key -eq "child_component" -and $value -in @("discord", "vibepollo", "game-provider")) { $record[$key] = $value }
+            } elseif ($key -eq "child_component" -and $value -in @("discord", "game-provider")) { $record[$key] = $value }
             elseif ($key -ne "child_component" -and (($value -is [int] -or $value -is [long]) -or
                 (($value -is [string]) -and $value -match '^[A-Za-z0-9._:$-]{1,256}$'))) { $record[$key] = $value }
         }
@@ -160,7 +160,7 @@ function Start-HiddenProcess([string]$FileName, [string]$Arguments, [string]$Wor
 function Write-State([string]$Status) {
     if (-not $ownsMutex) { return }
     $components = [ordered]@{}
-    foreach ($name in @("discord", "vibepollo", "game-provider")) {
+    foreach ($name in @("discord", "game-provider")) {
         $process = $children[$name]
         $components[$name] = [ordered]@{
             enabled = Test-Path -LiteralPath (Join-Path $ProfileRoot $name)
@@ -250,11 +250,6 @@ function Start-Component([string]$Name) {
         if (-not (Test-Path -LiteralPath $script)) { return $null }
         return Start-HiddenProcess "powershell.exe" ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $script.Replace('"', '\"'))
     }
-    if ($Name -eq "vibepollo") {
-        $script = Join-Path $directory "VibepolloBridge.ps1"
-        if (-not (Test-Path -LiteralPath $script)) { return $null }
-        return Start-HiddenProcess "powershell.exe" ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $script.Replace('"', '\"'))
-    }
     $script = Join-Path $directory "GameProviderBridge.py"
     $config = Join-Path $directory "config.json"
     if (-not (Test-Path -LiteralPath $script) -or -not (Test-Path -LiteralPath $config)) { return $null }
@@ -309,7 +304,7 @@ function Should-Restart-Component([string]$Name, [bool]$Healthy,
     } else { 0 }
     $failureCount++
     $FailureCounts[$Name] = $failureCount
-    $requiredFailures = if ($Name -in @("vibepollo", "game-provider")) { 2 } else { 1 }
+    $requiredFailures = if ($Name -eq "game-provider") { 2 } else { 1 }
     return $failureCount -ge $requiredFailures
 }
 
@@ -323,7 +318,6 @@ function Restart-Component([string]$Name, [Diagnostics.Process]$Process) {
 function Stop-Components {
     foreach ($entry in @(
         @{ name = "discord"; script = "Stop-DiscordBridge.ps1" },
-        @{ name = "vibepollo"; script = "Stop-VibepolloBridge.ps1" },
         @{ name = "game-provider"; script = "Stop-PlayniteBridge.ps1" })) {
         $stopScript = Join-Path (Join-Path $ProfileRoot $entry.name) $entry.script
         if (Test-Path -LiteralPath $stopScript) {
@@ -367,7 +361,7 @@ try {
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
     Write-AgentDiagnosticEvent "supervisor.started" @{ profile_id = $ProfileId; status = "running" }
     $loopStage = "start_components"
-    foreach ($name in @("discord", "vibepollo", "game-provider")) {
+    foreach ($name in @("discord", "game-provider")) {
         $loopComponent = $name
         try { $children[$name] = Start-Component $name } catch { Write-AgentDiagnosticEvent "component.start_failed" @{ profile_id = $ProfileId; child_component = $name; status = "failed" } $_.Exception }
     }
@@ -393,7 +387,7 @@ try {
             break
         }
         $loopStage = "process_check"
-        foreach ($name in @("discord", "vibepollo", "game-provider")) {
+        foreach ($name in @("discord", "game-provider")) {
             $loopComponent = $name
             $process = $children[$name]
             if ($null -ne $process -and $process.HasExited) {
@@ -410,7 +404,7 @@ try {
         if ($healthTick -ge 8) {
             $healthTick = 0
             $loopStage = "health_check"
-            foreach ($name in @("discord", "vibepollo", "game-provider")) {
+            foreach ($name in @("discord", "game-provider")) {
                 $loopComponent = $name
                 $process = $children[$name]
                 # DiscordBridge deliberately handles AUTHORIZE synchronously while

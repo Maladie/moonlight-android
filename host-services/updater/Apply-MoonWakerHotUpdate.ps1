@@ -139,7 +139,7 @@ function Get-VersionFloor([Version]$Installed, [object]$State, [object]$HighWate
 }
 
 function Test-AllowedPayloadPath([string]$Path) {
-    return $Path -match '^(gateway/[A-Za-z0-9_.-]+\.py|bridges/(playnite/[A-Za-z0-9_.-]+\.py|vibepollo/[A-Za-z0-9_.-]+\.(ps1|psm1)|discord/[A-Za-z0-9_.-]+\.(ps1|psm1)))$'
+    return $Path -match '^(gateway/[A-Za-z0-9_.-]+\.py|bridges/(playnite/[A-Za-z0-9_.-]+\.py|discord/[A-Za-z0-9_.-]+\.(ps1|psm1)))$'
 }
 
 function Set-StateAtomic([hashtable]$Value) {
@@ -221,7 +221,7 @@ function Stop-Runtime([hashtable]$Plan, [scriptblock]$AfterGatewayStop = {}) {
         foreach ($taskName in @($Plan.tasks)) {
             Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
         }
-        $known = '(wakeplay_gateway\.py|MoonWakerProfileBridge\.ps1|DiscordBridge\.ps1|VibepolloBridge\.ps1|GameProviderBridge\.py|PlayniteBridge\.py|MoonWakerDiscordAudioWorker\.exe|MoonWakerMicrophoneWorker\.exe)'
+        $known = '(wakeplay_gateway\.py|MoonWakerProfileBridge\.ps1|DiscordBridge\.ps1|GameProviderBridge\.py|PlayniteBridge\.py|MoonWakerDiscordAudioWorker\.exe|MoonWakerMicrophoneWorker\.exe)'
         $rootPattern = [regex]::Escape($HostRoot + '\')
         $processes = @(Get-CimInstance Win32_Process -Property ProcessId,CommandLine -ErrorAction Stop |
             Where-Object { [string]$_.CommandLine -match $rootPattern -and [string]$_.CommandLine -match $known })
@@ -323,10 +323,6 @@ function Test-EndpointHealth([hashtable]$Endpoint) {
             return $body.ok -eq $true -and $body.component -eq "game-provider" -and
                 [int]$body.pid -eq $ownerPid -and [string]$body.profile_id -eq $Endpoint.profile
         }
-        if ($Endpoint.component -eq "vibepollo") {
-            $body = $content | ConvertFrom-Json
-            return $body.ok -eq $true -and [int]$body.port -eq [int]$Endpoint.port
-        }
         return [string]$content -match '^ok\tconnected=(True|False)\tauthenticated=(True|False)\tpipe='
     } catch { return $false }
 }
@@ -344,17 +340,17 @@ function Test-RuntimeHealthy([hashtable]$Plan) {
     })
     foreach ($profile in @($config.profiles.PSObject.Properties | Where-Object {
             $_.Name -in $activeProfileIds })) {
-        foreach ($property in @("discord_bridge", "vibepollo_bridge", "game_provider_bridge", "playnite_bridge")) {
+        foreach ($property in @("discord_bridge", "game_provider_bridge", "playnite_bridge")) {
             $endpoint = $profile.Value.PSObject.Properties[$property]
             if ($null -eq $endpoint -or [string]::IsNullOrWhiteSpace([string]$endpoint.Value)) { continue }
             $uri = $null
             if (-not ([uri]::TryCreate([string]$endpoint.Value, [UriKind]::Absolute, [ref]$uri) -and
                 $uri.Host -in @("127.0.0.1", "localhost"))) { return $false }
             $component = if ($property -in @("game_provider_bridge", "playnite_bridge")) {
-                "game-provider" } elseif ($property -eq "vibepollo_bridge") { "vibepollo" } else { "discord" }
+                "game-provider" } else { "discord" }
             $directory = if ($component -eq "game-provider") { "game-provider" } else { $component }
             $script = if ($component -eq "game-provider") { "GameProviderBridge.py" } `
-                elseif ($component -eq "vibepollo") { "VibepolloBridge.ps1" } else { "DiscordBridge.ps1" }
+                else { "DiscordBridge.ps1" }
             $endpoints += @{ component = $component; scheme = "http"; port = $uri.Port;
                 path = "/health"; profile = $profile.Name;
                 root = (Join-Path (Join-Path $HostRoot "profiles\$($profile.Name)") $directory); script = $script }

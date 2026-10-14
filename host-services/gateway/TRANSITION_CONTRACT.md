@@ -348,8 +348,8 @@ client refuses to start a stream without the capability it knows.
 
 Per-game streamer applications are gone from the contract: `vibepollo/apps/ensure`,
 `vibepollo/apps/status`, the `vibepollo_apps` capability entry and the library field
-`vibepollo_state` no longer exist, and the Vibepollo Bridge keeps only the neutral
+`vibepollo_state` no longer exist, and the Gateway keeps only the neutral
 `MoonWaker Stream` application. Per-game applications an older host created stay in the
-streamer's configuration: nothing deletes them, and the Bridge token's scope grants no
+streamer's configuration: nothing deletes them, and the Vibepollo token's scope grants no
 `DELETE`. Nothing in the control-operation contract changed, so the
 capability and the protocol version stay.

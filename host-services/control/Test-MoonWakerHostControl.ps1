@@ -25,8 +25,6 @@ $configuratorSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWak
 $hostControlSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "Invoke-MoonWakerHostControl.ps1") -Raw
 $profileAgentSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
     "profile-agent\MoonWakerProfileBridge.ps1") -Raw
-$vibepolloBridgeSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
-    "bridges\vibepollo\VibepolloBridge.ps1") -Raw
 
 function Test-ProviderStatusFixture {
     # Execute the real status caller with all file/network/service effects replaced.
@@ -91,8 +89,11 @@ function Test-ProviderStatusFixture {
 }
 
 Test-ProviderStatusFixture
-if (-not $uiSource.Contains('vibepolloUrl.Text = vibepolloConfigured ? "" :')) {
-    throw "The integrations dialog no longer preserves an existing Vibepollo base URL."
+# Vibepollo is a computer setting: its one token is written by the elevated Configurator.
+if (-not $uiSource.Contains('LaunchConfigurator("vibepollo", null)') -or
+    -not $configuratorSource.Contains('else if (mode == "vibepollo") form = new VibepolloTokenForm(store);') -or
+    $hostControlSource.Contains('MOONWAKER_VIBEPOLLO')) {
+    throw "The Vibepollo token is not written through the elevated Configurator only."
 }
 foreach ($contract in @(
     'private const int ProfileCreatedExitCode = 10;',
@@ -108,24 +109,7 @@ if (-not $configuratorSource.Contains(
     -not $configuratorSource.Contains('DialogResult = DialogResult.OK;')) {
     throw "The elevated profile configurator does not report successful profile creation."
 }
-foreach ($contract in @(
-    'function Get-CompatiblePythonExecutable',
-    '$request | & $PythonExecutable $transport',
-    'python_path = $python',
-    '[string]::IsNullOrWhiteSpace($existingPython)',
-    '-not [string]::IsNullOrWhiteSpace($_)',
-    'Get-Command python.exe -CommandType Application'
-)) {
-    if (-not $hostControlSource.Contains($contract)) {
-        throw "Host Control Vibepollo Python resolution is missing: $contract"
-    }
-}
-if ($hostControlSource.Contains(
-        'Test-Path -LiteralPath ([string]$existing.python_path)')) {
-    throw "Host Control can still pass an empty configured Python path to LiteralPath."
-}
-if (-not $vibepolloBridgeSource.Contains('$script:PythonExe = Get-CompatiblePythonExecutable') -or
-    -not $profileAgentSource.Contains('return Start-HiddenProcess $python')) {
+if (-not $profileAgentSource.Contains('return Start-HiddenProcess $python')) {
     throw "Profile Bridges do not use the resolved Python executable."
 }
 if (-not $uiSource.Contains('Ctrl+Alt+Shift+End') -or
@@ -214,7 +198,7 @@ function Protect-TestValue([string]$Value) {
 try {
     Test-HostControlSingleton
     New-Item -ItemType Directory -Path $control, $gateway, (Join-Path $profile "game-provider"), `
-        (Join-Path $profile "discord"), (Join-Path $profile "vibepollo"), $legendaryState, `
+        (Join-Path $profile "discord"), $legendaryState, `
         $foreignProfile -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Invoke-MoonWakerHostControl.ps1") `
         -Destination (Join-Path $control "Invoke-MoonWakerHostControl.ps1")
@@ -249,7 +233,6 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot "gateway-manually-stopped
     }
     if (-not $foreignStopRejected) { throw "Fixture stopper accepted a foreign directory." }
     $gatewayPort = Get-FreeTcpPort
-    $vibepolloPort = Get-FreeTcpPort
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $currentSid = $currentIdentity.User.Value
     [ordered]@{
@@ -263,7 +246,6 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot "gateway-manually-stopped
                 windows_account_sid = $currentSid
                 profile_root = $profile
                 discord_bridge = "http://127.0.0.1:8765"
-                vibepollo_bridge = "http://127.0.0.1:$vibepolloPort"
                 game_provider_bridge = ""
             }
             foreign = [ordered]@{
@@ -286,14 +268,6 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot "gateway-manually-stopped
             }
         }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
-    # Fresh profiles intentionally start without a pinned Python path. This must
-    # fall through to discovery instead of reaching Test-Path with an empty value.
-    [ordered]@{
-        base_url = "https://127.0.0.1:47990"
-        listen_port = $vibepolloPort
-        python_path = ""
-    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $profile `
-        "vibepollo\config.json") -Encoding UTF8
     [ordered]@{ version = "test"; build = "test"; protocol_version = 1 } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "version.json") -Encoding UTF8
     New-Item -ItemType File -Path (Join-Path $gateway "gateway-manually-stopped") -Force | Out-Null
@@ -410,7 +384,6 @@ try {
 
     $discordId = "123456789012345678"
     $discordSecret = [guid]::NewGuid().ToString("N")
-    $vibepolloToken = [guid]::NewGuid().ToString("N")
     $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Action ConfigureIntegrations ' +
         '-ProfileId default -IntegrationDataProtectedFromEnvironment -ResultPath "{1}"'
     $arguments = $arguments -f $scriptPath, $resultPath
@@ -421,11 +394,6 @@ try {
     $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_ID"] = $discordId
     $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_SECRET_PROTECTED"] = `
         Protect-TestValue $discordSecret
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CONFIGURE"] = "1"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_URL"] = "https://127.0.0.1:47990"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_TOKEN_PROTECTED"] = `
-        Protect-TestValue $vibepolloToken
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CREATE_TOKEN"] = "0"
     $process = [Diagnostics.Process]::Start($startInfo)
     if (-not $process.WaitForExit(10000)) {
         try { $process.Kill() } catch {}
@@ -433,110 +401,22 @@ try {
     }
     $integration = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
     if (-not $integration.ok -or -not $integration.discord_configured -or
-        -not $integration.vibepollo_configured) {
+        $integration.PSObject.Properties["vibepollo_configured"]) {
         throw "Integration configuration failed: $($integration.error)"
     }
     $discordConfig = Get-Content -LiteralPath (Join-Path $profile `
         "discord\discord_bridge_config.json") -Raw | ConvertFrom-Json
-    $vibepolloConfig = Get-Content -LiteralPath (Join-Path $profile `
-        "vibepollo\config.json") -Raw | ConvertFrom-Json
-    if ([string]$discordConfig.client_id -ne $discordId -or $discordConfig.port -ne 8765 -or
-        [string]$vibepolloConfig.base_url -ne "https://127.0.0.1:47990" -or
-        $vibepolloConfig.listen_port -ne $vibepolloPort) {
+    if ([string]$discordConfig.client_id -ne $discordId -or $discordConfig.port -ne 8765) {
         throw "Integration configuration did not preserve the profile endpoints."
     }
     $savedDiscord = [pscredential]::new("discord", ((Get-Content -LiteralPath (Join-Path $profile `
         "discord\client_secret.dpapi") -Raw).Trim() | ConvertTo-SecureString)).GetNetworkCredential().Password
-    $savedVibepollo = [pscredential]::new("vibepollo", ((Get-Content -LiteralPath (Join-Path $profile `
-        "vibepollo\api_token.dpapi") -Raw).Trim() | ConvertTo-SecureString)).GetNetworkCredential().Password
-    if ($savedDiscord -ne $discordSecret -or $savedVibepollo -ne $vibepolloToken) {
+    if ($savedDiscord -ne $discordSecret) {
         throw "Integration secrets were not stored with CurrentUser DPAPI."
     }
 
-    $customVibepolloUrl = "https://localhost:48990"
-    $vibepolloConfig.base_url = $customVibepolloUrl
-    $vibepolloConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $profile `
-        "vibepollo\config.json") -Encoding UTF8
-    Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
-        "bridges\vibepollo\moonwaker-token-scopes.example.json") `
-        -Destination (Join-Path $profile "vibepollo\moonwaker-token-scopes.example.json")
-    $autoToken = "auto-" + [guid]::NewGuid().ToString("N")
-    $fakeTransport = @'
-import json
-import sys
-
-request = json.load(sys.stdin)
-if request.get("username") == "reject":
-    print(json.dumps({"ok": False, "status": 401, "error": "rejected"}))
-    raise SystemExit(2)
-valid = (
-    request.get("base_url") == "https://localhost:48990"
-    and request.get("path") == "/api/token"
-    and request.get("method") == "POST"
-    and request.get("username") == "admin"
-    and request.get("password") == "test-password"
-    and request.get("body", {}).get("scopes")
-)
-if not valid:
-    print(json.dumps({"ok": False, "status": 422, "error": "bad request"}))
-    raise SystemExit(2)
-print(json.dumps({"ok": True, "status": 200,
-                  "content": json.dumps({"token": "__AUTO_TOKEN__"})}))
-'@.Replace("__AUTO_TOKEN__", $autoToken)
-    [IO.File]::WriteAllText((Join-Path $profile "vibepollo\VibepolloTransport.py"),
-        $fakeTransport, [Text.UTF8Encoding]::new($false))
-
-    $startInfo = [Diagnostics.ProcessStartInfo]::new("powershell.exe", $arguments)
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CONFIGURE"] = "0"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CONFIGURE"] = "1"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_URL"] = ""
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CREATE_TOKEN"] = "1"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_ADMIN_USERNAME"] = "admin"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD_PROTECTED"] = `
-        Protect-TestValue "test-password"
-    $process = [Diagnostics.Process]::Start($startInfo)
-    if (-not $process.WaitForExit(10000)) {
-        try { $process.Kill() } catch {}
-        throw "Automatic Vibepollo token configuration timed out."
-    }
-    $autoIntegration = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-    $savedVibepollo = [pscredential]::new("vibepollo", ((Get-Content -LiteralPath (Join-Path $profile `
-        "vibepollo\api_token.dpapi") -Raw).Trim() | ConvertTo-SecureString)).GetNetworkCredential().Password
-    $vibepolloConfig = Get-Content -LiteralPath (Join-Path $profile `
-        "vibepollo\config.json") -Raw | ConvertFrom-Json
-    if (-not $autoIntegration.ok -or $savedVibepollo -ne $autoToken -or
-        [string]$vibepolloConfig.base_url -ne $customVibepolloUrl -or
-        -not (Test-Path -LiteralPath ([string]$vibepolloConfig.python_path) -PathType Leaf)) {
-        throw "Automatic Vibepollo token configuration did not preserve the URL or store the token."
-    }
-
-    $startInfo = [Diagnostics.ProcessStartInfo]::new("powershell.exe", $arguments)
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CONFIGURE"] = "0"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CONFIGURE"] = "1"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_URL"] = ""
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CREATE_TOKEN"] = "1"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_ADMIN_USERNAME"] = "reject"
-    $startInfo.EnvironmentVariables["MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD_PROTECTED"] = `
-        Protect-TestValue "test-password"
-    $process = [Diagnostics.Process]::Start($startInfo)
-    if (-not $process.WaitForExit(10000)) {
-        try { $process.Kill() } catch {}
-        throw "Rejected Vibepollo token configuration timed out."
-    }
-    $rejectedIntegration = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-    if ($rejectedIntegration.ok -or [string]$rejectedIntegration.error -notmatch 'HTTP 401') {
-        throw "Vibepollo token rejection did not preserve the HTTP status."
-    }
-
     $savedDiscord = $null
-    $savedVibepollo = $null
     $discordSecret = $null
-    $vibepolloToken = $null
-    $autoToken = $null
 
     New-Item -ItemType Directory -Path (Join-Path $gateway "logs"),
         (Join-Path $profile "game-provider\logs") -Force | Out-Null
@@ -621,11 +501,11 @@ print(json.dumps({"ok": True, "status": 200,
     if (-not $current.current_user -or $foreign.current_user) {
         throw "Host Control did not correlate profiles with their Windows owner."
     }
-    if ($foreign.discord -ne "disabled" -or $foreign.vibepollo -ne "disabled" -or
-        $foreign.game_provider -ne "disabled") {
+    if ($foreign.discord -ne "disabled" -or $foreign.game_provider -ne "disabled" -or
+        $current.PSObject.Properties["vibepollo"] -or $current.PSObject.Properties["vibepollo_pid"]) {
         throw "Host Control did not tolerate missing optional standard profile endpoints."
     }
-    if (-not $current.discord_configured -or -not $current.vibepollo_configured) {
+    if (-not $current.discord_configured) {
         throw "Host Control status did not report configured profile integrations."
     }
     if ($status.microphone.ready -or $status.microphone.reason -ne "worker_missing" -or
@@ -802,7 +682,7 @@ try { $listener.Start(); while ($true) { Start-Sleep -Seconds 1 } } finally { $l
     Stop-Process -Id $listenerProcess.Id -Force
     $listenerProcess = $null
     Write-Output "Host Control Steam configuration diagnostic test passed."
-    Write-Output "Host Control Discord and Vibepollo configuration test passed."
+    Write-Output "Host Control Discord configuration test passed."
     Write-Output "Host Control diagnostic export test passed."
     Write-Output "Host Control ownership and correlated Gateway stop tests passed."
     Write-Output "Host Control close-session request test passed."

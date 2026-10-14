@@ -4,6 +4,9 @@ import unittest
 from pathlib import Path
 
 import wakeplay_gateway
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 _MISSING = object()

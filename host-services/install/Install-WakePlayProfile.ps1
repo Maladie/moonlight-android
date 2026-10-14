@@ -5,7 +5,6 @@ param(
     [string]$ProfileId = "default",
     [string]$ProfileName = "",
     [int]$DiscordPort = 8765,
-    [int]$VibepolloPort = 8775,
     [int]$GameProviderPort = 0,
     [int]$PlaynitePort = 0,
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "WakePlayHost\profiles"),
@@ -16,7 +15,6 @@ param(
     [string]$OwnerName = "",
     [switch]$MachineProvisioning,
     [switch]$SkipDiscord,
-    [switch]$SkipVibepollo,
     [switch]$SkipPlaynite,
     [switch]$SkipGatewayRegistration,
     [switch]$NonInteractiveConfiguration,
@@ -200,11 +198,6 @@ if (-not $MachineProvisioning -and (Test-Path -LiteralPath $GatewayConfigPath -P
                 $SkipDiscord = $true
             } else { $DiscordPort = Get-RegisteredEndpointPort $registeredProfile "discord_bridge" }
         }
-        if ($null -ne $registeredProfile.PSObject.Properties["vibepollo_bridge"]) {
-            if ([string]::IsNullOrWhiteSpace([string]$registeredProfile.vibepollo_bridge)) {
-                $SkipVibepollo = $true
-            } else { $VibepolloPort = Get-RegisteredEndpointPort $registeredProfile "vibepollo_bridge" }
-        }
         $providerProperty = if ($null -ne $registeredProfile.PSObject.Properties["game_provider_bridge"]) {
             "game_provider_bridge"
         } else { "playnite_bridge" }
@@ -229,24 +222,21 @@ if ($profileDisplayName.Length -gt 80 -or $profileDisplayName -match '[\x00-\x1f
 }
 
 if ($DiscordPort -lt 1024 -or $DiscordPort -gt 65535 -or
-    $VibepolloPort -lt 1024 -or $VibepolloPort -gt 65535 -or
     $providerPort -lt 1024 -or $providerPort -gt 65535) {
     throw "Bridge ports must be between 1024 and 65535."
 }
 $activePorts = @()
 if (-not $SkipDiscord) { $activePorts += $DiscordPort }
-if (-not $SkipVibepollo) { $activePorts += $VibepolloPort }
 $activePorts += $providerPort
 $uniqueActivePorts = @($activePorts | Select-Object -Unique)
 if ($uniqueActivePorts.Count -ne $activePorts.Count) {
-    throw "Discord, Vibepollo and Game Provider Bridges must use different ports."
+    throw "Discord and Game Provider Bridges must use different ports."
 }
 if ($null -eq $registeredProfile -and $ProfileId -ne "default" -and (
     (-not $SkipDiscord -and -not $PSBoundParameters.ContainsKey("DiscordPort")) -or
-    (-not $SkipVibepollo -and -not $PSBoundParameters.ContainsKey("VibepolloPort")) -or
     (-not $PSBoundParameters.ContainsKey("GameProviderPort") -and
         -not $PSBoundParameters.ContainsKey("PlaynitePort")))) {
-    throw "Additional profiles require explicit, unique Discord, Vibepollo and Game Provider ports."
+    throw "Additional profiles require explicit, unique Discord and Game Provider ports."
 }
 
 $hostServicesRoot = Split-Path -Parent $PSScriptRoot
@@ -772,27 +762,6 @@ function Set-ConfigValue {
     $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
-function Ensure-MoonWakerStreamTarget {
-    param([int]$Port)
-    $endpoint = "http://127.0.0.1:$Port/apps/stream/ensure"
-    $lastError = $null
-    $deadline = (Get-Date).AddSeconds(15)
-    do {
-        try {
-            $result = Invoke-RestMethod -Uri $endpoint -Method Post `
-                -ContentType "application/json" -Body "{}" -TimeoutSec 2
-            if ($result.ok -and [string]$result.name -eq "MoonWaker Stream") {
-                Write-Host "MoonWaker Stream target is ready." -ForegroundColor Green
-                return
-            }
-        } catch {
-            $lastError = $_.Exception.Message
-        }
-        Start-Sleep -Milliseconds 250
-    } while ((Get-Date) -lt $deadline)
-    Write-Warning "MoonWaker Stream target could not be ensured; legacy launch targets remain available. $lastError"
-}
-
 function Initialize-DiscordConfig {
     param([string]$Directory, [string]$ConfigPath, [int]$Port)
     if (-not $NonInteractiveConfiguration) {
@@ -823,44 +792,8 @@ function Initialize-DiscordConfig {
     }
 }
 
-function Initialize-VibepolloConfig {
-    param([string]$Directory, [string]$ConfigPath, [int]$Port)
-    if (-not $NonInteractiveConfiguration) {
-        & (Join-Path $Directory "Configure-VibepolloBridge.ps1")
-        return
-    }
-    $existing = $null
-    if (Test-Path -LiteralPath $ConfigPath) {
-        try { $existing = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json } catch {}
-    }
-    $baseUrl = [string]$env:MOONWAKER_VIBEPOLLO_URL
-    $apiToken = [string]$env:MOONWAKER_VIBEPOLLO_TOKEN
-    if ([string]::IsNullOrWhiteSpace($baseUrl) -and $null -ne $existing) {
-        $baseUrl = [string]$existing.base_url
-    }
-    if ([string]::IsNullOrWhiteSpace($baseUrl)) { $baseUrl = "https://127.0.0.1:47990" }
-    $uri = $null
-    if (-not [uri]::TryCreate($baseUrl, [UriKind]::Absolute, [ref]$uri) -or
-        $uri.Scheme -ne "https" -or $uri.Host -notin @("127.0.0.1", "localhost") -or
-        [string]::IsNullOrWhiteSpace($apiToken)) {
-        throw "Vibepollo configuration is missing or invalid. Provide it in MoonWaker Host Control."
-    }
-    [ordered]@{
-        base_url = $baseUrl.TrimEnd('/')
-        listen_port = $Port
-        python_path = if ($null -ne $existing -and
-            $null -ne $existing.PSObject.Properties["python_path"]) {
-            [string]$existing.python_path
-        } else { "" }
-    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
-    ConvertTo-SecureString $apiToken -AsPlainText -Force |
-        ConvertFrom-SecureString |
-        Set-Content -LiteralPath (Join-Path $Directory "api_token.dpapi") -Encoding ASCII
-}
-
 function Remove-LegacyBridgeStartup {
     foreach ($name in @("Wake & Play Discord Bridge ($ProfileId)",
-        "Wake & Play Vibepollo Bridge ($ProfileId)",
         "Wake & Play Game Provider Bridge ($ProfileId)",
         "Wake & Play Playnite Bridge ($ProfileId)")) {
         try { ScheduledTasks\Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue } catch {}
@@ -981,26 +914,6 @@ if (-not $SkipDiscord) {
     Set-ConfigPort $discordConfig "port" $DiscordPort
 }
 
-$vibepolloDirectory = $null
-if (-not $SkipVibepollo) {
-    Stop-InstalledBridge "vibepollo" "Stop-VibepolloBridge.ps1"
-    $vibepolloDirectory = Install-BridgeFiles "vibepollo" @(
-        "VibepolloBridge.ps1", "VibepolloIdentity.ps1", "VibepolloTransport.py",
-        "Configure-VibepolloBridge.ps1", "config.example.json",
-        "moonwaker-token-scopes.example.json",
-        "Start-VibepolloBridge.ps1", "Stop-VibepolloBridge.ps1",
-        "Test-VibepolloBridge.ps1", "README.md")
-    $vibepolloConfig = Join-Path $vibepolloDirectory "config.json"
-    if ($MachineProvisioning -and -not (Test-Path -LiteralPath $vibepolloConfig)) {
-        Copy-Item -LiteralPath (Join-Path $vibepolloDirectory "config.example.json") `
-            -Destination $vibepolloConfig
-    } elseif (-not (Test-Path -LiteralPath $vibepolloConfig) -or
-        ($NonInteractiveConfiguration -and -not [string]::IsNullOrWhiteSpace($env:MOONWAKER_VIBEPOLLO_TOKEN))) {
-        Initialize-VibepolloConfig $vibepolloDirectory $vibepolloConfig $VibepolloPort
-    }
-    Set-ConfigPort $vibepolloConfig "listen_port" $VibepolloPort
-}
-
 $legacyProviderDirectory = Join-Path $profileRoot "playnite"
 $gameProviderDirectory = Join-Path $profileRoot "game-provider"
 Stop-InstalledBridge "game-provider" "Stop-PlayniteBridge.ps1"
@@ -1023,8 +936,6 @@ if (-not (Test-Path -LiteralPath $gameProviderConfig)) {
         -Destination $gameProviderConfig
 }
 Set-ConfigPort $gameProviderConfig "listen_port" $providerPort
-Set-ConfigValue $gameProviderConfig "vibepollo_bridge" `
-    $(if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" })
 Set-ConfigValue $gameProviderConfig "epic_legendary_enabled" $true
 Set-ConfigValue $gameProviderConfig "playnite_enabled" (-not $SkipPlaynite)
 if ($null -eq (Get-Content -LiteralPath $gameProviderConfig -Raw |
@@ -1075,9 +986,6 @@ if (-not $SkipGatewayRegistration) {
         $entryDiscordBridge = if ($null -ne $entry.PSObject.Properties["discord_bridge"]) {
             [string]$entry.discord_bridge
         } else { $(if ($SkipDiscord) { "" } else { "http://127.0.0.1:$DiscordPort" }) }
-        $entryVibepolloBridge = if ($null -ne $entry.PSObject.Properties["vibepollo_bridge"]) {
-            [string]$entry.vibepollo_bridge
-        } else { $(if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" }) }
         $defaults = [ordered]@{
             id = $ProfileId
             name = $entryDisplayName
@@ -1093,7 +1001,6 @@ if (-not $SkipGatewayRegistration) {
             } else { "resolved" }
             profile_root = $entryProfileRoot
             discord_bridge = $entryDiscordBridge
-            vibepollo_bridge = $entryVibepolloBridge
             game_provider_bridge = $entryProviderBridge
             playnite_bridge = $entryProviderBridge
         }
@@ -1125,7 +1032,6 @@ if (-not $SkipGatewayRegistration) {
             account_mapping_status = "resolved"
             profile_root = $profileRoot
             discord_bridge = if ($SkipDiscord) { "" } else { "http://127.0.0.1:$DiscordPort" }
-            vibepollo_bridge = if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" }
             game_provider_bridge = "http://127.0.0.1:$providerPort"
             playnite_bridge = "http://127.0.0.1:$providerPort"
         } | ConvertTo-Json | Set-Content -LiteralPath $registrationPath -Encoding UTF8
@@ -1148,11 +1054,9 @@ if (-not $SkipStart) {
         & $gatewayStart -GatewayDirectory $GatewayDirectory
     }
     & (Join-Path $profileRoot "Start-MoonWakerProfileBridge.ps1") -ProfileRoot $profileRoot -ProfileId $ProfileId
-    if (-not $SkipVibepollo) { Ensure-MoonWakerStreamTarget $VibepolloPort }
 }
 
 # Never leak Host Control-provided secrets into Bridge child processes.
 $env:MOONWAKER_DISCORD_CLIENT_SECRET = $null
-$env:MOONWAKER_VIBEPOLLO_TOKEN = $null
 
 Write-Host "Wake & Play integration profile '$ProfileId' installed for $($provisioningOwner.name)." -ForegroundColor Green

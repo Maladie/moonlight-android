@@ -24,6 +24,9 @@ from GameProviderBridge import (  # noqa: E402
     OperationJournal,
     SteamProvider,
 )
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 RAW_ALLOWED = "840317c9-b9a4-4f72-be8e-807414e36a9b"

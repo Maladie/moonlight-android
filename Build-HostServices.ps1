@@ -16,13 +16,16 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 if (-not (Test-Path -LiteralPath $hostServices)) {
     throw "host-services was not found next to this build script."
 }
+# The token the Host Configurator creates must cover every call the Gateway makes.
 $scopeDocument = Get-Content -LiteralPath (Join-Path $hostServices `
-    "bridges\vibepollo\moonwaker-token-scopes.example.json") -Raw | ConvertFrom-Json
-$appsScope = @($scopeDocument.scopes | Where-Object { $_.path -eq "/api/apps" }) |
-    Select-Object -First 1
-if ($null -eq $appsScope -or "GET" -notin @($appsScope.methods) -or
-    "POST" -notin @($appsScope.methods)) {
-    throw "Vibepollo token scope must allow GET and POST /api/apps."
+    "control\vibepollo-token-scopes.json") -Raw | ConvertFrom-Json
+foreach ($required in @("GET /api/apps", "POST /api/apps", "POST /api/pin",
+        "POST /api/clients/update", "GET /api/clients/list", "POST /api/apps/close")) {
+    $method, $path = $required -split " ", 2
+    if (-not @($scopeDocument.scopes | Where-Object {
+            $_.path -eq $path -and $method -in @($_.methods) })) {
+        throw "Vibepollo token scope must allow $required."
+    }
 }
 if (-not $SkipTests) {
     & python.exe -m unittest discover -s (Join-Path $hostServices "gateway") -p "test*.py"
@@ -83,7 +86,7 @@ try {
     foreach ($file in @("Build-MoonWakerHostControl.ps1", "Invoke-MoonWakerHostControl.ps1",
         "MoonWakerHostControl.cs", "MoonWakerHostControl.manifest",
         "MoonWakerHostConfigurator.cs", "ChildProfileForms.cs",
-        "MoonWakerHostConfigurator.manifest")) {
+        "MoonWakerHostConfigurator.manifest", "vibepollo-token-scopes.json")) {
         Copy-Item -LiteralPath (Join-Path $hostServices "control\$file") `
             -Destination $controlTarget -Force
     }

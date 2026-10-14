@@ -17,6 +17,7 @@ $files = @(
     "control_operation_policy.py",
     "child_terminal_operation.py",
     "provider_control_operation.py",
+    "vibepollo_client.py",
     "MoonWakerGatewayService.exe",
     "MoonWakerMicrophoneWorker.exe",
     "MoonWakerDiscordAudioWorker.exe",
@@ -235,6 +236,37 @@ if ($LASTEXITCODE -ne 0) { throw "Unable to configure the host close request ACL
 & $icacls $privateKey /inheritance:r /grant:r `
     "*${serviceSid}:(R)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Unable to secure the Gateway private key." }
+# The computer's one Vibepollo token. Only the elevated Host Configurator writes it, in place,
+# so this ACL stays; the Gateway service only reads it. A reinstall keeps the token.
+$vibepolloSettings = Join-Path $InstallDirectory "vibepollo-api.json"
+if (-not (Test-Path -LiteralPath $vibepolloSettings -PathType Leaf)) {
+    [IO.File]::WriteAllText($vibepolloSettings, "{}", [Text.UTF8Encoding]::new($false))
+}
+& $icacls $vibepolloSettings /inheritance:r /grant:r `
+    "*${serviceSid}:(R)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Unable to secure the Vibepollo token file." }
+# The Gateway pins Vibepollo's certificate and proves paired Moonlight identities from its
+# state file. The Host Configurator grants the service read access to exactly the files
+# Vibepollo's sunshine.conf names, plus traverse (never listing: the credentials directory
+# holds Vibepollo's private key) - the same grant every Vibepollo token save repeats.
+$configurator = Join-Path (Split-Path -Parent $sourceDirectory) "control\MoonWakerHostConfigurator.exe"
+$consoleEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+try {
+    # Capturing the output makes PowerShell wait for this GUI-subsystem executable.
+    $vibepolloAccess = @(& $configurator --mode vibepollo-access)
+} finally { [Console]::OutputEncoding = $consoleEncoding }
+switch ($LASTEXITCODE) {
+    0 {
+        foreach ($path in $vibepolloAccess) {
+            Write-Warning "Vibepollo file is missing, so the Gateway cannot read it: $path. Once Vibepollo has created it, save the Vibepollo token again in Host Control."
+        }
+    }
+    2 {
+        Write-Warning "The Gateway cannot reach Vibepollo yet: $($vibepolloAccess -join ' ') Install or repair Vibepollo, then save the Vibepollo token in Host Control."
+    }
+    default { throw "Unable to grant the Gateway read access to Vibepollo's files: $($vibepolloAccess -join ' ')" }
+}
 
 # Host Control's existing Start/Stop/Restart buttons control only this service.
 # Interactive-user rights do not grant writes to Gateway configuration or keys.

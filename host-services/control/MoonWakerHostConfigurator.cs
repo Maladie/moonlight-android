@@ -31,6 +31,8 @@ namespace MoonWaker.HostConfigurator
             string mode = Argument(args, "--mode") ?? "edit";
             if (String.Equals(mode, "child-api", StringComparison.OrdinalIgnoreCase))
                 return RunChildApi();
+            if (String.Equals(mode, "vibepollo-access", StringComparison.OrdinalIgnoreCase))
+                return RunVibepolloAccess();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (!IsAdministrator())
@@ -46,6 +48,7 @@ namespace MoonWaker.HostConfigurator
                 GatewayRegistryStore store = GatewayRegistryStore.ForInstalledHost();
                 Form form;
                 if (mode == "add") form = new AddProfileForm(store);
+                else if (mode == "vibepollo") form = new VibepolloTokenForm(store);
                 else
                 {
                     if (!GatewayRegistryStore.IsValidProfileId(profileId))
@@ -104,6 +107,25 @@ namespace MoonWaker.HostConfigurator
                 output.WriteLine(serializer.Serialize(result));
             }
             return 0;
+        }
+
+        // The installer's half of the Gateway's Vibepollo read access; every token save repeats
+        // it. Standard output lists missing files (exit 0), or why Vibepollo or its
+        // configuration cannot be used yet (exit 2), or why the grant failed (exit 1).
+        private static int RunVibepolloAccess()
+        {
+            List<string> lines = new List<string>();
+            int code = 0;
+            try
+            {
+                if (!IsAdministrator()) throw new UnauthorizedAccessException("administrator_required");
+                lines.AddRange(VibepolloMachineApi.GrantGatewayReadAccess());
+            }
+            catch (InvalidOperationException error) { lines.Add(error.Message); code = 2; }
+            catch (Exception error) { lines.Add(error.GetType().Name + ": " + error.Message); code = 1; }
+            using (StreamWriter output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)))
+                foreach (string line in lines) output.WriteLine(line);
+            return code;
         }
 
         private static Dictionary<string, object> ChildApiFailure(string reason)
@@ -302,7 +324,6 @@ namespace MoonWaker.HostConfigurator
         internal string AccountName;
         internal string Root;
         internal string DiscordEndpoint;
-        internal string VibepolloEndpoint;
         internal string GameProviderEndpoint;
         internal bool Enabled;
         internal bool AppPinRequired;
@@ -320,7 +341,6 @@ namespace MoonWaker.HostConfigurator
         }
 
         internal int DiscordPort { get { return GatewayRegistryStore.EndpointPort(DiscordEndpoint); } }
-        internal int VibepolloPort { get { return GatewayRegistryStore.EndpointPort(VibepolloEndpoint); } }
         internal int GameProviderPort { get { return GatewayRegistryStore.EndpointPort(GameProviderEndpoint); } }
     }
 
@@ -994,9 +1014,8 @@ namespace MoonWaker.HostConfigurator
                 profile["enabled"] = false;
                 profile["profile_root"] = root;
                 profile["discord_bridge"] = "http://127.0.0.1:" + ports[0];
-                profile["vibepollo_bridge"] = "http://127.0.0.1:" + ports[1];
-                profile["game_provider_bridge"] = "http://127.0.0.1:" + ports[2];
-                profile["playnite_bridge"] = "http://127.0.0.1:" + ports[2];
+                profile["game_provider_bridge"] = "http://127.0.0.1:" + ports[1];
+                profile["playnite_bridge"] = "http://127.0.0.1:" + ports[1];
                 profile["remote_sign_in_enabled"] = false;
                 profile["account_mapping_status"] = "resolved";
                 profile["reservation_nonce"] = Guid.NewGuid().ToString("N");
@@ -1416,7 +1435,7 @@ namespace MoonWaker.HostConfigurator
                 }
                 foreach (string forbidden in new string[] {
                     "windows_account_sid", "owner_sid", "windows_account_name", "owner",
-                    "profile_root", "discord_bridge", "vibepollo_bridge",
+                    "profile_root", "discord_bridge",
                     "game_provider_bridge", "playnite_bridge", "integration_token",
                     "pin_verifier", "account_mapping_status", "reservation_nonce",
                     "remote_sign_in_enabled",
@@ -1934,7 +1953,6 @@ namespace MoonWaker.HostConfigurator
                 AccountName = Text(profile, "windows_account_name", Text(profile, "owner", "")),
                 Root = Text(profile, "profile_root", ""),
                 DiscordEndpoint = Text(profile, "discord_bridge", ""),
-                VibepolloEndpoint = Text(profile, "vibepollo_bridge", ""),
                 GameProviderEndpoint = provider,
                 Enabled = BooleanValue(profile, "enabled"),
                 AppPinRequired = Value(profile, "pin_verifier") != null,
@@ -2174,7 +2192,7 @@ namespace MoonWaker.HostConfigurator
             {
                 Dictionary<string, object> profile = value as Dictionary<string, object>;
                 if (profile == null) continue;
-                foreach (string name in new string[] { "discord_bridge", "vibepollo_bridge",
+                foreach (string name in new string[] { "discord_bridge",
                     "game_provider_bridge", "playnite_bridge" })
                 {
                     int port = EndpointPort(Text(profile, name, ""));
@@ -2196,9 +2214,8 @@ namespace MoonWaker.HostConfigurator
         {
             for (int slot = 0; slot <= 50; slot++)
             {
-                int[] ports = new int[] { 8765 + (100 * slot), 8775 + (100 * slot),
-                    8780 + (100 * slot) };
-                if (!used.Contains(ports[0]) && !used.Contains(ports[1]) && !used.Contains(ports[2]))
+                int[] ports = new int[] { 8765 + (100 * slot), 8780 + (100 * slot) };
+                if (!used.Contains(ports[0]) && !used.Contains(ports[1]))
                     return ports;
             }
             throw new InvalidOperationException("Brak wolnego zestawu portów Bridge.");
@@ -2371,7 +2388,6 @@ namespace MoonWaker.HostConfigurator
             args.Add("-GatewayDirectory"); args.Add(store.GatewayDirectory);
             args.Add("-HostControlExecutable"); args.Add(hostControl);
             args.Add("-DiscordPort"); args.Add(profile.DiscordPort.ToString());
-            args.Add("-VibepolloPort"); args.Add(profile.VibepolloPort.ToString());
             args.Add("-GameProviderPort"); args.Add(profile.GameProviderPort.ToString());
             args.Add("-SkipPlaynite");
             args.Add("-SkipGatewayRegistration");
@@ -2391,7 +2407,6 @@ namespace MoonWaker.HostConfigurator
             string taskScheduler = TrustedSystemExecutable("schtasks.exe");
             foreach (string taskName in new string[] {
                 "Wake & Play Discord Bridge (" + profile.Id + ")",
-                "Wake & Play Vibepollo Bridge (" + profile.Id + ")",
                 "Wake & Play Game Provider Bridge (" + profile.Id + ")",
                 "Wake & Play Playnite Bridge (" + profile.Id + ")",
                 "MoonWaker Profile Bridge (" + profile.Id + ")" })
@@ -2502,7 +2517,7 @@ namespace MoonWaker.HostConfigurator
         {
             string rootPrefix = profileRoot.TrimEnd('\\') + "\\";
             string[] markers = new string[] { "MoonWakerProfileBridge.ps1", "DiscordBridge.ps1",
-                "VibepolloBridge.ps1", "GameProviderBridge.py", "PlayniteBridge.py" };
+                "GameProviderBridge.py", "PlayniteBridge.py" };
             using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
                 "SELECT ProcessId,CommandLine FROM Win32_Process"))
             using (ManagementObjectCollection processes = searcher.Get())
@@ -4125,7 +4140,6 @@ namespace MoonWaker.HostConfigurator
                     "\"owner\":\"PC\\\\A\",\"windows_account_name\":\"PC\\\\A\",\"enabled\":true," +
                     "\"profile_root\":\"C:\\\\MoonWaker\\\\profiles\\\\profile-a\"," +
                     "\"discord_bridge\":\"http://127.0.0.1:8765\"," +
-                    "\"vibepollo_bridge\":\"http://127.0.0.1:8775\"," +
                     "\"game_provider_bridge\":\"http://127.0.0.1:8780\"," +
                     "\"playnite_bridge\":\"http://127.0.0.1:8780\"," +
                     "\"remote_sign_in_enabled\":false,\"account_mapping_status\":\"resolved\"," +
@@ -4205,7 +4219,7 @@ namespace MoonWaker.HostConfigurator
                 ProfileRecord child = store.CreateChildProfile("profile-a", "Kid", "avatar-1");
                 Assert(child.Kind == "child" && child.ParentProfileId == "profile-a" &&
                     child.AllowedGameKeys.Count == 0 && child.Sid == "" && child.Root == "" &&
-                    child.DiscordEndpoint == "" && child.VibepolloEndpoint == "" &&
+                    child.DiscordEndpoint == "" &&
                     child.GameProviderEndpoint == "" && !child.AppPinRequired,
                     "Child profile inherited executable identity or policy data.");
                 Assert(store.GetProfiles().Find(delegate(ProfileRecord value) {
@@ -4215,7 +4229,7 @@ namespace MoonWaker.HostConfigurator
                 Dictionary<string, object> childRaw = dictionaryValue(
                     dictionaryValue(jsonDocument(File.ReadAllText(config)), "profiles"), child.Id);
                 foreach (string forbidden in new string[] { "windows_account_sid", "profile_root",
-                    "discord_bridge", "vibepollo_bridge", "game_provider_bridge", "playnite_bridge",
+                    "discord_bridge", "game_provider_bridge", "playnite_bridge",
                     "pin_verifier", "reservation_nonce" })
                     Assert(!childRaw.ContainsKey(forbidden), "Child profile cloned " + forbidden + ".");
                 Dictionary<string, object> weekdays = dictionaryValue(
@@ -4692,6 +4706,374 @@ namespace MoonWaker.HostConfigurator
                 Dictionary<string, object> client = value as Dictionary<string, object>;
                 if (client != null) yield return client;
             }
+        }
+    }
+
+    // The computer's one Vibepollo token for the Gateway. Only this elevated process writes
+    // gateway\vibepollo-api.json (in place, keeping the installer's ACL: Administrators, SYSTEM
+    // and read for the Gateway service). Every call pins the certificate Vibepollo keeps in its
+    // configuration directory, the same rule the Gateway applies.
+    internal static class VibepolloMachineApi
+    {
+        internal const string DefaultBaseUrl = "https://127.0.0.1:47990";
+        private const int MaxLocalFileBytes = 1024 * 1024;
+
+        internal static string LocalBaseUrl(string value)
+        {
+            Uri uri;
+            if (!Uri.TryCreate((value ?? "").Trim(), UriKind.Absolute, out uri) ||
+                uri.Scheme != Uri.UriSchemeHttps || !String.IsNullOrEmpty(uri.UserInfo) ||
+                !(uri.Host == "127.0.0.1" || uri.Host == "localhost") ||
+                uri.AbsolutePath != "/" || !String.IsNullOrEmpty(uri.Query) ||
+                !String.IsNullOrEmpty(uri.Fragment))
+                throw new InvalidOperationException("API Vibepollo musi używać HTTPS na 127.0.0.1 lub localhost.");
+            return "https://" + uri.Host + ":" + uri.Port;
+        }
+
+        internal static string SettingsPath(GatewayRegistryStore store)
+        {
+            return Path.Combine(store.GatewayDirectory, "vibepollo-api.json");
+        }
+
+        internal static Dictionary<string, object> ReadSettings(GatewayRegistryStore store)
+        {
+            try
+            {
+                return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(
+                    File.ReadAllText(SettingsPath(store))) ?? new Dictionary<string, object>();
+            }
+            catch { return new Dictionary<string, object>(); }
+        }
+
+        internal static void WriteSettings(GatewayRegistryStore store, string baseUrl, string token)
+        {
+            string path = SettingsPath(store);
+            if (!File.Exists(path))
+                throw new InvalidOperationException(
+                    "Brak chronionego pliku tokenu Vibepollo. Uruchom ponownie instalator MoonWaker Host.");
+            byte[] content = new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(
+                new Dictionary<string, object> { { "base_url", baseUrl }, { "token", token } }));
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.Read))
+            {
+                stream.SetLength(0);
+                stream.Write(content, 0, content.Length);
+            }
+        }
+
+        private static bool IsReparsePoint(string path)
+        {
+            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+        }
+
+        internal static string ConfigDirectory()
+        {
+            Dictionary<string, string> roots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (RegistryView view in new RegistryView[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                using (RegistryKey machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
+                using (RegistryKey uninstall = machine.OpenSubKey(
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", false))
+                {
+                    if (uninstall == null) continue;
+                    foreach (string name in uninstall.GetSubKeyNames())
+                    {
+                        using (RegistryKey entry = uninstall.OpenSubKey(name, false))
+                        {
+                            if (entry == null) continue;
+                            string display = Convert.ToString(entry.GetValue("DisplayName", ""));
+                            string location = Convert.ToString(entry.GetValue("InstallLocation", "")).Trim();
+                            if (display.IndexOf("vibepollo", StringComparison.OrdinalIgnoreCase) < 0 ||
+                                location.Length == 0) continue;
+                            try
+                            {
+                                string root = Path.GetFullPath(location).TrimEnd('\\', '/');
+                                if (Directory.Exists(root) && !IsReparsePoint(root)) roots[root] = root;
+                            }
+                            catch { }
+                        }
+                    }
+                }
+            }
+            if (roots.Count != 1)
+                throw new InvalidOperationException("Nie znaleziono jednoznacznej instalacji Vibepollo.");
+            string config = Path.Combine(new List<string>(roots.Keys)[0], "config");
+            if (!Directory.Exists(config) || IsReparsePoint(config))
+                throw new InvalidOperationException("Katalog konfiguracji Vibepollo jest niedostępny.");
+            return config;
+        }
+
+        private static byte[] ReadLocalFile(string path)
+        {
+            FileInfo info = new FileInfo(path);
+            if (!info.Exists || IsReparsePoint(path) || info.Length > MaxLocalFileBytes)
+                throw new InvalidOperationException("Plik Vibepollo jest niedostępny: " + path);
+            return File.ReadAllBytes(path);
+        }
+
+        internal static string ConfiguredFile(string configDirectory, string key, string fallback)
+        {
+            string value = fallback;
+            string conf = Path.Combine(configDirectory, "sunshine.conf");
+            if (File.Exists(conf))
+            {
+                List<string> values = new List<string>();
+                foreach (string rawLine in Encoding.UTF8.GetString(ReadLocalFile(conf))
+                    .TrimStart('﻿').Split('\r', '\n'))
+                {
+                    string line = System.Text.RegularExpressions.Regex.Replace(rawLine, "#.*$", "").Trim();
+                    System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(
+                        line, "^" + System.Text.RegularExpressions.Regex.Escape(key) + @"\s*=\s*(.*?)\s*$");
+                    if (!match.Success) continue;
+                    string item = match.Groups[1].Value.Trim();
+                    if (item.Length >= 2 && item[0] == item[item.Length - 1] && (item[0] == '"' || item[0] == '\''))
+                        item = item.Substring(1, item.Length - 2);
+                    if (item.Length > 0 && !values.Contains(item)) values.Add(item);
+                }
+                if (values.Count > 1)
+                    throw new InvalidOperationException("sunshine.conf podaje kilka wartości " + key + ".");
+                if (values.Count == 1) value = values[0];
+            }
+            string path = Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(configDirectory, value));
+            if (!path.StartsWith(configDirectory.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(key + " wskazuje plik poza konfiguracją Vibepollo.");
+            return path;
+        }
+
+        // Read access for the Gateway service to the files it reads from Vibepollo's
+        // configuration, found by the rules vibepollo_client.py applies: sunshine.conf, the
+        // state file and the HTTPS certificate it names, all inside the configuration
+        // directory and free of reparse points. The directories down to each file get
+        // traverse only, never listing: credentials also holds Vibepollo's private key.
+        // Returns the files that do not exist yet.
+        internal static List<string> GrantGatewayReadAccess()
+        {
+            string config = ConfigDirectory();
+            SecurityIdentifier gateway = (SecurityIdentifier)new NTAccount(@"NT SERVICE\MoonWakerGateway")
+                .Translate(typeof(SecurityIdentifier));
+            List<string> missing = new List<string>();
+            foreach (string file in new string[] {
+                Path.Combine(config, "sunshine.conf"),
+                ConfiguredFile(config, "file_state", "sunshine_state.json"),
+                ConfiguredFile(config, "cert", "credentials/cacert.pem") })
+            {
+                if (!File.Exists(file)) { missing.Add(file); continue; }
+                List<string> directories = new List<string>();
+                for (string directory = Path.GetDirectoryName(file);
+                    !String.Equals(directory, config, StringComparison.OrdinalIgnoreCase);
+                    directory = Path.GetDirectoryName(directory))
+                {
+                    if (IsReparsePoint(directory))
+                        throw new InvalidOperationException("Katalog Vibepollo jest punktem reparse: " + directory);
+                    directories.Add(directory);
+                }
+                directories.Add(config);
+                if (IsReparsePoint(file))
+                    throw new InvalidOperationException("Plik Vibepollo jest punktem reparse: " + file);
+                foreach (string directory in directories)
+                {
+                    DirectorySecurity security = Directory.GetAccessControl(directory, AccessControlSections.Access);
+                    security.AddAccessRule(new FileSystemAccessRule(gateway,
+                        FileSystemRights.Traverse | FileSystemRights.ReadAttributes, AccessControlType.Allow));
+                    Directory.SetAccessControl(directory, security);
+                }
+                FileSecurity fileSecurity = File.GetAccessControl(file, AccessControlSections.Access);
+                fileSecurity.AddAccessRule(new FileSystemAccessRule(gateway, FileSystemRights.Read,
+                    AccessControlType.Allow));
+                File.SetAccessControl(file, fileSecurity);
+            }
+            return missing;
+        }
+
+        internal static string PinnedCertificateSha256()
+        {
+            string configDirectory = ConfigDirectory();
+            string pem = Encoding.ASCII.GetString(ReadLocalFile(
+                ConfiguredFile(configDirectory, "cert", "credentials/cacert.pem")));
+            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(pem,
+                @"-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+/=\s]+?)\s*-----END CERTIFICATE-----");
+            if (!match.Success) throw new InvalidOperationException("Certyfikat Vibepollo jest nieczytelny.");
+            byte[] der = Convert.FromBase64String(
+                System.Text.RegularExpressions.Regex.Replace(match.Groups[1].Value, @"\s", ""));
+            return Sha256Hex(der);
+        }
+
+        private static string Sha256Hex(byte[] value)
+        {
+            using (SHA256 sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(value)).Replace("-", "").ToLowerInvariant();
+        }
+
+        internal static string Request(string baseUrl, string method, string path, string authorization,
+            object body, string pinnedSha256)
+        {
+            System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
+            System.Net.HttpWebRequest request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(baseUrl + path);
+            request.Method = method;
+            request.Timeout = 15000;
+            request.ReadWriteTimeout = 15000;
+            request.Accept = "application/json";
+            request.Headers[System.Net.HttpRequestHeader.Authorization] = authorization;
+            // Authentication is this pin: the self-signed certificate names no host and chains to no CA.
+            request.ServerCertificateValidationCallback = delegate(object sender,
+                System.Security.Cryptography.X509Certificates.X509Certificate certificate,
+                System.Security.Cryptography.X509Certificates.X509Chain chain,
+                System.Net.Security.SslPolicyErrors errors)
+            {
+                return certificate != null && Sha256Hex(certificate.GetRawCertData()) == pinnedSha256;
+            };
+            try
+            {
+                // The connection, and so the certificate check, starts here when there is a body.
+                if (body != null)
+                {
+                    byte[] content = new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(body));
+                    request.ContentType = "application/json";
+                    request.ContentLength = content.Length;
+                    using (Stream stream = request.GetRequestStream()) stream.Write(content, 0, content.Length);
+                }
+                using (System.Net.WebResponse response = request.GetResponse())
+                using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+                    return reader.ReadToEnd();
+            }
+            catch (System.Net.WebException error)
+            {
+                System.Net.HttpWebResponse response = error.Response as System.Net.HttpWebResponse;
+                if (response != null)
+                    throw new InvalidOperationException("Vibepollo odrzuciło żądanie " + path +
+                        " (HTTP " + (int)response.StatusCode + ").");
+                if (error.Status == System.Net.WebExceptionStatus.TrustFailure)
+                    throw new InvalidOperationException(
+                        "Certyfikat Vibepollo nie zgadza się z plikiem w jego konfiguracji.");
+                throw new InvalidOperationException("API Vibepollo nie odpowiada: " + error.Message);
+            }
+        }
+
+        internal static string CreateToken(string baseUrl, string username, string password, string pin)
+        {
+            Dictionary<string, object> scopes = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(
+                File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "vibepollo-token-scopes.json")));
+            string basic = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(username + ":" + password));
+            string raw = Request(baseUrl, "POST", "/api/token", basic,
+                new Dictionary<string, object> { { "scopes", scopes["scopes"] } }, pin).Trim();
+            string token = raw;
+            try
+            {
+                object parsed = new JavaScriptSerializer().DeserializeObject(raw);
+                Dictionary<string, object> document = parsed as Dictionary<string, object>;
+                if (parsed is string) token = (string)parsed;
+                else if (document != null)
+                    token = Convert.ToString(document.ContainsKey("token") ? document["token"] :
+                        document.ContainsKey("access_token") ? document["access_token"] : "");
+            }
+            catch (ArgumentException) { }
+            if (String.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Vibepollo nie zwróciło tokenu API.");
+            return token.Trim();
+        }
+    }
+
+    internal sealed class VibepolloTokenForm : Form
+    {
+        private readonly GatewayRegistryStore store;
+        private readonly TextBox url;
+        private readonly CheckBox create = new CheckBox();
+        private readonly TextBox admin;
+        private readonly TextBox password;
+        private readonly TextBox token;
+        private readonly Label status;
+        private readonly Button save;
+
+        internal VibepolloTokenForm(GatewayRegistryStore store)
+        {
+            this.store = store;
+            Dictionary<string, object> current = VibepolloMachineApi.ReadSettings(store);
+            bool configured = current.ContainsKey("token") &&
+                !String.IsNullOrWhiteSpace(Convert.ToString(current["token"]));
+            Ui.Prepare(this, "Vibepollo — token komputera", 700, 470);
+            Ui.Label(this, "Vibepollo (ustawienie komputera)", 28, 22, 640, 36, 16F, FontStyle.Bold, Color.White);
+            Ui.Label(this, configured
+                    ? "Gateway ma zapisany token. Zapis zastąpi go nowym."
+                    : "Gateway nie ma jeszcze tokenu Vibepollo.",
+                30, 62, 640, 24, 9.5F, FontStyle.Regular, Ui.Muted);
+            create.Text = "Pobierz / odnów token automatycznie";
+            create.SetBounds(30, 96, 400, 26);
+            create.ForeColor = Color.White;
+            create.Checked = true;
+            create.CheckedChanged += delegate { UpdateFields(); };
+            Controls.Add(create);
+            Ui.Label(this, "Login administratora Vibepollo", 30, 128, 300, 22, 9F, FontStyle.Regular, Color.White);
+            Ui.Label(this, "Hasło administratora", 365, 128, 300, 22, 9F, FontStyle.Regular, Color.White);
+            admin = Ui.TextBox(this, 30, 152, 315);
+            password = Ui.TextBox(this, 365, 152, 305);
+            password.UseSystemPasswordChar = true;
+            Ui.Label(this, "Istniejący token API (alternatywa)", 30, 194, 350, 22, 9F, FontStyle.Regular, Color.White);
+            token = Ui.TextBox(this, 30, 218, 640);
+            token.UseSystemPasswordChar = true;
+            Ui.Label(this, "Adres lokalnego API Vibepollo", 30, 260, 350, 22, 9F, FontStyle.Regular, Color.White);
+            url = Ui.TextBox(this, 30, 284, 640);
+            url.Text = current.ContainsKey("base_url") && !String.IsNullOrWhiteSpace(Convert.ToString(current["base_url"]))
+                ? Convert.ToString(current["base_url"]) : VibepolloMachineApi.DefaultBaseUrl;
+            Ui.Label(this, "Login i hasło służą tylko do lokalnego wywołania /api/token i nie są zapisywane. " +
+                "Certyfikat Vibepollo jest sprawdzany z plikiem w jego katalogu konfiguracji.",
+                30, 322, 640, 40, 8.7F, FontStyle.Regular, Ui.Muted);
+            status = Ui.Label(this, "", 30, 368, 640, 40, 9.5F, FontStyle.Bold, Ui.Muted);
+            save = Ui.Button(this, "Zapisz", 476, 414, 96, SaveClicked, true);
+            Button cancel = Ui.Button(this, "Zamknij", 582, 414, 88, delegate { Close(); }, false);
+            AcceptButton = save;
+            CancelButton = cancel;
+            FormClosed += delegate { password.Clear(); token.Clear(); };
+            UpdateFields();
+        }
+
+        private void UpdateFields()
+        {
+            admin.Enabled = create.Checked;
+            password.Enabled = create.Checked;
+            token.Enabled = !create.Checked;
+        }
+
+        private async void SaveClicked(object sender, EventArgs e)
+        {
+            string baseUrl, username = admin.Text.Trim(), secret = password.Text, pasted = token.Text.Trim();
+            bool automatic = create.Checked;
+            try { baseUrl = VibepolloMachineApi.LocalBaseUrl(url.Text); }
+            catch (InvalidOperationException error) { Fail(error.Message); return; }
+            if (automatic && (username.Length == 0 || secret.Length == 0))
+            { Fail("Podaj login i hasło administratora Vibepollo albo wklej istniejący token."); return; }
+            if (!automatic && !System.Text.RegularExpressions.Regex.IsMatch(pasted, "^[\\x21-\\x7e]{1,4096}$"))
+            { Fail("Wklej token API Vibepollo albo włącz jego automatyczne pobranie."); return; }
+            save.Enabled = false;
+            status.ForeColor = Ui.Muted;
+            status.Text = "Łączę się z Vibepollo…";
+            List<string> missing = null;
+            try
+            {
+                await System.Threading.Tasks.Task.Run(delegate
+                {
+                    string pin = VibepolloMachineApi.PinnedCertificateSha256();
+                    string value = automatic
+                        ? VibepolloMachineApi.CreateToken(baseUrl, username, secret, pin) : pasted;
+                    VibepolloMachineApi.Request(baseUrl, "GET", "/api/apps", "Bearer " + value, null, pin);
+                    VibepolloMachineApi.WriteSettings(store, baseUrl, value);
+                    // Every save repairs the Gateway's read access, e.g. after Vibepollo
+                    // regenerated its certificate or was updated.
+                    missing = VibepolloMachineApi.GrantGatewayReadAccess();
+                });
+                password.Clear();
+                token.Clear();
+                status.ForeColor = missing.Count == 0 ? Ui.Success : Ui.Danger;
+                status.Text = missing.Count == 0
+                    ? "Token zapisany. Gateway używa go od następnego wywołania Vibepollo."
+                    : "Token zapisany, ale brakuje pliku Vibepollo (" + String.Join(", ",
+                        missing.ConvertAll<string>(Path.GetFileName)) + "). Uruchom Vibepollo i zapisz ponownie.";
+            }
+            catch (Exception error) { Fail(error.Message); }
+            finally { save.Enabled = true; }
+        }
+
+        private void Fail(string message)
+        {
+            status.ForeColor = Ui.Danger;
+            status.Text = message;
         }
     }
 }

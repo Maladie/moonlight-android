@@ -100,7 +100,7 @@ For each successful active-user-to-target switch:
   interactive-session change; confirm authenticated health remains reachable.
 - [ ] Confirm the selected profile's Bridge processes start in that user's
   session and that Android does not continue normal launch readiness until the
-  required Playnite connector and Vibepollo Bridge report ready.
+  required Playnite connector and the Gateway's Vibepollo connection report ready.
 - [ ] Change the Android host/profile or cancel while polling; confirm only the
   exact correlated attempt is cancelled and a late result cannot update the new
   selection.

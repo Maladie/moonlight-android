@@ -56,7 +56,6 @@ if ($PurgeCredentials) {
         "MoonWaker Gateway Supervisor",
         "Wake & Play Host Gateway",
         "Wake & Play Discord Bridge (",
-        "Wake & Play Vibepollo Bridge (",
         "Wake & Play Game Provider Bridge (",
         "Wake & Play Playnite Bridge ("
     )

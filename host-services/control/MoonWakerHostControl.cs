@@ -263,9 +263,11 @@ namespace MoonWaker.HostControl
             pair.BackColor = accent;
             pair.FlatAppearance.BorderSize = 0;
             AddActionButton(gatewayPanel, "Napraw wszystko", 430, 74,
-                delegate { RunAction("RecoverAll", null); }, 250);
-            AddActionButton(gatewayPanel, "Eksportuj diagnostykę", 688, 74,
-                delegate { ExportDiagnostics(); }, 256);
+                delegate { RunAction("RecoverAll", null); }, 160);
+            AddActionButton(gatewayPanel, "Vibepollo…", 598, 74,
+                delegate { LaunchConfigurator("vibepollo", null); }, 150);
+            AddActionButton(gatewayPanel, "Eksportuj diagnostykę", 756, 74,
+                delegate { ExportDiagnostics(); }, 188);
             activeProfile.SetBounds(430, 122, 510, 25);
             activeProfile.ForeColor = muted;
             gatewayPanel.Controls.Add(activeProfile);
@@ -322,11 +324,10 @@ namespace MoonWaker.HostControl
             profiles.BackColor = Color.FromArgb(20, 24, 33);
             profiles.ForeColor = Color.White;
             profiles.BorderStyle = BorderStyle.None;
-            profiles.Columns.Add("Profil", 142);
-            profiles.Columns.Add("Użytkownik", 154);
+            profiles.Columns.Add("Profil", 204);
+            profiles.Columns.Add("Użytkownik", 216);
             profiles.Columns.Add("Nadzorca / PID", 126);
             profiles.Columns.Add("Discord / PID", 116);
-            profiles.Columns.Add("Vibepollo / PID", 124);
             profiles.Columns.Add("Provider / PID", 116);
             profiles.Columns.Add("PIN aplikacji", 94);
             profiles.Columns.Add("Logowanie", 88);
@@ -651,7 +652,6 @@ namespace MoonWaker.HostControl
                     row.SubItems.Add(GetText(profile, "owner", "—"));
                     row.SubItems.Add(ProcessStatus(profile, "supervisor"));
                     row.SubItems.Add(ProcessStatus(profile, "discord"));
-                    row.SubItems.Add(ProcessStatus(profile, "vibepollo"));
                     row.SubItems.Add(ProcessStatus(profile, "game_provider"));
                     row.SubItems.Add(GetBool(profile, "pin_required") ? "WŁ." : "WYŁ.");
                     row.SubItems.Add(RemoteSignInStatus(profile));
@@ -974,18 +974,18 @@ namespace MoonWaker.HostControl
             if (!GetBool(profile, "platform_controls_available"))
             {
                 MessageBox.Show(this,
-                    "Zaloguj się na konto Windows właściciela tego profilu, aby skonfigurować Discord i Vibepollo.",
+                    "Zaloguj się na konto Windows właściciela tego profilu, aby skonfigurować Discord.",
                     "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
             using (IntegrationsDialog dialog = new IntegrationsDialog(id,
-                GetBool(profile, "discord_configured"), GetBool(profile, "vibepollo_configured")))
+                GetBool(profile, "discord_configured")))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 IntegrationSettings settings = dialog.Settings;
                 try
                 {
-                    footer.Text = "Konfiguruję Discord i Vibepollo…";
+                    footer.Text = "Konfiguruję Discord…";
                     Dictionary<string, object> result = await RunControlAsync(
                         "ConfigureIntegrations", id, null, null, settings);
                     if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error",
@@ -1131,20 +1131,6 @@ namespace MoonWaker.HostControl
                         info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_SECRET_PROTECTED"] =
                             String.IsNullOrWhiteSpace(integrations.DiscordClientSecret) ? "" :
                             ProtectForCurrentUser(integrations.DiscordClientSecret);
-                        info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CONFIGURE"] =
-                            integrations.ConfigureVibepollo ? "1" : "0";
-                        info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_URL"] =
-                            integrations.VibepolloUrl ?? "";
-                        info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_TOKEN_PROTECTED"] =
-                            String.IsNullOrWhiteSpace(integrations.VibepolloToken) ? "" :
-                            ProtectForCurrentUser(integrations.VibepolloToken);
-                        info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CREATE_TOKEN"] =
-                            integrations.CreateVibepolloToken ? "1" : "0";
-                        info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_ADMIN_USERNAME"] =
-                            integrations.VibepolloAdmin ?? "";
-                        info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD_PROTECTED"] =
-                            String.IsNullOrWhiteSpace(integrations.VibepolloPassword) ? "" :
-                            ProtectForCurrentUser(integrations.VibepolloPassword);
                     }
                     info.CreateNoWindow = true;
                     info.RedirectStandardOutput = true;
@@ -1347,34 +1333,19 @@ namespace MoonWaker.HostControl
         internal bool ConfigureDiscord;
         internal string DiscordClientId;
         internal string DiscordClientSecret;
-        internal bool ConfigureVibepollo;
-        internal bool CreateVibepolloToken;
-        internal string VibepolloUrl;
-        internal string VibepolloToken;
-        internal string VibepolloAdmin;
-        internal string VibepolloPassword;
 
         internal void ClearSecrets()
         {
             DiscordClientSecret = null;
-            VibepolloToken = null;
-            VibepolloPassword = null;
         }
     }
 
     internal sealed class IntegrationsDialog : Form
     {
         private readonly bool discordWasConfigured;
-        private readonly bool vibepolloWasConfigured;
         private readonly CheckBox configureDiscord = new CheckBox();
         private readonly TextBox discordId = new TextBox();
         private readonly TextBox discordSecret = new TextBox();
-        private readonly CheckBox configureVibepollo = new CheckBox();
-        private readonly CheckBox createVibepolloToken = new CheckBox();
-        private readonly TextBox vibepolloAdmin = new TextBox();
-        private readonly TextBox vibepolloPassword = new TextBox();
-        private readonly TextBox vibepolloToken = new TextBox();
-        private readonly TextBox vibepolloUrl = new TextBox();
 
         internal IntegrationSettings Settings
         {
@@ -1383,25 +1354,17 @@ namespace MoonWaker.HostControl
                 return new IntegrationSettings {
                     ConfigureDiscord = configureDiscord.Checked,
                     DiscordClientId = discordId.Text.Trim(),
-                    DiscordClientSecret = discordSecret.Text,
-                    ConfigureVibepollo = configureVibepollo.Checked,
-                    CreateVibepolloToken = createVibepolloToken.Checked,
-                    VibepolloUrl = vibepolloUrl.Text.Trim(),
-                    VibepolloToken = vibepolloToken.Text,
-                    VibepolloAdmin = vibepolloAdmin.Text.Trim(),
-                    VibepolloPassword = vibepolloPassword.Text
+                    DiscordClientSecret = discordSecret.Text
                 };
             }
         }
 
-        internal IntegrationsDialog(string profileId, bool discordConfigured,
-            bool vibepolloConfigured)
+        internal IntegrationsDialog(string profileId, bool discordConfigured)
         {
             discordWasConfigured = discordConfigured;
-            vibepolloWasConfigured = vibepolloConfigured;
             Text = "Integracje MoonWaker";
             Icon = MoonWakerIcon.Create();
-            ClientSize = new Size(720, 620);
+            ClientSize = new Size(720, 300);
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -1412,7 +1375,7 @@ namespace MoonWaker.HostControl
             Font = new Font("Segoe UI", 9.5F);
             AutoScaleMode = AutoScaleMode.Dpi;
 
-            AddLabel("Discord i Vibepollo", 26, 18, 620, 34, 16F, FontStyle.Bold, Color.White);
+            AddLabel("Discord", 26, 18, 620, 34, 16F, FontStyle.Bold, Color.White);
             AddLabel("Profil: " + profileId + ". Sekrety są zapisywane dla aktualnego konta Windows.",
                 28, 55, 650, 25, 9F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
 
@@ -1431,45 +1394,12 @@ namespace MoonWaker.HostControl
             AddLabel("Przy pierwszej konfiguracji podaj oba pola. Discord uruchomi autoryzację OAuth przy starcie Bridge'a.",
                 30, 184, 660, 34, 8.7F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
 
-            Panel divider = new Panel();
-            divider.SetBounds(28, 224, 662, 1);
-            divider.BackColor = Color.FromArgb(62, 69, 88);
-            Controls.Add(divider);
-
-            configureVibepollo.Text = vibepolloConfigured
-                ? "Vibepollo — skonfigurowane (puste pola zachowają zapisane dane)"
-                : "Skonfiguruj Vibepollo";
-            configureVibepollo.SetBounds(28, 241, 650, 28);
-            configureVibepollo.ForeColor = Color.White;
-            configureVibepollo.Checked = true;
-            configureVibepollo.CheckedChanged += delegate { UpdateFields(); };
-            Controls.Add(configureVibepollo);
-
-            createVibepolloToken.Text = "Pobierz / odnów token automatycznie";
-            createVibepolloToken.SetBounds(30, 276, 390, 26);
-            createVibepolloToken.ForeColor = Color.White;
-            createVibepolloToken.Checked = !vibepolloConfigured;
-            createVibepolloToken.CheckedChanged += delegate { UpdateFields(); };
-            Controls.Add(createVibepolloToken);
-            AddLabel("Login administratora Vibepollo", 30, 309, 300, 22, 9F,
-                FontStyle.Regular, Color.White);
-            AddLabel("Hasło administratora", 365, 309, 300, 22, 9F,
-                FontStyle.Regular, Color.White);
-            ConfigureBox(vibepolloAdmin, 30, 333, 315, false);
-            ConfigureBox(vibepolloPassword, 365, 333, 325, true);
-            AddLabel("Istniejący token API (alternatywa)", 30, 374, 350, 22, 9F,
-                FontStyle.Regular, Color.White);
-            ConfigureBox(vibepolloToken, 30, 398, 660, true);
-            AddLabel("Adres lokalnego API Vibepollo", 30, 439, 350, 22, 9F,
-                FontStyle.Regular, Color.White);
-            ConfigureBox(vibepolloUrl, 30, 463, 660, false);
-            vibepolloUrl.Text = vibepolloConfigured ? "" : "https://127.0.0.1:47990";
-            AddLabel("Automatyczne pobranie używa loginu i hasła tylko do lokalnego wywołania /api/token. Możesz zamiast tego wkleić token.",
-                30, 501, 660, 38, 8.7F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
+            AddLabel("Vibepollo jest ustawieniem komputera: token zapisuje przycisk „Vibepollo…” w panelu Gateway.",
+                30, 220, 660, 22, 8.7F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
 
             Button save = new Button();
             save.Text = "Zapisz";
-            save.SetBounds(468, 562, 102, 38);
+            save.SetBounds(468, 248, 102, 38);
             save.BackColor = Color.FromArgb(116, 100, 255);
             save.ForeColor = Color.White;
             save.FlatStyle = FlatStyle.Flat;
@@ -1479,7 +1409,7 @@ namespace MoonWaker.HostControl
             Button cancel = new Button();
             cancel.Text = "Anuluj";
             cancel.DialogResult = DialogResult.Cancel;
-            cancel.SetBounds(582, 562, 108, 38);
+            cancel.SetBounds(582, 248, 108, 38);
             cancel.BackColor = Color.FromArgb(28, 33, 45);
             cancel.ForeColor = Color.White;
             cancel.FlatStyle = FlatStyle.Flat;
@@ -1493,9 +1423,9 @@ namespace MoonWaker.HostControl
 
         private void SaveClicked(object sender, EventArgs e)
         {
-            if (!configureDiscord.Checked && !configureVibepollo.Checked)
+            if (!configureDiscord.Checked)
             {
-                MessageBox.Show(this, "Wybierz przynajmniej jedną integrację.",
+                MessageBox.Show(this, "Zaznacz konfigurację Discorda.",
                     "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -1517,36 +1447,6 @@ namespace MoonWaker.HostControl
                     return;
                 }
             }
-            if (configureVibepollo.Checked)
-            {
-                string vibepolloUrlText = vibepolloUrl.Text.Trim();
-                Uri uri;
-                if (!(vibepolloWasConfigured && String.IsNullOrWhiteSpace(vibepolloUrlText)) &&
-                    (!Uri.TryCreate(vibepolloUrlText, UriKind.Absolute, out uri) ||
-                     uri.Scheme != Uri.UriSchemeHttps ||
-                     !(uri.Host == "127.0.0.1" || uri.Host.Equals("localhost",
-                         StringComparison.OrdinalIgnoreCase))))
-                {
-                    MessageBox.Show(this, "API Vibepollo musi używać HTTPS na 127.0.0.1 lub localhost.",
-                        "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                if (createVibepolloToken.Checked &&
-                    (String.IsNullOrWhiteSpace(vibepolloAdmin.Text) ||
-                     String.IsNullOrWhiteSpace(vibepolloPassword.Text)))
-                {
-                    MessageBox.Show(this, "Podaj login i hasło administratora Vibepollo albo wybierz tryb istniejącego tokenu.",
-                        "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                if (!createVibepolloToken.Checked &&
-                    String.IsNullOrWhiteSpace(vibepolloToken.Text) && !vibepolloWasConfigured)
-                {
-                    MessageBox.Show(this, "Wklej token API Vibepollo albo włącz jego automatyczne pobranie.",
-                        "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-            }
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -1555,11 +1455,6 @@ namespace MoonWaker.HostControl
         {
             discordId.Enabled = configureDiscord.Checked;
             discordSecret.Enabled = configureDiscord.Checked;
-            createVibepolloToken.Enabled = configureVibepollo.Checked;
-            vibepolloUrl.Enabled = configureVibepollo.Checked;
-            vibepolloAdmin.Enabled = configureVibepollo.Checked && createVibepolloToken.Checked;
-            vibepolloPassword.Enabled = configureVibepollo.Checked && createVibepolloToken.Checked;
-            vibepolloToken.Enabled = configureVibepollo.Checked && !createVibepolloToken.Checked;
         }
 
         private void AddLabel(string text, int x, int y, int width, int height,
@@ -1586,8 +1481,6 @@ namespace MoonWaker.HostControl
         internal void ClearSecrets()
         {
             discordSecret.Clear();
-            vibepolloPassword.Clear();
-            vibepolloToken.Clear();
         }
     }
 

@@ -9,21 +9,8 @@ if ($start -lt 0 -or $end -le $start) {
 Invoke-Expression $source.Substring($start, $end - $start)
 
 $counts = @{}
-if (Should-Restart-Component "vibepollo" $false $counts) {
-    throw "A single Vibepollo health miss must not restart the component."
-}
-if ([int]$counts["vibepollo"] -ne 1) {
-    throw "The first Vibepollo health miss was not recorded."
-}
-if (-not (Should-Restart-Component "vibepollo" $false $counts)) {
-    throw "Two consecutive Vibepollo health misses must restart the component."
-}
-$healthyRestart = Should-Restart-Component "vibepollo" $true $counts
-if ($healthyRestart -or [int]$counts["vibepollo"] -ne 0) {
-    throw "A healthy Vibepollo probe must reset the failure count."
-}
-if (Should-Restart-Component "vibepollo" $false $counts) {
-    throw "A post-recovery Vibepollo miss must start a new failure streak."
+if (-not (Should-Restart-Component "discord" $false $counts)) {
+    throw "A single Discord health miss must restart the component."
 }
 if (Should-Restart-Component "game-provider" $false $counts) {
     throw "A single Game Provider health miss must not interrupt an active launch."

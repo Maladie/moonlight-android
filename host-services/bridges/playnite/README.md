@@ -71,8 +71,9 @@ visible foreground window on the configured streamed display and three
 consecutive samples with identical geometry. Set `streamed_display` to the
 profile's Win32 display name (for example `\\.\DISPLAY15`). An empty or
 mismatched value deliberately keeps the privacy gate closed. During an active
-session the Bridge also reads its profile's loopback Vibepollo active-display
-diagnostics and picks the display that exactly one active display marked
+session the Bridge also enumerates the session's active displays itself
+(`StreamDisplayResolver`, Win32 `EnumDisplayMonitors`) and picks the display that
+exactly one active display marked
 `stream_virtual_display` (a Vibepollo virtual display adapter), however many
 physical displays remain active. When no active display is marked virtual and
 exactly one display is active, that display is the streamed display. Any other

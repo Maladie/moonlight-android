@@ -21,7 +21,6 @@ import threading
 import time
 import traceback
 import urllib.parse
-import urllib.request
 import uuid
 from collections import deque
 from ctypes import wintypes
@@ -264,12 +263,60 @@ class ProviderDiagnostics:
 DIAGNOSTICS = ProviderDiagnostics()
 
 
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD),
+                ("szDevice", wintypes.WCHAR * 32)]
+
+
+class _DisplayDevice(ctypes.Structure):
+    _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
+                ("DeviceString", wintypes.WCHAR * 128), ("StateFlags", wintypes.DWORD),
+                ("DeviceID", wintypes.WCHAR * 128), ("DeviceKey", wintypes.WCHAR * 128)]
+
+
 class StreamDisplayResolver:
-    def __init__(self, vibepollo_bridge: str) -> None:
-        self.endpoint = vibepollo_bridge.rstrip("/") + "/diagnostics/active-displays" \
-            if vibepollo_bridge else ""
+    """The display a stream shows, from this session's active displays."""
+
+    # Hardware IDs of the two virtual display drivers Vibepollo ships (drivers\sunshine and
+    # drivers\sudovda); dd_use_sunshine_virtual_display_driver selects which one creates the
+    # per-stream display.
+    STREAM_VIRTUAL_ADAPTER_IDS = {r"root\sunshinevirtualdisplay", r"root\sudomaker\sudovda"}
+
+    def __init__(self) -> None:
         self.last_check = 0.0
         self.cached = ""
+
+    @classmethod
+    def active_displays(cls) -> list[dict[str, Any]]:
+        """[{display_name, stream_virtual_display}] of the monitors attached to the desktop."""
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        adapters = {}
+        device = _DisplayDevice()
+        device.cb = ctypes.sizeof(device)
+        index = 0
+        while user32.EnumDisplayDevicesW(None, index, ctypes.byref(device), 0):
+            adapters[device.DeviceName.upper()] = device.DeviceID.lower()
+            index += 1
+        names = []
+        callback_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+            wintypes.LPARAM)
+
+        def collect(monitor, _context, _bounds, _data):
+            info = _MonitorInfo()
+            info.cbSize = ctypes.sizeof(info)
+            if user32.GetMonitorInfoW(monitor, ctypes.byref(info)) and info.szDevice.strip():
+                names.append(info.szDevice)
+            return True
+
+        callback = callback_type(collect)
+        user32.EnumDisplayMonitors(None, None, callback, 0)
+        return [{"display_name": name, "stream_virtual_display":
+                 adapters.get(name.upper(), "") in cls.STREAM_VIRTUAL_ADAPTER_IDS}
+                for name in names]
 
     @staticmethod
     def _normalize(value: Any) -> str:
@@ -281,10 +328,9 @@ class StreamDisplayResolver:
         return text.upper()
 
     @classmethod
-    def stream_display_from_payload(cls, payload: Any) -> str:
+    def stream_display(cls, displays: list[dict[str, Any]]) -> str:
         """The single active display marked `stream_virtual_display`; when none
         is marked, the single active display; otherwise ""."""
-        displays = ((payload or {}).get("value") or {}).get("displays") or []
         active = {cls._normalize(item.get("display_name")): item.get("stream_virtual_display") is True
                   for item in displays if isinstance(item, dict)}
         active.pop("", None)
@@ -294,14 +340,12 @@ class StreamDisplayResolver:
 
     def resolve(self) -> str:
         now = time.monotonic()
-        if not self.endpoint or now - self.last_check < 1.0:
+        if os.name != "nt" or now - self.last_check < 1.0:
             return self.cached
         self.last_check = now
         try:
-            with urllib.request.urlopen(self.endpoint, timeout=0.75) as response:
-                payload = json.loads(response.read(256 * 1024).decode("utf-8-sig"))
-            self.cached = self.stream_display_from_payload(payload)
-        except Exception:
+            self.cached = self.stream_display(self.active_displays())
+        except (OSError, AttributeError, ValueError):
             pass
         return self.cached
 
@@ -6050,8 +6094,7 @@ def main() -> None:
         ensure_playnite_desktop(str(
             config.get("playnite_desktop_executable", "")).strip())
     fullscreen_path = str(config.get("playnite_fullscreen_executable", "")).strip()
-    vibepollo_bridge = str(config.get("vibepollo_bridge", "")).strip()
-    display_resolver = StreamDisplayResolver(vibepollo_bridge)
+    display_resolver = StreamDisplayResolver()
     state.set_window_actions(
         window_probe.request_graceful_close,
         lambda: window_probe.show_playnite_fullscreen(fullscreen_path),

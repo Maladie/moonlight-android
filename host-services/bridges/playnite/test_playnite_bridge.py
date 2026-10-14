@@ -4197,47 +4197,45 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.readiness["ready"])
         self.assertEqual("game_focus_requested", self.state.readiness["reason"])
 
-    def test_stream_display_resolver_uses_active_displays_endpoint(self):
-        resolver = StreamDisplayResolver("http://127.0.0.1:47990/")
-        self.assertEqual(
-            "http://127.0.0.1:47990/diagnostics/active-displays", resolver.endpoint)
-
     def test_stream_display_resolver_prefers_single_virtual_then_single_active_display(self):
-        def display(name, virtual, primary=False):
-            # Shape emitted by VibepolloBridge.ps1 Get-ActiveDisplayDiagnostics.
-            return {"display_name": "\\\\.\\" + name, "primary": primary,
-                    "stream_virtual_display": virtual,
-                    "bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080}}
+        def display(name, virtual):
+            return {"display_name": "\\\\.\\" + name, "stream_virtual_display": virtual}
 
-        def active(*displays):
-            return {"ok": True, "source": "Win32.EnumDisplayMonitors",
-                    "value": {"displays": list(displays)}}
-
-        resolver = StreamDisplayResolver("http://127.0.0.1:47990")
-        response = mock.MagicMock()
-        response.__enter__.return_value = response
-        payloads = [
+        cases = [
             # Failed topology APPLY: two physical outputs stay active beside the stream.
-            (active(display("DISPLAY1", False), display("DISPLAY2", False, True),
-                    display("DISPLAY15", True)), r"\\.\DISPLAY15"),
-            (active(display("DISPLAY15", True)), r"\\.\DISPLAY15"),
+            ([display("DISPLAY1", False), display("DISPLAY2", False),
+              display("DISPLAY15", True)], r"\\.\DISPLAY15"),
+            ([display("DISPLAY15", True)], r"\\.\DISPLAY15"),
             # No virtual display: a lone active physical display is the streamed one.
-            (active(display("DISPLAY2", False, True)), r"\\.\DISPLAY2"),
-            (active(display("DISPLAY1", False), display("DISPLAY2", False, True)), ""),
-            (active(display("DISPLAY15", True), display("DISPLAY16", True)), ""),
-            # Only the explicit boolean marks a virtual display; "true" counts as
-            # physical, so it wins only as the single active display.
-            (active(display("DISPLAY15", "true")), r"\\.\DISPLAY15"),
-            (active(display("DISPLAY15", "true"), display("DISPLAY2", False)), ""),
+            ([display("DISPLAY2", False)], r"\\.\DISPLAY2"),
+            ([display("DISPLAY1", False), display("DISPLAY2", False)], ""),
+            ([display("DISPLAY15", True), display("DISPLAY16", True)], ""),
+            # Only the explicit boolean marks a virtual display.
+            ([display("DISPLAY15", "true")], r"\\.\DISPLAY15"),
+            ([display("DISPLAY15", "true"), display("DISPLAY2", False)], ""),
+            ([], ""),
         ]
-        with mock.patch.object(GameProviderBridge.urllib.request, "urlopen",
-                               return_value=response) as urlopen:
-            for payload, expected in payloads:
+        resolver = StreamDisplayResolver()
+        with mock.patch.object(GameProviderBridge.os, "name", "nt"):
+            for displays, expected in cases:
                 resolver.last_check = 0.0
-                response.read.return_value = json.dumps(payload).encode("utf-8")
-                self.assertEqual(expected, resolver.resolve())
-            self.assertEqual(len(payloads), urlopen.call_count)
-            self.assertTrue(all(call.args[0] == resolver.endpoint for call in urlopen.call_args_list))
+                with mock.patch.object(StreamDisplayResolver, "active_displays",
+                                       return_value=displays):
+                    self.assertEqual(expected, resolver.resolve())
+            # A failed enumeration keeps the last answer instead of dropping the display.
+            resolver.last_check, resolver.cached = 0.0, r"\\.\DISPLAY15"
+            with mock.patch.object(StreamDisplayResolver, "active_displays",
+                                   side_effect=OSError("enumeration failed")):
+                self.assertEqual(r"\\.\DISPLAY15", resolver.resolve())
+
+    def test_stream_display_resolver_marks_vibepollo_virtual_adapters(self):
+        self.assertEqual({r"root\sunshinevirtualdisplay", r"root\sudomaker\sudovda"},
+                         StreamDisplayResolver.STREAM_VIRTUAL_ADAPTER_IDS)
+        if os.name == "nt":
+            displays = StreamDisplayResolver.active_displays()
+            self.assertTrue(all(isinstance(item["stream_virtual_display"], bool) and
+                                item["display_name"].startswith("\\\\.\\")
+                                for item in displays))
 
     def test_connector_patch_is_guarded_and_idempotent(self):
         fixture = "\n".join([
@@ -4285,62 +4283,6 @@ class BridgeStateTest(unittest.TestCase):
         self.assertNotIn(PATCH_MARKER_V16, patched)
         self.assertIn("$play.EmulatorId", patched)
         self.assertIn("$PlayniteApi.Database.Emulators", patched)
-
-    def test_vibepollo_bridge_manages_no_per_game_applications(self):
-        script = Path(__file__).parents[1] / "vibepollo" / "VibepolloBridge.ps1"
-        source = script.read_text(encoding="utf-8-sig")
-
-        for removed in ("Ensure-PlayniteApp", "Get-PlayniteAppStatus",
-                        "Remove-DuplicatePlayniteApps", "'^/apps/ensure$'",
-                        "'^/apps/status$'", '"playnite-managed" = "manual"', " DELETE)"):
-            self.assertNotIn(removed, source)
-        self.assertIn("'^/apps/stream/ensure$'", source)
-
-    def test_vibepollo_ensures_one_command_free_neutral_stream_additively(self):
-        script = Path(__file__).parents[1] / "vibepollo" / "VibepolloBridge.ps1"
-        source = script.read_text(encoding="utf-8-sig")
-        start = source.index("function Ensure-MoonWakerStream {")
-        end = source.index("\nfunction Invoke-Action", start)
-        ensure = source[start:end]
-
-        self.assertIn('$name = "MoonWaker Stream"', ensure)
-        self.assertIn('$uuid = "6d6f6f6e-7761-4b65-9273-747265616d00"', ensure)
-        self.assertIn('$payload["moonwaker-managed"] = "stream"', ensure)
-        self.assertIn('$payload["uuid"] = $uuid', ensure)
-        self.assertIn('$payload["auto-detach"] = $true', ensure)
-        self.assertIn("Test-MoonWakerStreamCommandFree", ensure)
-        command_guard = source[source.index("function Test-MoonWakerStreamCommandFree {"):start]
-        for field in ("cmd", "prep-cmd", "state-cmd", "detached",
-                      "playnite-id", "playnite_id", "playnite-managed",
-                      "playnite-source"):
-            self.assertIn(f'"{field}"', command_guard)
-        self.assertIn("Multiple managed MoonWaker Stream applications", ensure)
-        self.assertIn("Multiple applications already use the MoonWaker Stream name", ensure)
-        self.assertIn("An unmarked application already uses the MoonWaker Stream name", ensure)
-        self.assertIn("An unmanaged application already uses the reserved MoonWaker Stream UUID", ensure)
-        self.assertGreaterEqual(ensure.count('Get-PropertyValue $matches[0].app'), 3)
-        self.assertIn("Test-MoonWakerStreamCommandFree $matches[0].app", ensure)
-        self.assertIn("return New-MoonWakerStreamResult $match $false $false", ensure)
-        self.assertNotIn("Remove-DuplicatePlayniteApps", ensure)
-        self.assertNotIn(" DELETE", ensure)
-        self.assertNotIn("Ensure-PlayniteApp", ensure)
-
-    def test_vibepollo_neutral_stream_ensure_is_wired_for_startup_and_retry(self):
-        bridge = (Path(__file__).parents[1] / "vibepollo" / "VibepolloBridge.ps1") \
-            .read_text(encoding="utf-8-sig")
-        installer = (Path(__file__).parents[2] / "install" /
-                     "Install-WakePlayProfile.ps1").read_text(encoding="utf-8-sig")
-        smoke_test = (Path(__file__).parents[1] / "vibepollo" /
-                      "Test-VibepolloBridge.ps1").read_text(encoding="utf-8-sig")
-
-        self.assertGreaterEqual(bridge.count("Ensure-MoonWakerStream"), 3)
-        self.assertIn("^/apps/stream/ensure$", bridge)
-        self.assertIn("Ensure-MoonWakerStreamTarget $VibepolloPort", installer)
-        self.assertIn("/apps/stream/ensure", installer)
-        self.assertEqual(2, smoke_test.count("/apps/stream/ensure"))
-        self.assertIn("$stream.uuid -ne [string]$streamAgain.uuid", smoke_test)
-        self.assertIn("$stream.app_id -ne [long]$streamAgain.app_id", smoke_test)
-        self.assertIn("[bool]$streamAgain.created", smoke_test)
 
     def test_connector_v8_is_upgraded_with_library_source(self):
         patched, changed = patch_text(PATCH_MARKER_V8 + "\n"

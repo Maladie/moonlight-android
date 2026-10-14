@@ -13,6 +13,9 @@ import test_child_time_control as child_fixture
 from test_child_time_control import VIBE_UUID
 from test_child_library_integration import BridgeFixture, BridgeState
 from wakeplay_gateway import GatewayState
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(GatewayState)
 
 
 class SessionRecoveryTest(unittest.TestCase):

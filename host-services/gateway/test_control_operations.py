@@ -11,6 +11,9 @@ import wakeplay_gateway
 from control_operation_policy import ControlOperationPolicy
 from provider_control_operation import StreamerControlOperation
 from wakeplay_gateway import GatewayState, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy, routed
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 VIBE_UUID = "01234567-89ab-cdef-0123-456789abcdef"
@@ -606,7 +609,7 @@ class ControlOperationTest(unittest.TestCase):
             return True, {**control_evidence(), "clients": [], "apps": []}
 
         trace = {}
-        self.assertTrue(StreamerControlOperation.force_close(proxy, "parent", trace))
+        self.assertTrue(StreamerControlOperation.force_close(routed(proxy), trace))
         self.assertEqual(["/action/close-app", "/snapshot?force=1"], calls)
         self.assertEqual(0, trace["close_http_ok"])
         self.assertEqual(500, trace["close_http_status"])
@@ -648,7 +651,7 @@ class ControlOperationTest(unittest.TestCase):
                    side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
+            closed, reason = StreamerControlOperation.close(routed(proxy), stream, trace)
         self.assertFalse(closed)
         self.assertEqual("streamer_close_unconfirmed", reason)
         self.assertEqual(1, calls.count("/action/close-app"))
@@ -677,7 +680,7 @@ class ControlOperationTest(unittest.TestCase):
                    side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
+            closed, reason = StreamerControlOperation.close(routed(proxy), stream, trace)
         self.assertTrue(closed)
         self.assertEqual("streamer_idle_after_close", reason)
         self.assertEqual("idle_confirmed", trace["close_stage"])
@@ -702,7 +705,7 @@ class ControlOperationTest(unittest.TestCase):
                 def proxy(_name, path, **_kwargs):
                     calls.append(path)
                     return True, {**active, **changes, "private_payload": "Bearer secret"}
-                closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
+                closed, reason = StreamerControlOperation.close(routed(proxy), stream, trace)
                 self.assertEqual((False, "streamer_identity_unconfirmed"), (closed, reason))
                 self.assertEqual(["/snapshot?force=1"], calls)
                 self.assertEqual("identity_rejected", trace["close_stage"])
@@ -717,7 +720,7 @@ class ControlOperationTest(unittest.TestCase):
         with patch("provider_control_operation.time.monotonic", side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", {
+            closed, reason = StreamerControlOperation.close(routed(proxy), {
                 "sunshine_app_id": 7, "vibepollo_client_uuid": VIBE_UUID}, trace)
         self.assertEqual((False, "streamer_snapshot_unavailable"), (closed, reason))
         self.assertNotIn("/action/close-app", calls)
@@ -742,7 +745,7 @@ class ControlOperationTest(unittest.TestCase):
                             raise OSError("response lost")
                         return False, {"status": 500, "private_payload": "secret"}
                     return True, idle if closed_effect[0] else active
-                result = StreamerControlOperation.close(proxy, "parent", {
+                result = StreamerControlOperation.close(routed(proxy), {
                     "sunshine_app_id": 7, "vibepollo_client_uuid": VIBE_UUID}, trace)
                 self.assertEqual((True, "streamer_idle_after_close"), result)
                 self.assertEqual(["/snapshot?force=1", "/action/close-app",
@@ -773,7 +776,7 @@ class ControlOperationTest(unittest.TestCase):
                    side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", stream)
+            closed, reason = StreamerControlOperation.close(routed(proxy), stream)
 
         self.assertTrue(closed)
         self.assertEqual("streamer_idle_after_close", reason)

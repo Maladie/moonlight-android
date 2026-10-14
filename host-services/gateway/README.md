@@ -1,7 +1,12 @@
 # Wake & Play Host Gateway
 
 Gateway exposes a small authenticated HTTPS API to Wake & Play while keeping
-Discord, Vibepollo and the Game Provider Bridge bound to `127.0.0.1`.
+Discord and the Game Provider Bridge bound to `127.0.0.1`. It talks to the
+computer's Vibepollo itself (`vibepollo_client.py`): one token in
+`vibepollo-api.json`, the HTTPS certificate pinned to the one in Vibepollo's
+configuration directory, and the `MoonWaker Stream` application ensured at start
+and rechecked every five minutes; a foreign application holding its name or UUID
+is never overwritten.
 
 For a complete installation use `../install/Install-WakePlayHost.ps1`. For
 development, run `Start-WakePlayGateway.ps1` and enter its six-digit code under
@@ -28,8 +33,8 @@ URLs are rejected.
 A Discord Bridge must run in the same interactive Windows session as its
 Discord client because named-pipe RPC and DPAPI credentials are user-bound.
 Discord itself can only own one machine-global RPC endpoint at a time, so fully
-exit it in the previous profile before switching. Vibepollo also needs a
-per-profile Bridge when its credentials or runtime state differ.
+exit it in the previous profile before switching. Vibepollo is one per computer
+and is shared by every profile.
 
 The profile registry uses stable IDs and authoritative Windows account SIDs.
 Paired clients store `profile_grants` separately for every profile. Legacy

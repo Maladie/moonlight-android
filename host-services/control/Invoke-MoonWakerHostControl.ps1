@@ -423,86 +423,6 @@ function Get-EndpointPort([object]$Entry, [string]$Property, [int]$Fallback) {
     return $Fallback
 }
 
-function Get-CompatiblePythonExecutable {
-    $candidates = @()
-    foreach ($programFiles in @(
-        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
-        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86))) {
-        if ([string]::IsNullOrWhiteSpace($programFiles) -or
-            -not (Test-Path -LiteralPath $programFiles -PathType Container)) { continue }
-        $candidates += Get-ChildItem -LiteralPath $programFiles -Directory -Filter "Python*" `
-            -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName "python.exe" }
-    }
-    foreach ($command in @(Get-Command python.exe -CommandType Application `
-            -ErrorAction SilentlyContinue)) {
-        $pathProperty = $command.PSObject.Properties["Path"]
-        if ($null -ne $pathProperty -and
-            -not [string]::IsNullOrWhiteSpace([string]$pathProperty.Value)) {
-            $candidates += [string]$pathProperty.Value
-        }
-    }
-    foreach ($candidate in @($candidates | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_)
-        } | Sort-Object -Unique)) {
-        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-        $versionText = & $candidate -c `
-            "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null
-        [version]$version = $null
-        if ($LASTEXITCODE -eq 0 -and
-            [version]::TryParse([string]$versionText, [ref]$version) -and
-            $version -ge [version]"3.10" -and $version -lt [version]"4.0") {
-            return [IO.Path]::GetFullPath($candidate)
-        }
-    }
-    throw "Nie znaleziono zgodnego Python 3.10 lub nowszego. Zaktualizuj MoonWaker Host."
-}
-
-function New-VibepolloToken([string]$Directory, [string]$BaseUrl,
-        [string]$Username, [string]$Password, [string]$PythonExecutable) {
-    $transport = Join-Path $Directory "VibepolloTransport.py"
-    $scopePath = Join-Path $Directory "moonwaker-token-scopes.example.json"
-    if (-not (Test-Path -LiteralPath $transport -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $scopePath -PathType Leaf)) {
-        throw "Brakuje plikow pomocniczych Vibepollo. Zaktualizuj profil MoonWaker."
-    }
-    $scopes = Get-Content -LiteralPath $scopePath -Raw | ConvertFrom-Json
-    $request = [ordered]@{
-        base_url = $BaseUrl.TrimEnd('/')
-        path = "/api/token"
-        method = "POST"
-        username = $Username
-        password = $Password
-        body = @{ scopes = @($scopes.scopes) }
-    } | ConvertTo-Json -Depth 20 -Compress
-    try {
-        $raw = ($request | & $PythonExecutable $transport) -join "`n"
-        $transportExitCode = $LASTEXITCODE
-        try { $transportResult = $raw | ConvertFrom-Json } catch { $transportResult = $null }
-        if ($null -eq $transportResult) {
-            throw "Pomocnik Vibepollo zwrocil nieprawidlowa odpowiedz (kod $transportExitCode)."
-        }
-        if (-not $transportResult.ok) {
-            throw "Vibepollo odrzucilo utworzenie tokenu (HTTP $($transportResult.status))."
-        }
-        if ($transportExitCode -ne 0) {
-            throw "Pomocnik Vibepollo zakonczyl sie bledem (kod $transportExitCode)."
-        }
-        $content = [string]$transportResult.content
-        try { $response = $content | ConvertFrom-Json } catch { $response = $content.Trim() }
-        $token = if ($response -is [string]) { [string]$response } `
-            elseif ($response.PSObject.Properties["token"]) { [string]$response.token } `
-            elseif ($response.PSObject.Properties["access_token"]) { [string]$response.access_token } `
-            else { "" }
-        if ([string]::IsNullOrWhiteSpace($token)) {
-            throw "Vibepollo nie zwrocilo tokenu API."
-        }
-        return $token
-    } finally {
-        $request = $null
-        $Password = $null
-    }
-}
-
 function Set-ProfileIntegrations([string]$Id) {
     if (-not $IntegrationDataProtectedFromEnvironment) {
         throw "Dane integracji musza pochodzic z MoonWaker Host Control."
@@ -516,12 +436,6 @@ function Set-ProfileIntegrations([string]$Id) {
     $configureDiscord = (Take-ProcessEnvironment "MOONWAKER_DISCORD_CONFIGURE") -eq "1"
     $discordId = Take-ProcessEnvironment "MOONWAKER_DISCORD_CLIENT_ID"
     $discordSecret = Take-ProcessEnvironment "MOONWAKER_DISCORD_CLIENT_SECRET_PROTECTED"
-    $configureVibepollo = (Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_CONFIGURE") -eq "1"
-    $vibepolloUrl = Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_URL"
-    $vibepolloToken = Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_TOKEN_PROTECTED"
-    $createVibepolloToken = (Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_CREATE_TOKEN") -eq "1"
-    $vibepolloAdmin = Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_ADMIN_USERNAME"
-    $vibepolloPassword = Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD_PROTECTED"
 
     try {
         if ($configureDiscord) {
@@ -559,74 +473,15 @@ function Set-ProfileIntegrations([string]$Id) {
             }
         }
 
-        if ($configureVibepollo) {
-            $directory = Join-Path $profile.root "vibepollo"
-            $configPath = Join-Path $directory "config.json"
-            $tokenPath = Join-Path $directory "api_token.dpapi"
-            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-                throw "Vibepollo Bridge nie jest zainstalowany dla tego profilu."
-            }
-            if ([string]::IsNullOrWhiteSpace($vibepolloUrl)) {
-                try { $vibepolloUrl = [string](Get-Content -LiteralPath $configPath -Raw |
-                    ConvertFrom-Json).base_url } catch {}
-            }
-            if ([string]::IsNullOrWhiteSpace($vibepolloUrl)) {
-                $vibepolloUrl = "https://127.0.0.1:47990"
-            }
-            $existing = $null
-            try { $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json } catch {}
-            $existingPython = if ($existing -and $existing.PSObject.Properties["python_path"]) {
-                [string]$existing.python_path
-            } else { "" }
-            $python = if (-not [string]::IsNullOrWhiteSpace($existingPython) -and
-                (Test-Path -LiteralPath $existingPython -PathType Leaf)) {
-                [IO.Path]::GetFullPath($existingPython)
-            } else { Get-CompatiblePythonExecutable }
-            $uri = $null
-            if (-not [uri]::TryCreate($vibepolloUrl, [UriKind]::Absolute, [ref]$uri) -or
-                $uri.Scheme -ne "https" -or $uri.Host -notin @("127.0.0.1", "localhost")) {
-                throw "API Vibepollo musi uzywac HTTPS na 127.0.0.1 lub localhost."
-            }
-            if ($createVibepolloToken) {
-                if ([string]::IsNullOrWhiteSpace($vibepolloAdmin) -or
-                    [string]::IsNullOrWhiteSpace($vibepolloPassword)) {
-                    throw "Podaj login i haslo administratora Vibepollo."
-                }
-                $plainPassword = Unprotect-ForCurrentUser $vibepolloPassword
-                $plainToken = New-VibepolloToken $directory $vibepolloUrl `
-                    $vibepolloAdmin $plainPassword $python
-                $vibepolloToken = Protect-ForCurrentUser $plainToken
-            }
-            if (-not [string]::IsNullOrWhiteSpace($vibepolloToken)) {
-                if ([string]::IsNullOrWhiteSpace((Unprotect-ForCurrentUser $vibepolloToken))) {
-                    throw "Token Vibepollo jest pusty."
-                }
-                Set-Content -LiteralPath $tokenPath -Value $vibepolloToken -Encoding ASCII
-            } elseif (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
-                throw "Utworz token Vibepollo automatycznie albo wklej istniejacy token API."
-            }
-            [ordered]@{
-                base_url = $vibepolloUrl.TrimEnd('/')
-                listen_port = Get-EndpointPort $profile.entry "vibepollo_bridge" 8775
-                python_path = $python
-            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
-        }
-
         if ((Get-SupervisorStatus $profile.root) -eq "running") { Restart-Profile $Id }
         return [ordered]@{
             ok = $true
             profile_id = $Id
             discord_configured = (Test-Path -LiteralPath (Join-Path $profile.root `
                 "discord\client_secret.dpapi") -PathType Leaf)
-            vibepollo_configured = (Test-Path -LiteralPath (Join-Path $profile.root `
-                "vibepollo\api_token.dpapi") -PathType Leaf)
         }
     } finally {
-        $plainPassword = $null
-        $plainToken = $null
         $discordSecret = $null
-        $vibepolloToken = $null
-        $vibepolloPassword = $null
     }
 }
 
@@ -738,7 +593,6 @@ function Get-Status {
                 (Test-Path -LiteralPath (Join-Path $root "profile-bridge-manually-stopped"))
             $steamConnected = Test-SteamConnection $root
             $discordEndpoint = Get-ProfileEndpoint $entry "discord_bridge"
-            $vibepolloEndpoint = Get-ProfileEndpoint $entry "vibepollo_bridge"
             $gameProviderEndpoint = Get-ProfileEndpoint $entry "game_provider_bridge"
             $profiles += [ordered]@{
                 id = $id
@@ -767,8 +621,6 @@ function Get-Status {
                 supervisor_pid = Get-ProfileProcessId $root "supervisor"
                 discord = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth $discordEndpoint }
                 discord_pid = Get-ProfileProcessId $root "discord"
-                vibepollo = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth $vibepolloEndpoint }
-                vibepollo_pid = Get-ProfileProcessId $root "vibepollo"
                 game_provider = if ($manuallyStopped) { "manually_stopped" } else {
                     Test-HttpHealth $gameProviderEndpoint '/observation'
                 }
@@ -780,9 +632,6 @@ function Get-Status {
                 discord_configured = -not [string]::IsNullOrWhiteSpace($root) -and
                     (Test-Path -LiteralPath (Join-Path $root "discord\discord_bridge_config.json") -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path $root "discord\client_secret.dpapi") -PathType Leaf)
-                vibepollo_configured = -not [string]::IsNullOrWhiteSpace($root) -and
-                    (Test-Path -LiteralPath (Join-Path $root "vibepollo\config.json") -PathType Leaf) -and
-                    (Test-Path -LiteralPath (Join-Path $root "vibepollo\api_token.dpapi") -PathType Leaf)
                 platform_controls_available = Test-CurrentProfileOwner $entry
                 last_used = $runtime -and [string]$runtime.profile_id -eq $id
                 last_used_at = if ($runtime -and [string]$runtime.profile_id -eq $id) { [int64]$runtime.updated_at } else { 0 }

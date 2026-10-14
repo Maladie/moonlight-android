@@ -11,6 +11,9 @@ from unittest import mock
 
 import wakeplay_gateway
 from wakeplay_gateway import GatewayState, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 class ChildSharingGatewayTest(unittest.TestCase):

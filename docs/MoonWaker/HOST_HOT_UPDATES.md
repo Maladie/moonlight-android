@@ -7,6 +7,15 @@ Those machine components still require the full elevated installer.
 Running that installer also clears any pending hot-update transaction and makes the
 full package version authoritative again.
 
+A change whose interpreted files depend on new machine state also requires the full
+installer, even when every file it touches is on the allowlist. The packager has no
+marker for this, so check it before building a package. Example: the change that
+removed the Vibepollo Bridge (the Gateway's in-process `gateway/vibepollo_client.py`)
+needs the installer to create the protected `gateway\vibepollo-api.json`, grant the
+Gateway service read access to Vibepollo's configuration files, and install the
+Configurator with `--mode vibepollo` and `--mode vibepollo-access`. A hot update of the
+Gateway files alone leaves the Gateway without a Vibepollo token.
+
 ## Local development trust
 
 The full installer installs `MoonWakerHotUpdater` once with administrator rights.
@@ -41,8 +50,7 @@ Apply it without elevation:
 
 The `manifest.psd1` is imported only through `Import-PowerShellDataFile`; it is
 never executed. Its allowlist is fixed to top-level `.py` files in `gateway` and
-`bridges/playnite`, and `.ps1`/`.psm1` files in `bridges/vibepollo` and
-`bridges/discord`. Every size and SHA-256 hash must match, undeclared ZIP entries are
+`bridges/playnite`, and `.ps1`/`.psm1` files in `bridges/discord`. Every size and SHA-256 hash must match, undeclared ZIP entries are
 rejected, and versions cannot be replayed or downgraded.
 
 The updater stops Gateway and active profile tasks with bounded waits, stages complete

@@ -9,7 +9,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 function Test-Allowed([string]$Path) {
-    return $Path -match '^(gateway/[A-Za-z0-9_.-]+\.py|bridges/(playnite/[A-Za-z0-9_.-]+\.py|vibepollo/[A-Za-z0-9_.-]+\.(ps1|psm1)|discord/[A-Za-z0-9_.-]+\.(ps1|psm1)))$'
+    return $Path -match '^(gateway/[A-Za-z0-9_.-]+\.py|bridges/(playnite/[A-Za-z0-9_.-]+\.py|discord/[A-Za-z0-9_.-]+\.(ps1|psm1)))$'
 }
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ("moonwaker-hot-package-" + [guid]::NewGuid().ToString("N"))
 try {

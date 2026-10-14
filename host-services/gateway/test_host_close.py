@@ -10,7 +10,11 @@ import wakeplay_gateway
 from control_operation_policy import ControlOperationPolicy
 from control_snapshot_fixture import control_evidence
 from provider_target_fixture import target_aware
-from wakeplay_gateway import GatewayState, MOONWAKER_STREAM_APP_UUID, sha256_text
+from wakeplay_gateway import GatewayState, sha256_text
+from vibepollo_client import STREAM_APP_UUID
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 VIBE_UUID = "01234567-89ab-cdef-0123-456789abcdef"
 TOKEN = "a" * 64
@@ -81,7 +85,7 @@ class HostCloseTest(unittest.TestCase):
                 "clients": [{"uuid": VIBE_UUID,
                              "connected": self.connected and self.attributed}],
                 "apps": [{"app_id": app_id, "uuid": uuid, "running": uuid == self.running_app}
-                         for app_id, uuid in ((7, MOONWAKER_STREAM_APP_UUID),
+                         for app_id, uuid in ((7, STREAM_APP_UUID),
                                               (99, FOREIGN_UUID))]}
         if name == "vibepollo" and path == "/action/close-app":
             if not self.close_ignored:
@@ -127,7 +131,7 @@ class HostCloseTest(unittest.TestCase):
         status, permit = self.acquire(operation_id)
         self.assertEqual(200, status)
         self.assertEqual(200, self.complete(permit)[0])
-        self.running_app, self.connected = MOONWAKER_STREAM_APP_UUID, True
+        self.running_app, self.connected = STREAM_APP_UUID, True
         if with_game:
             self.run_game()
             self.state.control_state["stream"].update({
@@ -248,7 +252,7 @@ class HostCloseTest(unittest.TestCase):
 
     def test_own_streamer_app_without_a_record_is_closed_with_the_game(self):
         self.run_game()
-        self.running_app = MOONWAKER_STREAM_APP_UUID
+        self.running_app = STREAM_APP_UUID
         self.write_request()
         self.poll()
 
@@ -346,7 +350,7 @@ class HostCloseTest(unittest.TestCase):
 
     def test_unverified_game_without_a_record_closes_only_the_own_stream(self):
         self.game = {"game_id": "steam:7", "process_id": 77}  # no verified process token
-        self.running_app = MOONWAKER_STREAM_APP_UUID
+        self.running_app = STREAM_APP_UUID
         self.write_request()
         self.poll()
 
@@ -363,7 +367,7 @@ class HostCloseTest(unittest.TestCase):
 
     def test_game_that_does_not_stop_leaves_the_streamer_and_says_so(self):
         self.run_game()
-        self.running_app = MOONWAKER_STREAM_APP_UUID
+        self.running_app = STREAM_APP_UUID
         self.stop_refused = True
         self.write_request()
         self.poll()
@@ -371,7 +375,7 @@ class HostCloseTest(unittest.TestCase):
         self.assert_result("refused", "game_stop_unconfirmed")
         self.assertEqual(1, len(self.stops))
         self.assertEqual([], self.closes())
-        self.assertEqual(MOONWAKER_STREAM_APP_UUID, self.running_app)
+        self.assertEqual(STREAM_APP_UUID, self.running_app)
         self.assertIsNotNone(self.game)
         self.assertEqual("failed", self.state.control_state["completed"][
             "host-close:" + REQUEST]["state"])
@@ -391,7 +395,7 @@ class HostCloseTest(unittest.TestCase):
         self.assertIsNone(self.state.control_state["active"])
         self.assertEqual(generation, self.state.control_state["stream"]["generation"])
         # The owner can still close its record afterwards.
-        self.running_app = MOONWAKER_STREAM_APP_UUID
+        self.running_app = STREAM_APP_UUID
         status, permit = self.acquire("owner-close", "full_quit", generation, 7)
         self.assertEqual((200, "permitted"), (status, permit["state"]))
 
@@ -415,7 +419,7 @@ class HostCloseTest(unittest.TestCase):
 
         self.assert_result("refused", "game_closed_stream_unconfirmed")
         self.assertIsNone(self.game)
-        self.assertEqual(MOONWAKER_STREAM_APP_UUID, self.running_app)
+        self.assertEqual(STREAM_APP_UUID, self.running_app)
         self.assertIsNotNone(self.state.control_state["stream"])
         self.assertEqual("failed", self.state.control_state["completed"][
             "host-close:" + REQUEST]["state"])
@@ -542,7 +546,7 @@ class HostCloseTest(unittest.TestCase):
         self.assertEqual(("start-1", "permitted"), (active["operation_id"], active["state"]))
         self.assertEqual([], self.closes())
         self.assertEqual(200, self.complete(permit)[0])
-        self.running_app, self.connected = MOONWAKER_STREAM_APP_UUID, True
+        self.running_app, self.connected = STREAM_APP_UUID, True
         self.poll()
 
         self.assert_result("completed", "stream_closed")
@@ -756,7 +760,7 @@ class HostCloseTest(unittest.TestCase):
         self.idle_tick(wakeplay_gateway.HOST_IDLE_STREAM_CLOSE_SECONDS + 5)
 
         self.assertEqual([], self.closes())
-        self.assertEqual(MOONWAKER_STREAM_APP_UUID, self.running_app)
+        self.assertEqual(STREAM_APP_UUID, self.running_app)
         self.assertIsNone(self.state.control_state["active"])
         self.assertEqual(generation, self.state.control_state["stream"]["generation"])
         receipt = self.state.control_state["completed"][f"host-idle:{generation}"]
@@ -769,7 +773,7 @@ class HostCloseTest(unittest.TestCase):
                 self.calls.clear()
                 self.stops.clear()
                 self.run_game()
-                self.running_app = MOONWAKER_STREAM_APP_UUID
+                self.running_app = STREAM_APP_UUID
                 inner = self.state.proxy
 
                 def proxy(name, path, *args, value=snapshot, **kwargs):
@@ -789,7 +793,7 @@ class HostCloseTest(unittest.TestCase):
                 self.assertEqual([], self.stops)
                 self.assertEqual([], self.closes())
                 self.assertIsNotNone(self.game)
-                self.assertEqual(MOONWAKER_STREAM_APP_UUID, self.running_app)
+                self.assertEqual(STREAM_APP_UUID, self.running_app)
                 self.assertIsNone(self.state.control_state["active"])
                 receipt = self.state.control_state["completed"]["host-close:" + request_id]
                 self.assertEqual(("failed", "streamer_snapshot_unavailable"),
@@ -816,19 +820,19 @@ class HostCloseTest(unittest.TestCase):
         def snapshot(*running):
             return {**control_evidence(0, bool(running)), "clients": [],
                     "apps": [{"uuid": uuid, "running": uuid in running}
-                             for uuid in (MOONWAKER_STREAM_APP_UUID, FOREIGN_UUID)]}
+                             for uuid in (STREAM_APP_UUID, FOREIGN_UUID)]}
 
         own = ControlOperationPolicy.streamer_runs_only
-        self.assertTrue(own(snapshot(MOONWAKER_STREAM_APP_UUID), MOONWAKER_STREAM_APP_UUID))
-        self.assertFalse(own(snapshot(), MOONWAKER_STREAM_APP_UUID))
-        self.assertFalse(own(snapshot(FOREIGN_UUID), MOONWAKER_STREAM_APP_UUID))
-        self.assertFalse(own(snapshot(MOONWAKER_STREAM_APP_UUID, FOREIGN_UUID),
-                             MOONWAKER_STREAM_APP_UUID))
-        self.assertFalse(own({**snapshot(MOONWAKER_STREAM_APP_UUID), "control_fresh": False},
-                             MOONWAKER_STREAM_APP_UUID))
-        self.assertFalse(own({**snapshot(MOONWAKER_STREAM_APP_UUID), "apps": None},
-                             MOONWAKER_STREAM_APP_UUID))
-        self.assertFalse(own(None, MOONWAKER_STREAM_APP_UUID))
+        self.assertTrue(own(snapshot(STREAM_APP_UUID), STREAM_APP_UUID))
+        self.assertFalse(own(snapshot(), STREAM_APP_UUID))
+        self.assertFalse(own(snapshot(FOREIGN_UUID), STREAM_APP_UUID))
+        self.assertFalse(own(snapshot(STREAM_APP_UUID, FOREIGN_UUID),
+                             STREAM_APP_UUID))
+        self.assertFalse(own({**snapshot(STREAM_APP_UUID), "control_fresh": False},
+                             STREAM_APP_UUID))
+        self.assertFalse(own({**snapshot(STREAM_APP_UUID), "apps": None},
+                             STREAM_APP_UUID))
+        self.assertFalse(own(None, STREAM_APP_UUID))
 
 
 if __name__ == "__main__":

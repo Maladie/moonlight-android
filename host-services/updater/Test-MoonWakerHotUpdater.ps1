@@ -45,12 +45,13 @@ try {
     Import-ApplyFunction "Test-AllowedPayloadPath"
     foreach ($allowed in @("gateway/wakeplay_gateway.py",
             "bridges/playnite/GameProviderBridge.py",
-            "bridges/vibepollo/VibepolloBridge.ps1")) {
+            "bridges/discord/DiscordBridge.ps1")) {
         if (-not (Test-AllowedPayloadPath $allowed)) { throw "Allowed path was rejected: $allowed" }
     }
     foreach ($denied in @("gateway/gateway.json", "../gateway/evil.py",
             "windows-login/login-broker/BrokerService.cs", "gateway/worker.exe",
-            "bridges/playnite/subdirectory/evil.py")) {
+            "bridges/playnite/subdirectory/evil.py",
+            "bridges/vibepollo/VibepolloBridge.ps1")) {
         if (Test-AllowedPayloadPath $denied) { throw "Unsafe path was accepted: $denied" }
     }
     $packageSource = Join-Path $temporary "package-source"
@@ -233,7 +234,7 @@ try {
             (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) {
             Start-Sleep -Milliseconds 50
         }
-        $endpoint = @{ component = "vibepollo"; scheme = "http"; port = $port;
+        $endpoint = @{ component = "discord"; scheme = "http"; port = $port;
             path = "/health"; root = $temporary; script = "--dummy-http" }
         if (Test-EndpointHealth $endpoint) { throw "Dummy TCP/HTTP listener passed runtime health." }
     } finally {

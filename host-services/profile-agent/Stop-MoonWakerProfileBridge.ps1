@@ -9,7 +9,6 @@ New-Item -ItemType File -Path (Join-Path $ProfileRoot "profile-bridge-manually-s
 New-Item -ItemType File -Path $stopPath -Force | Out-Null
 $stopScripts = @(
     (Join-Path $ProfileRoot "discord\Stop-DiscordBridge.ps1"),
-    (Join-Path $ProfileRoot "vibepollo\Stop-VibepolloBridge.ps1"),
     (Join-Path $ProfileRoot "game-provider\Stop-PlayniteBridge.ps1"))
 foreach ($script in $stopScripts) {
     if (Test-Path -LiteralPath $script) { try { & $script | Out-Null } catch {} }
@@ -30,7 +29,6 @@ if ($supervisorPid -gt 0 -and (Get-Process -Id $supervisorPid -ErrorAction Silen
 $stuck = @()
 foreach ($component in @(
     @{ name = "Discord"; directory = "discord"; config = "discord_bridge_config.json"; property = "port" },
-    @{ name = "Vibepollo"; directory = "vibepollo"; config = "config.json"; property = "listen_port" },
     @{ name = "Game Provider"; directory = "game-provider"; config = "config.json"; property = "listen_port" })) {
     $configPath = Join-Path (Join-Path $ProfileRoot $component.directory) $component.config
     if (-not (Test-Path -LiteralPath $configPath)) { continue }

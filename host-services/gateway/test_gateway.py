@@ -20,6 +20,10 @@ from provider_target_fixture import target_aware
 from wakeplay_gateway import (
     GatewayDiagnostics, GatewayHandler, GatewayState, diagnostic_route, sha256_text,
 )
+from control_snapshot_fixture import route_vibepollo_through_proxy
+from vibepollo_client import VibepolloError
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 class GatewayStateTest(unittest.TestCase):
@@ -362,7 +366,6 @@ class GatewayStateTest(unittest.TestCase):
                     "owner": "HOST\\Basia",
                     "profile_root": "C:\\MoonWaker\\Basia",
                     "discord_bridge": "http://127.0.0.1:8865",
-                    "vibepollo_bridge": "http://127.0.0.1:8875",
                     "playnite_bridge": "http://127.0.0.1:8880",
                     "integration_token": "preserved-token",
                     "remote_sign_in_enabled": True,
@@ -709,9 +712,9 @@ class GatewayStateTest(unittest.TestCase):
         pairing = state.pair("192.0.2.1", "123456", "TV")
         client = state.client_for_token(pairing["token"])
         calls = []
-        state.proxy_json = lambda name, path, body, timeout=8.0: (
-            calls.append((name, path, body, timeout)) or
-            (True, {"client_uuid": "paired-client", "permissions": 0x07001F00}))
+        state.vibepollo.pair = lambda pin, name: (
+            calls.append((pin, name)) or
+            {"ok": True, "client_uuid": "paired-client", "permissions": 0x07001F00})
 
         status, result = state.vibepollo_pair_client(
             "192.0.2.1", client, pairing["stream_pair_ticket"],
@@ -719,26 +722,28 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual(("vibepollo", "/pair",
-                          {"pin": "1234", "name": "MoonWaker TV"}, 50.0), calls[0])
+        self.assertEqual([("1234", "MoonWaker TV")], calls)
         with self.assertRaises(PermissionError):
             state.vibepollo_pair_client(
                 "192.0.2.1", client, pairing["stream_pair_ticket"],
                 {"pin": "1234", "name": "MoonWaker TV"})
 
-    def test_stream_pair_failure_preserves_bridge_detail_and_stage(self):
+    def test_stream_pair_failure_preserves_vibepollo_detail_and_stage(self):
         state = GatewayState(self.config_path, "123456")
         pairing = state.pair("192.0.2.1", "123456", "TV")
         client = state.client_for_token(pairing["token"])
-        state.proxy_json = lambda *args, **kwargs: (
-            False, {"error": "Vibepollo has no pending pairing session"})
+
+        def failing_pair(_pin, _name):
+            raise VibepolloError("Vibepollo has no pending pairing session")
+
+        state.vibepollo.pair = failing_pair
 
         status, result = state.vibepollo_pair_client(
             "192.0.2.1", client, pairing["stream_pair_ticket"],
             {"pin": "1234", "name": "MoonWaker TV"})
 
         self.assertEqual(502, status)
-        self.assertEqual("vibepollo_bridge", result["stage"])
+        self.assertEqual("vibepollo", result["stage"])
         self.assertEqual("vibepollo_pairing_failed", result["reason"])
         self.assertIn("Vibepollo has no pending pairing session", result["error"])
 
@@ -771,11 +776,43 @@ class GatewayStateTest(unittest.TestCase):
         result = state.pair("192.0.2.1", "654321", "TV")
         self.assertIsNotNone(state.client_for_token(result["token"]))
 
+    def test_vibepollo_repair_keeps_the_android_shape(self):
+        state = GatewayState(self.config_path, None)
+        # Without a token the machine's Vibepollo is unavailable, never a crash.
+        state.vibepollo = wakeplay_gateway.VibepolloClient(
+            Path(self.test_directory.name) / "vibepollo-api.json",
+            Path(self.test_directory.name) / "exports")
+        status, result = state.vibepollo_status()
+        self.assertEqual((503, False), (int(status), result["ok"]))
+        self.assertFalse(state.vibepollo.api_online())
+
+        class Configured:
+            def configured(self):
+                return True
+
+            def repair_status(self):
+                return {"host": {"online": True, "version": "1.18.4", "platform": "windows"},
+                        "bridge": {"online": True, "api_error": "", "uptime_seconds": 1,
+                                   "base_url": "https://127.0.0.1:47990"}}
+
+            def action(self, name):
+                raise VibepolloError("HTTP 503: busy", kind="http", status=503)
+
+        state.vibepollo = Configured()
+        status, result = state.vibepollo_status()
+        self.assertEqual(200, int(status))
+        self.assertEqual((True, True, "1.18.4", ""),
+                         (result["ok"], result["host"]["online"], result["host"]["version"],
+                          result["bridge"]["api_error"]))
+        status, result = state.vibepollo_action("restart")
+        self.assertEqual((502, False, 503), (int(status), result["ok"], result["result"]["status"]))
+        self.assertEqual(404, int(state.vibepollo_action("delete-everything")[0]))
+
     def test_bridge_url_must_remain_on_loopback(self):
         state = GatewayState(self.config_path, None)
-        state.config["profiles"]["default"]["vibepollo_bridge"] = "http://192.0.2.2:8775"
+        state.config["profiles"]["default"]["discord_bridge"] = "http://192.0.2.2:8765"
         with self.assertRaises(ValueError):
-            state.bridge_url("vibepollo", "/health")
+            state.bridge_url("discord", "/health")
 
     def test_microphone_probe_is_fail_closed_and_uses_worker_probe(self):
         state = GatewayState(self.config_path, None)
@@ -1151,7 +1188,6 @@ class GatewayStateTest(unittest.TestCase):
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://localhost:8875",
             "playnite_bridge": "http://127.0.0.1:8880",
         }
 
@@ -1173,9 +1209,10 @@ class GatewayStateTest(unittest.TestCase):
             return False, {"error": "fixture_offline"}
 
         state.proxy = proxy
+        # The machine's Vibepollo is no profile Bridge.
+        state.vibepollo = mock.Mock(**{"api_online.return_value": False})
         self.assertEqual("basia", state.capabilities()["gateway"]["integration_profile_id"])
         self.assertEqual([
-            "http://localhost:8875/health",
             "http://127.0.0.1:8865/health",
             "http://127.0.0.1:8880/observation",
         ], probed)
@@ -1185,7 +1222,6 @@ class GatewayStateTest(unittest.TestCase):
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://127.0.0.1:8875",
             "playnite_bridge": "http://127.0.0.1:8880",
         }
 
@@ -1207,7 +1243,6 @@ class GatewayStateTest(unittest.TestCase):
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://127.0.0.1:8875",
             "playnite_bridge": "http://127.0.0.1:8880",
         }
         state.request_context.request_id = "request-7"
@@ -1274,7 +1309,6 @@ class GatewayStateTest(unittest.TestCase):
             "name": "Basia",
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://127.0.0.1:8875",
             "game_provider_bridge": "http://127.0.0.1:8880",
         }
         token = "filtered-token"
@@ -1444,7 +1478,6 @@ class GatewayStateTest(unittest.TestCase):
             "name": "Basia",
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://127.0.0.1:8875",
         }
         state.discord_status = lambda: {
             "bridge_online": True,
@@ -1477,7 +1510,6 @@ class GatewayStateTest(unittest.TestCase):
         self.assertTrue(basia["discord_rpc_connected"])
         self.assertTrue(basia["virtualhere_available"])
         self.assertNotIn("discord_bridge", basia)
-        self.assertNotIn("vibepollo_bridge", basia)
         self.assertFalse(any(name == "game_provider" and path == "/health"
                              for name, path, _profile_id in calls))
 
@@ -2022,8 +2054,9 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("parent-x", calls[0][3]["profile_id"])
         self.assertEqual("parent-x",
                          calls[0][2]["control_operation"]["execution_profile_id"])
+        # The streamer is the machine's; only provider calls name a profile.
         self.assertTrue(all(call[-1]["profile_id"] == "parent-x"
-                            for call in calls[1:]))
+                            for call in calls[1:] if call[0] != "vibepollo"))
 
     def test_session_hard_reset_targets_child_owned_active_without_stream(self):
         state = GatewayState(self.config_path, None)
@@ -2038,7 +2071,7 @@ class GatewayStateTest(unittest.TestCase):
             profiles.append(kwargs["profile_id"]) is None,
             {"accepted": True, "stopped_count": 0})
         state.proxy = lambda _name, path, **kwargs: (
-            profiles.append(kwargs["profile_id"]) is None,
+            profiles.append(kwargs.get("profile_id")) is None,
             {**control_evidence(), "clients": [], "apps": []}
             if path == "/snapshot?force=1" else {"ok": True})
 
@@ -2046,7 +2079,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["accepted"])
-        self.assertEqual(["parent-x", "parent-x", "parent-x"], profiles)
+        self.assertEqual(["parent-x"], [value for value in profiles if value is not None])
 
     def test_session_hard_reset_rejects_conflicting_owner_profiles_before_clear(self):
         state = GatewayState(self.config_path, None)
