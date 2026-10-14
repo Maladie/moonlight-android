@@ -5,6 +5,7 @@ import android.content.Context;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 import com.limelight.gateway.ControlOperationClient;
+import com.limelight.session.SessionEvent;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -262,7 +263,6 @@ public final class PlayniteTransitionGateway {
     private final ActorContext actorContext;
     private final String hostId;
     private final com.limelight.session.SessionModel model;
-    private final SessionStateResolver.ProjectionOwner projectionOwner;
     private final java.util.function.LongSupplier monotonicClock;
 
     PlayniteTransitionGateway(com.limelight.session.SessionModel model,
@@ -288,8 +288,6 @@ public final class PlayniteTransitionGateway {
         this.hostId = hostId == null ? connection.endpoint() : hostId;
         this.monotonicClock = monotonicClock;
         this.model = model;
-        this.projectionOwner = SessionStateResolver.owner(model, this.hostId,
-                actorContext.actorProfileId, actorContext.executionProfileId);
     }
 
     public static PlayniteTransitionGateway connect(Context context, String hostId,
@@ -314,69 +312,92 @@ public final class PlayniteTransitionGateway {
 
     public Snapshot snapshot() throws IOException {
         for (int attempt = 1; ; attempt++) {
-            long ordinal = projectionOwner.nextRequestOrdinal();
-            com.limelight.session.SessionModel.Snapshot retained = model.snapshot();
-            String transition = retained.hostId.equalsIgnoreCase(hostId)
-                    && retained.executionProfileId.equals(actorContext.executionProfileId)
-                    ? retained.transitionId : "";
-            long now = monotonicClock.getAsLong();
+            com.limelight.session.SessionModel.ObservationRequest request = awaitModel(
+                    new SessionEvent.ObservationDispatched(hostId,
+                            actorContext.actorProfileId, actorContext.executionProfileId));
             try {
                 HostGatewayClient.SessionObservation observation =
                         client.getSessionObservation(connection,
-                                actorContext.executionProfileId, ordinal, transition);
-                SessionSnapshot accepted = projectionOwner.accept(observation, retained, now);
-                if (accepted == null) {
-                    // The dashboard polls the same owner: a read that lost only the dispatch
-                    // ordering carries no evidence, so read again instead of deciding on the
-                    // owner's older projection (lab formal133: the retained switch failed).
-                    if (attempt < SNAPSHOT_DISPATCH_ATTEMPTS
-                            && projectionOwner.lostDispatchOrdering(observation)) {
+                                actorContext.executionProfileId, request.ordinal,
+                                request.transitionId);
+                com.limelight.session.SessionModel.ObservationResult result = observed(observation);
+                if (result.accepted == null) {
+                    // The dashboard polls the same projection: a read that lost only the
+                    // dispatch ordering carries no evidence, so read again instead of deciding
+                    // on the older projection (lab formal133: the retained switch failed).
+                    if (attempt < SNAPSHOT_DISPATCH_ATTEMPTS && result.lostDispatchOrdering) {
                         continue;
                     }
-                    return new Snapshot(projectionOwner.current(retained, now), null, false);
+                    return new Snapshot(result.projection,
+                            null, false);
                 }
-                boolean correlated = accepted.observationCorrelated;
-                return new Snapshot(accepted, correlated ? observation : null, correlated);
+                boolean correlated = result.accepted.observationCorrelated;
+                return new Snapshot(result.accepted, correlated ? observation : null, correlated);
             } catch (IOException unavailable) {
                 // A cancelled read (interrupt restored by the transport) observed nothing.
                 if (Thread.currentThread().isInterrupted()) throw unavailable;
-                SessionSnapshot projected = projectionOwner.unavailable(
-                        ordinal, retained, now, unavailable.getMessage());
-                return new Snapshot(projected, null, false);
+                return new Snapshot(unavailable(request.ordinal, unavailable.getMessage()),
+                        null, false);
             }
         }
     }
+
+    private com.limelight.session.SessionModel.ObservationResult observed(
+            HostGatewayClient.SessionObservation observation) throws IOException {
+        return awaitModel(new SessionEvent.HostObserved(hostId, actorContext.actorProfileId,
+                actorContext.executionProfileId, observation));
+    }
+
+    private SessionSnapshot unavailable(long ordinal, String reason) throws IOException {
+        return awaitModel(new SessionEvent.ObservationUnavailable(hostId,
+                actorContext.actorProfileId, actorContext.executionProfileId, ordinal, reason));
+    }
+
+    /**
+     * The model's answer, or an IOException this read reports as unavailable: a transition
+     * that failed (or a projection the model no longer holds) answers null, and an interrupt
+     * is the read's cancellation (the interrupt stays set).
+     */
+    private <R> R awaitModel(SessionEvent<R> event) throws IOException {
+        R result;
+        try {
+            result = model.awaitInterruptibly(event);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new java.io.InterruptedIOException("session_model_interrupted");
+        }
+        if (result == null) throw new IOException("session_model_failed");
+        return result;
+    }
+
 
     /**
      * Observation for an exact control operation this client holds. Acquiring the permit
      * advances the Gateway control generation beyond the one bound to the retained stream,
      * so the ordinary projection correlation cannot match; the provider evidence is exposed
      * only when the observation carries this permit's operation, generation, stream session
-     * and actor lease epoch. The canonical projection is still updated through its single
-     * owner. The dashboard polls the same owner, typically at the moment a close returns to it,
-     * so this read can lose the owner's dispatch ordering; the permit fence already proves the
+     * and actor lease epoch. The canonical projection is still updated by the session model.
+     * The dashboard polls the same projection, typically at the moment a close returns to it,
+     * so this read can lose the dispatch ordering; the permit fence already proves the
      * observation was produced within this operation, so its evidence stays usable when the
-     * owner admits its scope and producer boot. The returned projection is then the owner's
-     * current one; the stop decision reads only the fenced observation's evidence.
+     * model admits its scope and producer boot. The returned projection is then the current
+     * one; the stop decision reads only the fenced observation's evidence.
      */
     public Snapshot snapshotWithinControl(ControlOperationClient.Permit permit) throws IOException {
-        long ordinal = projectionOwner.nextRequestOrdinal();
-        com.limelight.session.SessionModel.Snapshot retained = model.snapshot();
-        String transition = retained.hostId.equalsIgnoreCase(hostId)
-                && retained.executionProfileId.equals(actorContext.executionProfileId)
-                ? retained.transitionId : "";
-        long now = monotonicClock.getAsLong();
+        com.limelight.session.SessionModel.ObservationRequest request = awaitModel(
+                new SessionEvent.ObservationDispatched(hostId,
+                        actorContext.actorProfileId, actorContext.executionProfileId));
         HostGatewayClient.SessionObservation observation;
         try {
             observation = client.getSessionObservation(connection,
-                    actorContext.executionProfileId, ordinal, transition);
+                    actorContext.executionProfileId, request.ordinal, request.transitionId);
         } catch (IOException unavailable) {
             if (Thread.currentThread().isInterrupted()) throw unavailable;
-            return new Snapshot(projectionOwner.unavailable(
-                    ordinal, retained, now, unavailable.getMessage()), null, false);
+            return new Snapshot(unavailable(request.ordinal, unavailable.getMessage()),
+                    null, false);
         }
-        // The owner returns the projection of this exact observation, never a newer one.
-        SessionSnapshot accepted = projectionOwner.accept(observation, retained, now);
+        // The model returns the projection of this exact observation, never a newer one.
+        com.limelight.session.SessionModel.ObservationResult result = observed(observation);
         boolean permitted = permit != null
                 && !permit.operationId.isEmpty()
                 && permit.operationId.equals(observation.operationId)
@@ -385,22 +406,22 @@ public final class PlayniteTransitionGateway {
                 && !permit.streamSessionId.isEmpty()
                 && permit.streamSessionId.equals(observation.streamSessionId)
                 && permit.actorLeaseEpoch == observation.actorLeaseEpoch;
-        if (permitted && accepted != null) return new Snapshot(accepted, observation);
-        // A read that lost only the owner's ordering may still name the exact running
+        if (permitted && result.accepted != null) return new Snapshot(result.accepted, observation);
+        // A read that lost only the dispatch ordering may still name the exact running
         // process for the permit/token-checked stop. It never proves absence: a newer
         // accepted observation may show the game running, so idle or unverified evidence
         // from it would let the stop be skipped.
-        if (permitted && projectionOwner.admitsPermitEvidence(observation)
+        if (permitted && result.admitsPermitEvidence
                 && observation.gameEvidence == HostGatewayClient.Evidence.VERIFIED
                 && observation.processEvidence == HostGatewayClient.Evidence.VERIFIED
                 && observation.processToken != null && !observation.processToken.isEmpty()) {
-            return new Snapshot(projectionOwner.current(retained, now), observation);
+            return new Snapshot(result.projection,
+                    observation);
         }
         // Outside the caller's exact permit nothing proves the stop target: fail closed.
         return new Snapshot(false, false, "unknown", "", 0, false, "playnite", 0,
                 "control_correlation_mismatch");
     }
-
     static final long STOP_EVIDENCE_RETRY_MILLIS = 250L;
 
     /**

@@ -63,9 +63,9 @@ public class HostReadinessTest {
         m.drain();
 
         long timedFrom = m.model.records().hostSleep("host").requestedAt;
-        assertFalse(HostReadiness.sleepRequestExpired(timedFrom, 70_000L));
-        assertTrue(HostReadiness.sleepRequestExpired(timedFrom, 40_000L + 61_000L));
-        assertTrue(HostReadiness.sleepRequestExpired(timedFrom, 1_000L));
+        assertFalse(com.limelight.session.HostSleepStateStore.requestExpired(timedFrom, 70_000L));
+        assertTrue(com.limelight.session.HostSleepStateStore.requestExpired(timedFrom, 40_000L + 61_000L));
+        assertTrue(com.limelight.session.HostSleepStateStore.requestExpired(timedFrom, 1_000L));
     }
 
     /** A real wake cleared the record and a new request followed: the old settle is stale. */

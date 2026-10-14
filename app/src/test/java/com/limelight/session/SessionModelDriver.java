@@ -22,11 +22,35 @@ import java.util.function.BooleanSupplier;
 public final class SessionModelDriver {
     public final ArrayDeque<Runnable> modelQueue = new ArrayDeque<>();
     public final ArrayDeque<Runnable> mainQueue = new ArrayDeque<>();
-    public final MemoryPreferences resume = new MemoryPreferences();
-    public final MemoryPreferences suspended = new MemoryPreferences();
-    public final MemoryPreferences sleep = new MemoryPreferences();
-    public final SessionModel model = new SessionModel(modelQueue::add, mainQueue::add,
-            () -> false, resume, suspended, sleep);
+    public final MemoryPreferences resume;
+    public final MemoryPreferences suspended;
+    public final MemoryPreferences sleep;
+    /** The model's monotonic clock (milliseconds); tests move it. */
+    public long now;
+    /** Receives the model's projection diagnostics; replaced by tests that read them. */
+    public com.limelight.console.SessionStateResolver.DiagnosticSink diagnostics =
+            (level, component, event, fields) -> true;
+    public final SessionModel model;
+
+    public SessionModelDriver() {
+        this(new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
+    }
+
+    /** A model over existing stores, as a new process starts after the previous one died. */
+    public SessionModelDriver(MemoryPreferences resume, MemoryPreferences suspended,
+                              MemoryPreferences sleep) {
+        this.resume = resume;
+        this.suspended = suspended;
+        this.sleep = sleep;
+        this.model = new SessionModel(modelQueue::add, mainQueue::add, () -> false,
+                () -> now, (level, component, event, fields) -> diagnostics.record(level,
+                component, event, fields), resume, suspended, sleep);
+    }
+
+    /** Lets the model read stores a test wrote directly (any store write re-reads them). */
+    public void refreshRecords() {
+        post(new SessionEvent.HostSleepCleared(""));
+    }
 
     /** A stored reconnect record as the model reads it back. */
     public static SessionResumeManager.PendingSession reconnectRecord(

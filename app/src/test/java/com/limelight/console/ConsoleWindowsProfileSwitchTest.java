@@ -127,7 +127,7 @@ public class ConsoleWindowsProfileSwitchTest {
         assertFalse(close.contains("if (isChildIntent(intent))"));
         assertTrue(close.contains("switchRetainedProviderGame"));
         assertTrue(close.contains("boolean destructiveCloseAuthorized"));
-        assertTrue(close.contains("childMustCloseDisallowedGame"));
+        assertFalse(close.contains("isChildIntent("));
         assertTrue(close.contains("if (!destructiveCloseAuthorized)"));
     }
 

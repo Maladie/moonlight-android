@@ -23,6 +23,18 @@ public final class HostSleepStateStore {
 
     private HostSleepStateStore() {}
 
+    /** How long a requested sleep is awaited down after the host accepted it. */
+    public static final long DOWN_TIMEOUT_MS = 30_000L;
+
+    /**
+     * A sleep record, timed from the host's acceptance, that no poll saw down within twice
+     * the down wait (or whose follow-up died with the process): an online host then shows as
+     * it is.
+     */
+    public static boolean requestExpired(long requestedAtMs, long nowMs) {
+        return nowMs < requestedAtMs || nowMs - requestedAtMs > 2 * DOWN_TIMEOUT_MS;
+    }
+
     static void request(SharedPreferences prefs, String hostId, long requestedAt) {
         prefs.edit().putString(key(hostId), requestedAt + ":0").apply();
     }

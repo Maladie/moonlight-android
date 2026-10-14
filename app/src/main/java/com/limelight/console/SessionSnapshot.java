@@ -6,7 +6,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /** Immutable projection of already-owned session facts for one host. */
-final class SessionSnapshot {
+public final class SessionSnapshot {
     enum ObservationState { PENDING, READY, IDLE, RECOVERY_REQUIRED, UNAVAILABLE }
     enum State {
         NONE,
@@ -174,6 +174,12 @@ final class SessionSnapshot {
     }
 
     boolean hasActiveSession() { return state == State.ACTIVE; }
+
+    /** The game the host runs with an exact, correlated process proof; empty otherwise. */
+    String verifiedRunningGameId() {
+        return observationCorrelated && "VERIFIED".equals(processEvidence) && processId > 0
+                && !processToken.isEmpty() ? playniteGameId : "";
+    }
     boolean matches(String gameId, Integer appId) {
         if (!resumeAvailable) return false;
         if (!playniteGameId.isEmpty()) return playniteGameId.equals(normalize(gameId));

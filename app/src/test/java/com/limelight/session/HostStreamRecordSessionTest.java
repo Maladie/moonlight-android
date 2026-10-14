@@ -45,7 +45,7 @@ public class HostStreamRecordSessionTest {
                 .putString("pcUuid", "host").putString("profileId", "parent").apply();
         assertFalse(HostStreamRecord.sessionOwnsRecords("host", driver.snapshot()));
 
-        // What ConsoleActivity.applyHostStreamRecord posts for RETIRE.
+        // What the model applies for RETIRE (SessionModelHostTest drives the event itself).
         assertEquals(HostStreamRecord.Action.RETIRE, HostStreamRecord.decide(null, "parent", "s"));
         assertTrue(driver.clearAfterAuthoritativeEndIfMatches("s"));
         assertTrue(driver.call(new SessionEvent.ReconnectCleared("s")));

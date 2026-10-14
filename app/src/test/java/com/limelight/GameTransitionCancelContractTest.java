@@ -13,6 +13,7 @@ import java.nio.file.Paths;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class GameTransitionCancelContractTest {
     @Test public void overlayQuitRequiresExplicitConfirmation() throws IOException {
@@ -69,9 +70,104 @@ public class GameTransitionCancelContractTest {
     }
 
     @Test public void dashboardCancellationStopsAtTheReuseOwnershipBoundary() {
-        assertTrue(Game.shouldHonorExternalSwitchCancellation(false, true));
-        assertFalse(Game.shouldHonorExternalSwitchCancellation(true, true));
-        assertFalse(Game.shouldHonorExternalSwitchCancellation(false, false));
+        assertTrue(Game.retainedSwitchCancelled(false, true, false, false));
+        assertFalse("the closed console cancels nothing after REUSED",
+                Game.retainedSwitchCancelled(true, true, false, false));
+        assertFalse(Game.retainedSwitchCancelled(false, false, false, false));
+    }
+
+    /**
+     * Review 2026-10-14: after the authorization-retry offer (REUSED) the user picked Retry and
+     * then Cancel while the handoff ran; only the external console cancel was checked, so the
+     * game started and a child allowance was consumed. The user's own Cancel always counts.
+     */
+    @Test public void userCancelAfterReuseStopsTheHandoff() {
+        assertTrue(Game.retainedSwitchCancelled(true, false, true, false));
+        assertTrue(Game.retainedSwitchCancelled(true, true, true, false));
+        assertFalse("a cancel that clears the way for Retry is not a user cancel",
+                Game.retainedSwitchCancelled(true, false, true, true));
+    }
+
+    /** A fake of the host steps: records their order; the child may or may not play now. */
+    private static final class RecordedStop implements Game.RetainedStop {
+        final java.util.List<String> calls = new java.util.ArrayList<>();
+        final String refusal;
+        boolean cancelled;
+
+        RecordedStop(String refusal) { this.refusal = refusal; }
+
+        @Override public String childRefusal() { calls.add("eligibility"); return refusal; }
+        @Override public boolean cancelled() { calls.add("cancelled"); return cancelled; }
+        @Override public void stop() { calls.add("stop"); }
+    }
+
+    /**
+     * Owner 2026-10-14: a child replaces a parent's game on the live stream without a dialog,
+     * but the host's read-only eligibility comes first: a child without time or outside its
+     * schedule leaves the parent's game running (nothing stopped, recoverable failure).
+     */
+    @Test public void childOverAParentGameSwitchesOnTheLiveStreamWithoutConfirmation()
+            throws IOException {
+        RecordedStop refused = new RecordedStop("outside_schedule");
+        try {
+            Game.stopRetainedGame(true, refused);
+            fail("an ineligible child must not stop the parent's game");
+        } catch (IOException expected) {
+            assertEquals("outside_schedule", expected.getMessage());
+        }
+        assertEquals(java.util.Arrays.asList("eligibility"), refused.calls);
+
+        RecordedStop eligible = new RecordedStop(null);
+        assertTrue(Game.stopRetainedGame(true, eligible));
+        assertEquals(java.util.Arrays.asList("eligibility", "cancelled", "stop"), eligible.calls);
+
+        RecordedStop cancelledAfterEligibility = new RecordedStop(null);
+        cancelledAfterEligibility.cancelled = true;
+        assertFalse(Game.stopRetainedGame(true, cancelledAfterEligibility));
+        assertFalse(cancelledAfterEligibility.calls.contains("stop"));
+
+        RecordedStop parent = new RecordedStop("never_asked");
+        assertTrue(Game.stopRetainedGame(false, parent));
+        assertEquals(java.util.Arrays.asList("cancelled", "stop"), parent.calls);
+    }
+
+    /**
+     * The user's own Cancel on the stream before REUSED (a switch this Game submitted, no
+     * console waiting) shows the Home; a console that still waits and cancelled shows its own.
+     */
+    @Test public void aCancelledSwitchNeverLeavesTheNeutralStreamOnItsClosingCover() {
+        assertTrue(Game.cancelledSwitchShowsHome(false, false));
+        assertTrue(Game.cancelledSwitchShowsHome(true, false));
+        assertTrue(Game.cancelledSwitchShowsHome(true, true));
+        assertFalse(Game.cancelledSwitchShowsHome(false, true));
+    }
+
+    /**
+     * TV 2026-10-14: after the stream took the switch over (REUSED), the console closed and its
+     * ended orchestration read as cancelled; Retry then completed CANCELLED and left the neutral
+     * stream in RETURNING_TO_DASHBOARD with no way out. Every step of a retained switch asks the
+     * gated cancellation, and a failure the stream carries returns to the Home.
+     */
+    @Test public void aSwitchTheStreamCarriesIsNeverCancelledByTheClosedConsole()
+            throws IOException {
+        String text = source();
+        // The requester's cancellation is read only to place a settled Cancel, never to cancel.
+        assertEquals(text.indexOf("operation.request.cancelled.getAsBoolean()"),
+                text.lastIndexOf("operation.request.cancelled.getAsBoolean()"));
+        assertTrue(text.substring(text.indexOf("private static boolean settledSwitchShowsHome("),
+                text.indexOf("static boolean cancelledSwitchShowsHome(")).contains(
+                "operation.request.cancelled.getAsBoolean()"));
+        String gate = text.substring(text.indexOf("boolean cancelled() {"),
+                text.indexOf("private boolean hasProviderGameTransition()"));
+        assertTrue(gate.contains("retainedSwitchCancelled("));
+        assertTrue(gate.contains("cancelRequested, retryRequested"));
+        String handoff = text.substring(text.indexOf("private void runRetainedActorHandoff("),
+                text.indexOf("static final String RETAINED_AUTHORIZATION_UNCONFIRMED"));
+        assertTrue(handoff.contains("else if (streamCarriesRequest) returnToConsoleHome(operation);"));
+        String home = text.substring(text.indexOf("private void returnToConsoleHome(RetainedSwitch operation)"),
+                text.indexOf("private void openConsoleHome()"));
+        assertTrue("a dropped transport closes to the console, never a silent no-op",
+                home.contains("openTerminalConsoleHome()") && home.contains("finish()"));
     }
 
     @Test public void cancelDoesNotWaitForAnotherVideoFrame() throws IOException {
@@ -840,8 +936,8 @@ public class GameTransitionCancelContractTest {
         String settled = text.substring(text.indexOf("private void settleStartFailedSwitch("),
                 text.indexOf("private void afterRetainedGameStopped("));
         assertTrue(cleanup.contains("settleStartFailedSwitch(operation)"));
-        assertTrue(settled.contains("boolean returnToDashboard = operation.consoleSignalled.get()"));
-        assertTrue(settled.contains("if (returnToDashboard) openConsoleHome()"));
+        assertTrue(settled.contains("boolean returnToDashboard = settledSwitchShowsHome(operation, operation.cancelRequested)"));
+        assertTrue(settled.contains("if (returnToDashboard) returnToConsoleHome(operation)"));
         assertTrue(cleanup.contains("updateRetainedGame(operation, gameId, \"\","));
     }
 
@@ -874,7 +970,7 @@ public class GameTransitionCancelContractTest {
         assertTrue(acceptedExit.indexOf("settleNeutralRetainedStream(operation)")
                 < acceptedExit.indexOf("\"provider_game_exited\""));
         assertTrue(acceptedExit.contains("operation.consoleSignalled.get()"));
-        assertTrue(acceptedExit.contains("if (returnToDashboard) openConsoleHome()"));
+        assertTrue(acceptedExit.contains("if (returnToDashboard) returnToConsoleHome(operation)"));
         assertFalse(acceptedExit.contains("stopGame("));
         assertFalse(acceptedExit.contains("stopConnection("));
         assertFalse(acceptedExit.contains("closeStreamWithPrivacy("));
@@ -933,15 +1029,133 @@ public class GameTransitionCancelContractTest {
         assertTrue(snapshot.contains("coverWithdrawn(lastTransitionOverlayVisible"));
         assertTrue(snapshot.contains("revealUncoveredStream()"));
         String home = text.substring(text.indexOf("private void coverThenShowHome("),
-                text.indexOf("private void revealUncoveredStream()"));
+                text.indexOf("private void restoreControllerPresentation("));
         GameAutoWarmUpContractTest.assertOrdered(home, "openConsoleHome()",
-                "revealUncoveredStream()");
+                "restoreControllerPresentation(false)");
+        assertFalse("the Home's own cover restores only through the controller's snapshot",
+                home.contains("revealUncoveredStream()"));
 
         assertTrue(Game.coverWithdrawn(true, false, false));
         assertFalse("a completed reveal keeps its authorization",
                 Game.coverWithdrawn(true, false, true));
         assertFalse(Game.coverWithdrawn(false, false, false));
         assertFalse(Game.coverWithdrawn(true, true, false));
+    }
+
+    /**
+     * TV 2026-10-14 13:12: a revealed reconnect, Home, two failed switches and a return left the
+     * Game's own opaque cover ("Gotowe", no action) over the live stream. A local cover ends by
+     * following the controller's snapshot again.
+     */
+    @Test public void revealedStreamReturnsUncoveredAfterHomeAndFailedSwitch() {
+        com.limelight.console.transition.LaunchTransitionSpec spec =
+                new com.limelight.console.transition.LaunchTransitionSpec("re3-reconnect",
+                        "host", LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
+                        1_000L);
+        com.limelight.console.transition.LaunchTransitionController controller =
+                new com.limelight.console.transition.LaunchTransitionController(null);
+        controller.begin(spec);
+        controller.overlayRendered(spec.id);
+        controller.surfaceReady(spec.id);
+        controller.inputPipelineReady(spec.id);
+        controller.streamConnected(spec.id);
+        controller.videoFrameRendered(spec.id);
+        controller.gatewayConnected(spec.id, "host");
+        controller.targetProcessRunning(spec.id, "host", LaunchTransitionType.GAME,
+                "steam:952060", "not fullscreen");
+        assertFalse("still covered: nothing restores the stream",
+                Game.restoresStreamAfterLocalCover(controller.snapshot(), false, false));
+        controller.showStreamAnyway(spec.id);
+        controller.revealCompleted(spec.id);
+        // The host's readiness keeps flapping after the manual reveal; the cover stays off.
+        controller.targetWindowStabilizing(spec.id, "host", LaunchTransitionType.GAME,
+                "steam:952060", "stabilizing");
+        controller.targetWindowReady(spec.id, "host", LaunchTransitionType.GAME,
+                "steam:952060");
+
+        // Home and a failed switch change nothing in the controller: the stream comes back.
+        assertTrue(Game.restoresStreamAfterLocalCover(controller.snapshot(), false, false));
+        assertFalse("a hidden warm-up stays hidden",
+                Game.restoresStreamAfterLocalCover(controller.snapshot(), true, false));
+    }
+
+    /**
+     * Review K5.2: a switch whose game was already stopped (the session changed under it, or
+     * the new game exited) must not reveal the stale manually revealed spec over the host
+     * desktop; the closing cover stays.
+     */
+    @Test public void switchThatStoppedTheGameKeepsItsCoverOverAStaleRevealedSpec() {
+        com.limelight.console.transition.LaunchTransitionSpec spec =
+                new com.limelight.console.transition.LaunchTransitionSpec("revealed-old",
+                        "host", LaunchTransitionType.GAME, 42, "steam:952060", 1_000L);
+        com.limelight.console.transition.LaunchTransitionController controller =
+                new com.limelight.console.transition.LaunchTransitionController(null);
+        controller.begin(spec);
+        controller.overlayRendered(spec.id);
+        controller.surfaceReady(spec.id);
+        controller.inputPipelineReady(spec.id);
+        controller.streamConnected(spec.id);
+        controller.videoFrameRendered(spec.id);
+        controller.showStreamAnyway(spec.id);
+        controller.revealCompleted(spec.id);
+        assertFalse(controller.snapshot().overlayVisible);
+
+        assertTrue("the old game still runs: a failed switch shows it again",
+                Game.restoresStreamAfterLocalCover(controller.snapshot(), false, false));
+        assertFalse("the old game is stopped: no stale reveal over the desktop",
+                Game.restoresStreamAfterLocalCover(controller.snapshot(), false, true));
+    }
+
+    /**
+     * TV 2026-10-14 13:03:08: Play during a neutral warm-up stopped no game, yet a neutral
+     * GAME_CONNECTION "returning to library" transition (generic title, no artwork) was begun
+     * before the game's own transition. A game-less stream goes straight to the next game.
+     */
+    @Test public void switchFromGameLessStreamBeginsNoNeutralTransition() throws IOException {
+        String text = source();
+        String stopped = text.substring(text.indexOf("private void afterRetainedGameStopped("),
+                text.indexOf("private void beginNewRetainedGameAttempt("));
+        GameAutoWarmUpContractTest.assertOrdered(stopped,
+                "if (operation.request.oldGameId.isEmpty() && !cancelled) {",
+                "beginNewRetainedGameAttempt(operation);", "return;",
+                "settleNeutralRetainedStream(operation);");
+    }
+
+    @Test public void homeReturnAndFailedSwitchRestoreTheControllerPresentation()
+            throws IOException {
+        String text = source();
+        String resume = text.substring(text.indexOf("protected void onResume()"),
+                text.indexOf("private void returnFromStreamHome()"));
+        String complete = text.substring(text.indexOf("private void completeRetainedSwitch("),
+                text.indexOf("private void signalRetainedSwitchReuse("));
+        String restore = text.substring(
+                text.indexOf("private void restoreControllerPresentation("),
+                text.indexOf("static boolean restoresStreamAfterLocalCover("));
+        String stopped = text.substring(text.indexOf("private void afterRetainedGameStopped("),
+                text.indexOf("private void beginNewRetainedGameAttempt("));
+        String exited = text.substring(text.indexOf("public void onProviderGameStopped("),
+                text.indexOf("hasProviderGameTransition() && !providerStopInFlight"));
+        String frame = text.substring(text.indexOf("private void onFirstVideoFrameRendered()"),
+                text.indexOf("private void onTransitionChanged("));
+        GameAutoWarmUpContractTest.assertOrdered(resume, "if (returningFromStreamHome) {",
+                "returnFromStreamHome();", "restoreControllerPresentation(false);");
+        GameAutoWarmUpContractTest.assertOrdered(complete, "retainedSwitch = null;",
+                "operation.gameStopped", "restoreControllerPresentation(gameStopped)",
+                "operation.completion.complete(");
+        GameAutoWarmUpContractTest.assertOrdered(stopped,
+                "operation.gameStopped = !operation.request.oldGameId.isEmpty();",
+                "updateRetainedGame(");
+        GameAutoWarmUpContractTest.assertOrdered(exited, "operation.gameStopped = true;",
+                "consoleLoadingView.showOpaque();");
+        // The restore waits for a fresh frame of a restored decoder or a reconnecting transport.
+        GameAutoWarmUpContractTest.assertOrdered(restore, "streamHomeVisible",
+                "retainedSwitch != null", "transitionController.snapshot()",
+                "restoresStreamAfterLocalCover(", "retainedRestoreAwaitingFrame",
+                "!isTransportConnected()", "restorePresentationAfterFrameId = transitionSpec.id;",
+                "return;", "revealUncoveredStream();");
+        GameAutoWarmUpContractTest.assertOrdered(frame, "retainedRestoreAwaitingFrame = false;",
+                "transitionController.videoFrameRendered(",
+                "restorePresentationAfterFrameId", "restoreControllerPresentation(false);");
     }
 
     /** End game the controller refuses covers nothing and starts nothing. */
@@ -993,7 +1207,7 @@ public class GameTransitionCancelContractTest {
         assertTrue(stopped.indexOf("updateRetainedGame(")
                 < stopped.indexOf("settleNeutralRetainedStream(operation)"));
         assertTrue(stopped.indexOf("settleNeutralRetainedStream(operation)")
-                < stopped.indexOf("beginNewRetainedGameAttempt(operation)"));
+                < stopped.lastIndexOf("beginNewRetainedGameAttempt(operation)"));
         assertTrue(neutral.contains("LaunchTransitionType.GAME_CONNECTION"));
         assertTrue(neutral.contains("operation.request.streamTargetName"));
         assertTrue(neutral.contains("saveReconnect(false)"));
@@ -1062,11 +1276,23 @@ public class GameTransitionCancelContractTest {
                         "private void performRetainedProviderSwitch("),
                 text.indexOf("private void recoverRetainedSwitch("));
 
+        // The gameless decision and the adoption are behaviour-tested in
+        // PlayniteIdentityResolutionPolicyTest and stream.RetainedRunningAdoptionTest.
         assertTrue(provider.contains("operation.request.oldGameId.isEmpty()"));
-        assertTrue(provider.contains("\"idle\".equalsIgnoreCase(current.gameState)"));
         assertTrue(provider.contains("if (!exactGame.isEmpty())"));
         assertTrue(provider.contains("!current.hasVerifiedProcessFor(exactGame)"));
         assertTrue(provider.contains("gateway.stopGame(exactGame, current.processToken);"));
+    }
+
+    /**
+     * TV 2026-10-14 13:55: a failed switch of the neutral stream kept a GAME_CONNECTION without a
+     * game, which waited for a game window and timed out under its cover. The neutral stream is
+     * kept as the plain neutral stream; a stream with a game observes that game again.
+     */
+    @Test public void failedSwitchOfANeutralStreamKeepsItNeutralNotAGameObservation() {
+        assertEquals(LaunchTransitionType.GENERIC, Game.retainedRecoveryType(""));
+        assertEquals(LaunchTransitionType.GAME_CONNECTION,
+                Game.retainedRecoveryType("steam:952060"));
     }
 
     @Test public void failedCompensatingStopRearmsNewGameObservationOnSameTransport()
@@ -1121,7 +1347,7 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private void beginNewRetainedGameAttempt("));
         int cas = stopped.indexOf("if (!updated)");
         String staleBranch = stopped.substring(cas,
-                stopped.indexOf("settleNeutralRetainedStream(operation)", cas));
+                stopped.indexOf("boolean cancelled =", cas));
 
         assertTrue(staleBranch.contains("completeRetainedSwitch(operation"));
         assertFalse(staleBranch.contains("saveReconnect(true)"));

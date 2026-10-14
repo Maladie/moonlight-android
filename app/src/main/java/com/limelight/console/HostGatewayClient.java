@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
-class HostGatewayClient {
+public class HostGatewayClient {
     static final int DEFAULT_PORT = 8785;
     static final int REQUIRED_GAMEPLAY_PERMISSIONS = 0x07001F00;
     /** Also host entry's profile fetch, which falls back to the cached list on a slow Gateway. */
@@ -504,9 +504,9 @@ class HostGatewayClient {
         }
     }
 
-    enum Evidence { VERIFIED, ABSENT, PENDING, UNAVAILABLE }
+    public enum Evidence { VERIFIED, ABSENT, PENDING, UNAVAILABLE }
 
-    static final class SessionObservation {
+    public static final class SessionObservation {
         final String producerBootId;
         final long producerRevision;
         final long observedAtUnixMs;

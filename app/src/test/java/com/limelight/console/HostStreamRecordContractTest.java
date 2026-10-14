@@ -63,20 +63,11 @@ public class HostStreamRecordContractTest {
                 "private String ownReconnectRecord(");
         assertTrue(reconcile.contains("!hostStreamReconciled.add(key.cacheKey())"));
         assertTrue(reconcile.contains(".ownedStream(gateway)"));
-        // The app list cache an adoption needs is read on the worker, never on the UI thread.
+        // The app list cache adoption material needs is read on the worker, never on the UI
+        // or model thread; the decision itself is the session model's (SessionModelHostTest).
         assertTrue(reconcile.contains("? loadApps(host, true)"));
         assertFalse(section(console, "private Intent adoptedStreamRecord(",
                 "private long knownControlGeneration(").contains("loadApps("));
-        String apply = section(console, "private void applyHostStreamRecord(",
-                "private Intent adoptedStreamRecord(");
-        assertTrue(apply.contains("HostStreamRecord.decide(owned, key.profileId, local)"));
-        // A start or reconnect of this host begun since the read owns the records.
-        int owns = apply.indexOf(
-                "HostStreamRecord.sessionOwnsRecords(hostId, sessionModel.snapshot())");
-        assertTrue(owns >= 0 && owns < apply.indexOf("HostStreamRecord.decide("));
-        // Adoption is a reconnect record: Play reconnects it through the saved-session path.
-        assertTrue(apply.contains("new SessionEvent.ReconnectSaved(")
-                && apply.contains("owned.streamSessionId, false)"));
         assertTrue(section(console, "private Intent adoptedStreamRecord(",
                 "private long knownControlGeneration(")
                 .contains(".putExtra(Game.EXTRA_CONTROL_GENERATION, owned.generation)"));

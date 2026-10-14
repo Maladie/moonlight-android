@@ -59,6 +59,10 @@ public enum SessionFailure {
             R.string.applist_quit_fail, R.string.console_provider_stop_waiting_for_process),
     SWITCH_FAILED("switch.failed",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
+    // A switch would attach to a game the host runs for another actor: never taken over (a
+    // replacement the user confirms closes it instead).
+    SESSION_HELD_BY_OTHER_ACTOR("session.held_by_other_actor",
+            R.string.playnite_launch_unavailable, R.string.console_child_launch_session_in_use),
 
     // SessionOrchestrator: the canonical snapshot could not be trusted for this target.
     UNCERTAIN_RECOVERY_REQUIRED("uncertain.recovery_required",
@@ -172,10 +176,14 @@ public enum SessionFailure {
 
     Raised raise() { return new Raised(this, ""); }
 
+    /** The stream's refusal of a switch whose actor does not hold what the host runs. */
+    public static final String SWITCH_OTHER_ACTOR_REASON = "retained_switch_other_actor";
+
     /** Classifies the failure reason reported by the attached stream for a retained switch. */
     static Raised switchFailed(String reason) {
         String value = reason == null ? "" : reason;
         SessionFailure failure = "retained_switch_not_eligible".equals(value) ? SWITCH_REFUSED
+                : SWITCH_OTHER_ACTOR_REASON.equals(value) ? SESSION_HELD_BY_OTHER_ACTOR
                 : value.contains("game_stop_timeout") ? SWITCH_PROVIDER_STOP_TIMEOUT
                 : SWITCH_FAILED;
         return new Raised(failure, value);

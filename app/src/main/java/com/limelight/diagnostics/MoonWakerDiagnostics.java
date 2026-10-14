@@ -48,7 +48,8 @@ public final class MoonWakerDiagnostics {
             "game_evidence", "process_evidence", "process_id", "process_token_fp",
             "window_evidence", "producer_boot_id", "producer_revision", "request_ordinal",
             "control_generation", "actor_lease_epoch", "transport_generation",
-            "episode_remaining_ms", "sample_marker", "published_age_ms"));
+            "episode_remaining_ms", "sample_marker", "published_age_ms",
+            "controller_number", "source", "local_key_count"));
 
     private static Writer writer;
     private static File directory;

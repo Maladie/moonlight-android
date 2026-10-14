@@ -67,6 +67,7 @@ public class SuspendedSessionStoreTest {
 
         // A new process restores the record from the store, not from a live connection.
         SessionModel restored = new SessionModel(Runnable::run, Runnable::run, () -> false,
+                () -> 0L, (level, component, event, fields) -> true,
                 driver.resume, driver.suspended, driver.sleep);
         assertEquals("suspend-a", restored.records()
                 .suspendedForExecution("host", "parent").suspendId);

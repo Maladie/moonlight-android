@@ -184,26 +184,6 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(sleep.contains("executor.execute("));
         assertTrue(source.contains("return snapshot.hostSleepObserved "
                 + "|| host.state != ComputerDetails.State.ONLINE;"));
-        String reconcile = source.substring(source.indexOf(
-                        "private void reconcileFreshSessionFacts("),
-                source.indexOf("private void reconcileAuthoritativeSession("));
-        assertTrue(reconcile.contains("HostReadiness.sleepRequestExpired("));
-    }
-
-    @Test public void freshZeroReconcilesOnlyExactLostRetainedSession() throws IOException {
-        String source = consoleActivitySource();
-        String method = source.substring(source.indexOf(
-                        "private void reconcileAuthoritativeSession("),
-                source.indexOf("private final ServiceConnection serviceConnection"));
-
-        assertTrue(method.contains("AuthoritativeSessionTransition.lostRetainedTransport("));
-        assertTrue(method.contains("new SessionEvent.Cleared(retained.streamSessionId)"));
-        assertTrue(method.contains("pending.matches(retained.streamSessionId)"));
-        assertTrue(method.contains("isStreamHome() && retained.streamSessionId.equals(\n"
-                + "                        launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID))"));
-        assertTrue(method.contains("finish();"));
-        assertFalse(method.contains("finishAffinity"));
-        assertFalse(method.contains("!pending.autoResume"));
     }
 
     @Test public void retainedFallbackRequiresPersistedControlGeneration() throws IOException {
@@ -275,8 +255,6 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(source.contains("publishedSessionSnapshots"));
         assertFalse(source.contains("RunningGameObservation"));
         assertFalse(source.contains("getPlayniteCurrentGame("));
-        assertTrue(hardReset.contains("lastFreshRunningAppIds.remove(host.uuid)"));
-        assertTrue(hardReset.contains("lastFreshStreamSessionIds.remove(host.uuid)"));
     }
 
     @Test public void destructiveReplacementUsesExactRetainedTerminationBeforeFallback()
@@ -517,6 +495,8 @@ public class ConsoleActivityEnsureContractTest {
                 < method.indexOf("SessionSnapshot projection = resolveSessionSnapshot("));
         assertTrue(method.contains("\"VERIFIED\".equals(projection.processEvidence)"));
         assertTrue(method.contains(".hostRunningAppId == retained.appId"));
+        // switchKeepsHostGame / retainedGameUnproven: behaviour-tested
+        // with the table in SessionTransitionTableTest.
         assertTrue(method.contains("retained.hostId.equalsIgnoreCase(intent.hostId)"));
         assertTrue(method.contains("!retained.playniteGameId.equalsIgnoreCase("));
         assertTrue(method.contains("PlayniteTargetResolver.findById("));
@@ -662,7 +642,6 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(status.contains("System.currentTimeMillis()"));
         // The library's presentation key reads the status without its minutes.
         assertTrue(source.contains("+ '|' + hostStatus(host, snapshot, false);"));
-        assertTrue(source.contains("SessionStateResolver.hostUnreachable(copy.uuid);"));
         assertTrue(english.contains(
                 "name=\"console_status_game_running\">Game running · %1$s<"));
         assertTrue(polish.contains(

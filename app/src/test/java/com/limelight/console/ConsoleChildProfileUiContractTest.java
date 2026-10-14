@@ -91,22 +91,10 @@ public class ConsoleChildProfileUiContractTest {
         assertFalse(activity.contains("getPlayniteCurrentGame("));
     }
 
-    @Test public void disallowedRunningGameTriggersAutomaticCommonFullCloseBeforeChildLaunch()
-            throws Exception {
-        String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
-        String close = between(activity,
-                "@Override public SessionOrchestrator.CloseResult closePreviousSession(",
-                "@Override public void launch(PlayIntent intent, NvApp app,");
-        assertTrue(close.contains("boolean childMustCloseDisallowedGame = isChildIntent(intent)"));
-        assertTrue(close.contains("providerGameMetadata(intent.hostId, intent.profileId,"));
-        assertTrue(close.contains("retained.playniteGameId) == null;"));
-        assertTrue(close.contains("boolean destructiveCloseAuthorized = allowDestructiveClose"));
-        assertTrue(close.contains("|| childMustCloseDisallowedGame;"));
-        assertTrue(close.contains("terminateLiveRetainedForReplacement("));
-        assertTrue(close.contains("terminateKnownControlPlane("));
-        assertTrue(close.contains("&& !childMustCloseDisallowedGame)"));
-    }
-
+    /**
+     * Owner 2026-10-14: a child's Play over its parent's running game switches on the live
+     * stream without a confirmation, like any actor's; the host gates the child's own start.
+     */
     @Test public void childKeepsInstallAndUninstallButNeverGetsMicrophone() throws Exception {
         String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
         String install = between(activity, "private void startPlayniteInstallation(",
@@ -326,6 +314,17 @@ public class ConsoleChildProfileUiContractTest {
                 true, "running", "pairing_required", 1L));
         assertFalse(ConsoleActivity.childSessionCanContinue(
                 true, "running", "none", 0L));
+    }
+
+    /** A child's switch refused by its time or schedule shows that reason, not a close failure. */
+    @Test public void childSwitchRefusalKeepsTheChildsOwnMessage() {
+        assertEquals(com.limelight.R.string.console_child_launch_outside_schedule,
+                ConsoleActivity.childRefusalMessage("outside_schedule"));
+        assertEquals(com.limelight.R.string.console_child_launch_daily_limit,
+                ConsoleActivity.childRefusalMessage("daily_limit_reached"));
+        assertEquals(com.limelight.R.string.console_child_launch_unavailable,
+                ConsoleActivity.childRefusalMessage("child_not_playable"));
+        assertEquals(0, ConsoleActivity.childRefusalMessage("retained_switch_process_unconfirmed"));
     }
 
     private static HostGatewayClient.IntegrationProfile childProfile(

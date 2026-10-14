@@ -211,6 +211,7 @@ public class SessionModelAsyncTest {
 
     @Test public void awaitIsRefusedOnTheMainThread() {
         SessionModel onMain = new SessionModel(Runnable::run, Runnable::run, () -> true,
+                () -> 0L, (level, component, event, fields) -> true,
                 new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
         try {
             onMain.await(new SessionEvent.Cleared("s"));
@@ -227,6 +228,7 @@ public class SessionModelAsyncTest {
         driver.resume.values.put("appId", 7);
         driver.resume.values.put("streamSessionId", "s");
         SessionModel restarted = new SessionModel(Runnable::run, Runnable::run, () -> false,
+                () -> 0L, (level, component, event, fields) -> true,
                 driver.resume, driver.suspended, driver.sleep);
 
         assertEquals("s", restarted.records().pending.streamSessionId);
@@ -269,6 +271,7 @@ public class SessionModelAsyncTest {
                 java.util.concurrent.Executors.newSingleThreadExecutor();
         try {
             SessionModel threaded = new SessionModel(thread::execute, Runnable::run, () -> false,
+                () -> 0L, (level, component, event, fields) -> true,
                     new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
             java.util.concurrent.Future<Boolean> worker = java.util.concurrent.Executors
                     .newSingleThreadExecutor().submit(() -> threaded.await(new Throwing()));

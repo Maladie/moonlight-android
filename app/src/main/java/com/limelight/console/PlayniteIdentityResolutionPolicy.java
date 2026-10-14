@@ -49,8 +49,35 @@ public final class PlayniteIdentityResolutionPolicy {
         return current;
     }
 
-    static boolean allowsPendingReconnect(String bridgeState, String pendingGameId) {
-        return !("idle".equals(SessionSnapshot.normalize(bridgeState))
-                && !SessionSnapshot.normalize(pendingGameId).isEmpty());
+    /** What a switch of a retained stream carrying no game does with the host's current game. */
+    public enum GamelessSwitch {
+        /** Nothing to stop: the new game's attempt begins (its actor's host gates decide). */
+        START,
+        /** The host already runs exactly the new game for this same parent: the stream observes it. */
+        ADOPT_RUNNING,
+        /**
+         * The host runs (or may run) a game: never stopped by a switch, and never taken over by
+         * another actor (a child or another parent), not even when it is the new game.
+         */
+        MISMATCH
+    }
+
+    /**
+     * A stream carrying no game holds no process of its own; the host reauthorizes it only over
+     * an idle provider. A verified running {@code newGameId} is therefore never stopped and never
+     * restarted: the same parent observes it, any other actor is refused before its allowance.
+     */
+    public static GamelessSwitch gamelessSwitch(String newGameId, boolean sameParentActor,
+                                                String currentState, String currentGameId,
+                                                boolean verifiedProcess) {
+        String state = SessionSnapshot.normalize(currentState);
+        if ("idle".equals(state)) return GamelessSwitch.START;
+        if (!sameParentActor || !"running".equals(state) || !verifiedProcess
+                || SessionSnapshot.normalize(newGameId).isEmpty()
+                || !SessionSnapshot.normalize(newGameId).equals(
+                SessionSnapshot.normalize(currentGameId))) {
+            return GamelessSwitch.MISMATCH;
+        }
+        return GamelessSwitch.ADOPT_RUNNING;
     }
 }

@@ -131,33 +131,22 @@ public class HostGatewayClientTest {
             throws Exception {
         long deviceWall = 1_700_000_000_000L;
         long providerWall = deviceWall - 6L * 60L * 60L * 1_000L;
-        SessionStateResolver.resetProjectionOwnersForTests();
-        try {
-            SessionStateResolver.ProjectionOwner owner =
-                    SessionStateResolver.owner(m.model, "host", "kid", "parent");
-            long ordinal = owner.nextRequestOrdinal();
-            HostGatewayClient.SessionObservation parsed =
-                    HostGatewayClient.parseSessionObservation(
-                            observation(providerWall, "boot-skew", 1, ordinal, ""),
-                            "kid", "parent", ordinal, "", deviceWall);
-            assertEquals(providerWall, parsed.observedAtUnixMs);
-            assertNotNull(owner.accept(parsed,
-                    m.snapshot(),
-                    1_000L));
+        SessionStateResolver.ProjectionOwner owner = new SessionStateResolver.ProjectionOwner(
+                (level, component, event, fields) -> true, "host", "kid", "parent", 0L);
+        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        HostGatewayClient.SessionObservation parsed =
+                HostGatewayClient.parseSessionObservation(
+                        observation(providerWall, "boot-skew", 1, ordinal, ""),
+                        "kid", "parent", ordinal, "", deviceWall);
+        assertEquals(providerWall, parsed.observedAtUnixMs);
+        assertNotNull(owner.accept(parsed, m.snapshot(), 1_000L));
 
-            SessionSnapshot locallyStale = owner.current(
-                    m.snapshot(),
-                    7_000L);
-            assertEquals("UNAVAILABLE", locallyStale.processEvidence);
-            assertEquals(SessionSnapshot.ObservationState.PENDING,
-                    locallyStale.observationState);
-            assertEquals(SessionSnapshot.ObservationState.UNAVAILABLE,
-                    owner.current(
-                            m.snapshot(),
-                            16_000L).observationState);
-        } finally {
-            SessionStateResolver.resetProjectionOwnersForTests();
-        }
+        SessionSnapshot locallyStale = owner.current(m.snapshot(), 7_000L);
+        assertEquals("UNAVAILABLE", locallyStale.processEvidence);
+        assertEquals(SessionSnapshot.ObservationState.PENDING,
+                locallyStale.observationState);
+        assertEquals(SessionSnapshot.ObservationState.UNAVAILABLE,
+                owner.current(m.snapshot(), 16_000L).observationState);
     }
 
     private static JSONObject observation(long observedAt, String boot, long revision,

@@ -64,7 +64,6 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(confirmUnpair.contains("cancel.setOnClickListener(view -> handlePanelBack());"));
         // No request or session owner of a forgotten host outlives it.
         assertTrue(forget.contains("cancelPlayniteRequest();"));
-        assertTrue(forget.contains("SessionStateResolver.forgetHost(uuid);"));
         assertTrue(confirm.contains("R.string.console_remove_host_title"));
         assertTrue(confirm.contains("forgetHost(host)"));
         assertTrue(unpair.contains("if (forget) forgetHost(host);"));
@@ -93,13 +92,11 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(confirm.contains("hideSidePanelImmediately();"));
         assertFalse(request.contains("showSidePanelBusy("));
         assertFalse(request.contains("busyPanelKey"));
-        assertTrue(request.indexOf(
-                "long closeToken = closing.beginLocalClose(SystemClock.uptimeMillis(), true);")
-                < request.indexOf("executor.execute("));
-        // The stop ends in finally, before any stale-scope return: the status always returns.
-        String stopFinally = "} finally {\n                closing.finishLocalClose(closeToken, success);";
-        assertTrue(request.contains(stopFinally));
-        assertTrue(request.indexOf(stopFinally) < request.indexOf("mainHandler.post("));
+        // The model's close begins before the worker and ends in finally, before any
+        // stale-scope return: the status always returns (SessionModelHostTest).
+        com.limelight.GameAutoWarmUpContractTest.assertOrdered(request,
+                "new SessionEvent.LocalCloseBegun(", "executor.execute(", "} finally {",
+                "new SessionEvent.LocalCloseFinished(", "mainHandler.post(");
         assertTrue(completion.contains("return;"));
         // The host status (and every busy row) says "Ending the game…" while the stop runs.
         assertTrue(source.contains(
@@ -118,14 +115,11 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(request.contains("hideSidePanelImmediately();"));
         assertFalse(request.contains("showSidePanelBusy("));
         assertFalse(source.contains("busyPanelKey"));
-        assertTrue(controlPlane.indexOf(
-                "closing.beginLocalClose(SystemClock.uptimeMillis(), false)")
-                < controlPlane.indexOf("executor.execute("));
         // Also when the task throws: the close ends in finally, not in a posted callback.
-        String closeFinally = controlPlane.substring(controlPlane.indexOf("} finally {"));
-        assertTrue(closeFinally.indexOf("closing.finishLocalClose(closeToken, outcome != null"
-                + " && outcome.streamClosed());") < closeFinally.indexOf("mainHandler.post("));
-        assertTrue(closeFinally.contains("closing.finishLocalClose("));
+        com.limelight.GameAutoWarmUpContractTest.assertOrdered(controlPlane,
+                "new SessionEvent.LocalCloseBegun(", "executor.execute(", "} finally {",
+                "new SessionEvent.LocalCloseFinished(", "outcome != null && outcome.streamClosed()",
+                "mainHandler.post(");
         assertFalse(source.contains("if (sidePanelTransient) hideSidePanel();"));
     }
 
@@ -551,8 +545,8 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains(
                 "facts.gameRunning = isFreshExactRunningManagedGame(host, item);"));
         assertTrue(confirm.contains("if (!isFreshExactRunningManagedGame(host, item)) return;"));
-        assertTrue(request.indexOf("!isFreshExactRunningManagedGame(host, item)")
-                < request.indexOf("closing.beginLocalClose("));
+        com.limelight.GameAutoWarmUpContractTest.assertOrdered(request,
+                "!isFreshExactRunningManagedGame(host, item)", "new SessionEvent.LocalCloseBegun(");
     }
 
     @Test public void closingARetainedSessionNamesTheGameItsDialogNamed() throws Exception {

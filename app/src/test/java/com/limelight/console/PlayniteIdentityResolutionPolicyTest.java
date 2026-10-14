@@ -80,12 +80,46 @@ public class PlayniteIdentityResolutionPolicyTest {
                         "epic:celesteapp", "running", "epic:CelesteApp"));
     }
 
-    @Test public void freshIdleSuppressesOnlyGamePendingReconnect() {
-        assertFalse(PlayniteIdentityResolutionPolicy.allowsPendingReconnect(
-                "idle", "steam:224760"));
-        assertTrue(PlayniteIdentityResolutionPolicy.allowsPendingReconnect(
-                "idle", ""));
-        assertTrue(PlayniteIdentityResolutionPolicy.allowsPendingReconnect(
-                "unknown", "steam:224760"));
+    /** TV 2026-10-14 13:54: Play RE3 over the neutral warm-up while the host runs RE3. */
+    @Test public void neutralStreamPlayOfTheGameTheHostRunsAdoptsItInsteadOfFailing() {
+        String re3 = "steam:952060";
+        assertEquals(PlayniteIdentityResolutionPolicy.GamelessSwitch.ADOPT_RUNNING,
+                PlayniteIdentityResolutionPolicy.gamelessSwitch(
+                        re3, true, "running", re3, true));
+        // An idle host: the chosen game is started, as before.
+        assertEquals(PlayniteIdentityResolutionPolicy.GamelessSwitch.START,
+                PlayniteIdentityResolutionPolicy.gamelessSwitch(re3, true, "idle", "", false));
+    }
+
+    @Test public void neutralStreamNeverStopsOrAdoptsAnotherOrUnprovenGame() {
+        String re3 = "steam:952060";
+        for (boolean parent : new boolean[] {true, false}) {
+            assertEquals(PlayniteIdentityResolutionPolicy.GamelessSwitch.MISMATCH,
+                    PlayniteIdentityResolutionPolicy.gamelessSwitch(
+                            re3, parent, "running", "steam:224760", true));
+            assertEquals(PlayniteIdentityResolutionPolicy.GamelessSwitch.MISMATCH,
+                    PlayniteIdentityResolutionPolicy.gamelessSwitch(
+                            re3, parent, "running", re3, false));
+            assertEquals(PlayniteIdentityResolutionPolicy.GamelessSwitch.MISMATCH,
+                    PlayniteIdentityResolutionPolicy.gamelessSwitch(
+                            re3, parent, "stopping", re3, true));
+        }
+    }
+
+    /**
+     * Review K5 round 2 (2): the host never reauthorizes a gameless stream over a running game
+     * for another actor, so a child's start there could only fail after its allowance began.
+     * Refused before it (fail-closed); over an idle host the child starts as before.
+     */
+    @Test public void childOrOtherActorIsRefusedOverTheRunningGameAndStartsOnlyOverIdle() {
+        String re3 = "steam:952060";
+        assertEquals(PlayniteIdentityResolutionPolicy.GamelessSwitch.MISMATCH,
+                PlayniteIdentityResolutionPolicy.gamelessSwitch(
+                        re3, false, "running", re3, true));
+        assertEquals(PlayniteIdentityResolutionPolicy.GamelessSwitch.START,
+                PlayniteIdentityResolutionPolicy.gamelessSwitch(re3, false, "idle", "", false));
+        // The stream shows the refusal as the session being another actor's, not a retry.
+        assertEquals(SessionFailure.SESSION_HELD_BY_OTHER_ACTOR,
+                SessionFailure.switchFailed(SessionFailure.SWITCH_OTHER_ACTOR_REASON).reason);
     }
 }
