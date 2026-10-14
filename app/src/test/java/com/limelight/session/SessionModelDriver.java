@@ -20,6 +20,14 @@ import java.util.function.BooleanSupplier;
  * an event sequence with its replies, and readers see the state after every effect settled.
  */
 public final class SessionModelDriver {
+    private static final java.util.concurrent.atomic.AtomicLong TRANSPORT_GENERATIONS =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** A fresh transport generation for a fake owner, as StreamRuntime assigns one per owner. */
+    public static long nextTransportGeneration() {
+        return TRANSPORT_GENERATIONS.incrementAndGet();
+    }
+
     public final ArrayDeque<Runnable> modelQueue = new ArrayDeque<>();
     public final ArrayDeque<Runnable> mainQueue = new ArrayDeque<>();
     public final MemoryPreferences resume;
@@ -169,10 +177,9 @@ public final class SessionModelDriver {
         drain();
         return model.ownsLiveOrParkedSession(owner, sessionId, hostId, appId, gameId);
     }
-    public boolean ownsSwitchBeforeMutation(Controller owner, SwitchRequest request,
-                                            long controlGeneration) {
+    public boolean ownsSwitchBeforeMutation(Controller owner, SwitchRequest request) {
         drain();
-        return model.ownsSwitchBeforeMutation(owner, request, controlGeneration);
+        return model.ownsSwitchBeforeMutation(owner, request);
     }
     public boolean consumeProviderTransferAuthorization(ProviderTransferAuthorization proof) {
         drain();
@@ -254,7 +261,7 @@ public final class SessionModelDriver {
     public boolean parkForBackground(String sessionId) {
         drain();
         return call(new SessionEvent.ParkRequested(sessionId,
-                model.snapshot().presentationEpoch));
+                model.snapshot().presentationOperation));
     }
     public void markParked(String sessionId) { call(new SessionEvent.Parked(sessionId)); }
     public void markReconnectRequired(String sessionId) {
@@ -318,20 +325,13 @@ public final class SessionModelDriver {
                 orchestrationId, cancelled, completion));
     }
     public boolean updatePreparingSwitch(Controller owner, SwitchRequest request,
-                                         String currentTransitionId, String expectedGameId,
-                                         String newGameId, String newTransitionId) {
-        return call(new SessionEvent.PreparingSwitchUpdated(owner, request, currentTransitionId,
-                expectedGameId, newGameId, newTransitionId));
+                                         String expectedGameId, String newGameId,
+                                         String newTransitionId) {
+        return call(new SessionEvent.PreparingSwitchUpdated(owner, request, expectedGameId,
+                newGameId, newTransitionId));
     }
-    public boolean finishSwitch(String sessionId, Controller owner) {
-        return call(new SessionEvent.SwitchFinished(owner, new SwitchRequest(sessionId, "",
-                "", "", "", false, 0, "", "", "", "", "", "", 0L, false, 0L, null)));
-    }
-    public boolean finishSwitch(String sessionId, String transitionId, long attempt,
-                                Controller owner) {
-        return call(new SessionEvent.SwitchFinished(owner, new SwitchRequest(sessionId, "",
-                "", "", "", false, 0, "", "", "", "", "", transitionId, attempt, true, 0L,
-                null)));
+    public boolean finishSwitch(SwitchRequest request, Controller owner) {
+        return call(new SessionEvent.SwitchFinished(owner, request));
     }
     public boolean updateOwnedSwitchGame(Controller owner, SwitchRequest request,
                                          String expectedOldGameId, String newGameId) {

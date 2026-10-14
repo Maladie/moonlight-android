@@ -35,14 +35,12 @@ public class StreamRuntimeTest {
 
     @Before public void reset() {
         StreamRuntime.resetForTests();
-        TransportStopCoordinator.resetForTests();
         platform = new FakePlatform();
         m = platform.driver;
     }
 
     @After public void tearDown() {
         StreamRuntime.resetForTests();
-        TransportStopCoordinator.resetForTests();
     }
 
     @Test public void wifiLocksAreHeldExactlyForTheTransportLifetime() {
@@ -656,7 +654,6 @@ public class StreamRuntimeTest {
     @Test public void intentionallyClosedRetainedStreamLeavesNoReconnectMarker() {
         for (boolean recorded : new boolean[] {false, true}) {
             StreamRuntime.resetForTests();
-            TransportStopCoordinator.resetForTests();
             platform = new FakePlatform();
             m = platform.driver;
             StreamRuntime runtime = connected("s1", new FakeTransport());
@@ -779,6 +776,29 @@ public class StreamRuntimeTest {
         assertEquals(TransportStopCoordinator.Result.FAILED, afterSuccessor.get());
         assertEquals("failed predecessor never starts the successor native", 0,
                 successor.starts.get());
+    }
+
+    /**
+     * K5.3b: StreamRuntime alone assigns transport generations. A reconnect reuses the stream
+     * session id, so only the generation fences the lost transport's late events: its service
+     * end and acknowledgment change nothing, and its late stop reads CANCELLED.
+     */
+    @Test public void reconnectReusingTheSessionIdFencesTheLostGenerationsLateEvents() {
+        StreamRuntime lost = connected("s1", new FakeTransport());
+        long lostGeneration = lost.generation();
+        lost.stop(r -> { });
+
+        StreamRuntime reconnect = connected("s1", new FakeTransport());
+        assertTrue(reconnect.generation() > lostGeneration);
+
+        StreamRuntime.serviceEnded("s1", lostGeneration);
+        assertFalse(StreamRuntime.serviceEstablished("s1", lostGeneration));
+        AtomicReference<TransportStopCoordinator.Result> late = new AtomicReference<>();
+        lost.stop(late::set);
+
+        assertEquals(TransportStopCoordinator.Result.CANCELLED, late.get());
+        assertFalse("the reconnect keeps running", reconnect.isStopping());
+        assertSame(reconnect, StreamRuntime.forSession("s1"));
     }
 
     private StreamRuntime connected(String session, FakeTransport transport) {

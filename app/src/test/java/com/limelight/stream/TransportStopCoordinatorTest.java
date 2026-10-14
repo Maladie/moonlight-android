@@ -1,7 +1,6 @@
 package com.limelight.stream;
 
 import org.junit.Test;
-import org.junit.After;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -16,10 +15,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class TransportStopCoordinatorTest {
-    @After public void resetOwnerRegistry() {
-        TransportStopCoordinator.resetForTests();
-    }
-
     @Test public void concurrentCallersJoinOneStopAfterItReturns() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -71,35 +66,6 @@ public class TransportStopCoordinatorTest {
         assertEquals(results.get(0), results.get(1));
     }
 
-    @Test public void oldCompletionIsCancelledAfterNewGenerationClaimsOwnership()
-            throws Exception {
-        CountDownLatch entered = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        CountDownLatch completed = new CountDownLatch(1);
-        List<TransportStopCoordinator.Result> results =
-                Collections.synchronizedList(new ArrayList<>());
-        TransportStopCoordinator old = owner(() -> {
-            entered.countDown();
-            await(release);
-        });
-        activate(old);
-        old.stop(result -> {
-            results.add(old.fence(result));
-            completed.countDown();
-        });
-        assertTrue(entered.await(2, TimeUnit.SECONDS));
-
-        TransportStopCoordinator current = owner(() -> { });
-        assertTrue(current.generation() > old.generation());
-        release.countDown();
-
-        assertTrue(completed.await(2, TimeUnit.SECONDS));
-        assertEquals(Collections.singletonList(
-                TransportStopCoordinator.Result.CANCELLED), results);
-        assertFalse(current.hasStopStarted());
-        current.stop(null);
-    }
-
     @Test public void nextStartDoesNotRunBeforePreviousStopReturns() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -112,7 +78,7 @@ public class TransportStopCoordinatorTest {
         });
         activate(old);
 
-        TransportStopCoordinator next = owner(() -> { });
+        TransportStopCoordinator next = owner(old, () -> { });
         next.start(Runnable::run, () -> {
             nextStarts.incrementAndGet();
             started.countDown();
@@ -146,8 +112,8 @@ public class TransportStopCoordinatorTest {
             await(releaseStop);
         });
         activate(first);
-        TransportStopCoordinator middle = owner(middleStops::incrementAndGet);
-        TransportStopCoordinator next = owner(() -> { });
+        TransportStopCoordinator middle = owner(first, middleStops::incrementAndGet);
+        TransportStopCoordinator next = owner(middle, () -> { });
 
         next.start(Runnable::run, nextStarted::countDown);
         assertFalse(nextStarted.await(100, TimeUnit.MILLISECONDS));
@@ -194,7 +160,12 @@ public class TransportStopCoordinatorTest {
     }
 
     private static TransportStopCoordinator owner(Runnable effect) {
-        return new TransportStopCoordinator(effect,
+        return owner(null, effect);
+    }
+
+    private static TransportStopCoordinator owner(TransportStopCoordinator predecessor,
+                                                  Runnable effect) {
+        return new TransportStopCoordinator(predecessor, effect,
                 action -> new Thread(action, "transport-stop-test").start());
     }
 

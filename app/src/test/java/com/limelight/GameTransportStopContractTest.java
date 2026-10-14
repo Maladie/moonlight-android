@@ -22,9 +22,9 @@ public class GameTransportStopContractTest {
                 "public void stageFailed(");
 
         // S07: the physical transport, its stop completion, listener and locks leave Game.
-        assertTrue(runtime.contains("new TransportStopCoordinator(this::stopNative,"));
+        assertTrue(runtime.contains("new TransportStopCoordinator(predecessor, this::stopNative,"));
         assertTrue(runtime.contains("transport.start(this)"));
-        assertTrue(runtime.contains("stopCoordinator.fence("));
+        assertTrue(runtime.contains("TransportStopCoordinator.Result fenced = fence(result)"));
         assertTrue(android.contains("connection.start(audio, video, listener)"));
         assertTrue(android.contains("WIFI_MODE_FULL_HIGH_PERF"));
         assertFalse(game.contains("private NvConnection conn"));
@@ -90,12 +90,17 @@ public class GameTransportStopContractTest {
         assertTrue(finish.contains("complete(waiting, current && success)"));
     }
 
+    /** K5.3b: StreamRuntime alone assigns generations; the stop owner keeps no static state. */
     @Test public void transportRegistryDoesNotKeepAStaticStrongOwnerChain()
             throws IOException {
         String owner = source(
                 "app/src/main/java/com/limelight/stream/TransportStopCoordinator.java");
+        String runtime = source("app/src/main/java/com/limelight/stream/StreamRuntime.java");
 
-        assertTrue(owner.contains("static WeakReference<TransportStopCoordinator> current"));
+        assertTrue(runtime.contains("static WeakReference<TransportStopCoordinator> newestStop"));
+        assertFalse(runtime.contains("private static TransportStopCoordinator"));
+        assertFalse(owner.contains("private static"));
+        assertFalse(owner.contains("generation()"));
         assertTrue(owner.contains("private TransportStopCoordinator predecessor"));
         assertFalse(owner.contains("private static TransportStopCoordinator current"));
         assertFalse(owner.contains("private final TransportStopCoordinator predecessor"));

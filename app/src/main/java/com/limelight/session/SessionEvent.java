@@ -140,32 +140,32 @@ public abstract class SessionEvent<R> {
     }
 
     /**
-     * Park for background, asked by the presenter that saw {@code presentationEpoch}; ignored
-     * once another presenter has shown the stream. Replies whether the transport was parked.
+     * Park for background, asked by the presenter that saw {@code presentationOperation};
+     * ignored once another presenter has shown the stream. Replies whether it was parked.
      */
     public static final class ParkRequested extends BooleanEvent {
         private final String sessionId;
-        private final long presentationEpoch;
+        private final long presentationOperation;
 
         private final Controller owner;
 
-        public ParkRequested(String sessionId, long presentationEpoch) {
-            this(null, sessionId, presentationEpoch);
+        public ParkRequested(String sessionId, long presentationOperation) {
+            this(null, sessionId, presentationOperation);
         }
 
-        private ParkRequested(Controller owner, String sessionId, long presentationEpoch) {
+        private ParkRequested(Controller owner, String sessionId, long presentationOperation) {
             this.owner = owner;
             this.sessionId = sessionId;
-            this.presentationEpoch = presentationEpoch;
+            this.presentationOperation = presentationOperation;
         }
 
-        /** The owner's own presentation leaves the screen: scoped to the owner, not an epoch. */
+        /** The owner's own presentation leaves the screen: scoped to the owner. */
         public static ParkRequested byOwner(Controller owner, String sessionId) {
             return new ParkRequested(owner, sessionId, -1L);
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            m.parkForBackground(owner, sessionId, presentationEpoch, reply);
+            m.parkForBackground(owner, sessionId, presentationOperation, reply);
         }
     }
 
@@ -388,22 +388,21 @@ public abstract class SessionEvent<R> {
     public static final class PreparingSwitchUpdated extends BooleanEvent {
         private final Controller owner;
         private final SwitchRequest request;
-        private final String currentTransitionId, expectedGameId, newGameId, newTransitionId;
+        private final String expectedGameId, newGameId, newTransitionId;
 
         public PreparingSwitchUpdated(Controller owner, SwitchRequest request,
-                                      String currentTransitionId, String expectedGameId,
-                                      String newGameId, String newTransitionId) {
+                                      String expectedGameId, String newGameId,
+                                      String newTransitionId) {
             this.owner = owner;
             this.request = request;
-            this.currentTransitionId = currentTransitionId;
             this.expectedGameId = expectedGameId;
             this.newGameId = newGameId;
             this.newTransitionId = newTransitionId;
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            reply.accept(m.updatePreparingSwitch(owner, request, currentTransitionId,
-                    expectedGameId, newGameId, newTransitionId));
+            reply.accept(m.updatePreparingSwitch(owner, request, expectedGameId, newGameId,
+                    newTransitionId));
         }
     }
 
@@ -436,10 +435,7 @@ public abstract class SessionEvent<R> {
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            reply.accept(request.preparing
-                    ? m.finishSwitch(request.streamSessionId, request.transitionId,
-                    request.attempt, owner)
-                    : m.finishSwitch(request.streamSessionId, owner));
+            reply.accept(m.finishSwitch(request, owner));
         }
     }
 

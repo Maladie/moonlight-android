@@ -1802,21 +1802,17 @@ public class HostGatewayClient {
 
     SessionObservation getSessionObservation(GatewayConnection connection,
                                              String executionProfileId,
-                                             long requestOrdinal,
-                                             String transitionId) throws IOException {
+                                             long requestOrdinal) throws IOException {
         if (requestOrdinal <= 0L) throw new IllegalArgumentException("request ordinal");
-        String transition = transitionId == null ? "" : transitionId.trim();
-        String path = "/api/v1/session/observation?request_ordinal=" + requestOrdinal
-                + "&transition_id=" + URLEncoder.encode(
-                transition, StandardCharsets.UTF_8.name());
+        String path = "/api/v1/session/observation?request_ordinal=" + requestOrdinal;
         return parseSessionObservation(request(connection, path, "GET", null,
                         READ_TIMEOUT_MS), connection.profileId(), executionProfileId,
-                requestOrdinal, transition, System.currentTimeMillis());
+                requestOrdinal, System.currentTimeMillis());
     }
 
     static SessionObservation parseSessionObservation(
             JSONObject response, String expectedActor, String expectedExecution,
-            long expectedOrdinal, String expectedTransition, long receivedWallMs)
+            long expectedOrdinal, long receivedWallMs)
             throws IOException {
         if (response == null || !response.optBoolean("ok", false)) {
             throw new IOException(response == null ? "observation_unavailable"
@@ -1865,9 +1861,7 @@ public class HostGatewayClient {
         }
         if (!GatewayConnection.normalizeProfileId(expectedActor).equals(actor)
                 || !GatewayConnection.normalizeProfileId(expectedExecution).equals(execution)
-                || ordinal != expectedOrdinal
-                || !(expectedTransition == null ? "" : expectedTransition.trim())
-                .equals(transition)) {
+                || ordinal != expectedOrdinal) {
             throw new IOException("observation_correlation_mismatch");
         }
         Evidence connectorEvidence = evidence(provider, "connector_evidence");

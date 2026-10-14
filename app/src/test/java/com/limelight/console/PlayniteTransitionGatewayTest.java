@@ -159,7 +159,7 @@ public class PlayniteTransitionGatewayTest {
         // The read fails without a cancellation: the model is told it is unavailable.
         HostGatewayClient down = new HostGatewayClient() {
             @Override SessionObservation getSessionObservation(GatewayConnection connection,
-                    String executionProfileId, long requestOrdinal, String transitionId)
+                    String executionProfileId, long requestOrdinal)
                     throws IOException {
                 throw new IOException("down");
             }
@@ -550,9 +550,9 @@ public class PlayniteTransitionGatewayTest {
 
         @Override SessionObservation getSessionObservation(
                 GatewayConnection connection, String executionProfileId,
-                long requestOrdinal, String transitionId) throws IOException {
+                long requestOrdinal) throws IOException {
             SessionObservation observation = super.getSessionObservation(connection,
-                    executionProfileId, requestOrdinal, transitionId);
+                    executionProfileId, requestOrdinal);
             parsedObservations++;
             Runnable interleaved = beforeReturn;
             beforeReturn = null;
@@ -575,8 +575,6 @@ public class PlayniteTransitionGatewayTest {
                     long ordinal = Long.parseLong(path.replaceFirst(
                             ".*request_ordinal=([0-9]+).*", "$1"));
                     long now = System.currentTimeMillis();
-                    String transition = java.net.URLDecoder.decode(path.replaceFirst(
-                            ".*transition_id=([^&]*).*", "$1"), "UTF-8");
                     return new JSONObject().put("ok", true).put("schema_version", 2)
                             .put("producer", new JSONObject().put("boot_id", "boot-a")
                                     .put("revision", revision > 0L ? revision : ordinal))
@@ -590,7 +588,7 @@ public class PlayniteTransitionGatewayTest {
                                                     ? "parent" : connection.profileId()))
                             .put("correlation", new JSONObject()
                                     .put("request_ordinal", ordinal)
-                                    .put("caller_transition_id", transition)
+                                    .put("caller_transition_id", "")
                                     .put("operation_id", operationId)
                                     .put("stream_session_id", streamSessionId)
                                     .put("control_generation", controlGeneration)

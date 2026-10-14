@@ -28,6 +28,9 @@ public class SessionModelHostTest {
     private static final class Owner implements SessionModel.Controller {
         boolean live = true;
         @Override public boolean isRetainedTransportLive() { return live; }
+        private final long fakeGeneration =
+                com.limelight.session.SessionModelDriver.nextTransportGeneration();
+        @Override public long transportGeneration() { return fakeGeneration; }
         @Override public SessionModel.ParkOutcome parkRetainedTransport() {
             return SessionModel.ParkOutcome.PARKED;
         }

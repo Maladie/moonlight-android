@@ -14965,7 +14965,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void leaveMoonWakerKeepingStream() {
         sessionModel.post(new SessionEvent.ParkRequested(currentRetainedStreamSessionId(),
-                sessionModel.snapshot().presentationEpoch));
+                sessionModel.snapshot().presentationOperation));
         moveTaskToBack(true);
     }
 

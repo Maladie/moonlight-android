@@ -25,6 +25,9 @@ public class SessionModelAsyncTest {
 
         @Override public String getExecutionProfileId() { return "parent"; }
         @Override public boolean isRetainedTransportLive() { return true; }
+        private final long fakeGeneration =
+                com.limelight.session.SessionModelDriver.nextTransportGeneration();
+        @Override public long transportGeneration() { return fakeGeneration; }
         @Override public SessionModel.ParkOutcome parkRetainedTransport() {
             trace.add("owner.park");
             return parkResult ? SessionModel.ParkOutcome.PARKED : SessionModel.ParkOutcome.STOPPED;
@@ -331,12 +334,15 @@ public class SessionModelAsyncTest {
         driver.post(new SessionEvent.PresentationRestored(owner, "other"));
         driver.post(new SessionEvent.PresentationRestored(new Owner(), "s"));
         assertEquals(SessionModel.State.PARKED_LIVE, driver.state());
-        assertEquals(0L, driver.snapshot().presentationEpoch);
+        assertEquals(0L, driver.snapshot().presentationOperation);
     }
 
     @Test public void lateBeginForAGoneGameIsCancelledSoTheHostIsNotBlocked() {
         Owner stopped = new Owner() {
             @Override public boolean isRetainedTransportLive() { return false; }
+            private final long fakeGeneration =
+                    com.limelight.session.SessionModelDriver.nextTransportGeneration();
+            @Override public long transportGeneration() { return fakeGeneration; }
         };
         assertTrue(driver.beginPreparing(stopped, "s", "host", "parent", 7, "", "t", 1L));
         // The Game was destroyed before the reply: it cancels its own begun attempt.
@@ -366,7 +372,7 @@ public class SessionModelAsyncTest {
 
     @Test public void homeStoppingAfterTheGameShowedTheStreamAgainDoesNotPark() {
         Owner owner = liveHome("s");
-        long homeEpoch = driver.snapshot().presentationEpoch;   // Home visible
+        long homeEpoch = driver.snapshot().presentationOperation;   // Home visible
         assertTrue(driver.parkForBackground("s"));              // TV Home from Home parks
         driver.post(new SessionEvent.PresentationRestored(owner, "s"));   // back to the game
         trace.clear();

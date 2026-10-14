@@ -1,12 +1,14 @@
 package com.limelight.stream;
 
-import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicLong;
 
-/** Owns the one real stop of an immutable transport generation. */
+/**
+ * Owns the one real stop of one transport generation and orders its start after the
+ * predecessor's stop. The generation itself and the predecessor are assigned by
+ * {@link StreamRuntime}, the single owner of transport generations.
+ */
 public final class TransportStopCoordinator {
     public enum Result { STOPPED, FAILED, CANCELLED }
 
@@ -16,13 +18,6 @@ public final class TransportStopCoordinator {
 
     private enum State { NEW, STARTING, ACTIVE, STOPPING, STOPPED }
 
-    private static final AtomicLong NEXT_GENERATION = new AtomicLong();
-    private static final AtomicLong CURRENT_GENERATION = new AtomicLong();
-    private static final Object GENERATION_LOCK = new Object();
-    private static WeakReference<TransportStopCoordinator> current =
-            new WeakReference<>(null);
-
-    private final long generation;
     private TransportStopCoordinator predecessor;
     private final Runnable stopEffect;
     private final Executor executor;
@@ -30,20 +25,13 @@ public final class TransportStopCoordinator {
     private State state = State.NEW;
     private Result terminalResult;
 
-    public TransportStopCoordinator(Runnable stopEffect, Executor executor) {
+    /** {@code predecessor}: the previous generation's stop this start waits for; may be null. */
+    TransportStopCoordinator(TransportStopCoordinator predecessor, Runnable stopEffect,
+                             Executor executor) {
         if (stopEffect == null || executor == null) throw new NullPointerException();
+        this.predecessor = predecessor;
         this.stopEffect = stopEffect;
         this.executor = executor;
-        synchronized (GENERATION_LOCK) {
-            predecessor = current.get();
-            current = new WeakReference<>(this);
-            generation = NEXT_GENERATION.incrementAndGet();
-            CURRENT_GENERATION.set(generation);
-        }
-    }
-
-    public long generation() {
-        return generation;
     }
 
     public synchronized boolean hasStopStarted() {
@@ -52,11 +40,6 @@ public final class TransportStopCoordinator {
 
     public synchronized boolean hasWorkStarted() {
         return state != State.NEW;
-    }
-
-    public Result fence(Result result) {
-        return result == Result.STOPPED && CURRENT_GENERATION.get() != generation
-                ? Result.CANCELLED : result;
     }
 
     public static void completeSafely(Completion completion, Result result) {
@@ -218,12 +201,6 @@ public final class TransportStopCoordinator {
         }
         for (Completion completion : waiting) {
             completeSafely(completion, result);
-        }
-    }
-
-    static void resetForTests() {
-        synchronized (GENERATION_LOCK) {
-            current = new WeakReference<>(null);
         }
     }
 }

@@ -3876,8 +3876,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         || !transferRuntime.isCurrent(transferAttachment)
                         || transferRuntime.controlGeneration() != previousControlGeneration
                         || (reuseRunningGame
-                        && !sessionModel.ownsSwitchBeforeMutation(
-                        runtime, operation.request, previousControlGeneration))
+                        && !sessionModel.ownsSwitchBeforeMutation(runtime, operation.request))
                         || (reuseRunningGame && (currentProviderIdentity == null
                         || !providerIdentity.processToken.equals(
                         currentProviderIdentity.processToken)
@@ -4341,7 +4340,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!operation.oldCoordinator.transferProviderOwnershipTo(replacement)) {
             replacement.close();
             sessionModel.dispatch(new SessionEvent.PreparingSwitchUpdated(runtime,
-                    operation.request, next.id, operation.request.oldGameId,
+                    operation.request, operation.request.oldGameId,
                     operation.request.oldGameId, operation.request.transitionId), restored -> {
                 if (!restored) abortStalePreparingSwitch(operation);
                 else completeRetainedSwitch(operation, SessionModel.SwitchOutcome.FAILED,
@@ -4400,8 +4399,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         sessionModel.dispatch(new SessionEvent.PreparingSwitchUpdated(runtime,
-                operation.request, preparing.transitionId, expectedGameId, newGameId,
-                newTransitionId), advanced -> {
+                operation.request, expectedGameId, newGameId, newTransitionId), advanced -> {
             if (isCurrentRetainedSwitch(operation)) done.accept(advanced);
         });
     }
@@ -4626,11 +4624,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && request.oldGameId.equalsIgnoreCase(retained.playniteGameId)
                 && request.oldGameId.equalsIgnoreCase(transitionSpec.playniteGameId)
                 && request.transitionId.equals(retained.transitionId)
-                && request.attempt == retained.attempt
-                && request.attempt == autoWarmUpAttempt
-                && sessionModel.isPreparing(
-                runtime, request.streamSessionId, request.hostId, request.appId,
-                request.transitionId, request.attempt);
+                && retained.attempt == autoWarmUpAttempt
+                && sessionModel.ownsPreparingSwitch(runtime, request);
     }
 
     /** Moves the switch's game in the model; {@code done} runs only while it is current. */

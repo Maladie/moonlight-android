@@ -25,7 +25,7 @@ public class HostGatewayClientTest {
         JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
         HostGatewayClient.SessionObservation parsed =
                 HostGatewayClient.parseSessionObservation(value, "kid", "parent",
-                        7, "transition-a", now + 100);
+                        7, now + 100);
         assertEquals("boot-a", parsed.producerBootId);
         assertEquals(2L, parsed.producerRevision);
         assertEquals(HostGatewayClient.Evidence.VERIFIED, parsed.processEvidence);
@@ -62,7 +62,7 @@ public class HostGatewayClientTest {
 
         HostGatewayClient.SessionObservation parsed =
                 HostGatewayClient.parseSessionObservation(value, "kid", "parent",
-                        7, "transition-a", now + 100);
+                        7, now + 100);
 
         assertEquals("previous_launch_game_running", parsed.reason);
         assertEquals("steam:123", parsed.previousLaunchGameId);
@@ -72,11 +72,11 @@ public class HostGatewayClientTest {
         value.getJSONObject("window").getJSONObject("previous_launch")
                 .put("name", " Resident Evil 3 ");
         assertEquals("Resident Evil 3", HostGatewayClient.parseSessionObservation(value, "kid",
-                "parent", 7, "transition-a", now + 100).previousLaunchGameName);
+                "parent", 7, now + 100).previousLaunchGameName);
         value.getJSONObject("window").getJSONObject("previous_launch").put("name", 5);
         assertEquals("a non-text name is ignored, not a rejection", "",
                 HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7,
-                        "transition-a", now + 100).previousLaunchGameName);
+                        now + 100).previousLaunchGameName);
 
         value.getJSONObject("window").getJSONObject("previous_launch")
                 .put("process_token", "short");
@@ -89,14 +89,14 @@ public class HostGatewayClientTest {
         long now = 1_700_000_000_000L;
         JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
         HostGatewayClient.SessionObservation unknown = HostGatewayClient.parseSessionObservation(
-                value, "kid", "parent", 7, "transition-a", now + 100);
+                value, "kid", "parent", 7, now + 100);
         assertEquals(0L, unknown.streamStartedUnixMs);
         assertEquals(0L, unknown.processStartedUnixMs);
 
         value.getJSONObject("correlation").put("stream_started_unix_ms", now - 3_600_000L);
         value.getJSONObject("process").put("started_unix_ms", now - 720_000L);
         HostGatewayClient.SessionObservation parsed = HostGatewayClient.parseSessionObservation(
-                value, "kid", "parent", 7, "transition-a", now + 100);
+                value, "kid", "parent", 7, now + 100);
         assertEquals(now - 3_600_000L, parsed.streamStartedUnixMs);
         assertEquals(now - 720_000L, parsed.processStartedUnixMs);
 
@@ -132,12 +132,12 @@ public class HostGatewayClientTest {
         long deviceWall = 1_700_000_000_000L;
         long providerWall = deviceWall - 6L * 60L * 60L * 1_000L;
         SessionStateResolver.ProjectionOwner owner = new SessionStateResolver.ProjectionOwner(
-                (level, component, event, fields) -> true, "host", "kid", "parent", 0L);
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+                (level, component, event, fields) -> true, "host", "kid", "parent");
+        long ordinal = owner.nextRequestOrdinal();
         HostGatewayClient.SessionObservation parsed =
                 HostGatewayClient.parseSessionObservation(
                         observation(providerWall, "boot-skew", 1, ordinal, ""),
-                        "kid", "parent", ordinal, "", deviceWall);
+                        "kid", "parent", ordinal, deviceWall);
         assertEquals(providerWall, parsed.observedAtUnixMs);
         assertNotNull(owner.accept(parsed, m.snapshot(), 1_000L));
 
@@ -184,8 +184,7 @@ public class HostGatewayClientTest {
     private static void assertObservationRejected(JSONObject value, String reason, long now)
             throws Exception {
         try {
-            HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7,
-                    "transition-a", now);
+            HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7, now);
             throw new AssertionError("Observation was accepted");
         } catch (java.io.IOException expected) {
             assertEquals(reason, expected.getMessage());
