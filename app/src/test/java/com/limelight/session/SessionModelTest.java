@@ -52,6 +52,9 @@ public class SessionModelTest {
         int switches;
 
         @Override public boolean isRetainedTransportLive() { return live; }
+        private final long fakeGeneration =
+                com.limelight.session.SessionModelDriver.nextTransportGeneration();
+        @Override public long transportGeneration() { return fakeGeneration; }
         @Override public SessionModel.ParkOutcome parkRetainedTransport() {
             return parkResult ? SessionModel.ParkOutcome.PARKED : SessionModel.ParkOutcome.STOPPED;
         }
@@ -98,7 +101,7 @@ public class SessionModelTest {
         }
     }
 
-    @Test public void transportGenerationIsMonotonicAndIndependentOfRemoteControl() {
+    @Test public void transportGenerationIsTheOwnersAndIndependentOfRemoteControl() {
         FakeController owner = new FakeController();
         m.enterHome(owner, SESSION_A, "host", 7, "game-a");
         long first = m.snapshot().transportGeneration;
@@ -109,7 +112,10 @@ public class SessionModelTest {
         m.enterHome(owner, SESSION_A, "host", 7, "game-a");
         assertEquals(first, m.snapshot().transportGeneration);
         m.clear();
-        m.enterHome(owner, "session-b", "host", 7, "game-b");
+        // A new stream is a new transport owner, with the generation StreamRuntime gave it.
+        FakeController next = new FakeController();
+        m.enterHome(next, "session-b", "host", 7, "game-b");
+        assertEquals(next.transportGeneration(), m.snapshot().transportGeneration);
         assertTrue(m.snapshot().transportGeneration > first);
         assertEquals(0L, m.snapshot().controlGeneration);
     }
@@ -205,7 +211,7 @@ public class SessionModelTest {
                     owner.switchRequest, before.playniteGameId, "game-b"));
             owner.switchCompletion.complete(SessionModel.SwitchOutcome.REUSED, "");
             m.drain();
-            m.finishSwitch(SESSION_A, owner);
+            m.finishSwitch(owner.switchRequest, owner);
             assertFalse(m.canResumeInstantly(before));
             assertEquals(actor, m.snapshot().profileId);
             assertEquals(SESSION_A, m.snapshot().streamSessionId);
@@ -861,20 +867,19 @@ public class SessionModelTest {
         assertTrue(owner.switchRequest.preparing);
         assertEquals("old", owner.switchRequest.oldGameId);
         assertEquals("transition-a", owner.switchRequest.transitionId);
-        assertEquals(3L, owner.switchRequest.attempt);
+        assertTrue(owner.switchRequest.operationId > 0L);
         owner.switchCompletion.complete(
                 SessionModel.SwitchOutcome.REUSED, "");
         m.drain();
         assertTrue(m.isPreparingSwitchOwned(
                 SESSION_A, "host", 7, "transition-a", 3L));
-        assertFalse(m.finishSwitch(SESSION_A, owner));
-        assertTrue(m.finishSwitch(
-                SESSION_A, "transition-a", 3L, owner));
+        assertFalse(m.finishSwitch(owner.switchRequest, new FakeController()));
+        assertTrue(m.finishSwitch(owner.switchRequest, owner));
         assertFalse(m.isPreparingSwitchOwned(
                 SESSION_A, "host", 7, "transition-a", 3L));
     }
 
-    @Test public void preMutationSwitchFenceRequiresExactOwnerActorAndGeneration() {
+    @Test public void preMutationSwitchFenceRequiresExactOwnerTransportAndOperation() {
         FakeController owner = new FakeController();
         owner.origin = "parent";
         m.enterHome(
@@ -888,21 +893,16 @@ public class SessionModelTest {
                         () -> false, null));
         SessionModel.SwitchRequest request = owner.switchRequest;
 
-        assertTrue(m.ownsSwitchBeforeMutation(
-                owner, request, 4L));
-        assertFalse(m.ownsSwitchBeforeMutation(
-                new FakeController(), request, 4L));
-        assertFalse(m.ownsSwitchBeforeMutation(
-                owner, request, 5L));
-
+        assertTrue(m.ownsSwitchBeforeMutation(owner, request));
+        assertFalse(m.ownsSwitchBeforeMutation(new FakeController(), request));
+        // The Gateway control generation is carried, never a decision key (MW-04 §7).
         assertTrue(m.bindControlGeneration(
                 owner, SESSION_A, 5L));
-        assertFalse(m.ownsSwitchBeforeMutation(
-                owner, request, 4L));
+        assertTrue(m.ownsSwitchBeforeMutation(owner, request));
+
         m.enterHome(
                 new FakeController(), "session-b", "host", "child", 7, "game");
-        assertFalse(m.ownsSwitchBeforeMutation(
-                owner, request, 5L));
+        assertFalse(m.ownsSwitchBeforeMutation(owner, request));
     }
 
     @Test public void stalePreparingSwitchCallbackCannotChangeANewerAttempt() {
@@ -940,7 +940,7 @@ public class SessionModelTest {
         assertTrue(m.completePreparing(
                 owner, SESSION_A, "host", 7, "transition-a", 1L));
 
-        assertTrue(m.finishSwitch(SESSION_A, owner));
+        assertTrue(m.finishSwitch(owner.switchRequest, owner));
     }
 
     @Test public void reusedPreparingSwitchReleasesItsCapturedLockBeforeConnection() {
@@ -957,8 +957,7 @@ public class SessionModelTest {
 
         m.drain();
         assertFalse(m.canSwitchGame("host", 7));
-        assertTrue(m.finishSwitch(
-                SESSION_A, "transition-a", 3L, owner));
+        assertTrue(m.finishSwitch(owner.switchRequest, owner));
         assertTrue(m.canSwitchGame("host", 7));
         assertEquals(SessionModel.SwitchResult.STARTED,
                 m.switchGame(
@@ -974,6 +973,7 @@ public class SessionModelTest {
                 m.switchGame(
                         "host", 7, "old", "Old", "MoonWaker Stream", "",
                         () -> false, null));
+        SessionModel.SwitchRequest stale = owner.switchRequest;
         assertTrue(m.cancelPreparing(
                 owner, SESSION_A, "host", 7, "transition-a", 1L));
         assertTrue(m.beginPreparing(
@@ -983,11 +983,51 @@ public class SessionModelTest {
                         "host", 7, "new", "New", "MoonWaker Stream", "",
                         () -> false, null));
 
-        assertFalse(m.finishSwitch(
-                SESSION_A, "transition-a", 1L, owner));
+        // Same owner and stream session: only the model's operation id tells them apart.
+        assertFalse(m.finishSwitch(stale, owner));
         assertFalse(m.canSwitchGame("host", 7));
-        assertTrue(m.finishSwitch(
-                SESSION_A, "transition-b", 2L, owner));
+        assertTrue(m.finishSwitch(owner.switchRequest, owner));
+    }
+
+    /** K5.3b: the switch lock is released only by its own operation's finish. */
+    @Test public void lateFinishOfAFailedSwitchCannotReleaseTheNextSwitch() {
+        FakeController owner = new FakeController();
+        m.enterHome(owner, SESSION_A, "host", 7, "game-a");
+        assertEquals(SessionModel.SwitchResult.STARTED, m.switchGame(
+                "host", 7, "game-b", "B", "MoonWaker Stream", "", () -> false, null));
+        SessionModel.SwitchRequest failed = owner.switchRequest;
+        owner.switchCompletion.complete(SessionModel.SwitchOutcome.FAILED, "failed");
+        m.drain();
+        assertEquals(SessionModel.SwitchResult.STARTED, m.switchGame(
+                "host", 7, "game-c", "C", "MoonWaker Stream", "", () -> false, null));
+
+        // Same owner, same stream session: the late finish is stale by its operation id.
+        assertFalse(m.finishSwitch(failed, owner));
+        assertFalse("the next switch keeps its lock", m.canSwitchGame("host", 7));
+        assertTrue(m.finishSwitch(owner.switchRequest, owner));
+        assertTrue(m.canSwitchGame("host", 7));
+    }
+
+    /**
+     * K5.3b: a reconnect reuses the stream session id but is a new transport generation. A
+     * recovery captured against the lost transport cannot act on the reconnected one, although
+     * every other binding still matches.
+     */
+    @Test public void reconnectReusingTheSessionIdDoesNotLetTheLostTransportsRecoveryThrough() {
+        FakeController lost = new FakeController();
+        m.enterHome(lost, SESSION_A, "host", 7, "game");
+        SessionModel.Snapshot beforeLoss = m.snapshot();
+        m.markReconnectRequired(SESSION_A);
+        FakeController reconnect = new FakeController();
+        assertTrue(m.beginPreparing(
+                reconnect, SESSION_A, "host", 7, "game", "transition-reconnect", 1L));
+        assertTrue(m.completePreparing(
+                reconnect, SESSION_A, "host", 7, "transition-reconnect", 1L));
+        assertEquals(reconnect.transportGeneration(), m.snapshot().transportGeneration);
+
+        assertNull(m.beginDirectTermination(beforeLoss));
+        assertEquals(SessionModel.State.HOME_LIVE, m.state());
+        assertTrue(m.ownsLiveOrParkedSession(reconnect, SESSION_A, "host", 7));
     }
 
     @Test public void preparingSwitchUpdateRequiresTheFullCapturedToken() {
@@ -1002,13 +1042,11 @@ public class SessionModelTest {
         SessionModel.SwitchRequest request = owner.switchRequest;
 
         assertFalse(m.updatePreparingSwitch(
-                staleOwner, request, "transition-a", "old", "", "transition-b"));
+                staleOwner, request, "old", "", "transition-b"));
         assertFalse(m.updatePreparingSwitch(
-                owner, request, "stale", "old", "", "transition-b"));
-        assertFalse(m.updatePreparingSwitch(
-                owner, request, "transition-a", "other", "", "transition-b"));
+                owner, request, "other", "", "transition-b"));
         assertTrue(m.updatePreparingSwitch(
-                owner, request, "transition-a", "old", "", "transition-b"));
+                owner, request, "old", "", "transition-b"));
 
         SessionModel.Snapshot updated =
                 m.snapshot();
@@ -1016,14 +1054,13 @@ public class SessionModelTest {
         assertEquals("", updated.playniteGameId);
         assertEquals("transition-b", updated.transitionId);
         assertEquals(3L, updated.attempt);
-        assertFalse(m.updatePreparingSwitch(
-                owner, request, "transition-a", "", "new", "transition-c"));
         assertTrue(m.cancelPreparing(
                 owner, SESSION_A, "host", 7, "transition-b", 3L));
         assertTrue(m.beginPreparing(
                 staleOwner, SESSION_A, "host", 7, "", "transition-c", 4L));
+        // The released switch's late update cannot retarget the replacement preparation.
         assertFalse(m.updatePreparingSwitch(
-                owner, request, "transition-b", "", "new", "transition-d"));
+                owner, request, "", "new", "transition-d"));
         assertTrue(m.isPreparing(
                 staleOwner, SESSION_A, "host", 7, "transition-c", 4L));
     }
@@ -1045,7 +1082,7 @@ public class SessionModelTest {
         assertEquals(19L, request.orchestrationId);
 
         assertTrue(m.updatePreparingSwitch(
-                owner, request, "transition-a", "old", "old", "transition-b"));
+                owner, request, "old", "old", "transition-b"));
 
         assertTrue("the same attempt keeps its accepted Home proof",
                 m.isPreparingHomeFrameAccepted(
@@ -1071,7 +1108,7 @@ public class SessionModelTest {
                 "host", 7, "old", "Old", "MoonWaker Stream", "", () -> false, null);
 
         assertFalse(m.updatePreparingSwitch(
-                stale, owner.switchRequest, "transition-a", "old", "old", "transition-b"));
+                stale, owner.switchRequest, "old", "old", "transition-b"));
         assertTrue(m.isPreparingHomeFrameAccepted(
                 SESSION_A, "host", 7, "old", "transition-a", 3L));
     }
@@ -1490,7 +1527,7 @@ public class SessionModelTest {
                         () -> false, null));
         assertEquals(1, controller.switches);
 
-        assertTrue(m.finishSwitch(SESSION_A, controller));
+        assertTrue(m.finishSwitch(controller.switchRequest, controller));
         assertTrue(m.canSwitchGame("host", 7));
     }
 

@@ -522,6 +522,9 @@ public class SessionTransitionTableTest {
 
     private static final class NoopController implements com.limelight.session.SessionModel.Controller {
         @Override public boolean isRetainedTransportLive() { return true; }
+        private final long fakeGeneration =
+                com.limelight.session.SessionModelDriver.nextTransportGeneration();
+        @Override public long transportGeneration() { return fakeGeneration; }
         @Override public com.limelight.session.SessionModel.ParkOutcome parkRetainedTransport() {
             return com.limelight.session.SessionModel.ParkOutcome.PARKED;
         }
@@ -635,6 +638,9 @@ public class SessionTransitionTableTest {
         SessionModelDriver m = new SessionModelDriver();
         SessionModel.Controller owner = new SessionModel.Controller() {
             @Override public boolean isRetainedTransportLive() { return true; }
+            private final long fakeGeneration =
+                    com.limelight.session.SessionModelDriver.nextTransportGeneration();
+            @Override public long transportGeneration() { return fakeGeneration; }
             @Override public SessionModel.ParkOutcome parkRetainedTransport() {
                 return SessionModel.ParkOutcome.PARKED;
             }

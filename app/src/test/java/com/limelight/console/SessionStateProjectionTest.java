@@ -18,21 +18,38 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class SessionStateProjectionTest {
-    private static final SessionModelDriver m = new SessionModelDriver();
+    private final SessionModelDriver m = new SessionModelDriver();
     private static final String TOKEN =
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private SessionStateResolver.ProjectionOwner owner;
     private SessionStateResolver.DiagnosticSink diagnostics;
 
-    /** A projection as the session model holds one; its records go to {@link #diagnostics}. */
+    /** A standalone projection owner; its records go to {@link #diagnostics}. */
     private SessionStateResolver.ProjectionOwner newOwner(String host, String actor,
                                                           String execution) {
         return new SessionStateResolver.ProjectionOwner(
                 (level, component, event, fields) -> diagnostics.record(level, component, event,
-                        fields), host, actor, execution, m.snapshot().terminationEpoch(host));
+                        fields), host, actor, execution);
+    }
+
+    // The model's own projection, driven through real dispatch and reply events.
+    private long dispatch(String host) {
+        return m.call(new SessionEvent.ObservationDispatched(host, "child", "parent")).ordinal;
+    }
+
+    private SessionModel.ObservationResult observe(
+            String host, HostGatewayClient.SessionObservation observation) {
+        return m.call(new SessionEvent.HostObserved(host, "child", "parent", observation));
+    }
+
+    /** The frozen projection the published model snapshot holds for {@code host}. */
+    private SessionSnapshot held(String host, long nowMs) {
+        return SessionStateResolver.render(m.snapshot(), host, "child", "parent",
+                SessionStateResolver.LocalFacts.NONE, nowMs);
     }
 
     @Before public void setUp() {
+        m.now = 0L;
         clearRetainedTransport();
         diagnostics = (level, component, event, fields) -> true;
         owner = newOwner("host", "child", "parent");
@@ -42,22 +59,22 @@ public class SessionStateProjectionTest {
         clearRetainedTransport();
     }
 
-    private static void clearRetainedTransport() {
+    private void clearRetainedTransport() {
         m.clear();
     }
 
     @Test public void delayedDispatchAndRetiredBootAreRejected() {
-        long delayed = owner.nextRequestOrdinal(m.snapshot());
-        long current = owner.nextRequestOrdinal(m.snapshot());
+        long delayed = owner.nextRequestOrdinal();
+        long current = owner.nextRequestOrdinal();
         assertNull(owner.accept(pending("boot-a", 1, delayed, "episode-a"),
                 m.snapshot(), 0L));
         assertNotNull(owner.accept(pending("boot-a", 2, current, "episode-a"),
                 m.snapshot(), 0L));
 
-        long restarted = owner.nextRequestOrdinal(m.snapshot());
+        long restarted = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(pending("boot-b", 1, restarted, "episode-b"),
                 m.snapshot(), 1L));
-        long lateOldBoot = owner.nextRequestOrdinal(m.snapshot());
+        long lateOldBoot = owner.nextRequestOrdinal();
         assertNull(owner.accept(pending("boot-a", 3, lateOldBoot, "episode-a"),
                 m.snapshot(), 2L));
     }
@@ -94,7 +111,7 @@ public class SessionStateProjectionTest {
                 "session", "host", "child", "parent", 42, "game", false);
         assertFalse("no observation names it yet", owner.rendered(m.snapshot(),
                 local(adopted), 0L).isReconnectRequired());
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-a", ordinal), m.snapshot(), 0L));
 
         SessionSnapshot paused = owner.rendered(m.snapshot(), local(adopted), 0L);
@@ -125,10 +142,10 @@ public class SessionStateProjectionTest {
                 0);
     }
     @Test public void acceptReturnsTheProjectionOfItsOwnObservationNotALaterOne() {
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         SessionSnapshot own = owner.accept(pending("boot-a", 1, first, "episode-a"),
                 m.snapshot(), 0L);
-        long second = owner.nextRequestOrdinal(m.snapshot());
+        long second = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(pending("boot-a", 2, second, "episode-a"),
                 m.snapshot(), 1L));
 
@@ -140,10 +157,10 @@ public class SessionStateProjectionTest {
     @Test public void unknownEpisodeCannotEraseLiveTransportOrExtendItsDeadline() {
         m.enterHome(new Controller(), "session", "host",
                 "child", 42, "game");
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(pending("boot-a", 1, first, "episode-a"),
                 m.snapshot(), 0L));
-        long second = owner.nextRequestOrdinal(m.snapshot());
+        long second = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(pending("boot-a", 2, second, "episode-a"),
                 m.snapshot(), 10_000L));
 
@@ -159,13 +176,13 @@ public class SessionStateProjectionTest {
     @Test public void unavailableCannotRestartTheAcceptedUnknownEpisodeDeadline() {
         m.enterHome(new Controller(), "session", "host",
                 "child", 42, "game");
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(pending("boot-a", 1, first, "episode-a"),
                 m.snapshot(), 0L));
-        long failed = owner.nextRequestOrdinal(m.snapshot());
+        long failed = owner.nextRequestOrdinal();
         owner.unavailable(failed, m.snapshot(),
                 10_000L, "offline");
-        long second = owner.nextRequestOrdinal(m.snapshot());
+        long second = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(pending("boot-a", 2, second, "episode-a"),
                 m.snapshot(), 16_000L));
 
@@ -189,7 +206,7 @@ public class SessionStateProjectionTest {
         assertTrue(failed.transportGeneration > 0L);
     }
     @Test public void unavailableWithoutTransportConvergesAndVerifiedFactsTerminate() {
-        long failed = owner.nextRequestOrdinal(m.snapshot());
+        long failed = owner.nextRequestOrdinal();
         SessionSnapshot pending = owner.unavailable(
                 failed, m.snapshot(), 0L, "offline");
         assertEquals(SessionSnapshot.ObservationState.PENDING, pending.observationState);
@@ -200,7 +217,7 @@ public class SessionStateProjectionTest {
         assertEquals(SessionSnapshot.State.NONE, unavailable.state);
 
         SessionStateResolver.ProjectionOwner idleOwner = newOwner("other", "child", "parent");
-        long ordinal = idleOwner.nextRequestOrdinal(m.snapshot());
+        long ordinal = idleOwner.nextRequestOrdinal();
         assertNotNull(idleOwner.accept(idle("boot-idle", ordinal),
                 m.snapshot(), 20_000L));
         assertEquals(SessionSnapshot.ObservationState.IDLE,
@@ -214,7 +231,7 @@ public class SessionStateProjectionTest {
                 "child", 42, "game");
         assertTrue(m.bindControlGeneration(
                 controller, "session", 1L));
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-ready", ordinal),
                 m.snapshot(), 0L));
         SessionSnapshot snapshot = owner.current(
@@ -232,7 +249,7 @@ public class SessionStateProjectionTest {
                 "child", 42, "game");
         assertTrue(m.bindControlGeneration(
                 controller, "session", 1L));
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-ready", ordinal),
                 m.snapshot(), 0L));
         SessionSnapshot snapshot = owner.current(
@@ -282,7 +299,7 @@ public class SessionStateProjectionTest {
 
     @Test public void recordThatCannotBeQueuedIsRetriedOnTheNextPublication() {
         recordInto(false);
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-fresh", ordinal),
                 m.snapshot(), 0L));
         assertEquals(0L, owner.diagnosticEventsForTests());
@@ -345,7 +362,7 @@ public class SessionStateProjectionTest {
 
     @Test public void projectionDiagnosticIsEmittedOncePerDistinctPublication() {
         recordInto();
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-fresh", ordinal),
                 m.snapshot(), 0L));
         long afterAccept = owner.diagnosticEventsForTests();
@@ -363,10 +380,10 @@ public class SessionStateProjectionTest {
                 "child", 42, "game");
         assertTrue(m.bindControlGeneration(
                 controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-ready", first),
                 m.snapshot(), 0L));
-        long second = owner.nextRequestOrdinal(m.snapshot());
+        long second = owner.nextRequestOrdinal();
         // Same episode, provider freshness 5 s (the lab provider value), polled every ~6 s.
         HostGatewayClient.SessionObservation again = new HostGatewayClient.SessionObservation(
                 "boot-ready", 2L, 1_000L, 5_000L, "running", 1_000L, "child", "parent",
@@ -391,7 +408,7 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void freshStreamCanBecomeReadyBeforeItIsRetained() {
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-fresh", ordinal),
                 m.snapshot(), 0L));
 
@@ -408,10 +425,10 @@ public class SessionStateProjectionTest {
                 "child", 42, "");
         assertTrue(m.bindControlGeneration(
                 controller, "session", 1L));
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(idle("boot-idle-retained", ordinal),
                 m.snapshot(), 0L));
-        long refreshedOrdinal = owner.nextRequestOrdinal(m.snapshot());
+        long refreshedOrdinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(idle("boot-idle-retained", 2L, refreshedOrdinal),
                 m.snapshot(), 10_000L));
 
@@ -424,7 +441,7 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void unavailableAttemptIsCanonicalBeforeAnyAcceptedObservation() {
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         owner.unavailable(ordinal, m.snapshot(), 0L, "offline");
         assertEquals(SessionSnapshot.ObservationState.UNAVAILABLE,
                 owner.current(m.snapshot(), 15_000L)
@@ -432,8 +449,8 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void delayedFailureAfterNewerSuccessDoesNotReplaceReadyOrDeadline() {
-        long delayed = owner.nextRequestOrdinal(m.snapshot());
-        long current = owner.nextRequestOrdinal(m.snapshot());
+        long delayed = owner.nextRequestOrdinal();
+        long current = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-ready", current),
                 m.snapshot(), 0L));
 
@@ -451,7 +468,7 @@ public class SessionStateProjectionTest {
                 "child", 42, "");
         assertTrue(m.bindControlGeneration(
                 controller, "session", 1L));
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(observation("boot-mismatch", 1L, ordinal, "running",
                         "running", HostGatewayClient.Evidence.VERIFIED, "game",
                         HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
@@ -469,7 +486,7 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void expiredObservationWithoutMatchingTransportDropsGameIdentity() {
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-ready", ordinal),
                 m.snapshot(), 0L));
         assertEquals("game", owner.current(
@@ -483,7 +500,7 @@ public class SessionStateProjectionTest {
         m.enterHome(controller, "session", "host", "child", 42, "game");
         assertTrue(m.bindControlGeneration(controller, "session", 1L));
         m.markReconnectRequired("session");
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot", ordinal), m.snapshot(), 0L));
 
         // Lost transport is never READY; once the episode expires it stays RECOVERY_REQUIRED,
@@ -512,7 +529,7 @@ public class SessionStateProjectionTest {
                 controller, "session", 4L));
         SessionModel.Snapshot firstTransport =
                 m.snapshot();
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(pending("boot-recovery", 1, ordinal, "episode-recovery"),
                 firstTransport, 0L));
 
@@ -524,22 +541,22 @@ public class SessionStateProjectionTest {
         assertFalse(controller.disconnected);
         assertFalse(controller.terminated);
 
+        // A Gateway control generation bound since then does not stale the recovery.
         assertTrue(m.bindControlGeneration(
                 controller, "session", 5L));
-        assertNull(m.beginDirectTermination(firstTransport));
-        SessionModel.Snapshot exactRecovery =
-                m.snapshot();
         SessionModel.DirectTermination recoveryToken =
-                m.beginDirectTermination(exactRecovery);
+                m.beginDirectTermination(firstTransport);
         assertNotNull(recoveryToken);
         assertTrue(m.completeDirectTermination(
                 recoveryToken, true));
 
-        assertTrue(m.beginPreparing(controller,
+        // The next Play is a new transport, with its own generation.
+        Controller nextController = new Controller();
+        assertTrue(m.beginPreparing(nextController,
                 "session-next", "host", "child", 42, "game",
                 "transition-next", 1L));
         assertTrue(m.bindControlGeneration(
-                controller, "session-next", 5L));
+                nextController, "session-next", 5L));
         SessionModel.Snapshot nextTransport =
                 m.snapshot();
         assertTrue(nextTransport.transportGeneration > firstTransport.transportGeneration);
@@ -549,7 +566,7 @@ public class SessionStateProjectionTest {
         assertEquals("session-next",
                 m.snapshot().streamSessionId);
 
-        long nextOrdinal = owner.nextRequestOrdinal(m.snapshot());
+        long nextOrdinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(readyForNextPlay("boot-next", nextOrdinal),
                 nextTransport, 16_001L));
         SessionSnapshot nextPlay = owner.current(nextTransport, 16_001L);
@@ -557,94 +574,69 @@ public class SessionStateProjectionTest {
         assertEquals("transition-next", nextPlay.transitionId);
         assertEquals(nextTransport.transportGeneration, nextPlay.transportGeneration);
         assertEquals(SessionSnapshot.ObservationState.READY, nextPlay.observationState);
-        assertTrue(m.completePreparing(controller,
+        assertTrue(m.completePreparing(nextController,
                 "session-next", "host", 42, "transition-next", 1L));
     }
 
     @Test public void observationsBeforeTheLocalTerminationCannotPublishReadyAgain() {
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
-                "child", 42, "game");
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(ready("boot", first),
-                m.snapshot(), 0L));
-        assertEquals(SessionSnapshot.ObservationState.READY, owner.current(
-                m.snapshot(), 1L).observationState);
-        long inFlight = owner.nextRequestOrdinal(m.snapshot());
+        m.enterHome(new Controller(), "session", "host", "child", 42, "game");
+        assertNotNull(observe("host", ready("boot", dispatch("host"))).accepted);
+        assertEquals(SessionSnapshot.ObservationState.READY,
+                held("host", 1L).observationState);
+        long inFlight = dispatch("host");
 
-        assertTrue(m.markTerminating(
-                "session", "host", 42, "game"));
-        assertEquals(SessionSnapshot.ObservationState.PENDING, owner.current(
-                m.snapshot(), 2L).observationState);
+        assertTrue(m.markTerminating("session", "host", 42, "game"));
+        assertEquals(SessionSnapshot.ObservationState.PENDING,
+                held("host", 2L).observationState);
         clearRetainedTransport();
-        SessionModel.Snapshot ended = m.snapshot();
 
         // The stale READY (observed before the verified stop) neither returns as the
         // projection nor lets a request dispatched before the termination finish.
         assertEquals(SessionSnapshot.ObservationState.PENDING,
-                owner.current(ended, 3L).observationState);
-        assertNull(owner.accept(ready("boot", 2L, inFlight), ended, 4L));
+                held("host", 3L).observationState);
+        assertNull(observe("host", ready("boot", 2L, inFlight)).accepted);
         assertEquals(SessionSnapshot.ObservationState.PENDING,
-                owner.current(ended, 5L).observationState);
+                held("host", 5L).observationState);
 
-        long afterwards = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(idle("boot", 3L, afterwards), ended, 6L));
+        assertNotNull(observe("host", idle("boot", 3L, dispatch("host"))).accepted);
         assertEquals(SessionSnapshot.ObservationState.IDLE,
-                owner.current(ended, 7L).observationState);
+                held("host", 7L).observationState);
     }
 
-    @Test public void terminationNobodySampledStillFencesTheOldObservation() {
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
-                "child", 42, "game");
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(ready("boot", first),
+    /** The boundary itself, without the model: both edges retire what was observed before. */
+    @Test public void terminationBoundaryRetiresTheObservationAndEveryEarlierRead() {
+        assertNotNull(owner.accept(ready("boot", owner.nextRequestOrdinal()),
                 m.snapshot(), 0L));
-        long inFlight = owner.nextRequestOrdinal(m.snapshot());
+        long inFlight = owner.nextRequestOrdinal();
 
-        // HOME_LIVE -> TERMINATING -> NONE with no owner call in between.
-        assertTrue(m.markTerminating(
-                "session", "host", 42, "game"));
-        clearRetainedTransport();
-        SessionModel.Snapshot ended = m.snapshot();
+        owner.terminationBoundary(false);
+        SessionSnapshot entered = owner.current(m.snapshot(), 1L);
+        assertEquals(SessionSnapshot.ObservationState.PENDING, entered.observationState);
+        assertEquals("entering arms no closing window",
+                SessionSnapshot.State.UNCERTAIN, entered.state);
+        assertNull(owner.accept(ready("boot", 2L, inFlight), m.snapshot(), 2L));
 
-        assertEquals(SessionSnapshot.ObservationState.PENDING,
-                owner.current(ended, 3L).observationState);
-        assertNull(owner.accept(ready("boot", 2L, inFlight), ended, 4L));
-        long afterwards = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(idle("boot", 3L, afterwards), ended, 6L));
-        assertEquals(SessionSnapshot.ObservationState.IDLE,
-                owner.current(ended, 7L).observationState);
+        owner.terminationBoundary(true);
+        assertEquals(SessionSnapshot.State.TERMINATING, owner.current(m.snapshot(), 3L).state);
+        assertEquals(SessionSnapshot.State.UNCERTAIN, owner.current(m.snapshot(),
+                3L + SessionStateResolver.CLOSING_CONFIRMATION_MS).state);
     }
 
     @Test public void verifiedCloseProjectsClosingUntilAFreshIdlePollIsAccepted() {
         // The snapshot SessionOrchestrator re-resolves right after a CLOSED result (MW-02).
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
-                "child", 42, "game");
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(ready("boot", first),
-                m.snapshot(), 0L));
-        assertTrue(m.markTerminating(
-                "session", "host", 42, "game"));
+        m.enterHome(new Controller(), "session", "host", "child", 42, "game");
+        assertNotNull(observe("host", ready("boot", dispatch("host"))).accepted);
+        assertTrue(m.markTerminating("session", "host", 42, "game"));
         clearRetainedTransport();
-        SessionModel.Snapshot ended = m.snapshot();
 
         // Closing, not "uncertain": the console greys the games until the host is free.
-        assertEquals(SessionSnapshot.State.TERMINATING, owner.current(ended, 3L).state);
-        long afterwards = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(idle("boot", 3L, afterwards), ended, 6L));
-        assertEquals(SessionSnapshot.State.NONE, owner.current(ended, 7L).state);
+        assertEquals(SessionSnapshot.State.TERMINATING, held("host", 3L).state);
+        assertNotNull(observe("host", idle("boot", 3L, dispatch("host"))).accepted);
+        assertEquals(SessionSnapshot.State.NONE, held("host", 7L).state);
     }
 
     @Test public void hostApiCloseReadsClosingUntilTheHostConfirmsItFree() {
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot", first), m.snapshot(), 0L));
         SessionModel.Snapshot none = m.snapshot();
 
@@ -652,20 +644,20 @@ public class SessionStateProjectionTest {
         assertEquals(SessionSnapshot.State.TERMINATING, owner.current(none, 1L).state);
         assertEquals(SessionSnapshot.State.TERMINATING,
                 owner.rendered(none, SessionStateResolver.LocalFacts.NONE, 1L).state);
-        long inFlight = owner.nextRequestOrdinal(m.snapshot());
+        long inFlight = owner.nextRequestOrdinal();
         owner.finishLocalClose(close, true);
 
         // A poll dispatched before the close finished describes the game going away.
         assertEquals(SessionSnapshot.State.TERMINATING, owner.current(none, 2L).state);
         assertNull(owner.accept(ready("boot", 2L, inFlight), none, 3L));
         assertEquals(SessionSnapshot.State.TERMINATING, owner.current(none, 4L).state);
-        long afterwards = owner.nextRequestOrdinal(m.snapshot());
+        long afterwards = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(idle("boot", 3L, afterwards), none, 5L));
         assertEquals(SessionSnapshot.State.NONE, owner.current(none, 6L).state);
     }
 
     @Test public void failedHostApiCloseRestoresTheProjectionItInterrupted() {
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot", first), m.snapshot(), 0L));
         SessionModel.Snapshot none = m.snapshot();
         SessionSnapshot before = owner.current(none, 1L);
@@ -679,7 +671,7 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void anEarlierCloseCannotEndANewerOneButItsResultCounts() {
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot", first), m.snapshot(), 0L));
         SessionModel.Snapshot none = m.snapshot();
         long earlier = owner.beginLocalClose(1L, false);
@@ -738,7 +730,7 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void runningGameIsHeldForTheStatusLineButNeverForADecision() {
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         SessionSnapshot fresh = owner.accept(running(ordinal, 1, 0L, "game",
                 HOST_NOW - 12 * 60_000L - 50_000L, 0L), m.snapshot(), 0L);
         assertEquals("game", fresh.playniteGameId);
@@ -769,26 +761,26 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void heldRunningGameFollowsLaterObservations() {
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         owner.accept(running(first, 1, 0L, "game", HOST_NOW - 60_000L, 0L), m.snapshot(), 0L);
         // Pending evidence says nothing; a confirming observation renews the hold.
-        long second = owner.nextRequestOrdinal(m.snapshot());
+        long second = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(pending("boot-a", 2, second, "episode-b"),
                 m.snapshot(), 40_000L));
         assertEquals("game", owner.current(m.snapshot(), 40_000L).display.runningGameId);
-        long third = owner.nextRequestOrdinal(m.snapshot());
+        long third = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(running(third, 3, 44_000L, "game", HOST_NOW - 60_000L, 0L),
                 m.snapshot(), 44_000L));
         assertEquals("game|2|-1", owner.current(m.snapshot(), 80_000L).display.key());
 
         // Another game replaces it with its own process start.
-        long fourth = owner.nextRequestOrdinal(m.snapshot());
+        long fourth = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(running(fourth, 4, 81_000L, "other",
                 HOST_NOW + 81_000L - 300_000L, 0L), m.snapshot(), 81_000L));
         assertEquals("other|5|-1", owner.current(m.snapshot(), 81_000L).display.key());
 
         // A game that is stopping, and an idle host, refute it.
-        long fifth = owner.nextRequestOrdinal(m.snapshot());
+        long fifth = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(observation("boot-a", 5, fifth,
                 "stopping", "stopping", HostGatewayClient.Evidence.VERIFIED, "other",
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
@@ -796,11 +788,11 @@ public class SessionStateProjectionTest {
                 m.snapshot(), 82_000L));
         assertTrue(SessionSnapshot.Display.NONE
                 == owner.current(m.snapshot(), 82_000L).display);
-        long sixth = owner.nextRequestOrdinal(m.snapshot());
+        long sixth = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(running(sixth, 6, 83_000L, "game",
                 HOST_NOW + 83_000L - 60_000L, 0L), m.snapshot(), 83_000L));
         assertEquals("game|1|-1", owner.current(m.snapshot(), 83_000L).display.key());
-        long seventh = owner.nextRequestOrdinal(m.snapshot());
+        long seventh = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(idle("boot-a", 7, seventh), m.snapshot(), 84_000L));
         assertTrue(SessionSnapshot.Display.NONE
                 == owner.current(m.snapshot(), 84_000L).display);
@@ -808,15 +800,15 @@ public class SessionStateProjectionTest {
 
     @Test public void childHoldsOnlyTheGameOfItsOwnSessionParentAnyRunningGame() {
         // The host tells a child no process start for a game that is not its own session's.
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         SessionSnapshot foreign = owner.accept(
                 running(ordinal, 1, 0L, "game", 0L, 0L), m.snapshot(), 0L);
         assertTrue(SessionSnapshot.Display.NONE == foreign.display);
-        long own = owner.nextRequestOrdinal(m.snapshot());
+        long own = owner.nextRequestOrdinal();
         assertEquals("game|3|-1", owner.accept(running(own, 2, 1_000L, "game",
                 HOST_NOW - 3 * 60_000L, 0L), m.snapshot(), 1_000L).display.key());
         // The same game stops being the child's own: it is dropped at once.
-        long later = owner.nextRequestOrdinal(m.snapshot());
+        long later = owner.nextRequestOrdinal();
         assertTrue(SessionSnapshot.Display.NONE == owner.accept(
                 running(later, 3, 2_000L, "game", 0L, 0L), m.snapshot(), 2_000L).display);
 
@@ -824,7 +816,7 @@ public class SessionStateProjectionTest {
                 newOwner("host", "parent", "parent");
         HostGatewayClient.SessionObservation seen = new HostGatewayClient.SessionObservation(
                 "boot-a", 1L, HOST_NOW, 5_000L, "running",
-                HOST_NOW, "parent", "parent", parent.nextRequestOrdinal(m.snapshot()), "", "operation",
+                HOST_NOW, "parent", "parent", parent.nextRequestOrdinal(), "", "operation",
                 "", 1L, 1L, "running", HostGatewayClient.Evidence.VERIFIED,
                 "running", HostGatewayClient.Evidence.VERIFIED, "game",
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
@@ -839,11 +831,11 @@ public class SessionStateProjectionTest {
         assertTrue(m.bindControlGeneration(controller, "session", 1L));
         long limit = SessionStateResolver.MAX_STATUS_DURATION_MS;
         assertEquals(7L * 24L * 60L * 60_000L, limit);
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         assertEquals("game|10080|10080", owner.accept(running(first, 1, 0L, "session", "game",
                 HOST_NOW - limit, HOST_NOW - limit), m.snapshot(), 0L).display.key());
         // A host clock set forward: the game stays named, without an absurd duration.
-        long second = owner.nextRequestOrdinal(m.snapshot());
+        long second = owner.nextRequestOrdinal();
         assertEquals("game|-1|-1", owner.accept(running(second, 2, 1_000L, "session", "game",
                 HOST_NOW - limit - 1L, HOST_NOW - limit - 1L),
                 m.snapshot(), 1_000L).display.key());
@@ -853,7 +845,7 @@ public class SessionStateProjectionTest {
         Controller controller = new Controller();
         m.enterHome(controller, "session", "host", "child", 42, "");
         assertTrue(m.bindControlGeneration(controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
+        long first = owner.nextRequestOrdinal();
         SessionSnapshot live = owner.accept(running(first, 1, 0L, "session", "game",
                 HOST_NOW - 5 * 60_000L, HOST_NOW - 65 * 60_000L), m.snapshot(), 0L);
         assertEquals(SessionSnapshot.State.ACTIVE, live.state);
@@ -862,60 +854,31 @@ public class SessionStateProjectionTest {
         assertEquals("game|5|65", owner.current(m.snapshot(), 6_000L).display.key());
 
         // The host names another stream than the transport holds: not this stream's start.
-        long second = owner.nextRequestOrdinal(m.snapshot());
+        long second = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(running(second, 2, 7_000L, "other-session", "game",
                 HOST_NOW - 5 * 60_000L, HOST_NOW - 65 * 60_000L), m.snapshot(), 7_000L));
         assertEquals("game|5|-1", owner.current(m.snapshot(), 7_000L).display.key());
 
         // No stream of this actor on the host: 0 is unknown, not "since 1970".
-        long third = owner.nextRequestOrdinal(m.snapshot());
+        long third = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(running(third, 3, 8_000L, "session", "game",
                 HOST_NOW - 5 * 60_000L, 0L), m.snapshot(), 8_000L));
         assertEquals("game|5|-1", owner.current(m.snapshot(), 8_000L).display.key());
     }
 
-    @Test public void closingAfterACloseIsBoundedThenUncertainAgain() {
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
-                "child", 42, "game");
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(ready("boot", first),
-                m.snapshot(), 0L));
-        assertTrue(m.markTerminating(
-                "session", "host", 42, "game"));
+    @Test public void closingBoundRunsFromTheModelsPublicationThenUncertainAgain() {
+        m.enterHome(new Controller(), "session", "host", "child", 42, "game");
+        assertNotNull(observe("host", ready("boot", dispatch("host"))).accepted);
+        assertTrue(m.markTerminating("session", "host", 42, "game"));
+        m.now = 100L; // the model publishes the boundary now: the closing bound starts
         clearRetainedTransport();
-        SessionModel.Snapshot ended = m.snapshot();
 
-        assertEquals(SessionSnapshot.State.TERMINATING, owner.current(ended, 100L).state);
-        assertEquals(SessionSnapshot.State.TERMINATING, owner.current(ended,
+        assertEquals(SessionSnapshot.State.TERMINATING, held("host", 100L).state);
+        assertEquals(SessionSnapshot.State.TERMINATING, held("host",
                 100L + SessionStateResolver.CLOSING_CONFIRMATION_MS - 1L).state);
         assertEquals("no free state in time: the ordinary uncertain path applies",
-                SessionSnapshot.State.UNCERTAIN, owner.current(ended,
+                SessionSnapshot.State.UNCERTAIN, held("host",
                 100L + SessionStateResolver.CLOSING_CONFIRMATION_MS).state);
-    }
-
-    @Test public void renderedProjectionDoesNotStartTheClosingBound() {
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
-                "child", 42, "game");
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(ready("boot", first),
-                m.snapshot(), 0L));
-        assertTrue(m.markTerminating(
-                "session", "host", 42, "game"));
-        clearRetainedTransport();
-        SessionModel.Snapshot ended = m.snapshot();
-        owner.nextRequestOrdinal(m.snapshot()); // Consumes the boundary and arms the closing bound.
-
-        assertEquals(SessionSnapshot.State.TERMINATING,
-                owner.rendered(ended, SessionStateResolver.LocalFacts.NONE, 100L).state);
-        assertEquals("the bound starts at the first publication, not at a render",
-                SessionSnapshot.State.TERMINATING, owner.current(ended,
-                        100L + SessionStateResolver.CLOSING_CONFIRMATION_MS).state);
     }
 
     /** A read dispatched before a termination boundary is rejected by the model after it. */
@@ -942,55 +905,18 @@ public class SessionStateProjectionTest {
         assertEquals(SessionSnapshot.ObservationState.PENDING, late.projection.observationState);
         assertFalse(late.projection.retainedTransport);
     }
-    @Test public void aBoundaryPublishedDuringAcceptanceRetiresTheObservationNext() {
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
-                "child", 42, "game");
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
-        SessionModel.Snapshot captured =
-                m.snapshot();
-
-        // The model thread never waits for a reader: a termination committed while the owner
-        // publishes is ordered after that publication and retires it on the next projection.
-        final boolean[] terminated = new boolean[1];
-        diagnostics = (level, component, event, fields) -> {
-            if ("projection.published".equals(event) && !terminated[0]) {
-                terminated[0] = true;
-                m.markTerminating("session", "host", 42, "game");
-            }
-            return true;
-        };
-
-        assertNotNull(owner.accept(ready("boot", first), captured, 0L));
-
-        assertTrue(terminated[0]);
-        assertEquals(SessionModel.State.TERMINATING, m.state());
-        assertEquals(SessionSnapshot.ObservationState.PENDING,
-                owner.current(m.snapshot(), 1L).observationState);
-    }
-
     @Test public void terminationRolledBackToReconnectAlsoFencesTheOldObservation() {
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
-                "child", 42, "game");
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
-        long first = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(ready("boot", first),
-                m.snapshot(), 0L));
-        long inFlight = owner.nextRequestOrdinal(m.snapshot());
+        m.enterHome(new Controller(), "session", "host", "child", 42, "game");
+        assertNotNull(observe("host", ready("boot", dispatch("host"))).accepted);
+        long inFlight = dispatch("host");
 
         SessionModel.DirectTermination direct = m.beginDirectTermination(
                 "session", "host", 42, "game");
         m.abandonDirectTermination(direct);
-        SessionModel.Snapshot rolledBack =
-                m.snapshot();
 
         assertEquals(SessionSnapshot.ObservationState.PENDING,
-                owner.current(rolledBack, 3L).observationState);
-        assertNull(owner.accept(ready("boot", 2L, inFlight), rolledBack, 4L));
+                held("host", 3L).observationState);
+        assertNull(observe("host", ready("boot", 2L, inFlight)).accepted);
     }
 
     @Test public void projectionCarriesTheRunningAppOfTheHostPollItWasGiven() {
@@ -1002,14 +928,13 @@ public class SessionStateProjectionTest {
     }
     @Test public void renderedProjectionOfAnOlderSnapshotPublishesNothing() {
         Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
+        m.enterHome(controller, "earlier-session", "host",
                 "child", 42, "game");
         SessionModel.Snapshot delivered =
                 m.snapshot();
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
+        m.enterHome(controller, "session", "host", "child", 42, "game");
         recordInto();
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(ready("boot-ready", ordinal),
                 m.snapshot(), 0L));
         int records = recorded.size();
@@ -1028,20 +953,12 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void renderedProjectionHidesAnObservationAcrossATerminationBoundary() {
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host",
-                "child", 42, "game");
-        assertTrue(m.bindControlGeneration(
-                controller, "session", 1L));
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(ready("boot", ordinal),
-                m.snapshot(), 0L));
+        m.enterHome(new Controller(), "session", "host", "child", 42, "game");
+        assertNotNull(observe("host", ready("boot", dispatch("host"))).accepted);
 
-        assertTrue(m.markTerminating(
-                "session", "host", 42, "game"));
+        assertTrue(m.markTerminating("session", "host", 42, "game"));
         clearRetainedTransport();
-        SessionSnapshot rendered = owner.rendered(m.snapshot(),
-                SessionStateResolver.LocalFacts.NONE, 3L);
+        SessionSnapshot rendered = held("host", 3L);
 
         assertEquals(SessionSnapshot.ObservationState.PENDING, rendered.observationState);
         assertEquals("UNAVAILABLE", rendered.processEvidence);
@@ -1049,64 +966,102 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void closingOneHostsStreamShowsClosingOnlyOnThatHost() {
-        SessionStateResolver.ProjectionOwner other =
-                newOwner("other-host", "child", "parent");
-        assertEquals(SessionSnapshot.State.UNCERTAIN, other.current(m.snapshot(), 0L).state);
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "host", "child", 42, "game");
-        assertTrue(m.bindControlGeneration(controller, "session", 1L));
+        dispatch("other-host");
+        assertEquals(SessionSnapshot.State.UNCERTAIN, held("other-host", 0L).state);
+        m.enterHome(new Controller(), "session", "host", "child", 42, "game");
+        dispatch("host");
 
         assertTrue(m.markTerminating("session", "host", 42, "game"));
-        assertEquals(SessionSnapshot.State.TERMINATING, owner.rendered(m.snapshot(),
-                SessionStateResolver.LocalFacts.NONE, 1L).state);
-        assertEquals(SessionSnapshot.State.UNCERTAIN, other.rendered(m.snapshot(),
-                SessionStateResolver.LocalFacts.NONE, 1L).state);
+        assertEquals(SessionSnapshot.State.TERMINATING, held("host", 1L).state);
+        assertEquals(SessionSnapshot.State.UNCERTAIN, held("other-host", 1L).state);
 
         clearRetainedTransport();
-        assertEquals(SessionSnapshot.State.TERMINATING,
-                owner.current(m.snapshot(), 2L).state);
-        assertEquals(SessionSnapshot.State.UNCERTAIN, other.current(m.snapshot(), 2L).state);
+        assertEquals(SessionSnapshot.State.TERMINATING, held("host", 2L).state);
+        assertEquals(SessionSnapshot.State.UNCERTAIN, held("other-host", 2L).state);
     }
 
-    /** Host ids differ in case between records and polls: one host, one termination epoch. */
-    @Test public void terminationEpochIsPerHostWhateverTheIdsCase() {
-        Controller controller = new Controller();
-        m.enterHome(controller, "session", "Host-A", "child", 42, "game");
-        assertTrue(m.bindControlGeneration(controller, "session", 1L));
-        assertEquals(0L, m.snapshot().terminationEpoch("host-a"));
+    /**
+     * Host ids differ in case between records and polls. Closing one host's stream is a
+     * termination boundary for that host's observations only: its read in flight is rejected,
+     * another host's read still counts.
+     */
+    @Test public void terminationBoundaryReachesOnlyTheClosedHostWhateverTheIdsCase() {
+        assertNotNull(observe("HOST-A", ready("boot", dispatch("HOST-A"))).accepted);
+        assertNotNull(observe("other-host", ready("boot", dispatch("other-host"))).accepted);
+        long closedInFlight = dispatch("HOST-A");
+        long otherInFlight = dispatch("other-host");
+        m.enterHome(new Controller(), "session", " Host-a ", "child", 42, "game");
 
-        assertTrue(m.markTerminating("session", "Host-A", 42, "game"));
-        SessionModel.Snapshot closing = m.snapshot();
-        assertEquals(1L, closing.terminationEpoch("host-a"));
-        assertEquals(1L, closing.terminationEpoch(" HOST-A "));
-        assertEquals(0L, closing.terminationEpoch("other-host"));
+        assertTrue(m.markTerminating("session", " Host-a ", 42, "game"));
+        clearRetainedTransport();
+
+        assertNull(observe("HOST-A", ready("boot", 2L, closedInFlight)).accepted);
+        assertEquals(SessionSnapshot.State.TERMINATING, held("HOST-A", 1L).state);
+        assertNotNull(observe("other-host", ready("boot", 2L, otherInFlight)).accepted);
+        assertEquals(SessionSnapshot.ObservationState.READY,
+                held("other-host", 1L).observationState);
     }
 
-    @Test public void liveReconnectOfTheMarkedRecordReplacesItsStaleCorrelation() {
+    /**
+     * Leaving TERMINATING straight onto another host's stream: the leaving edge belongs to the
+     * closed host, not to the host the model moved to in the same transition.
+     */
+    @Test public void leavingATerminationOntoAnotherHostClosesOnlyTheTerminatedHost() {
+        m.enterHome(new Controller(), "session-a", "host-a", "child", 42, "game");
+        dispatch("host-a");
+        long otherInFlight = dispatch("host-b");
+        assertTrue(m.markTerminating("session-a", "host-a", 42, "game"));
+
+        m.enterHome(new Controller(), "session", "host-b", "child", 42, "game");
+
+        assertNotNull(observe("host-b", ready("boot", otherInFlight)).accepted);
+        assertEquals(SessionSnapshot.ObservationState.READY,
+                held("host-b", 1L).observationState);
+        assertEquals("the closed host reads as closing",
+                SessionSnapshot.State.TERMINATING, held("host-a", 1L).state);
+    }
+
+    /**
+     * A parent's close is a boundary of its execution profile only: a child on the parent's
+     * Windows profile shares it, a child under its own execution profile does not.
+     */
+    @Test public void parentsCloseReachesOnlyProjectionsOfItsExecutionProfile() {
+        m.call(new SessionEvent.ObservationDispatched("host", "kid", "kid"));
+        dispatch("host");
+        m.enterHome(new Controller(), "session", "host", "parent", 42, "game");
+        assertTrue(m.markTerminating("session", "host", 42, "game"));
+        clearRetainedTransport();
+
+        assertEquals("a child on the parent's profile sees the close",
+                SessionSnapshot.State.TERMINATING, held("host", 1L).state);
+        assertEquals("a child under its own profile does not",
+                SessionSnapshot.State.UNCERTAIN, SessionStateResolver.render(m.snapshot(),
+                        "host", "kid", "kid", SessionStateResolver.LocalFacts.NONE, 1L).state);
+    }
+
+    @Test public void liveReconnectOfTheMarkedRecordIsReadyOnlyOnceTheMarkerYields() {
         Controller controller = new Controller();
         m.enterHome(controller, "other", "host", "child", 42, "game");
         SessionModel.Snapshot otherRecord = m.snapshot();
         clearRetainedTransport();
         m.enterHome(controller, "session", "host", "child", 42, "game");
-        assertTrue(m.bindControlGeneration(controller, "session", 3L));
         SessionModel.Snapshot beforeLoss = m.snapshot();
         // A state other than RECONNECT_REQUIRED is never relinquished.
         assertFalse(m.call(new SessionEvent.ReconnectRelinquished(beforeLoss)));
         assertEquals(SessionModel.State.HOME_LIVE, m.state());
         m.markReconnectRequired("session");
 
-        // The host bumped the generation for the reconnect acquire (3 -> 4).
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        // Resume metadata is not a live connection: the reconnect's evidence is not READY.
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(readyAtGeneration("boot", ordinal, 4L), m.snapshot(), 0L));
-        SessionSnapshot marked = owner.current(m.snapshot(), 1L);
-        assertEquals(SessionSnapshot.ObservationState.PENDING, marked.observationState);
-        assertEquals("observation_correlation_mismatch", marked.observationReason);
+        assertEquals(SessionSnapshot.ObservationState.PENDING,
+                owner.current(m.snapshot(), 1L).observationState);
 
         // A stale Game of another record changes nothing.
         assertFalse(m.call(new SessionEvent.ReconnectRelinquished(otherRecord)));
         assertEquals(SessionModel.State.RECONNECT_REQUIRED, m.state());
-        assertEquals("observation_correlation_mismatch",
-                owner.current(m.snapshot(), 2L).observationReason);
+        assertEquals(SessionSnapshot.ObservationState.PENDING,
+                owner.current(m.snapshot(), 2L).observationState);
 
         assertTrue(m.call(new SessionEvent.ReconnectRelinquished(m.snapshot())));
         assertEquals(SessionModel.State.NONE, m.state());
@@ -1114,21 +1069,28 @@ public class SessionStateProjectionTest {
                 owner.current(m.snapshot(), 3L).observationState);
     }
 
-    @Test public void liveActorHandoffOfTheMarkedRecordReplacesItsStaleCorrelation() {
-        // Saved by the parent actor; the child reconnects it through a host-authorized
-        // "reauthorize" acquire on the same execution profile, which also advances 3 -> 4.
+    /** MW-04 §7: the Gateway control generation is carried, never a correlation key. */
+    @Test public void controlGenerationIsCarriedButNeverDecidesTheProjection() {
         Controller controller = new Controller();
-        m.enterHome(controller, "session", "host", "parent", 42, "game");
+        m.enterHome(controller, "session", "host", "child", 42, "game");
         assertTrue(m.bindControlGeneration(controller, "session", 3L));
-        m.markReconnectRequired("session");
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
-        assertNotNull(owner.accept(readyAtGeneration("boot", ordinal, 4L), m.snapshot(), 0L));
-        assertEquals("observation_correlation_mismatch",
-                owner.current(m.snapshot(), 1L).observationReason);
 
-        assertTrue(m.call(new SessionEvent.ReconnectRelinquished(m.snapshot())));
-        assertEquals(SessionSnapshot.ObservationState.READY,
-                owner.current(m.snapshot(), 2L).observationState);
+        SessionSnapshot advanced = observe("host",
+                readyAtGeneration("boot", dispatch("host"), 9L)).accepted;
+        assertEquals(SessionSnapshot.ObservationState.READY, advanced.observationState);
+        assertEquals(9L, advanced.controlGeneration);
+
+        // Stale evidence is still rejected on its own correlators.
+        long older = dispatch("host");
+        long newer = dispatch("host");
+        assertNull("a read dispatched before a newer one",
+                observe("host", ready("boot", 2L, older)).accepted);
+        assertNull("no newer producer revision",
+                observe("host", ready("boot", 1L, newer)).accepted);
+        SessionSnapshot otherStream = observe("host",
+                readyForNextPlay("boot-b", dispatch("host"))).accepted;
+        assertFalse("another stream session", otherStream.observationCorrelated);
+        assertEquals(SessionSnapshot.ObservationState.PENDING, otherStream.observationState);
     }
 
     /**
@@ -1142,7 +1104,7 @@ public class SessionStateProjectionTest {
         assertTrue(m.bindControlGeneration(controller, "session", 1L));
         m.markReconnectRequired("session");
         SessionModel.Snapshot marked = m.snapshot();
-        long ordinal = owner.nextRequestOrdinal(m.snapshot());
+        long ordinal = owner.nextRequestOrdinal();
         assertNotNull(owner.accept(readyForNextPlay("boot", ordinal), m.snapshot(), 0L));
         assertEquals("observation_correlation_mismatch",
                 owner.current(m.snapshot(), 1L).observationReason);
@@ -1269,6 +1231,9 @@ public class SessionStateProjectionTest {
         boolean disconnected;
         boolean terminated;
         @Override public boolean isRetainedTransportLive() { return true; }
+        private final long fakeGeneration =
+                com.limelight.session.SessionModelDriver.nextTransportGeneration();
+        @Override public long transportGeneration() { return fakeGeneration; }
         @Override public String getExecutionProfileId() { return "parent"; }
         @Override public SessionModel.ParkOutcome parkRetainedTransport() { return SessionModel.ParkOutcome.PARKED; }
         @Override public void disconnectRetainedStream(

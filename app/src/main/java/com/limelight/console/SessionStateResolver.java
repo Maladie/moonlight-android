@@ -81,8 +81,7 @@ public final class SessionStateResolver {
                 key(hostId, actorProfileId, executionProfileId));
         if (frozen != null) return frozen.state.rendered(session, local, nowMs);
         return new ProjectionOwner((level, component, event, fields) -> false, hostId,
-                actorProfileId, executionProfileId, session.terminationEpoch(hostId))
-                .rendered(session, local, nowMs);
+                actorProfileId, executionProfileId).rendered(session, local, nowMs);
     }
 
     /**
@@ -191,7 +190,6 @@ public final class SessionStateResolver {
         private final Set<String> retiredBoots = new LinkedHashSet<>();
         private long nextRequestOrdinal;
         private long lastAcceptedOrdinal;
-        private long observedTerminationEpoch;
         /** A local close finished: arm the bounded closing window at the next projection. */
         private boolean closingConfirmationArmed;
         private long closingConfirmationUntilMs;
@@ -234,19 +232,17 @@ public final class SessionStateResolver {
         private String observedRunningGameId = "";
 
         public ProjectionOwner(DiagnosticSink diagnosticSink, String hostId,
-                               String actorProfileId, String executionProfileId,
-                               long terminationEpoch) {
+                               String actorProfileId, String executionProfileId) {
             this.diagnosticSink = diagnosticSink;
             this.hostId = SessionSnapshot.normalize(hostId);
             this.actorProfileId = GatewayConnection.normalizeProfileId(actorProfileId);
             this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
-            this.observedTerminationEpoch = terminationEpoch;
         }
 
         /** A frozen copy for readers of one published model snapshot. */
         public FrozenProjection freeze() {
             ProjectionOwner copy = new ProjectionOwner(diagnosticSink, hostId, actorProfileId,
-                    executionProfileId, observedTerminationEpoch);
+                    executionProfileId);
             copy.retiredBoots.addAll(retiredBoots);
             copy.nextRequestOrdinal = nextRequestOrdinal;
             copy.lastAcceptedOrdinal = lastAcceptedOrdinal;
@@ -279,23 +275,25 @@ public final class SessionStateResolver {
         }
 
         public String hostId() { return hostId; }
+        public String executionProfileId() { return executionProfileId; }
 
         public String observedRunningGameId() { return observedRunningGameId; }
 
         /**
-         * Applies a termination boundary {@code session} passed since this owner's last
-         * transition and publishes the result. Returns whether anything changed.
+         * A termination boundary of this host's session: the session model calls it in the
+         * transition that enters or leaves TERMINATING. An observation gathered before it, or
+         * by a read dispatched before it, describes a game that is going or gone: it is dropped
+         * and every request dispatched so far is rejected, so only a later read can publish
+         * READY or IDLE again. {@code left}: the session left TERMINATING, so the projection
+         * reads as closing until the host confirms it free (or the bound passes).
          */
-        public boolean settleTerminationBoundary(SessionModel.Snapshot session, long nowMs) {
-            if (session.terminationEpoch(hostId) == observedTerminationEpoch) return false;
-            retireObservationAtTerminationBoundary(session);
-            published = publish(project(session, LocalFacts.NONE, nowMs, "", false), nowMs);
-            return true;
+        public void terminationBoundary(boolean left) {
+            retireObservation();
+            closingConfirmationArmed = left;
+            closingConfirmationUntilMs = 0L;
         }
 
-        public long nextRequestOrdinal(SessionModel.Snapshot session) {
-            // A boundary that passed before this dispatch must not reject this very request.
-            retireObservationAtTerminationBoundary(session);
+        public long nextRequestOrdinal() {
             if (nextRequestOrdinal == Long.MAX_VALUE) nextRequestOrdinal = 0L;
             return ++nextRequestOrdinal;
         }
@@ -330,7 +328,6 @@ public final class SessionStateResolver {
          */
         public SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
                                       SessionModel.Snapshot retained, long nowMs) {
-            retireObservationAtTerminationBoundary(retained);
             if (candidate == null || candidate.requestOrdinal != nextRequestOrdinal
                     || candidate.requestOrdinal <= lastAcceptedOrdinal
                     || !actorProfileId.equals(candidate.actorProfileId)
@@ -351,8 +348,7 @@ public final class SessionStateResolver {
             observationAcceptedAtMs = nowMs;
             holdDisplay(candidate, nowMs);
             String nextEpisode = candidate.producerBootId + "|" + candidate.stateEpisode
-                    + "|" + candidate.operationId + "|" + candidate.callerTransitionId
-                    + "|" + candidate.providerState;
+                    + "|" + candidate.operationId + "|" + candidate.providerState;
             if (!nextEpisode.equals(episodeKey)) {
                 boolean continuingUnavailableEpisode = episodeDeadlineMs > 0L
                         && episodeKey.endsWith("|unavailable")
@@ -363,7 +359,7 @@ public final class SessionStateResolver {
                     episodeDeadlineMs = nowMs + OBSERVATION_LIVENESS_MS;
                 }
             }
-            published = publish(project(retained, LocalFacts.NONE, nowMs, "", false), nowMs);
+            published = publish(project(retained, LocalFacts.NONE, nowMs, ""), nowMs);
             if (published.observationState == SessionSnapshot.ObservationState.READY
                     || published.observationState == SessionSnapshot.ObservationState.IDLE) {
                 lastResolvedAtMs = nowMs;
@@ -373,9 +369,8 @@ public final class SessionStateResolver {
 
         public SessionSnapshot unavailable(long failedOrdinal, SessionModel.Snapshot retained,
                                            long nowMs, String reason) {
-            retireObservationAtTerminationBoundary(retained);
             if (failedOrdinal != nextRequestOrdinal || failedOrdinal <= lastAcceptedOrdinal) {
-                return project(retained, LocalFacts.NONE, nowMs, "", false);
+                return project(retained, LocalFacts.NONE, nowMs, "");
             }
             String unavailableEpisode = producerBootId + "|unavailable";
             boolean resolvedEpisode = published != null
@@ -386,25 +381,22 @@ public final class SessionStateResolver {
                 episodeDeadlineMs = nowMs + OBSERVATION_LIVENESS_MS;
             }
             published = publish(project(retained, LocalFacts.NONE, nowMs,
-                    reason == null ? "observation_unavailable" : reason, false), nowMs);
+                    reason == null ? "observation_unavailable" : reason), nowMs);
             return published;
         }
 
         /** Publishes the projection of {@code retained} now (expiry and closing bounds). */
         public SessionSnapshot current(SessionModel.Snapshot retained, long nowMs) {
-            retireObservationAtTerminationBoundary(retained);
-            published = publish(project(retained, LocalFacts.NONE, nowMs, "", false), nowMs);
+            published = publish(project(retained, LocalFacts.NONE, nowMs, ""), nowMs);
             return published;
         }
 
         /**
          * Render-only projection of a published, possibly older, model snapshot. It publishes
-         * nothing and changes no owner state; an observation the owner holds across a
-         * termination boundary from that snapshot is not shown.
+         * nothing and changes no owner state.
          */
         SessionSnapshot rendered(SessionModel.Snapshot retained, LocalFacts local, long nowMs) {
-            return project(retained, local, nowMs, "",
-                    retained.terminationEpoch(hostId) != observedTerminationEpoch);
+            return project(retained, local, nowMs, "");
         }
 
         /**
@@ -434,30 +426,6 @@ public final class SessionStateResolver {
             closingConfirmationArmed = true;
             closingConfirmationUntilMs = 0L;
         }
-        private void retireObservationAtTerminationBoundary(
-                SessionModel.Snapshot retained) {
-            long terminationEpoch = retained == null ? observedTerminationEpoch
-                    : retained.terminationEpoch(hostId);
-            if (terminationEpoch == observedTerminationEpoch) return;
-            retireObservationAtTerminationBoundary(terminationEpoch);
-            closingConfirmationArmed = retained.state != SessionModel.State.TERMINATING;
-            closingConfirmationUntilMs = 0L;
-        }
-
-        /**
-         * A local session termination (for example the game stop this client verifies) is a
-         * boundary for host observations: one gathered before it, or by a poll dispatched before
-         * it finished, describes a game that is going or gone. The model's termination
-         * epoch advances on entering and leaving TERMINATING even if no owner sampled the state in
-         * between; on any change drop the observation and reject every request dispatched so
-         * far, so only a later poll can publish READY or IDLE again.
-         */
-        private void retireObservationAtTerminationBoundary(long terminationEpoch) {
-            if (terminationEpoch == observedTerminationEpoch) return;
-            observedTerminationEpoch = terminationEpoch;
-            retireObservation();
-        }
-
         private void retireObservation() {
             lastAcceptedOrdinal = nextRequestOrdinal;
             observation = null;
@@ -583,8 +551,8 @@ public final class SessionStateResolver {
 
         private SessionSnapshot project(SessionModel.Snapshot retained,
                                         LocalFacts local, long nowMs,
-                                        String unavailableReason, boolean retired) {
-            HostGatewayClient.SessionObservation observed = retired ? null : observation;
+                                        String unavailableReason) {
+            HostGatewayClient.SessionObservation observed = observation;
             SessionModel.State retainedState = retained == null
                     ? SessionModel.State.NONE : retained.state;
             boolean matchingTransport = retained != null
@@ -602,11 +570,7 @@ public final class SessionStateResolver {
             HostGatewayClient.SessionObservation current = freshObservation ? observed : null;
             boolean correlationMatches = current != null && (!matchingTransport
                     || (!retained.streamSessionId.isEmpty()
-                    && retained.streamSessionId.equals(current.streamSessionId)
-                    && retained.controlGeneration > 0L
-                    && current.controlGeneration == retained.controlGeneration
-                    && (retained.transitionId.isEmpty()
-                    || retained.transitionId.equals(current.callerTransitionId))));
+                    && retained.streamSessionId.equals(current.streamSessionId)));
             HostGatewayClient.SessionObservation evidence = correlationMatches ? current : null;
             boolean ready = unavailableReason.isEmpty() && evidence != null
                     && evidence.gameEvidence == HostGatewayClient.Evidence.VERIFIED
@@ -619,7 +583,7 @@ public final class SessionStateResolver {
                     && (!matchingTransport || knownLive);
             // A resolved (READY/IDLE) projection that merely goes stale between polls gets a
             // fresh bounded window; an unresolved episode never extends its own deadline.
-            boolean expired = !retired && episodeDeadlineMs > 0L
+            boolean expired = episodeDeadlineMs > 0L
                     && nowMs >= Math.max(episodeDeadlineMs,
                     lastResolvedAtMs >= 0L ? lastResolvedAtMs + OBSERVATION_LIVENESS_MS : 0L);
             SessionSnapshot.ObservationState disposition = ready
@@ -673,7 +637,7 @@ public final class SessionStateResolver {
             long closingUntilMs = closingConfirmationArmed
                     ? nowMs + CLOSING_CONFIRMATION_MS : closingConfirmationUntilMs;
             if (!idle && !ready && state == SessionSnapshot.State.UNCERTAIN
-                    && (retired || nowMs < closingUntilMs)) {
+                    && nowMs < closingUntilMs) {
                 state = SessionSnapshot.State.TERMINATING;
             }
 
@@ -709,8 +673,7 @@ public final class SessionStateResolver {
                     evidence == null ? "" : evidence.processToken,
                     evidence == null ? "UNAVAILABLE" : evidence.windowEvidence.name(),
                     reason, local.hostRunningAppId, endingGame,
-                    retired ? SessionSnapshot.Display.NONE
-                            : display(retained, matchingTransport, nowMs));
+                    display(retained, matchingTransport, nowMs));
         }
     }
 }

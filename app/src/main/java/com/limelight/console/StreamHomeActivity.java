@@ -22,7 +22,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
     private boolean preparingHomeFrameSubmitting;
     private SessionModel.Snapshot preparingSnapshot;
     /** The presentation epoch while this Home was the visible presenter. */
-    private long presentedEpoch;
+    private long presentedOperation;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -273,7 +273,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        presentedEpoch = SessionModel.of(this).snapshot().presentationEpoch;
+        presentedOperation = SessionModel.of(this).snapshot().presentationOperation;
     }
 
     @Override
@@ -294,7 +294,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
         SessionModel model = SessionModel.of(this);
         // Scoped to this Home: if the game showed the stream since, the request is stale.
         model.post(new SessionEvent.ParkRequested(model.snapshot().streamSessionId,
-                presentedEpoch));
+                presentedOperation));
     }
 
     private void cancelUnsubmittedPreparingFrame() {

@@ -318,8 +318,7 @@ public final class PlayniteTransitionGateway {
             try {
                 HostGatewayClient.SessionObservation observation =
                         client.getSessionObservation(connection,
-                                actorContext.executionProfileId, request.ordinal,
-                                request.transitionId);
+                                actorContext.executionProfileId, request.ordinal);
                 com.limelight.session.SessionModel.ObservationResult result = observed(observation);
                 if (result.accepted == null) {
                     // The dashboard polls the same projection: a read that lost only the
@@ -372,9 +371,8 @@ public final class PlayniteTransitionGateway {
 
 
     /**
-     * Observation for an exact control operation this client holds. Acquiring the permit
-     * advances the Gateway control generation beyond the one bound to the retained stream,
-     * so the ordinary projection correlation cannot match; the provider evidence is exposed
+     * Observation for an exact control operation this client holds. The provider evidence is
+     * exposed
      * only when the observation carries this permit's operation, generation, stream session
      * and actor lease epoch. The canonical projection is still updated by the session model.
      * The dashboard polls the same projection, typically at the moment a close returns to it,
@@ -390,7 +388,7 @@ public final class PlayniteTransitionGateway {
         HostGatewayClient.SessionObservation observation;
         try {
             observation = client.getSessionObservation(connection,
-                    actorContext.executionProfileId, request.ordinal, request.transitionId);
+                    actorContext.executionProfileId, request.ordinal);
         } catch (IOException unavailable) {
             if (Thread.currentThread().isInterrupted()) throw unavailable;
             return new Snapshot(unavailable(request.ordinal, unavailable.getMessage()),

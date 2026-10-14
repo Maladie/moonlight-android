@@ -52,6 +52,8 @@ public final class SessionModel {
     public interface Controller {
         /** Thread-safe probe; may be read from the model thread and from readers. */
         boolean isRetainedTransportLive();
+        /** The transport generation {@code StreamRuntime} assigned this owner; never changes. */
+        long transportGeneration();
         default String getExecutionProfileId() { return null; }
         /** Thread-safe probe: false while the transport runs without a presentation. */
         default boolean hasAttachedPresentation() { return true; }
@@ -105,19 +107,22 @@ public final class SessionModel {
         public final String newGameName;
         public final String streamTargetName;
         public final String artworkPath;
+        /** The launch transition the switch started on; carried for its controller. */
         public final String transitionId;
-        public final long attempt;
         public final boolean preparing;
+        /** The orchestration request that asked for the switch (SessionOrchestrator). */
         public final long orchestrationId;
+        /** The model's operation id of this switch: its results and updates correlate on it. */
+        public final long operationId;
         public final BooleanSupplier cancelled;
 
-        public SwitchRequest(String streamSessionId, String hostId, String profileId,
-                             String executionProfileId, String targetProfileId,
-                             boolean targetIsChild,
-                             int appId, String oldGameId, String newGameId, String newGameName,
-                             String streamTargetName, String artworkPath, String transitionId,
-                             long attempt, boolean preparing, long orchestrationId,
-                             BooleanSupplier cancelled) {
+        SwitchRequest(String streamSessionId, String hostId, String profileId,
+                      String executionProfileId, String targetProfileId,
+                      boolean targetIsChild,
+                      int appId, String oldGameId, String newGameId, String newGameName,
+                      String streamTargetName, String artworkPath, String transitionId,
+                      boolean preparing, long orchestrationId, long operationId,
+                      BooleanSupplier cancelled) {
             this.streamSessionId = normalize(streamSessionId);
             this.hostId = normalize(hostId);
             this.profileId = GatewayConnection.normalizeProfileId(profileId);
@@ -131,9 +136,9 @@ public final class SessionModel {
             this.streamTargetName = normalize(streamTargetName);
             this.artworkPath = normalize(artworkPath);
             this.transitionId = normalize(transitionId);
-            this.attempt = attempt;
             this.preparing = preparing;
             this.orchestrationId = orchestrationId;
+            this.operationId = operationId;
             this.cancelled = cancelled == null ? () -> false : cancelled;
         }
     }
@@ -150,12 +155,9 @@ public final class SessionModel {
     /** A Gateway observation read the model admitted for dispatch. */
     public static final class ObservationRequest {
         public final long ordinal;
-        /** The model's transition this read correlates with; empty for another session. */
-        public final String transitionId;
 
-        ObservationRequest(long ordinal, String transitionId) {
+        ObservationRequest(long ordinal) {
             this.ordinal = ordinal;
-            this.transitionId = transitionId;
         }
     }
 
@@ -219,14 +221,13 @@ public final class SessionModel {
         public final String transitionId;
         public final long attempt;
         public final long controlGeneration;
+        /** The bound owner's transport generation, carried from {@code StreamRuntime}. */
         public final long transportGeneration;
-        /** Per host: advances each time its session enters or leaves TERMINATING, seen or not. */
-        private final Map<String, Long> terminationEpochs;
         /**
-         * Advances each time a presentation shows the stream again. A park request carries the
-         * epoch its presenter saw; a newer one means another presenter took over.
+         * The model operation id of the presentation that last showed the stream. A park
+         * request carries the one its presenter saw; a newer one means another took over.
          */
-        public final long presentationEpoch;
+        public final long presentationOperation;
         /** Persistent records, mirrored from the stores the model alone writes. */
         public final Records records;
         /** Frozen host projections by {@link SessionStateResolver#key}; render-only. */
@@ -235,6 +236,8 @@ public final class SessionModel {
         final Controller controller;
         final Controller switchOwner;
         final String switchSessionId;
+        final long switchOperation;
+        // The warm-up identity the switch started on; read only by the S09 Home relay reader.
         final String switchTransitionId;
         final long switchAttempt;
         final String acceptedHomeTransitionId;
@@ -253,13 +256,13 @@ public final class SessionModel {
             this.attempt = m.attempt;
             this.controlGeneration = m.controlGeneration;
             this.transportGeneration = m.transportGeneration;
-            this.terminationEpochs = m.terminationEpochs;
-            this.presentationEpoch = m.presentationEpoch;
+            this.presentationOperation = m.presentationOperation;
             this.records = records;
             this.projections = m.frozenProjections;
             this.controller = m.controller;
             this.switchOwner = m.switchOwner;
             this.switchSessionId = m.switchSessionId;
+            this.switchOperation = m.switchOperation;
             this.switchTransitionId = m.switchTransitionId;
             this.switchAttempt = m.switchAttempt;
             this.acceptedHomeTransitionId = m.acceptedHomeTransitionId;
@@ -270,12 +273,6 @@ public final class SessionModel {
         /** The frozen projection of {@code key}, or null when the model holds none. */
         public FrozenProjection projection(String key) {
             return projections.get(key);
-        }
-
-        /** Termination boundaries of {@code hostId}'s session; another host's close is none. */
-        public long terminationEpoch(String hostId) {
-            Long epoch = terminationEpochs.get(epochKey(hostId));
-            return epoch == null ? 0L : epoch;
         }
 
         /**
@@ -301,7 +298,6 @@ public final class SessionModel {
                     && transitionId.equals(other.transitionId) && attempt == other.attempt
                     && controlGeneration == other.controlGeneration
                     && transportGeneration == other.transportGeneration
-                    && terminationEpochs == other.terminationEpochs
                     && records == other.records && projections == other.projections;
         }
     }
@@ -380,9 +376,7 @@ public final class SessionModel {
 
     // ---- model-thread-confined state ----------------------------------------------------------
     State state = State.NONE;
-    /** Copied on write: a snapshot shares the map it was published with. */
-    private Map<String, Long> terminationEpochs = Collections.emptyMap();
-    long presentationEpoch;
+    long presentationOperation;
     Controller controller;
     String streamSessionId = "";
     String hostId = "";
@@ -394,7 +388,6 @@ public final class SessionModel {
     long attempt;
     long controlGeneration;
     long transportGeneration;
-    private long nextTransportGeneration;
     private long nextOperationId;
     private long homeFrameClaim;
     String acceptedHomeTransitionId = "";
@@ -403,7 +396,7 @@ public final class SessionModel {
     String switchSessionId = "";
     String switchTransitionId = "";
     long switchAttempt;
-    private long switchOperation;
+    long switchOperation;
     private long parkOperation;
     private long reauthorizationOperation;
     private TerminationOperation terminationOperation;
@@ -413,6 +406,12 @@ public final class SessionModel {
     private final Map<String, ProjectionOwner> projections = new LinkedHashMap<>();
     private Map<String, FrozenProjection> frozenProjections = Collections.emptyMap();
     private boolean projectionsChanged;
+    /** The session (host key, execution profile) TERMINATING was entered for. */
+    private String terminatingHost = "";
+    private String terminatingExecution = "";
+    /** Projections a termination boundary retired in the current transition. */
+    private final Set<ProjectionOwner> crossedBoundary =
+            Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     /** Per host (normalized): the last fresh poll's running app. */
     private final Map<String, PolledApp> polledApps = new HashMap<>();
     /** Forgotten hosts (normalized) until a new read or close of them starts again. */
@@ -750,25 +749,27 @@ public final class SessionModel {
     }
 
     /** Confirms every retained binding immediately before an external switch mutation. */
-    public boolean ownsSwitchBeforeMutation(Controller expectedOwner, SwitchRequest request,
-                                            long expectedControlGeneration) {
+    public boolean ownsSwitchBeforeMutation(Controller expectedOwner, SwitchRequest request) {
         Snapshot s = published;
-        return request != null && !request.preparing
-                && expectedControlGeneration > 0L
+        return request != null && !request.preparing && expectedOwner != null
                 && (s.state == State.HOME_LIVE || s.state == State.PARKED_LIVE)
                 && s.controller == expectedOwner && s.switchOwner == expectedOwner
+                && s.transportGeneration == expectedOwner.transportGeneration()
+                && s.switchOperation == request.operationId
                 && s.streamSessionId.equals(request.streamSessionId)
-                && s.switchSessionId.equals(request.streamSessionId)
                 && s.hostId.equalsIgnoreCase(request.hostId)
                 && s.profileId.equals(request.profileId)
                 && s.executionProfileId.equals(request.executionProfileId)
                 && s.appId == request.appId
-                && s.playniteGameId.equalsIgnoreCase(request.oldGameId)
-                && s.transitionId.equals(request.transitionId)
-                && s.attempt == request.attempt
-                && s.switchTransitionId.equals(request.transitionId)
-                && s.switchAttempt == request.attempt
-                && s.controlGeneration == expectedControlGeneration;
+                && s.playniteGameId.equalsIgnoreCase(request.oldGameId);
+    }
+
+    /** Whether {@code request} is still the preparing switch {@code expectedOwner} holds. */
+    public boolean ownsPreparingSwitch(Controller expectedOwner, SwitchRequest request) {
+        Snapshot s = published;
+        return request != null && request.preparing && s.state == State.PREPARING
+                && s.controller == expectedOwner && s.switchOwner == expectedOwner
+                && s.switchOperation == request.operationId;
     }
 
     /** Consumes provider proof only while every retained binding is still exact. */
@@ -824,14 +825,13 @@ public final class SessionModel {
             records = stores.read();
             recordsChanged = false;
         }
-        if (!projections.isEmpty()) {
-            // A termination boundary retires each of its host's observations in the same
-            // transition that crossed it.
+        if (!crossedBoundary.isEmpty()) {
+            // Publish what a termination boundary left, against the state it committed.
             Snapshot crossing = current();
             long now = clock.getAsLong();
-            for (ProjectionOwner owner : projections.values()) {
-                projectionsChanged |= owner.settleTerminationBoundary(crossing, now);
-            }
+            crossedBoundary.retainAll(projections.values()); // a forgotten host keeps none
+            for (ProjectionOwner owner : crossedBoundary) owner.current(crossing, now);
+            crossedBoundary.clear();
         }
         if (projectionsChanged) {
             Map<String, FrozenProjection> frozen = new LinkedHashMap<>();
@@ -878,7 +878,7 @@ public final class SessionModel {
         if (sessionId.isEmpty()) {
             throw new IllegalArgumentException("Stream session ID is required");
         }
-        establishTransportGeneration(owner, sessionId);
+        transportGeneration = generation(owner);
         if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
         if (!sessionId.equals(streamSessionId) || controller != owner) releaseSwitch();
         controller = owner;
@@ -928,7 +928,8 @@ public final class SessionModel {
                     "attempt", preparingAttempt);
             return false;
         }
-        if (!exactReconnect) establishTransportGeneration(owner, sessionId);
+        // A reconnect is a new transport: its generation fences the lost one's late events.
+        transportGeneration = generation(owner);
         if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
         controller = owner;
         streamSessionId = sessionId;
@@ -1128,9 +1129,9 @@ public final class SessionModel {
     }
 
     void parkForBackground(Controller presenterOwner, String expectedStreamSessionId,
-                           long expectedPresentationEpoch, Reply<Boolean> reply) {
+                           long expectedPresentationOperation, Reply<Boolean> reply) {
         boolean currentPresenter = presenterOwner != null ? presenterOwner == controller
-                : expectedPresentationEpoch == presentationEpoch;
+                : expectedPresentationOperation == presentationOperation;
         if (!matches(streamSessionId, expectedStreamSessionId) || switchOwner != null
                 || !currentPresenter) {
             reply.accept(false);
@@ -1197,7 +1198,7 @@ public final class SessionModel {
         if (owner == null || controller != owner
                 || !matches(streamSessionId, expectedStreamSessionId)
                 || (state != State.HOME_LIVE && state != State.PARKED_LIVE)) return;
-        presentationEpoch++;
+        presentationOperation = ++nextOperationId;
         if (state == State.PARKED_LIVE) setState(State.HOME_LIVE);
     }
 
@@ -1276,7 +1277,7 @@ public final class SessionModel {
                 || !playniteGameId.equalsIgnoreCase(expected.playniteGameId)
                 || !transitionId.equals(expected.transitionId)
                 || attempt != expected.attempt
-                || controlGeneration != expected.controlGeneration
+                || controller != expected.controller
                 || transportGeneration != expected.transportGeneration) return null;
         return beginDirectTermination(expected.streamSessionId, expected.hostId,
                 expected.appId, expected.playniteGameId);
@@ -1338,12 +1339,12 @@ public final class SessionModel {
             reply.accept(SwitchResult.NOT_ELIGIBLE);
             return;
         }
+        long operation = ++nextOperationId;
         SwitchRequest request = new SwitchRequest(streamSessionId, hostId, profileId,
                 executionProfileId, targetProfileId, targetIsChild, appId,
                 playniteGameId, newGameId, newGameName, streamTargetName,
-                artworkPath, transitionId, attempt, state == State.PREPARING,
-                orchestrationId, cancelled);
-        long operation = ++nextOperationId;
+                artworkPath, transitionId, state == State.PREPARING,
+                orchestrationId, operation, cancelled);
         switchOwner = owner;
         switchSessionId = streamSessionId;
         switchTransitionId = transitionId;
@@ -1358,35 +1359,32 @@ public final class SessionModel {
 
     void switchCompleted(long operation, SwitchRequest request, SwitchOutcome outcome,
                          String error, SwitchCallback completion) {
-        boolean current = switchOperation == operation && switchOwner != null
-                && switchSessionId.equals(request.streamSessionId)
-                && switchTransitionId.equals(request.transitionId)
-                && switchAttempt == request.attempt;
+        boolean current = switchOperation == operation && switchOwner != null;
         if (current && outcome != SwitchOutcome.REUSED) releaseSwitch();
         if (completion != null && (current || !request.preparing)) {
             effect(() -> completion.complete(outcome, error));
         }
     }
 
+    /**
+     * Retargets the preparing switch {@code request}; a switch the model released (a new
+     * preparation, a lost transport, a cancel) is stale by its operation id.
+     */
     boolean updatePreparingSwitch(Controller expectedOwner, SwitchRequest request,
-                                  String expectedCurrentTransitionId, String expectedGameId,
-                                  String newGameId, String newTransitionId) {
-        String currentTransition = normalize(expectedCurrentTransitionId);
+                                  String expectedGameId, String newGameId,
+                                  String newTransitionId) {
         String nextTransition = normalize(newTransitionId);
         if (request == null || !request.preparing || nextTransition.isEmpty()
-                || switchOwner != expectedOwner
-                || !switchSessionId.equals(request.streamSessionId)
-                || !switchTransitionId.equals(request.transitionId)
-                || switchAttempt != request.attempt
-                || !matchesPreparing(expectedOwner, request.streamSessionId,
-                request.hostId, request.appId, currentTransition, request.attempt)
+                || state != State.PREPARING || controller != expectedOwner
+                || switchOwner != expectedOwner || switchOperation != request.operationId
                 || !playniteGameId.equalsIgnoreCase(normalize(expectedGameId))) {
             return false;
         }
+        String currentTransition = transitionId;
         playniteGameId = normalize(newGameId);
         // The accepted Home frame belongs to this exact attempt; carry its proof forward with
         // the replacement transition so a recreated presentation still recognizes it.
-        if (acceptedHomeAttempt == request.attempt
+        if (acceptedHomeAttempt == attempt
                 && acceptedHomeTransitionId.equals(currentTransition)) {
             acceptedHomeTransitionId = nextTransition;
         }
@@ -1402,25 +1400,10 @@ public final class SessionModel {
         return true;
     }
 
-    boolean finishSwitch(String expectedStreamSessionId, Controller expectedOwner) {
-        if (switchOwner != expectedOwner
-                || !switchSessionId.equals(normalize(expectedStreamSessionId))) {
-            return false;
-        }
-        if ((!switchTransitionId.isEmpty() || switchAttempt != 0L)
-                && (state != State.HOME_LIVE || !transitionId.isEmpty() || attempt != 0L)) {
-            return false;
-        }
-        releaseSwitch();
-        return true;
-    }
-
-    boolean finishSwitch(String expectedStreamSessionId, String expectedTransitionId,
-                         long expectedAttempt, Controller expectedOwner) {
-        if (switchOwner != expectedOwner
-                || !switchSessionId.equals(normalize(expectedStreamSessionId))
-                || !switchTransitionId.equals(normalize(expectedTransitionId))
-                || switchAttempt != expectedAttempt) {
+    /** Releases the switch lock of exactly {@code request}; a newer switch keeps its own. */
+    boolean finishSwitch(SwitchRequest request, Controller expectedOwner) {
+        if (request == null || switchOwner != expectedOwner
+                || switchOperation != request.operationId) {
             return false;
         }
         releaseSwitch();
@@ -1431,9 +1414,7 @@ public final class SessionModel {
                                   String expectedOldGameId, String newGameId) {
         if (request == null || (state != State.HOME_LIVE && state != State.PARKED_LIVE)
                 || controller != expectedOwner || switchOwner != expectedOwner
-                || !switchSessionId.equals(request.streamSessionId)
-                || !switchTransitionId.equals(request.transitionId)
-                || switchAttempt != request.attempt
+                || switchOperation != request.operationId
                 || !matches(streamSessionId, request.streamSessionId)
                 || appId != request.appId
                 || !hostId.equalsIgnoreCase(request.hostId)
@@ -1477,7 +1458,7 @@ public final class SessionModel {
                 return false;
             }
             controller = expectedOwner;
-            establishTransportGeneration(expectedOwner, sessionId);
+            transportGeneration = generation(expectedOwner);
             streamSessionId = sessionId;
             hostId = expectedHost;
             executionProfileId = origin(expectedOwner, profileId);
@@ -1650,7 +1631,7 @@ public final class SessionModel {
 
     boolean hardResetIfHostMatches(String expectedHostId) {
         String expected = normalize(expectedHostId);
-        polledApps.remove(epochKey(expected));
+        polledApps.remove(hostKey(expected));
         if (expected.isEmpty() || !expected.equalsIgnoreCase(hostId)) return false;
         Snapshot preparing = state == State.PREPARING
                 ? new Snapshot(this, records, sequence) : null;
@@ -1683,10 +1664,10 @@ public final class SessionModel {
         recordsChanged = true;
         // A forgotten host keeps no projection (nor its close or observation state).
         projectionsChanged |= projections.values()
-                .removeIf(owner -> owner.hostId().equals(epochKey(host)));
+                .removeIf(owner -> owner.hostId().equals(hostKey(host)));
         // Polls and replies already in flight for it are late: only a new read or close of
         // this host (ObservationDispatched, LocalCloseBegun) starts its state again.
-        forgottenHosts.add(epochKey(host));
+        forgottenHosts.add(hostKey(host));
         return true;
     }
 
@@ -1702,12 +1683,11 @@ public final class SessionModel {
      * publishes a fresh frozen copy instead of leaving the published one behind the owner.
      */
     private ProjectionOwner startProjection(String host, String actor, String execution) {
-        forgottenHosts.remove(epochKey(host));
+        forgottenHosts.remove(hostKey(host));
         String key = SessionStateResolver.key(host, actor, execution);
         ProjectionOwner owner = projections.get(key);
         if (owner == null) {
-            owner = new ProjectionOwner(diagnostics, host, actor, execution,
-                    current().terminationEpoch(host));
+            owner = new ProjectionOwner(diagnostics, host, actor, execution);
             projections.put(key, owner);
         }
         projectionsChanged = true;
@@ -1722,10 +1702,7 @@ public final class SessionModel {
     }
 
     ObservationRequest observationDispatched(String host, String actor, String execution) {
-        long ordinal = startProjection(host, actor, execution).nextRequestOrdinal(current());
-        boolean ownSession = hostId.equalsIgnoreCase(normalize(host))
-                && executionProfileId.equals(GatewayConnection.normalizeProfileId(execution));
-        return new ObservationRequest(ordinal, ownSession ? transitionId : "");
+        return new ObservationRequest(startProjection(host, actor, execution).nextRequestOrdinal());
     }
 
     /**
@@ -1793,7 +1770,7 @@ public final class SessionModel {
      */
     PollOutcome hostPolled(String host, String actor, String execution, boolean online,
                            boolean offline, int runningAppId, long wallNowMs) {
-        String polledHost = epochKey(host);
+        String polledHost = hostKey(host);
         if (polledHost.isEmpty() || forgottenHosts.contains(polledHost)) return PollOutcome.NONE;
         SuspendedSessionStore.Session suspended = records.suspendedForExecution(host, execution);
         if (suspended != null && suspended.resumedAt == 0L && !online
@@ -1815,7 +1792,7 @@ public final class SessionModel {
             }
         }
 
-        boolean sameHost = polledHost.equals(epochKey(hostId));
+        boolean sameHost = polledHost.equals(hostKey(hostId));
         SessionResumeManager.PendingSession pending = records.pending;
         String lost = "";
         if (online && runningAppId == 0 && sameHost && state == State.RECONNECT_REQUIRED
@@ -1825,7 +1802,7 @@ public final class SessionModel {
             clearReconnect(lost);
             if (pending != null && pending.matches(lost)) pending = null;
         }
-        boolean retainedLive = polledHost.equals(epochKey(hostId))
+        boolean retainedLive = polledHost.equals(hostKey(hostId))
                 && (state == State.HOME_LIVE || state == State.PARKED_LIVE);
         if (suspended != null && suspended.resumedAt == 0L && retainedLive
                 && (appId != suspended.sunshineAppId
@@ -1842,7 +1819,7 @@ public final class SessionModel {
             runningSession = "";
         } else if (sameHost && appId == runningAppId && !streamSessionId.isEmpty()) {
             runningSession = streamSessionId;
-        } else if (pending != null && polledHost.equals(epochKey(pending.hostUuid))
+        } else if (pending != null && polledHost.equals(hostKey(pending.hostUuid))
                 && pending.appId == runningAppId) {
             runningSession = pending.streamSessionId;
         }
@@ -1999,11 +1976,8 @@ public final class SessionModel {
         releaseSwitch();
     }
 
-    private void establishTransportGeneration(Controller owner, String sessionId) {
-        if (transportGeneration > 0L && streamSessionId.equals(sessionId)
-                && controller == owner) return;
-        if (nextTransportGeneration == Long.MAX_VALUE) nextTransportGeneration = 0L;
-        transportGeneration = ++nextTransportGeneration;
+    private static long generation(Controller owner) {
+        return owner == null ? 0L : owner.transportGeneration();
     }
 
     private Controller liveControllerLocked() {
@@ -2079,10 +2053,22 @@ public final class SessionModel {
         State previous = state;
         state = next;
         if (previous == State.TERMINATING || next == State.TERMINATING) {
-            // Both edges run with the session's host still set (clear() resets it afterwards).
-            Map<String, Long> epochs = new HashMap<>(terminationEpochs);
-            epochs.merge(epochKey(hostId), 1L, Long::sum);
-            terminationEpochs = Collections.unmodifiableMap(epochs);
+            // A termination boundary of the terminating session, whoever sampled it: the
+            // projections of its host and execution profile (any actor there, a child on its
+            // parent's Windows profile included) drop what they observed before it, in this
+            // same transition. The leaving edge acts on the session that entered, even when
+            // the caller already moved the model to another host or execution profile.
+            if (next == State.TERMINATING) {
+                terminatingHost = hostKey(hostId);
+                terminatingExecution = executionProfileId;
+            }
+            for (ProjectionOwner owner : projections.values()) {
+                if (!owner.hostId().equals(terminatingHost)
+                        || !owner.executionProfileId().equals(terminatingExecution)) continue;
+                owner.terminationBoundary(next != State.TERMINATING);
+                crossedBoundary.add(owner);
+                projectionsChanged = true;
+            }
         }
         MoonWakerDiagnostics.record("INFO", "android.retained-stream",
                 "retained_stream.state_changed",
@@ -2096,7 +2082,7 @@ public final class SessionModel {
         return value == null ? "" : value.trim();
     }
 
-    private static String epochKey(String hostId) {
+    private static String hostKey(String hostId) {
         return normalize(hostId).toLowerCase(java.util.Locale.ROOT);
     }
 

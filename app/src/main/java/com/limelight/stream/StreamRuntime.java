@@ -7,6 +7,7 @@ import com.limelight.nvstream.input.KeyboardPacket;
 import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -113,7 +114,12 @@ public final class StreamRuntime implements NvConnectionListener,
 
     private static final Object REGISTRY_LOCK = new Object();
     private static StreamRuntime current;
+    /** The newest transport generation; a stop of an older one completes CANCELLED. */
+    private static long newestGeneration;
+    /** The newest generation's stop, which the next start waits for; weak once unreachable. */
+    private static WeakReference<TransportStopCoordinator> newestStop = new WeakReference<>(null);
 
+    private final long generation;
     private final String streamSessionId;
     private final String executionProfileId;
     private final Transport transport;
@@ -144,13 +150,15 @@ public final class StreamRuntime implements NvConnectionListener,
     private boolean touchActive;
     private boolean penActive;
 
-    private StreamRuntime(String streamSessionId, String executionProfileId,
+    private StreamRuntime(long generation, TransportStopCoordinator predecessor,
+                          String streamSessionId, String executionProfileId,
                           Transport transport, Platform platform) {
+        this.generation = generation;
         this.streamSessionId = streamSessionId;
         this.executionProfileId = executionProfileId;
         this.transport = transport;
         this.platform = platform;
-        this.stopCoordinator = new TransportStopCoordinator(this::stopNative,
+        this.stopCoordinator = new TransportStopCoordinator(predecessor, this::stopNative,
                 platform.stopExecutor());
     }
 
@@ -186,8 +194,10 @@ public final class StreamRuntime implements NvConnectionListener,
         }
         synchronized (REGISTRY_LOCK) {
             if (current != null && current.isLiveAndUnstopped()) return null;
-            StreamRuntime runtime = new StreamRuntime(
+            if (newestGeneration == Long.MAX_VALUE) newestGeneration = 0L;
+            StreamRuntime runtime = new StreamRuntime(++newestGeneration, newestStop.get(),
                     session, executionProfileId, transport, platform);
+            newestStop = new WeakReference<>(runtime.stopCoordinator);
             runtime.stopCoordinator.whenStopped(runtime::onStopped);
             current = runtime;
             return runtime;
@@ -231,6 +241,7 @@ public final class StreamRuntime implements NvConnectionListener,
     static void resetForTests() {
         synchronized (REGISTRY_LOCK) {
             current = null;
+            newestStop = new WeakReference<>(null);
         }
     }
 
@@ -238,7 +249,19 @@ public final class StreamRuntime implements NvConnectionListener,
 
     Platform platform() { return platform; }
 
-    public long generation() { return stopCoordinator.generation(); }
+    /** This transport's generation: the one identity that fences its connection's events. */
+    public long generation() { return generation; }
+
+    @Override public long transportGeneration() { return generation; }
+
+    /** A STOPPED of an older generation reads CANCELLED: a newer one owns the transport now. */
+    private TransportStopCoordinator.Result fence(TransportStopCoordinator.Result result) {
+        synchronized (REGISTRY_LOCK) {
+            return result == TransportStopCoordinator.Result.STOPPED
+                    && newestGeneration != generation
+                    ? TransportStopCoordinator.Result.CANCELLED : result;
+        }
+    }
 
     public synchronized boolean isConnecting() { return state == State.CONNECTING; }
 
@@ -276,7 +299,7 @@ public final class StreamRuntime implements NvConnectionListener,
             if (state == State.STOPPED) {
                 // Replay the actual terminal result; a failed native stop is never STOPPED.
                 stopCoordinator.whenStopped(result -> TransportStopCoordinator.completeSafely(
-                        completion, stopCoordinator.fence(result)));
+                        completion, fence(result)));
                 return;
             }
             if (completion != null) stopWaiters.add(completion);
@@ -338,7 +361,7 @@ public final class StreamRuntime implements NvConnectionListener,
         synchronized (REGISTRY_LOCK) {
             if (current == this) current = null;
         }
-        TransportStopCoordinator.Result fenced = stopCoordinator.fence(result);
+        TransportStopCoordinator.Result fenced = fence(result);
         platform.record("INFO", "runtime.stopped", "stream_session_id", streamSessionId,
                 "generation", generation(), "status", fenced.name());
         for (TransportStopCoordinator.Completion completion : waiting) {

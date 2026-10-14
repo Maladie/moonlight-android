@@ -2802,6 +2802,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
         }
 
         @Override public boolean isRetainedTransportLive() { return true; }
+        private final long fakeGeneration =
+                com.limelight.session.SessionModelDriver.nextTransportGeneration();
+        @Override public long transportGeneration() { return fakeGeneration; }
         @Override public String getExecutionProfileId() { return executionProfileId; }
         @Override public SessionModel.ParkOutcome parkRetainedTransport() { return SessionModel.ParkOutcome.PARKED; }
         @Override public void disconnectRetainedStream(

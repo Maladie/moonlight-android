@@ -262,7 +262,12 @@ public final class SessionOrchestrator implements AutoCloseable {
     private final Effects effects;
     private final Executor executor;
     private final Dispatcher dispatcher;
-    private final AtomicLong generation = new AtomicLong();
+    /**
+     * The newest user request this orchestrator decides (Play, warm-up, cancel bumps it). Not
+     * the model's operation id: a request exists before any model state does, and one request
+     * may issue several model operations (prepare, switch, park), each fenced by its own id.
+     */
+    private final AtomicLong orchestrationId = new AtomicLong();
     private PlayIntent lastIntent;
     /** The request still being decided; 0 once it was handed off, refused or failed. */
     private long inFlight;
@@ -289,7 +294,7 @@ public final class SessionOrchestrator implements AutoCloseable {
     void play(PlayIntent intent) {
         if (handoffPreparingGame(intent)) return;
         lastIntent = intent;
-        long request = generation.incrementAndGet();
+        long request = orchestrationId.incrementAndGet();
         if (closed) {
             diagnostic("INFO", "orchestration.ignored", request, intent,
                     "reason", "CLOSED");
@@ -308,7 +313,7 @@ public final class SessionOrchestrator implements AutoCloseable {
 
     long prepareHost(String hostId, String profileId) {
         PlayIntent intent = PlayIntent.autoWarmUp(hostId, profileId);
-        long request = generation.incrementAndGet();
+        long request = orchestrationId.incrementAndGet();
         preparation = null;
         if (closed) return 0L;
         if (!effects.isAvailable()) {
@@ -359,7 +364,7 @@ public final class SessionOrchestrator implements AutoCloseable {
         if (!currentPreparation(pending) || !pending.hostId.equals(
                 SessionSnapshot.normalize(hostId))) return false;
         preparation = null;
-        generation.compareAndSet(pending.request, pending.request + 1L);
+        orchestrationId.compareAndSet(pending.request, pending.request + 1L);
         return true;
     }
 
@@ -370,7 +375,7 @@ public final class SessionOrchestrator implements AutoCloseable {
     }
 
     void cancel() {
-        long cancelled = generation.getAndIncrement();
+        long cancelled = orchestrationId.getAndIncrement();
         preparation = null;
         // Only a request still being decided is cancelled; one already launched is not.
         if (!closed && inFlight == cancelled && lastIntent != null) {
@@ -449,7 +454,7 @@ public final class SessionOrchestrator implements AutoCloseable {
 
     private boolean currentPreparation(Preparation pending) {
         return pending != null && !closed && preparation == pending
-                && generation.get() == pending.request;
+                && orchestrationId.get() == pending.request;
     }
 
     /** What the user asked for. */
@@ -1498,7 +1503,7 @@ public final class SessionOrchestrator implements AutoCloseable {
         MoonWakerDiagnostics.record(level, "android.session-orchestrator", event, values);
     }
 
-    private boolean current(long request) { return !closed && generation.get() == request; }
+    private boolean current(long request) { return !closed && orchestrationId.get() == request; }
 
     private static LaunchTransitionType freshType(PlayIntent intent) {
         switch (intent.kind) {
