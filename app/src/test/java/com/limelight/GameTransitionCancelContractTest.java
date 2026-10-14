@@ -30,6 +30,17 @@ public class GameTransitionCancelContractTest {
         assertTrue(confirmation.contains("() -> closeStreamWithPrivacy(true)"));
     }
 
+    /** A switch submitted from the stream's Home that failed tells the user why on that Home. */
+    @Test public void failedPendingSwitchShowsItsReason() throws IOException {
+        String text = source();
+        String submit = text.substring(text.indexOf("private void submitPendingRetainedSwitch()"),
+                text.indexOf("private void logLaunchMilestone("));
+        String failed = submit.substring(submit.indexOf("SwitchOutcome.FAILED"),
+                submit.indexOf("returnFromStreamHome();"));
+        assertTrue(failed.contains("SessionFailure.ofSwitchFailure(error).details"));
+        assertTrue(failed.contains(".show()"));
+    }
+
     @Test public void retainedStreamDisconnectDoesNotStopTheProviderGame() throws IOException {
         String text = source();
         Path runtimePath = Paths.get("src/main/java/com/limelight/stream/StreamRuntime.java");
@@ -54,92 +65,11 @@ public class GameTransitionCancelContractTest {
                 "if (userInitiatedDisconnect) return false"));
     }
 
-    @Test public void reattachedWarmUpAdoptsOnlyAnAcceptedFrameOrRetainedWarmUp() {
-        assertTrue(Game.shouldResumeAcceptedWarmUp(true, true, false));
-        assertFalse("unaccepted preparing starts its own Home frame",
-                Game.shouldResumeAcceptedWarmUp(true, false, true));
-        assertTrue(Game.shouldResumeAcceptedWarmUp(false, false, true));
-        assertFalse(Game.shouldResumeAcceptedWarmUp(false, false, false));
-    }
-
     @Test public void repeatedSnapshotsDoNotRecoverOverlayButReadinessRegressionDoes() {
         assertFalse(Game.shouldShowTransitionOverlay(true, false, true, false));
         assertFalse(Game.shouldShowTransitionOverlay(true, true, true, true));
         assertTrue(Game.shouldShowTransitionOverlay(false, false, true, false));
         assertTrue(Game.shouldShowTransitionOverlay(true, true, true, false));
-    }
-
-    @Test public void dashboardCancellationStopsAtTheReuseOwnershipBoundary() {
-        assertTrue(Game.retainedSwitchCancelled(false, true, false, false));
-        assertFalse("the closed console cancels nothing after REUSED",
-                Game.retainedSwitchCancelled(true, true, false, false));
-        assertFalse(Game.retainedSwitchCancelled(false, false, false, false));
-    }
-
-    /**
-     * Review 2026-10-14: after the authorization-retry offer (REUSED) the user picked Retry and
-     * then Cancel while the handoff ran; only the external console cancel was checked, so the
-     * game started and a child allowance was consumed. The user's own Cancel always counts.
-     */
-    @Test public void userCancelAfterReuseStopsTheHandoff() {
-        assertTrue(Game.retainedSwitchCancelled(true, false, true, false));
-        assertTrue(Game.retainedSwitchCancelled(true, true, true, false));
-        assertFalse("a cancel that clears the way for Retry is not a user cancel",
-                Game.retainedSwitchCancelled(true, false, true, true));
-    }
-
-    /** A fake of the host steps: records their order; the child may or may not play now. */
-    private static final class RecordedStop implements Game.RetainedStop {
-        final java.util.List<String> calls = new java.util.ArrayList<>();
-        final String refusal;
-        boolean cancelled;
-
-        RecordedStop(String refusal) { this.refusal = refusal; }
-
-        @Override public String childRefusal() { calls.add("eligibility"); return refusal; }
-        @Override public boolean cancelled() { calls.add("cancelled"); return cancelled; }
-        @Override public void stop() { calls.add("stop"); }
-    }
-
-    /**
-     * Owner 2026-10-14: a child replaces a parent's game on the live stream without a dialog,
-     * but the host's read-only eligibility comes first: a child without time or outside its
-     * schedule leaves the parent's game running (nothing stopped, recoverable failure).
-     */
-    @Test public void childOverAParentGameSwitchesOnTheLiveStreamWithoutConfirmation()
-            throws IOException {
-        RecordedStop refused = new RecordedStop("outside_schedule");
-        try {
-            Game.stopRetainedGame(true, refused);
-            fail("an ineligible child must not stop the parent's game");
-        } catch (IOException expected) {
-            assertEquals("outside_schedule", expected.getMessage());
-        }
-        assertEquals(java.util.Arrays.asList("eligibility"), refused.calls);
-
-        RecordedStop eligible = new RecordedStop(null);
-        assertTrue(Game.stopRetainedGame(true, eligible));
-        assertEquals(java.util.Arrays.asList("eligibility", "cancelled", "stop"), eligible.calls);
-
-        RecordedStop cancelledAfterEligibility = new RecordedStop(null);
-        cancelledAfterEligibility.cancelled = true;
-        assertFalse(Game.stopRetainedGame(true, cancelledAfterEligibility));
-        assertFalse(cancelledAfterEligibility.calls.contains("stop"));
-
-        RecordedStop parent = new RecordedStop("never_asked");
-        assertTrue(Game.stopRetainedGame(false, parent));
-        assertEquals(java.util.Arrays.asList("cancelled", "stop"), parent.calls);
-    }
-
-    /**
-     * The user's own Cancel on the stream before REUSED (a switch this Game submitted, no
-     * console waiting) shows the Home; a console that still waits and cancelled shows its own.
-     */
-    @Test public void aCancelledSwitchNeverLeavesTheNeutralStreamOnItsClosingCover() {
-        assertTrue(Game.cancelledSwitchShowsHome(false, false));
-        assertTrue(Game.cancelledSwitchShowsHome(true, false));
-        assertTrue(Game.cancelledSwitchShowsHome(true, true));
-        assertFalse(Game.cancelledSwitchShowsHome(false, true));
     }
 
     /**
@@ -155,14 +85,14 @@ public class GameTransitionCancelContractTest {
         assertEquals(text.indexOf("operation.request.cancelled.getAsBoolean()"),
                 text.lastIndexOf("operation.request.cancelled.getAsBoolean()"));
         assertTrue(text.substring(text.indexOf("private static boolean settledSwitchShowsHome("),
-                text.indexOf("static boolean cancelledSwitchShowsHome(")).contains(
+                text.indexOf("private void afterRetainedGameStopped(")).contains(
                 "operation.request.cancelled.getAsBoolean()"));
         String gate = text.substring(text.indexOf("boolean cancelled() {"),
                 text.indexOf("private boolean hasProviderGameTransition()"));
         assertTrue(gate.contains("retainedSwitchCancelled("));
         assertTrue(gate.contains("cancelRequested, retryRequested"));
         String handoff = text.substring(text.indexOf("private void runRetainedActorHandoff("),
-                text.indexOf("static final String RETAINED_AUTHORIZATION_UNCONFIRMED"));
+                text.indexOf("static final long RETAINED_AUTHORIZATION_RETRY_DELAY_MS"));
         assertTrue(handoff.contains("else if (streamCarriesRequest) returnToConsoleHome(operation);"));
         String home = text.substring(text.indexOf("private void returnToConsoleHome(RetainedSwitch operation)"),
                 text.indexOf("private void openConsoleHome()"));
@@ -173,7 +103,7 @@ public class GameTransitionCancelContractTest {
     @Test public void cancelDoesNotWaitForAnotherVideoFrame() throws IOException {
         String text = source();
         String method = text.substring(text.indexOf("private void endCancelledTransition("),
-                text.indexOf("static boolean offersPreviousGameStop("));
+                text.indexOf("static boolean isFailedStartObservation("));
 
         assertFalse(method.contains("doAfterNextFrame"));
         assertTrue(method.contains("transitionCancelInFlight = true"));
@@ -189,7 +119,7 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private SessionOrchestrator.State transitionState()"),
                 text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("));
         String cancel = text.substring(text.indexOf("private void endCancelledTransition("),
-                text.indexOf("static boolean offersPreviousGameStop("));
+                text.indexOf("static boolean isFailedStartObservation("));
         String host = text.substring(text.indexOf("private void runWholeSessionTermination("),
                 text.indexOf("private void applyImmediateTerminalPrivacy("));
 
@@ -312,7 +242,7 @@ public class GameTransitionCancelContractTest {
     @Test public void cancelNeverStopsAProviderGameItself() throws IOException {
         String text = source();
         String cancel = text.substring(text.indexOf("private void cancelTransition()"),
-                text.indexOf("static boolean offersPreviousGameStop("));
+                text.indexOf("static boolean isFailedStartObservation("));
 
         // A cancelled reconnect leaves the running game alone; only a whole-session close
         // stops a game, and only the one its permit verifies.
@@ -662,9 +592,6 @@ public class GameTransitionCancelContractTest {
         assertTrue(failed.contains("cleanupUnrevealedProviderLaunch("));
         assertTrue(terminated.contains("cleanupUnrevealedProviderLaunch("));
         assertFalse(terminated.contains("!connected"));
-        assertTrue(Game.shouldCleanupUnrevealedProviderLaunch(true, false));
-        assertFalse(Game.shouldCleanupUnrevealedProviderLaunch(true, true));
-        assertFalse(Game.shouldCleanupUnrevealedProviderLaunch(false, false));
     }
 
     /**
@@ -675,11 +602,8 @@ public class GameTransitionCancelContractTest {
      */
     @Test public void refusedAcquireOnAFreshNeutralStartClosesNothingAndShowsItsError()
             throws IOException {
-        // The exact inputs of the lab case: fresh owner, neutral target, GAME, provider
-        // start pending, never revealed, nothing retained - and the host refused the start.
-        assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME, true, false, false, true));
-
+        // The lab case's rule (host refused the start: nothing to close) is a table row:
+        // SessionTransitionTableTest.streamScreenClosesOnlyTheFreshSessionItStarted.
         String text = source();
         // Only the answer to the start's own acquire says that nothing was started; a 409 on
         // a later complete or reconcile follows a sent effect and keeps the cleanup.
@@ -734,8 +658,6 @@ public class GameTransitionCancelContractTest {
         // The screen stays until the user answers it: both dialogs finish Game themselves.
         String shown = rejected.substring(dialog);
         assertTrue(shown.contains("if (rejection != null && rejection.offersHardTerminate()) {"));
-        assertTrue(shown.contains("() -> ConsoleActivity.offerHardTerminate(hostId),\n"
-                + "                                0L, Game.this::finish);"));
         assertTrue(shown.contains(
                 "getResources().getString(R.string.conn_error_title), dialogText, true);"));
         assertFalse(shown.contains("finish();"));
@@ -758,19 +680,6 @@ public class GameTransitionCancelContractTest {
 
     @Test public void freshNeutralFailureOwnsProviderAndSunshineCleanupExactlyOnce()
             throws IOException {
-        assertTrue(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME, true, false, false, false));
-        assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                false, true, LaunchTransitionType.GAME, true, false, false, false));
-        assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, false, LaunchTransitionType.GAME, true, false, false, false));
-        assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME_CONNECTION, false, false, false, false));
-        assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME, true, true, false, false));
-        assertFalse(Game.shouldTerminateFreshOwnedSunshineSession(
-                true, true, LaunchTransitionType.GAME, true, false, true, false));
-
         String text = source();
         String failed = text.substring(text.indexOf("public void stageFailed("),
                 text.indexOf("public void connectionTerminated("));
@@ -817,7 +726,6 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private void showOverlayMenuHint()"));
 
         assertTrue(destroyed.contains("cleanupUnrevealedProviderLaunch("));
-        assertFalse(Game.shouldCleanupUnrevealedProviderLaunch(false, false));
         assertTrue(bitrate.contains("LaunchTransitionType.GAME_CONNECTION.name()"));
     }
 
@@ -1284,17 +1192,6 @@ public class GameTransitionCancelContractTest {
         assertTrue(provider.contains("gateway.stopGame(exactGame, current.processToken);"));
     }
 
-    /**
-     * TV 2026-10-14 13:55: a failed switch of the neutral stream kept a GAME_CONNECTION without a
-     * game, which waited for a game window and timed out under its cover. The neutral stream is
-     * kept as the plain neutral stream; a stream with a game observes that game again.
-     */
-    @Test public void failedSwitchOfANeutralStreamKeepsItNeutralNotAGameObservation() {
-        assertEquals(LaunchTransitionType.GENERIC, Game.retainedRecoveryType(""));
-        assertEquals(LaunchTransitionType.GAME_CONNECTION,
-                Game.retainedRecoveryType("steam:952060"));
-    }
-
     @Test public void failedCompensatingStopRearmsNewGameObservationOnSameTransport()
             throws IOException {
         String text = source();
@@ -1454,14 +1351,6 @@ public class GameTransitionCancelContractTest {
     }
 
     @Test public void revealedGameRecreatesAsObservationOnly() throws IOException {
-        assertTrue(Game.recoveredTransitionType(LaunchTransitionType.GAME, true)
-                == LaunchTransitionType.GAME_CONNECTION);
-        assertTrue(Game.recoveredTransitionType(LaunchTransitionType.GAME, false)
-                == LaunchTransitionType.GAME);
-        assertTrue(Game.recoveredTransitionType(LaunchTransitionType.GAME_CONNECTION, true)
-                == LaunchTransitionType.GAME_CONNECTION);
-        assertFalse(Game.shouldCleanupUnrevealedProviderLaunch(false, false));
-
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
         String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
@@ -1594,7 +1483,7 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private SessionOrchestrator.State transitionState()"),
                 text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("));
         String cancel = text.substring(text.indexOf("private void endCancelledTransition("),
-                text.indexOf("static boolean offersPreviousGameStop("));
+                text.indexOf("static boolean isFailedStartObservation("));
         String rearm = text.substring(
                 text.indexOf("private boolean rearmFailedNewGameObservation("),
                 text.indexOf("private void updateRetainedTransitionIntent("));
@@ -1617,7 +1506,7 @@ public class GameTransitionCancelContractTest {
             throws IOException {
         String text = source();
         String handoff = text.substring(text.indexOf("private void runRetainedActorHandoff("),
-                text.indexOf("static final String RETAINED_AUTHORIZATION_UNCONFIRMED"));
+                text.indexOf("static final long RETAINED_AUTHORIZATION_RETRY_DELAY_MS"));
         String cancel = text.substring(
                 text.indexOf("private SessionOrchestrator.ActionKind runStreamIntent("),
                 text.indexOf("private void endCancelledTransition("));
@@ -1635,19 +1524,6 @@ public class GameTransitionCancelContractTest {
         assertTrue(cancel.indexOf("settleOfferedAuthorizationRetry(true)")
                 < cancel.indexOf("case RETRY_RETAINED_SWITCH:"));
         assertTrue(settle.contains("settleStartFailedSwitch(operation)"));
-        assertTrue(Game.retriesRetainedAuthorization(false, 0));
-        assertFalse("exactly one quiet retry", Game.retriesRetainedAuthorization(false, 1));
-        assertFalse("a reused running game is not stopped: no retry",
-                Game.retriesRetainedAuthorization(true, 0));
-        assertTrue(Game.offersRetainedAuthorizationRetry(false, false,
-                Game.RETAINED_AUTHORIZATION_UNCONFIRMED));
-        assertFalse("a changed child time attachment still fails closed",
-                Game.offersRetainedAuthorizationRetry(true, false,
-                        Game.RETAINED_AUTHORIZATION_UNCONFIRMED));
-        assertFalse(Game.offersRetainedAuthorizationRetry(false, true,
-                Game.RETAINED_AUTHORIZATION_UNCONFIRMED));
-        assertFalse(Game.offersRetainedAuthorizationRetry(false, false,
-                "retained_switch_context_changed"));
     }
 
     @Test public void childIsNotOfferedToEndThePreviousLaunchGame() throws IOException {
@@ -1659,10 +1535,9 @@ public class GameTransitionCancelContractTest {
 
         assertTrue(render.contains("offersPreviousGameStop(isChildSession())"));
         assertTrue(render.contains("R.string.transition_previous_game_running_title_named"));
-        assertTrue(text.contains("&& offersPreviousGameStop(isChildSession())) {\n"
+        assertTrue(text.contains("&& SessionOrchestrator.offersPreviousGameStop(\n"
+                + "                                            isChildSession())) {\n"
                 + "                                transitionCoordinator.stopPreviousGame();"));
-        assertTrue(Game.offersPreviousGameStop(false));
-        assertFalse(Game.offersPreviousGameStop(true));
     }
 
     @Test public void failedStartObservationSurvivesRecreation() throws IOException {
@@ -1697,18 +1572,7 @@ public class GameTransitionCancelContractTest {
 
     @Test public void restartAfterADeadTransportNeverStartsARunningGameTwice()
             throws IOException {
-        assertEquals(LaunchTransitionType.GAME_CONNECTION,
-                Game.restartType(LaunchTransitionType.GAME, true, true));
-        // Not confirmed ready, or an uncommitted launch the dead transport cleans up.
-        assertEquals(LaunchTransitionType.GAME,
-                Game.restartType(LaunchTransitionType.GAME, false, true));
-        assertEquals(LaunchTransitionType.GAME,
-                Game.restartType(LaunchTransitionType.GAME, true, false));
-        for (LaunchTransitionType type : LaunchTransitionType.values()) {
-            if (type != LaunchTransitionType.GAME) {
-                assertEquals(type, Game.restartType(type, true, true));
-            }
-        }
+        // The rule: LaunchTransitionControllerTest.restartOfAConfirmedCommittedGameOnlyReconnectsToIt.
         String game = source();
         String restart = game.substring(game.indexOf("private void restartStreamForRetry()"),
                 game.indexOf("private boolean retryStillCurrent("));

@@ -54,19 +54,8 @@ public class SessionFailureControlRejectionTest {
         assertTrue(!SessionFailure.CONTROL_REJECTED.offersHardTerminate());
         assertTrue(pending > 0);
         assertTrue(failed.indexOf("R.string.console_hard_terminate_session", pending) > 0);
-        assertTrue(failed.indexOf("ConsoleActivity.offerHardTerminate(hostId)", pending) > 0);
-        String console = source("console/ConsoleActivity.java");
-        String resume = console.substring(console.indexOf("protected void onResume()"));
-        String offer = resume.substring(0, resume.indexOf("refreshChildBindingStates();"))
-                .replace("\r\n", "\n");
-        // Honoured only at once, on that host's own screen, never over a gate or the picker.
-        assertTrue(offer.contains("- hardTerminateOfferAt <= HARD_TERMINATE_OFFER_WINDOW_MS) {"));
-        int shown = offer.indexOf("if (hardTerminateOffer.equalsIgnoreCase(selectedHostUuid)\n"
-                + "                        && !hostSelectionVisible && profileGateHostUuid == null) {");
-        assertTrue(shown > 0 && shown < offer.indexOf(
-                "confirmHardTerminateSession(currentHost(hardTerminateOffer))"));
-        assertTrue(console.contains("HARD_TERMINATE_OFFER_WINDOW_MS = 10_000L;"));
-        assertTrue(console.contains("hardTerminateOfferAt = SystemClock.uptimeMillis();"));
+        assertTrue(failed.indexOf("ConsoleActivity.offerHardTerminate(Game.this, hostId)",
+                pending) > 0);
         for (String strings : new String[] {"values", "values-pl"}) {
             assertTrue(new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(
                     "src/main/res/" + strings + "/strings.xml")),

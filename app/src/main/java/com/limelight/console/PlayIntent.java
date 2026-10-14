@@ -174,10 +174,6 @@ final class PlayIntent {
                 hdrSupported, "", "", "", false, false);
     }
 
-    static PlayIntent autoWarmUp(String hostId) {
-        return autoWarmUp(hostId, GatewayConnection.DEFAULT_PROFILE_ID);
-    }
-
     static PlayIntent autoWarmUp(String hostId, String profileId) {
         return new PlayIntent(hostId, profileId, Kind.AUTO_WARM_UP, 0,
                 PlayniteTargetResolver.MOONWAKER_STREAM_NAME,

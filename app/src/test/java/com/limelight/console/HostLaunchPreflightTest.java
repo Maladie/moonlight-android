@@ -519,7 +519,7 @@ public class HostLaunchPreflightTest {
     }
 
     private static HostLaunchPreflight.Request warmUp() {
-        return HostLaunchPreflight.Request.from(PlayIntent.autoWarmUp("host"),
+        return HostLaunchPreflight.Request.from(PlayIntent.autoWarmUp("host", "default"),
                 HostLaunchPreflight.Action.WARM_UP);
     }
 

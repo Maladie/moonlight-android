@@ -104,6 +104,33 @@ public final class LaunchTransitionController {
         return gameReadyConfirmed;
     }
 
+    /**
+     * The transition a restart after a dead transport begins: a game this controller saw
+     * confirmed ready and whose launch was committed keeps running without its transport, so
+     * the restart connects to it again and never starts it a second time.
+     */
+    public synchronized LaunchTransitionType restartType(LaunchTransitionType type,
+                                                         boolean launchCommitted) {
+        return type == LaunchTransitionType.GAME && gameReadyConfirmed && launchCommitted
+                ? LaunchTransitionType.GAME_CONNECTION : type;
+    }
+
+    /**
+     * The transition a failed switch keeps: its game is observed again; a stream carrying none
+     * is the plain neutral stream again, never a game observation that can only time out.
+     */
+    public static LaunchTransitionType retainedRecoveryType(String oldGameId) {
+        return oldGameId == null || oldGameId.isEmpty()
+                ? LaunchTransitionType.GENERIC : LaunchTransitionType.GAME_CONNECTION;
+    }
+
+    /** A revealed game start recreates as an observation: its start never replays. */
+    public static LaunchTransitionType recoveredTransitionType(
+            LaunchTransitionType runtimeType, boolean restoredRevealed) {
+        return restoredRevealed && runtimeType == LaunchTransitionType.GAME
+                ? LaunchTransitionType.GAME_CONNECTION : runtimeType;
+    }
+
     public static boolean isGameStartPending(LaunchTransitionState state) {
         return state == LaunchTransitionState.GAME_START_REQUESTED
                 || state == LaunchTransitionState.GAME_STARTING

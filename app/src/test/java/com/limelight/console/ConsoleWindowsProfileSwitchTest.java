@@ -113,7 +113,7 @@ public class ConsoleWindowsProfileSwitchTest {
                 "private void showHostSelectionOptions(ComputerDetails host)",
                 "static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(");
         String close = between(source,
-                "@Override public SessionOrchestrator.CloseResult closePreviousSession(",
+                "@Override public SessionOrchestrator.CloseResult switchRetained(",
                 "@Override public void launch(PlayIntent intent");
         assertFalse(menu.contains("boolean childProfile"));
         assertTrue(new String(Files.readAllBytes(Paths.get(
@@ -125,10 +125,10 @@ public class ConsoleWindowsProfileSwitchTest {
                 + "        unpair.setTextColor"));
         assertFalse(menu.contains("getString(R.string.pcview_menu_test_network), !childProfile"));
         assertFalse(close.contains("if (isChildIntent(intent))"));
+        // Which path a child's close takes is the table's (SessionTransitionTableTest
+        // childNeverAdoptsAParentGameButSwitchesAStreamThatCarriesIt); the effects only run it.
         assertTrue(close.contains("switchRetainedProviderGame"));
-        assertTrue(close.contains("boolean destructiveCloseAuthorized"));
         assertFalse(close.contains("isChildIntent("));
-        assertTrue(close.contains("if (!destructiveCloseAuthorized)"));
     }
 
     @Test public void everyTerminalPathRefreshesAndStaleResultsCannotTouchUi()

@@ -9,8 +9,6 @@ import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.session.SessionModel;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,8 +26,6 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 thread.setDaemon(true);
                 return thread;
             });
-    private static final Object PROVIDER_OWNERS_LOCK = new Object();
-    private static final Map<String, ProviderOwner> PROVIDER_OWNERS = new HashMap<>();
 
     interface Gateway {
         PlayniteTransitionGateway.Snapshot snapshot() throws IOException;
@@ -99,6 +95,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         void onInstallationVerificationFailed();
     }
 
+    private final ProviderOwnership owners;
     private final LaunchTransitionSpec transitionSpec;
     private final LaunchTransitionController transitionController;
     private final Gateway gateway;
@@ -131,23 +128,16 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private boolean previousGameStopFailed;
     private long epoch;
 
+    /** @param owners the process's provider owners ({@code SessionModel.providerOwnership()}) */
     public ConsoleStreamTransitionCoordinator(
-            LaunchTransitionSpec transitionSpec,
-            LaunchTransitionController transitionController,
-            PlayniteTransitionGateway gateway,
-            Scheduler scheduler,
-            Callbacks callbacks) {
-        this(transitionSpec, transitionController, gateway, scheduler, callbacks, 0L);
-    }
-
-    public ConsoleStreamTransitionCoordinator(
+            ProviderOwnership owners,
             LaunchTransitionSpec transitionSpec,
             LaunchTransitionController transitionController,
             PlayniteTransitionGateway gateway,
             Scheduler scheduler,
             Callbacks callbacks,
             long launchStartedAtMillis) {
-        this(transitionSpec, transitionController, adapt(gateway),
+        this(owners, transitionSpec, transitionController, adapt(gateway),
                 Executors.newFixedThreadPool(2),
                 PROVIDER_ACTIONS,
                 android.os.SystemClock::uptimeMillis,
@@ -155,6 +145,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     ConsoleStreamTransitionCoordinator(
+            ProviderOwnership owners,
             LaunchTransitionSpec transitionSpec,
             LaunchTransitionController transitionController,
             Gateway gateway,
@@ -163,11 +154,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             Sleeper sleeper,
             Scheduler scheduler,
             Callbacks callbacks) {
-        this(transitionSpec, transitionController, gateway, executor, executor,
+        this(owners, transitionSpec, transitionController, gateway, executor, executor,
                 clock, 0L, sleeper, scheduler, callbacks);
     }
 
     ConsoleStreamTransitionCoordinator(
+            ProviderOwnership owners,
             LaunchTransitionSpec transitionSpec,
             LaunchTransitionController transitionController,
             Gateway gateway,
@@ -178,6 +170,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             Sleeper sleeper,
             Scheduler scheduler,
             Callbacks callbacks) {
+        this.owners = owners;
         this.transitionSpec = transitionSpec;
         this.transitionController = transitionController;
         this.gateway = gateway;
@@ -262,8 +255,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
      * owner (STARTING or STARTED, cleanup not claimed) without a holder for the next presentation.
      */
     public void detachForRecreation() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             // An observation owner a switch or recovery transferred has no holder yet: this
             // presentation is its custodian, so its exact process survives the recreation.
             if (owner != null && owner.matches(transitionSpec) && (owner.holder == this
@@ -282,8 +275,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     public boolean adoptRecreatedProviderOwnership() {
         if (transitionSpec.playniteGameId.isEmpty()) return true;
         boolean pendingAdopted;
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner == null || !owner.matches(transitionSpec) || owner.holder != null
                     || owner.cleanupClaimed || owner.cleanupAfterStart) return false;
             owner.holder = this;
@@ -302,22 +295,22 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
      * The retained transport ended with no presentation holding this host's provider owner:
      * stop the exact started process, or defer until an in-flight start returns.
      */
-    public static void endDetachedOwner(String hostId) {
+    public static void endDetachedOwner(ProviderOwnership owners, String hostId) {
         ConsoleStreamTransitionCoordinator custodian;
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(normalizeOwnerPart(hostId));
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(normalizeOwnerPart(hostId));
             if (owner == null || owner.holder != null || owner.custodian == null
                     || owner.cleanupClaimed) return;
             // A committed launch is never stopped for its transport: its owner simply ends.
             if (!owner.pending && !owner.starting && owner.custodian.providerLaunchCommitted()) {
-                PROVIDER_OWNERS.remove(normalizeOwnerPart(hostId));
+                owners.byHost.remove(normalizeOwnerPart(hostId));
                 return;
             }
             // No presentation remains to observe: cleanup may bind the exact process from one
             // authenticated snapshot of this attempt.
             owner.bindOnCleanup = true;
             if (owner.pending) {
-                PROVIDER_OWNERS.remove(normalizeOwnerPart(hostId));
+                owners.byHost.remove(normalizeOwnerPart(hostId));
                 return;
             }
             if (owner.starting) {
@@ -344,16 +337,16 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     /** Stops observation and releases only this exact provider attempt. */
     public boolean detachForSwitch() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = providerOwnerKey();
-            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            ProviderOwner owner = owners.byHost.get(key);
             if (owner == null) {
                 if (transitionSpec.type != LaunchTransitionType.GAME_CONNECTION) {
                     return false;
                 }
             } else {
                 if (!owner.matches(transitionSpec) || owner.starting || owner.pending) return false;
-                PROVIDER_OWNERS.remove(key);
+                owners.byHost.remove(key);
             }
         }
         stop();
@@ -362,12 +355,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     /** Stops observation after an exact game stop, including an already-cleared owner. */
     public boolean detachAfterConfirmedGameStop() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = providerOwnerKey();
-            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            ProviderOwner owner = owners.byHost.get(key);
             if (owner != null) {
                 if (!owner.matches(transitionSpec)) return false;
-                PROVIDER_OWNERS.remove(key);
+                owners.byHost.remove(key);
             }
         }
         stop();
@@ -377,10 +370,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     /** Adopts a detached owner for an observation-only replacement attempt. */
     public boolean adoptDetachedProviderOwnership() {
         if (transitionSpec.playniteGameId.isEmpty()) return true;
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = providerOwnerKey();
-            if (PROVIDER_OWNERS.containsKey(key)) return false;
-            PROVIDER_OWNERS.put(key, new ProviderOwner(transitionSpec));
+            if (owners.byHost.containsKey(key)) return false;
+            owners.byHost.put(key, new ProviderOwner(transitionSpec));
         }
         return true;
     }
@@ -396,15 +389,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 || !transitionSpec.profileId.equals(replacement.transitionSpec.profileId)) {
             return transitionSpec.playniteGameId.isEmpty();
         }
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = providerOwnerKey();
-            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            ProviderOwner owner = owners.byHost.get(key);
             if (owner != null && !owner.matches(transitionSpec)) return false;
             if (owner != null && (owner.cleanupClaimed || owner.starting || owner.pending)) {
                 return false;
             }
             if (owner == null && startsProviderGame()) return false;
-            PROVIDER_OWNERS.put(key, owner == null
+            owners.byHost.put(key, owner == null
                     ? new ProviderOwner(replacement.transitionSpec)
                     : owner.transferTo(replacement.transitionSpec));
         }
@@ -424,8 +417,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     /** Returns the exact, unclaimed process owned by this provider observation. */
     public ProviderProcessIdentity providerProcessIdentityForTransfer() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner == null || !owner.matches(transitionSpec) || owner.cleanupClaimed
                     || owner.starting || owner.pending
                     || owner.processToken.isEmpty() || owner.processId <= 0) return null;
@@ -462,15 +455,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 || !replacement.transitionSpec.profileId.equals(authorization.profileId)) {
             return false;
         }
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = providerOwnerKey();
-            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            ProviderOwner owner = owners.byHost.get(key);
             if (owner == null || !owner.matches(transitionSpec) || owner.cleanupClaimed
                     || !owner.processToken.equals(authorization.processToken)
                     || owner.processId != authorization.processId
                     || !model.consumeProviderTransferAuthorization(
                     authorization)) return false;
-            PROVIDER_OWNERS.put(key, owner.transferTo(replacement.transitionSpec));
+            owners.byHost.put(key, owner.transferTo(replacement.transitionSpec));
         }
         stop();
         return true;
@@ -497,15 +490,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
      * (endDetachedOwner). A recreation detach clears the holder first, so its owner stays.
      */
     private void settleClosedOwner() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = providerOwnerKey();
-            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            ProviderOwner owner = owners.byHost.get(key);
             if (owner == null || !owner.matches(transitionSpec) || owner.pending
                     || owner.cleanupClaimed) return;
             boolean held = owner.holder == this;
             if (!held && (owner.holder != null || owner.custodian != null)) return;
             if (providerLaunchCommitted()) {
-                if (!owner.starting) PROVIDER_OWNERS.remove(key);
+                if (!owner.starting) owners.byHost.remove(key);
             } else if (held && !providerCleanupRequested()) {
                 owner.holder = null;
                 owner.custodian = this;
@@ -1266,8 +1259,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     enum OwnerState { NONE, PENDING, STARTING, STARTED }
 
     OwnerState ownerState() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner == null || !owner.matches(transitionSpec)) return OwnerState.NONE;
             if (owner.pending) return OwnerState.PENDING;
             return owner.starting ? OwnerState.STARTING : OwnerState.STARTED;
@@ -1279,17 +1272,17 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
      * cleanup must run first, so the worker decides at run time exactly as before.
      */
     boolean reservePendingStart(long actionEpoch) {
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             synchronized (this) {
                 // Atomic with the reservation: a cleanup that already won leaves no entry.
                 if (!isCurrent(actionEpoch) || providerCleanupRequested) return false;
-                ProviderOwner current = PROVIDER_OWNERS.get(providerOwnerKey());
+                ProviderOwner current = owners.byHost.get(providerOwnerKey());
                 if (current != null) return true;
                 ProviderOwner reserved = new ProviderOwner(transitionSpec);
                 reserved.pending = true;
                 reserved.holder = this;
                 reserved.custodian = this;
-                PROVIDER_OWNERS.put(providerOwnerKey(), reserved);
+                owners.byHost.put(providerOwnerKey(), reserved);
                 return true;
             }
         }
@@ -1301,10 +1294,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     /** Claims the one external start of a pending reservation this coordinator holds. */
     private boolean claimPendingStart(long actionEpoch) {
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             synchronized (this) {
                 if (!isCurrent(actionEpoch) || providerCleanupRequested) return false;
-                ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+                ProviderOwner owner = owners.byHost.get(providerOwnerKey());
                 if (owner == null || !owner.matches(transitionSpec) || !owner.pending
                         || owner.holder != this || owner.cleanupClaimed) return false;
                 owner.pending = false;
@@ -1317,12 +1310,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     /** A never-invoked reservation needs no stop; it is simply released. */
     private void releaseOwnPendingStart() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = providerOwnerKey();
-            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            ProviderOwner owner = owners.byHost.get(key);
             if (owner != null && owner.matches(transitionSpec) && owner.pending
                     && (owner.holder == this || owner.custodian == this)) {
-                PROVIDER_OWNERS.remove(key);
+                owners.byHost.remove(key);
             }
         }
     }
@@ -1332,8 +1325,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     private boolean holdStartingOwner() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner == null || !owner.matches(transitionSpec) || !owner.starting
                     || (owner.holder != null && owner.holder != this)) return false;
             owner.holder = this;
@@ -1344,8 +1337,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     /** The same attempt reused by a later presentation takes a holderless owner's custody. */
     private void holdStartedOwner() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner == null || !owner.matches(transitionSpec) || owner.starting
                     || owner.pending || owner.cleanupClaimed || owner.holder != null) return;
             owner.holder = this;
@@ -1355,17 +1348,17 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     /** Reserves the exact owner in STARTING before the one external start call. */
     private boolean reserveProviderStart(long actionEpoch) {
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             synchronized (this) {
                 if (!isCurrent(actionEpoch) || providerCleanupRequested) return false;
-                ProviderOwner current = PROVIDER_OWNERS.get(providerOwnerKey());
+                ProviderOwner current = owners.byHost.get(providerOwnerKey());
                 if (current != null && (current.cleanupClaimed || current.starting
                         || current.pending)) return false;
                 ProviderOwner reserved = new ProviderOwner(transitionSpec);
                 reserved.starting = true;
                 reserved.holder = this;
                 reserved.custodian = this;
-                PROVIDER_OWNERS.put(providerOwnerKey(), reserved);
+                owners.byHost.put(providerOwnerKey(), reserved);
                 providerStartInvoked = true;
                 return true;
             }
@@ -1373,13 +1366,13 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     /** Settles the reservation by spec identity and delivers the result to its holder once. */
-    private static void completeReservedStart(LaunchTransitionSpec spec, Exception startError) {
+    private void completeReservedStart(LaunchTransitionSpec spec, Exception startError) {
         ConsoleStreamTransitionCoordinator holder;
         ConsoleStreamTransitionCoordinator compensate = null;
         boolean bindFromSnapshot = false;
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = normalizeOwnerPart(spec.hostId);
-            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            ProviderOwner owner = owners.byHost.get(key);
             if (owner == null || !owner.matches(spec) || !owner.starting) return;
             holder = owner.holder;
             bindFromSnapshot = owner.bindOnCleanup;
@@ -1392,12 +1385,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 } else if (holder != null && holder.isClosed()) {
                     // A closed holder gets no result: a committed start is settled now, any
                     // other stays with its custodian (settleClosedOwner).
-                    if (holder.providerLaunchCommitted()) PROVIDER_OWNERS.remove(key);
+                    if (holder.providerLaunchCommitted()) owners.byHost.remove(key);
                     else owner.holder = null;
                     holder = null;
                 }
             } else {
-                PROVIDER_OWNERS.remove(key);
+                owners.byHost.remove(key);
                 if (owner.cleanupAfterStart) {
                     compensate = owner.custodian;
                     holder = null;
@@ -1413,8 +1406,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     /** True when our own in-flight start must finish before its exact process can be stopped. */
     private boolean deferCleanupUntilStartCompletes() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner == null || !owner.matches(transitionSpec) || !owner.starting
                     || (owner.holder != this && owner.custodian != this)) return false;
             owner.cleanupAfterStart = true;
@@ -1431,8 +1424,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 transitionSpec.playniteGameId, snapshot.gameState, snapshot.gameId);
         if (exactGame == null || exactGame.isEmpty() || snapshot.processId <= 0
                 || !snapshot.processToken.matches("[0-9a-f]{64}")) return;
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner != null && owner.matches(transitionSpec)) {
                 owner.bindProcessIdentity(snapshot.processToken, snapshot.processId);
             }
@@ -1440,8 +1433,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     private String claimCurrentAttemptProcessToken() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner == null || !owner.matches(transitionSpec)
                     || owner.cleanupClaimed || owner.processToken.isEmpty()) return "";
             owner.cleanupClaimed = true;
@@ -1450,8 +1443,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     private void releaseCurrentAttemptCleanupClaim() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+        synchronized (owners) {
+            ProviderOwner owner = owners.byHost.get(providerOwnerKey());
             if (owner != null && owner.matches(transitionSpec)) {
                 owner.cleanupClaimed = false;
             }
@@ -1459,18 +1452,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     private void clearCurrentAttemptOwner() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
+        synchronized (owners) {
             String key = providerOwnerKey();
-            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            ProviderOwner owner = owners.byHost.get(key);
             if (owner != null && owner.matches(transitionSpec)) {
-                PROVIDER_OWNERS.remove(key);
+                owners.byHost.remove(key);
             }
-        }
-    }
-
-    static void resetProviderOwnershipForTests() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            PROVIDER_OWNERS.clear();
         }
     }
 
@@ -1619,7 +1606,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
     }
 
-    private static final class ProviderOwner {
+    static final class ProviderOwner {
         final String transitionId;
         final String gameId;
         final String profileId;

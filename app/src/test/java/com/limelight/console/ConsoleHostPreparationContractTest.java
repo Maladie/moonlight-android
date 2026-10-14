@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import static com.limelight.GameAutoWarmUpContractTest.assertOrdered;
 import static org.junit.Assert.*;
 
 public class ConsoleHostPreparationContractTest {
@@ -43,13 +44,12 @@ public class ConsoleHostPreparationContractTest {
                 + "                return ConsoleActionCatalog.isRememberedPaired("
                 + "currentHost(hostId));"));
         assertFalse(source.contains("canPrepareHost"));
-        assertTrue(prepare.indexOf("if (managerBinder == null)")
-                < prepare.indexOf("sessionOrchestrator.prepareHost(host.uuid,"));
+        assertOrdered(prepare, "if (managerBinder == null)",
+                "sessionOrchestrator.prepareHost(host.uuid,");
         assertTrue(prepare.contains("pendingHostPreparation = host.uuid;\n                return;"));
         String dispatch = section(source, "private void dispatchPendingHostPreparation()",
                 "private void armPendingWarmUpRelay()");
-        assertTrue(dispatch.indexOf("pendingHostPreparation = null;")
-                < dispatch.indexOf("prepareSelectedHost("));
+        assertOrdered(dispatch, "pendingHostPreparation = null;", "prepareSelectedHost(");
         assertTrue(dispatch.contains("!hostSelectionVisible && hostId.equals(selectedHostUuid)"));
         assertTrue(source.contains("managerBinder = binder;\n                    dispatchPendingHostPreparation();"));
         assertTrue(source.contains("private void selectHost(ComputerDetails host, boolean focusApps) {\n        pendingHostPreparation = null;"));
@@ -60,15 +60,18 @@ public class ConsoleHostPreparationContractTest {
         assertTrue(pause.contains("childEligibilityLaunchToken++"));
         String initial = section(source, "private void resolveInitialHostSelection()",
                 "private void showHostSelection(");
-        assertTrue(initial.indexOf("if (!active || initialHostSelectionResolved) return;")
-                < initial.indexOf("initialHostSelectionResolved = true;"));
+        assertOrdered(initial, "if (!active || initialHostSelectionResolved) return;",
+                "initialHostSelectionResolved = true;");
         assertTrue(source.contains("active = true;\n        if (initialHostsLoaded) resolveInitialHostSelection();"));
-        assertTrue(prepare.indexOf("if (!active) return;")
-                < prepare.indexOf("pendingHostPreparation = host.uuid;"));
+        assertOrdered(prepare, "if (!active) return;", "pendingHostPreparation = host.uuid;");
         assertTrue(dispatch.contains("if (active && hostId != null"));
+        // Whether a prepared warm-up may run (another app, its fresh session) is the table's:
+        // SessionTransitionTableTest warmUpNeverRunsBesideAnotherAppAndOwnsOnlyAnIdleHostsSession.
         String fresh = source.substring(source.indexOf("ready = refreshWarmUpHost(host)"));
-        assertTrue(fresh.indexOf("!ConsoleActionCatalog.isPaired(ready)")
-                < fresh.indexOf("new SessionOrchestrator.PreparedWarmUp("));
+        assertOrdered(fresh, "!ConsoleActionCatalog.isPaired(ready)",
+                "new SessionOrchestrator.PreparedWarmUp(");
+        assertFalse(fresh.substring(0, fresh.indexOf("new SessionOrchestrator.PreparedWarmUp("))
+                .contains("hostRunningAppId"));
         String retained = section(source, "@Override public NvApp verifiedRetainedTarget(",
                 "@Override public List<NvApp> refreshApps(");
         assertTrue(retained.contains("request.action != HostLaunchPreflight.Action.SWITCH_RETAINED"));
@@ -120,9 +123,8 @@ public class ConsoleHostPreparationContractTest {
         String resume = section(console, "private String startResumeActivity(",
                 "private void failClosedActorHandoff(");
         assertFalse(resume.contains("warmUpClientAttempt <= 0L"));
-        assertTrue(resume.indexOf("return \"retained_mismatch\"")
-                < resume.indexOf("applyWarmUpIntent("));
-        assertTrue(resume.indexOf("applyWarmUpIntent(") < resume.indexOf("startActivity(resume)"));
+        assertOrdered(resume, "return \"retained_mismatch\"", "applyWarmUpIntent(",
+                "startActivity(resume)");
         assertTrue(console.contains("return warmUpCarriesPendingGame(\n"
                 + "                    warmUpClientAttempt, warmUpClientHostId, s.records.pending, s); }"));
     }

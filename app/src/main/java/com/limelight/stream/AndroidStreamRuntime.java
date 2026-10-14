@@ -299,6 +299,7 @@ public final class AndroidStreamRuntime {
 
         @Override public void runtimeEnded() {
             com.limelight.console.ConsoleStreamTransitionCoordinator.endDetachedOwner(
+                    sessionModel().providerOwnership(),
                     launchIntent().getStringExtra(Game.EXTRA_PC_UUID));
         }
 

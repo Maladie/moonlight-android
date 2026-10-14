@@ -737,18 +737,29 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final ConcurrentHashMap<String, ResolvedArtwork> resolvedPlayniteArtwork =
             new ConcurrentHashMap<>();
     private static volatile InitialLibraryPresentation initialLibraryPresentation;
-    private static final long HARD_TERMINATE_OFFER_WINDOW_MS = 10_000L;
-    private static volatile String hardTerminateOfferHostId = "";
-    private static volatile long hardTerminateOfferAt;
+    static final String EXTRA_HARD_TERMINATE_HOST_ID =
+            "com.limelight.console.HARD_TERMINATE_HOST_ID";
+    private static final String STATE_SUPPRESS_AUTO_WARM_UP = "suppressAutoWarmUp";
+    /** The only owner of the return Intent's requests; the Intent is never read again. */
+    private final ConsoleReturnRequests returnRequests = new ConsoleReturnRequests();
 
     /**
-     * The stream error screen offers the host panel's hard close: its confirmation opens when
-     * the console is shown again at once, on that host's own screen. Otherwise the offer
-     * lapses and the action stays in the host panel.
+     * The stream error screen offers the host panel's hard close: the console it returns to
+     * opens its confirmation on that host's own screen. Otherwise the action stays in the host
+     * panel.
      */
-    public static void offerHardTerminate(String hostId) {
-        hardTerminateOfferAt = SystemClock.uptimeMillis();
-        hardTerminateOfferHostId = hostId == null ? "" : hostId;
+    public static void offerHardTerminate(Activity from, String hostId) {
+        Intent console = new Intent(from, ConsoleActivity.class);
+        console.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        console.putExtra(EXTRA_SUPPRESS_AUTO_WARM_UP, true);
+        console.putExtra(EXTRA_HARD_TERMINATE_HOST_ID, hostId == null ? "" : hostId);
+        from.startActivity(console);
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        returnRequests.delivered(intent.getBooleanExtra(EXTRA_SUPPRESS_AUTO_WARM_UP, false),
+                intent.getStringExtra(EXTRA_HARD_TERMINATE_HOST_ID));
     }
 
     private static final class InitialLibraryPresentation {
@@ -945,6 +956,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     protected void onCreate(Bundle state) {
         sessionModel = SessionModel.of(this);
+        returnRequests.created(state != null,
+                state != null && state.getBoolean(STATE_SUPPRESS_AUTO_WARM_UP, false),
+                getIntent().getBooleanExtra(EXTRA_SUPPRESS_AUTO_WARM_UP, false),
+                getIntent().getStringExtra(EXTRA_HARD_TERMINATE_HOST_ID));
         if (isStreamHome()) setTheme(useTransparentWarmUpStartingWindow()
                 ? R.style.ConsoleStreamHomeWarmUpTheme
                 : R.style.ConsoleStreamHomeTheme);
@@ -1275,10 +1290,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         active = true;
         if (initialHostsLoaded) resolveInitialHostSelection();
-        String hardTerminateOffer = hardTerminateOfferHostId;
-        hardTerminateOfferHostId = "";
-        if (!hardTerminateOffer.isEmpty() && SystemClock.uptimeMillis()
-                - hardTerminateOfferAt <= HARD_TERMINATE_OFFER_WINDOW_MS) {
+        String hardTerminateOffer = returnRequests.takeHardTerminateOffer();
+        if (!hardTerminateOffer.isEmpty()) {
             // ponytail: also dropped when this console was recreated and its host binder is
             // not connected yet; the action stays in the host panel.
             mainHandler.post(() -> {
@@ -1886,6 +1899,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     protected void onSaveInstanceState(Bundle outState) {
         outState.putBoolean(STATE_WARM_UP_RELAY_DISPATCHED,
                 warmUpRelayDispatched);
+        outState.putBoolean(STATE_SUPPRESS_AUTO_WARM_UP,
+                returnRequests.suppressesAutoWarmUp());
         super.onSaveInstanceState(outState);
     }
 
@@ -3677,10 +3692,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void prepareSelectedHost(ComputerDetails host) {
         if (!active) return;
-        if (getIntent().getBooleanExtra(EXTRA_SUPPRESS_AUTO_WARM_UP, false)) {
-            getIntent().removeExtra(EXTRA_SUPPRESS_AUTO_WARM_UP);
-            return;
-        }
+        if (returnRequests.takeSuppressAutoWarmUp()) return;
         if (sessionOrchestrator != null
                 && ConsoleActionCatalog.isRememberedPaired(host)
                 && HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid)) {
@@ -12530,25 +12542,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    /**
-     * A stream that carries no game holds no process of its own: it takes a game only while the
-     * host names none or verifiably runs exactly that one (the proof the stream's own adoption
-     * needs). Another running game is a replacement the user confirms, never something a switch
-     * stops; a named game without that proof is refreshed first ({@link #retainedGameUnproven}).
-     * A fact for the orchestrator's table; its reads move into the projection in K5.2.
-     */
-    static boolean switchKeepsHostGame(String retainedGameId, SessionSnapshot projection,
-                                       String gameId) {
-        return !retainedGameId.isEmpty() || projection.playniteGameId.isEmpty()
-                || projection.verifiedRunningGameId().equals(SessionSnapshot.normalize(gameId));
-    }
-
-    /** The live stream carries no game and the host names one without an exact process proof. */
-    static boolean retainedGameUnproven(String retainedGameId, SessionSnapshot projection) {
-        return retainedGameId.isEmpty() && !projection.playniteGameId.isEmpty()
-                && projection.verifiedRunningGameId().isEmpty();
-    }
-
     private ComputerDetails refreshWarmUpHost(ComputerDetails host) throws IOException {
         if (host == null || managerBinder == null) throw new IOException("Host unavailable");
         NvHTTP connection = new NvHTTP(
@@ -12612,15 +12605,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         ? null : SessionFailure.HOST_GATEWAY_TIMEOUT;
             }
 
-            @Override public SessionSnapshot resolve(String hostId) {
-                return resolve(selectedProfileKey(hostId));
-            }
-
             @Override public SessionSnapshot resolve(HostProfileKey profileKey) {
-                if (profileKey == null) {
-                    return SessionSnapshot.pending("", GatewayConnection.DEFAULT_PROFILE_ID,
-                            GatewayConnection.DEFAULT_PROFILE_ID);
-                }
                 String hostId = profileKey.hostId;
                 ComputerDetails host = currentHost(hostId);
                 if (ConsoleActionCatalog.isOnline(host)
@@ -12676,69 +12661,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 confirmQuitAction(accepted);
             }
 
-            @Override public boolean canAttemptRetainedSwitch(PlayIntent intent) {
-                if (intent.kind != PlayIntent.Kind.PLAYNITE_GAME) return false;
+            @Override public SessionOrchestrator.Retained retained(PlayIntent intent) {
                 ComputerDetails host = currentHost(intent.hostId);
-                SessionModel.Snapshot retained =
-                        sessionModel.snapshot();
-                if (!retained.executionProfileId.equals(executionProfileId(intent.hostId, intent.profileId))) return false;
-                boolean preparing = retained.state
-                        == SessionModel.State.PREPARING;
-                NvApp retainedTarget = PlayniteTargetResolver.findById(
-                        preparing && host != null ? loadApps(host, true)
-                                : currentSunshineApps,
-                        retained.appId);
-                if (preparing) {
-                    if (host == null || !retained.hostId.equalsIgnoreCase(host.uuid)) {
-                        return false;
-                    }
-                    if (retained.playniteGameId.isEmpty()) {
-                        return PlayniteTargetResolver.isNeutralStream(retainedTarget)
-                                && sessionModel.canSwitchOrigin(
-                                intent.hostId, executionProfileId(intent.hostId, intent.profileId), retained.appId);
-                    }
-                    SessionSnapshot projection = resolveSessionSnapshot(
-                            host, intent.profileId);
-                    String gameId = projection.playniteGameId;
-                    boolean identityMatches = retained.playniteGameId.isEmpty()
-                            ? projection.observationState
-                            == SessionSnapshot.ObservationState.IDLE
-                            : "VERIFIED".equals(projection.processEvidence)
-                            && gameId.equalsIgnoreCase(retained.playniteGameId);
-                    return identityMatches
-                            && PlayniteTargetResolver.isNeutralStream(retainedTarget)
-                            && sessionModel.canSwitchOrigin(
-                            intent.hostId, executionProfileId(intent.hostId, intent.profileId), retained.appId);
-                }
-                SessionSnapshot projection = host == null ? null
-                        : resolveSessionSnapshot(host, intent.profileId);
-                return (preparing || retained.state
-                        == SessionModel.State.HOME_LIVE
-                        || retained.state == SessionModel.State.PARKED_LIVE)
-                        && projection != null
-                        && (preparing || projection.hostRunningAppId == retained.appId)
-                        && switchKeepsHostGame(retained.playniteGameId, projection,
-                        intent.playniteGameId)
-                        && retained.hostId.equalsIgnoreCase(intent.hostId)
-                        && retained.executionProfileId.equals(executionProfileId(intent.hostId, intent.profileId))
-                        && (preparing || !retained.profileId.equals(intent.profileId)
-                                || !retained.playniteGameId.equalsIgnoreCase(intent.playniteGameId))
-                        && PlayniteTargetResolver.isNeutralStream(retainedTarget)
-                        && sessionModel.canSwitchOrigin(
-                                intent.hostId, executionProfileId(intent.hostId, intent.profileId), retained.appId);
+                SessionModel.Snapshot stream = sessionModel.snapshot();
+                String execution = executionProfileId(intent);
+                NvApp streamTarget = PlayniteTargetResolver.findById(
+                        stream.state == SessionModel.State.PREPARING && host != null
+                                ? loadApps(host, true) : currentSunshineApps,
+                        stream.appId);
+                return new SessionOrchestrator.Retained(stream, execution,
+                        host == null ? null : resolveSessionSnapshot(host, intent.profileId),
+                        PlayniteTargetResolver.isNeutralStream(streamTarget),
+                        sessionModel.canSwitchOrigin(intent.hostId, execution, stream.appId),
+                        sessionModel.hasAttachedPresentation());
             }
 
-            @Override public boolean retainedGameUnproven(PlayIntent intent) {
-                ComputerDetails host = currentHost(intent.hostId);
-                SessionModel.Snapshot retained = sessionModel.snapshot();
-                return host != null && intent.kind == PlayIntent.Kind.PLAYNITE_GAME
-                        && (retained.state == SessionModel.State.HOME_LIVE
-                        || retained.state == SessionModel.State.PARKED_LIVE)
-                        && retained.hostId.equalsIgnoreCase(intent.hostId)
-                        && retained.executionProfileId.equals(
-                        executionProfileId(intent.hostId, intent.profileId))
-                        && ConsoleActivity.retainedGameUnproven(retained.playniteGameId,
-                        resolveSessionSnapshot(host, intent.profileId));
+            @Override public SessionModel.Snapshot stream() {
+                return sessionModel.snapshot();
+            }
+
+            @Override public String executionProfileId(PlayIntent intent) {
+                return ConsoleActivity.this.executionProfileId(intent.hostId, intent.profileId);
             }
 
 
@@ -12828,52 +12771,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return result;
             }
 
-            @Override public SessionOrchestrator.CloseResult closePreviousSession(
-                    PlayIntent intent, NvApp target, boolean allowDestructiveClose,
+            @Override public SessionOrchestrator.CloseResult switchRetained(
+                    PlayIntent intent, NvApp target, BooleanSupplier cancelled)
+                    throws SessionFailure.Raised {
+                return switchRetainedProviderGame(intent, target, cancelled);
+            }
+
+            @Override public SessionOrchestrator.CloseResult closeSession(
+                    PlayIntent intent, SessionModel.Snapshot retained,
                     BooleanSupplier cancelled)
                     throws SessionFailure.Raised {
                 ComputerDetails host = currentHost(intent.hostId);
                 if (host == null) throw SessionFailure.CLOSE_HOST_UNAVAILABLE.raise();
-                SessionModel.Snapshot retained = sessionModel.snapshot();
-                int runningAppId = resolveSessionSnapshot(host, intent.profileId)
-                        .hostRunningAppId;
-                // Any actor, a child over its parent's game included, switches on the live
-                // stream without asking (owner 2026-10-14); the host gates the child's start.
-                boolean destructiveCloseAuthorized = allowDestructiveClose;
-                if (intent.kind == PlayIntent.Kind.PLAYNITE_GAME
-                        && PlayniteTargetResolver.isNeutralStream(target)) {
-                    if (retained.appId == target.getAppId()
-                            && canAttemptRetainedSwitch(intent)) {
-                        if (!sessionModel.hasAttachedPresentation()) {
-                            // No Activity presents the retained transport: the switch must
-                            // run inside an attaching Game, never against a headless runtime.
-                            return SessionOrchestrator.CloseResult.PRESENTATION_REQUIRED;
-                        }
-                        try {
-                            return switchRetainedProviderGame(intent, target, cancelled);
-                        } catch (SessionFailure.Raised error) {
-                            if (!allowDestructiveClose
-                                    && (error.reason == SessionFailure.SWITCH_NOT_ELIGIBLE
-                                    || error.reason == SessionFailure.SWITCH_REFUSED)) {
-                                return SessionOrchestrator.CloseResult.NEEDS_CONFIRMATION;
-                            }
-                            throw error;
-                        }
-                    }
-                    if (!destructiveCloseAuthorized) {
-                        return SessionOrchestrator.CloseResult.NEEDS_CONFIRMATION;
-                    }
-                } else if (!destructiveCloseAuthorized) {
-                    return SessionOrchestrator.CloseResult.NEEDS_CONFIRMATION;
-                }
-                boolean exactRetained = destructiveCloseAuthorized
-                        && !retained.streamSessionId.isEmpty()
-                        && retained.hostId.equalsIgnoreCase(intent.hostId)
-                        && retained.executionProfileId.equals(executionProfileId(
-                        intent.hostId, intent.profileId))
-                        && retained.appId == runningAppId;
                 SessionModel.DirectTermination reconnectTermination = null;
-                if (exactRetained) {
+                if (retained != null) {
                     Boolean terminated = terminateLiveRetainedForReplacement(
                             retained, cancelled);
                     if (terminated != null) {
@@ -12900,7 +12811,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                 } else {
                     LimeLog.info("Destructive close path=direct-nonretained host="
-                            + intent.hostId + " app=" + runningAppId);
+                            + intent.hostId);
                 }
                 HostSessionTermination.Outcome outcome = HostSessionTermination.Outcome.FAILED;
                 try {
@@ -13010,35 +12921,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
             @Override public SessionOrchestrator.PreparedWarmUp prepareHost(
                     PlayIntent intent, long request, BooleanSupplier cancelled) {
-                SessionModel.Snapshot retained =
-                        sessionModel.snapshot();
-                boolean localLifecycle = retained.state !=
-                        SessionModel.State.NONE;
-                if (localLifecycle && (!retained.hostId.equalsIgnoreCase(intent.hostId)
-                        || !retained.executionProfileId.equals(executionProfileId(
-                        intent.hostId, intent.profileId)))) {
-                    if (!cancelled.getAsBoolean()) {
-                        setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
-                    }
-                    return null;
-                }
-                if (retained.state == SessionModel.State.TERMINATING) {
-                    if (!cancelled.getAsBoolean()) {
-                        setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
-                    }
-                    return null;
-                }
-                if (retained.hostId.equalsIgnoreCase(intent.hostId)
-                        && retained.executionProfileId.equals(executionProfileId(
-                        intent.hostId, intent.profileId))
-                        && (retained.state == SessionModel.State.HOME_LIVE
-                        || retained.state == SessionModel.State.PARKED_LIVE
-                        || retained.state == SessionModel.State.PREPARING)) {
-                    setWarmUpStatus(intent.hostId, request,
-                            retained.state == SessionModel.State.PREPARING
-                                    ? WARM_UP_PREPARING : WARM_UP_READY);
-                    return null;
-                }
                 ComputerDetails host = currentHost(intent.hostId);
                 if (host == null) {
                     if (!cancelled.getAsBoolean()) {
@@ -13075,15 +12957,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
                     return null;
                 }
-                int readyAppId = resolveSessionSnapshot(ready, intent.profileId)
-                        .hostRunningAppId;
-                if (readyAppId != 0 && readyAppId != result.target.getAppId()) {
-                    setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
-                    return null;
-                }
+                SessionSnapshot readyProjection = resolveSessionSnapshot(ready, intent.profileId);
                 refreshWarmUpObservation(ready, intent.profileId);
                 return new SessionOrchestrator.PreparedWarmUp(
-                        result.target, ready, intent.profileKey, readyAppId == 0);
+                        result.target, ready, intent.profileKey, readyProjection);
+            }
+
+            @Override public void showWarmUpStatus(PlayIntent intent, long request,
+                                                   SessionOrchestrator.WarmUpStart status) {
+                setWarmUpStatus(intent.hostId, request,
+                        status == SessionOrchestrator.WarmUpStart.PREPARING ? WARM_UP_PREPARING
+                                : status == SessionOrchestrator.WarmUpStart.LIVE ? WARM_UP_READY
+                                : WARM_UP_ERROR);
             }
 
             @Override public boolean mayOpenPreparedHost() {
@@ -13091,12 +12976,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return introView == null || !introView.running();
             }
 
+            @Override public SessionResumeManager.PendingSession pendingResume() {
+                return sessionModel.records().pending;
+            }
+
             @Override public void launchPreparedHost(
                     SessionOrchestrator.PreparedWarmUp prepared,
-                    PlayIntent pendingGame, long request) {
+                    SessionOrchestrator.WarmUpLaunch launch,
+                    SessionResumeManager.PendingSession record,
+                    boolean ownsFreshSunshineSession, PlayIntent pendingGame, long request) {
                 if (prepared.host == null || request != warmUpClientAttempt
                         || !prepared.host.uuid.equalsIgnoreCase(warmUpClientHostId)) return;
-                launchPreparedWarmUp(prepared, pendingGame, request);
+                launchPreparedWarmUp(prepared, launch, record, ownsFreshSunshineSession,
+                        pendingGame, request);
             }
 
             @Override public void preparationFailed() {
@@ -13256,9 +13148,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                 }
             }
-            int readyAppId = resolveSessionSnapshot(ready, transitionProfileId)
-                    .hostRunningAppId;
-            if (ready != null && readyAppId != 0 && readyAppId != app.getAppId()
+            if (ready != null && SessionOrchestrator.anotherAppRuns(
+                    resolveSessionSnapshot(ready, transitionProfileId), app.getAppId())
                     && !terminateKnownControlPlane(ready, transitionProfileId,
                     knownProviderGameId(ready)).closed()) {
                 mainHandler.post(() -> {
@@ -13313,6 +13204,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void launchPreparedWarmUp(SessionOrchestrator.PreparedWarmUp prepared,
+                                      SessionOrchestrator.WarmUpLaunch launch,
+                                      SessionResumeManager.PendingSession record,
+                                      boolean ownsFreshSunshineSession,
                                       PlayIntent pendingGame, long request) {
         // The game the host runs is read when the warm-up launches, from the one projection.
         String runningGame = resolveSessionSnapshot(prepared.host,
@@ -13322,25 +13216,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         LaunchTransitionSpec transition = LaunchTransitionSpec.create(
                 prepared.host.uuid, prepared.profileKey.profileId, type,
                 prepared.target.getAppId(), runningGame, System.currentTimeMillis());
-        SessionModel.Snapshot retained =
-                sessionModel.snapshot();
-        SessionResumeManager.PendingSession pending =
-                sessionModel.records().pending;
-        boolean exactPending = pending != null && pending.neutralStreamTarget
-                && pending.hostUuid.equalsIgnoreCase(prepared.host.uuid)
-                && pending.executionProfileId.equals(executionProfileId(
-                prepared.host.uuid, prepared.profileKey.profileId))
-                && pending.appId == prepared.target.getAppId();
-        boolean coordinatorReconnect = exactPending
-                && retained.state == SessionModel.State.RECONNECT_REQUIRED
-                && retained.hostId.equalsIgnoreCase(pending.hostUuid)
-                && retained.executionProfileId.equals(pending.executionProfileId)
-                && retained.appId == pending.appId
-                && retained.streamSessionId.equals(pending.streamSessionId);
-        boolean pendingOnlyReconnect = exactPending && pending.autoResume
-                && retained.state == SessionModel.State.NONE;
-        if (coordinatorReconnect || pendingOnlyReconnect) {
-            Intent resume = SessionResumeManager.buildResumeIntent(this, pending);
+        if (launch == SessionOrchestrator.WarmUpLaunch.RECONNECT) {
+            Intent resume = SessionResumeManager.buildResumeIntent(this, record);
             if (resume == null) {
                 setWarmUpStatus(prepared.host.uuid, request, WARM_UP_ERROR);
                 return;
@@ -13358,7 +13235,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? suspended.suspendId : "";
         launchPreparedStream(prepared.host, prepared.target, null, transition, null,
                 sourceSuspendId, sourceSuspendId.isEmpty() ? "" : suspended.playniteGameId,
-                prepared.ownsFreshSunshineSession, request, pendingGame, false, null);
+                ownsFreshSunshineSession, request, pendingGame, false, null);
     }
 
     private void applyWarmUpIntent(Intent intent, LaunchTransitionSpec transition,
