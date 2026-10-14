@@ -214,7 +214,7 @@ public class ConsoleHostPresentationTest {
         return new SessionSnapshot("host", "default", "default",
                 SessionSnapshot.State.UNCERTAIN, 0, "", false, false, false, false, false, "",
                 false, SessionSnapshot.ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false, display);
     }
 
@@ -222,7 +222,7 @@ public class ConsoleHostPresentationTest {
         return new SessionSnapshot("host", "default", "default", state, 42, "", false,
                 state == SessionSnapshot.State.SUSPENDED, false, false, false, "", false,
                 SessionSnapshot.ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 

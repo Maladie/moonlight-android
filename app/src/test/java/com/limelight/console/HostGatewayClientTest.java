@@ -22,7 +22,7 @@ public class HostGatewayClientTest {
     @Test public void coherentObservationRequiresExactSchemaScopeAndEvidence()
             throws Exception {
         long now = 1_700_000_000_000L;
-        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        JSONObject value = observation(now, "boot-a", 2, 7);
         HostGatewayClient.SessionObservation parsed =
                 HostGatewayClient.parseSessionObservation(value, "kid", "parent",
                         7, now + 100);
@@ -37,20 +37,20 @@ public class HostGatewayClientTest {
 
     @Test public void malformedTimestampAndMissingGameEvidenceFailClosed() throws Exception {
         long now = 1_700_000_000_000L;
-        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        JSONObject value = observation(now, "boot-a", 2, 7);
         value.getJSONObject("game").put("evidence", "ABSENT");
         assertObservationRejected(value, "inconsistent_observation_evidence", now);
         value = observation(now - 366L * 24L * 60L * 60L * 1_000L,
-                "boot-a", 2, 7, "transition-a");
+                "boot-a", 2, 7);
         assertObservationRejected(value, "stale_or_malformed_observation", now);
-        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value = observation(now, "boot-a", 2, 7);
         value.put("schema_version", 1);
         assertObservationRejected(value, "unsupported_observation_schema", now);
     }
 
     @Test public void previousLaunchGameIsParsedFromTheWindowBlock() throws Exception {
         long now = 1_700_000_000_000L;
-        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        JSONObject value = observation(now, "boot-a", 2, 7);
         value.getJSONObject("game").put("state", "starting").put("id", "steam:456");
         value.put("process", new JSONObject().put("evidence", "ABSENT")
                 .put("process_id", 0).put("process_token", "").put("started_unix_ms", 0));
@@ -87,7 +87,7 @@ public class HostGatewayClientTest {
 
     @Test public void streamAndProcessStartsAreRequiredAndZeroMeansUnknown() throws Exception {
         long now = 1_700_000_000_000L;
-        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        JSONObject value = observation(now, "boot-a", 2, 7);
         HostGatewayClient.SessionObservation unknown = HostGatewayClient.parseSessionObservation(
                 value, "kid", "parent", 7, now + 100);
         assertEquals(0L, unknown.streamStartedUnixMs);
@@ -102,14 +102,14 @@ public class HostGatewayClientTest {
 
         value.getJSONObject("correlation").remove("stream_started_unix_ms");
         assertObservationRejected(value, "missing_observation_stream_started_unix_ms", now);
-        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value = observation(now, "boot-a", 2, 7);
         value.getJSONObject("process").remove("started_unix_ms");
         assertObservationRejected(value, "missing_observation_started_unix_ms", now);
-        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value = observation(now, "boot-a", 2, 7);
         value.getJSONObject("correlation").put("stream_started_unix_ms", -1);
         assertObservationRejected(value, "stale_or_malformed_observation", now);
         // A process start belongs to a verified process only.
-        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value = observation(now, "boot-a", 2, 7);
         value.put("process", new JSONObject().put("evidence", "PENDING")
                 .put("process_id", 0).put("process_token", "").put("started_unix_ms", now));
         value.getJSONObject("window").put("evidence", "PENDING").put("ready", false);
@@ -118,11 +118,11 @@ public class HostGatewayClientTest {
 
     @Test public void missingOrWronglyTypedCorrelationIsRejected() throws Exception {
         long now = 1_700_000_000_000L;
-        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        JSONObject value = observation(now, "boot-a", 2, 7);
         value.getJSONObject("correlation").remove("stream_session_id");
         assertObservationRejected(value, "missing_observation_stream_session_id", now);
 
-        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value = observation(now, "boot-a", 2, 7);
         value.getJSONObject("correlation").put("control_generation", "4");
         assertObservationRejected(value, "missing_observation_control_generation", now);
     }
@@ -136,7 +136,7 @@ public class HostGatewayClientTest {
         long ordinal = owner.nextRequestOrdinal();
         HostGatewayClient.SessionObservation parsed =
                 HostGatewayClient.parseSessionObservation(
-                        observation(providerWall, "boot-skew", 1, ordinal, ""),
+                        observation(providerWall, "boot-skew", 1, ordinal),
                         "kid", "parent", ordinal, deviceWall);
         assertEquals(providerWall, parsed.observedAtUnixMs);
         assertNotNull(owner.accept(parsed, m.snapshot(), 1_000L));
@@ -150,7 +150,7 @@ public class HostGatewayClientTest {
     }
 
     private static JSONObject observation(long observedAt, String boot, long revision,
-                                          long ordinal, String transition) throws Exception {
+                                          long ordinal) throws Exception {
         return new JSONObject().put("ok", true).put("schema_version", 2)
                 .put("producer", new JSONObject().put("boot_id", boot)
                         .put("revision", revision))
@@ -160,7 +160,6 @@ public class HostGatewayClientTest {
                 .put("scope", new JSONObject().put("actor_profile_id", "kid")
                         .put("execution_profile_id", "parent"))
                 .put("correlation", new JSONObject().put("request_ordinal", ordinal)
-                        .put("caller_transition_id", transition)
                         .put("operation_id", "operation-a")
                         .put("stream_session_id", "session-a")
                         .put("control_generation", 4).put("actor_lease_epoch", 5)

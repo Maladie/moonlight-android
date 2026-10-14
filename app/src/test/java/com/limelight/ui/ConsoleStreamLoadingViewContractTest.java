@@ -1,10 +1,9 @@
 package com.limelight.ui;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -14,10 +13,7 @@ import static org.junit.Assert.assertTrue;
 public class ConsoleStreamLoadingViewContractTest {
     @Test public void launcherFailureOffersOnlyRevealAndBack() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
-        }
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String text = SourceText.read(source);
         String method = text.substring(text.indexOf("public void showLauncherInteraction"),
                 text.indexOf("public void setManualRevealAvailable"));
 
@@ -293,17 +289,11 @@ public class ConsoleStreamLoadingViewContractTest {
 
     private static String source() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
-        }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 
     private static String gameSource() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 }

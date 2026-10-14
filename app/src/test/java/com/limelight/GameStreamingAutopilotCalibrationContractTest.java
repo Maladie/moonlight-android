@@ -3,8 +3,6 @@ package com.limelight;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -79,7 +77,6 @@ public class GameStreamingAutopilotCalibrationContractTest {
 
     private static String source(String path) throws IOException {
         Path source = Paths.get(path);
-        if (!Files.exists(source)) source = Paths.get("app").resolve(path);
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 }

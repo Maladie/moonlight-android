@@ -1,5 +1,7 @@
 package com.limelight.binding.audio;
 
+import com.limelight.SourceText;
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertEquals;
@@ -8,8 +10,6 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -67,8 +67,8 @@ public class UsbMicrophoneServiceContractTest {
         assertTrue(service.contains("usb_microphone_notification_reconnecting"));
         assertTrue(service.contains("onAudioDevicesAdded"));
         assertTrue(service.contains("onAudioDevicesRemoved"));
-        assertTrue(service.indexOf("startAsForeground(R.string.usb_microphone_notification_connecting)")
-                < service.indexOf("reloadCapture();"));
+        assertOrdered(service, "startAsForeground(R.string.usb_microphone_notification_connecting)",
+                "reloadCapture();");
         assertFalse(service.contains("surfaceCreated"));
         assertFalse(service.contains("streamEverRevealed"));
         assertFalse(game.contains("UsbMicrophone"));
@@ -91,7 +91,6 @@ public class UsbMicrophoneServiceContractTest {
 
     private static String source(String relative) throws IOException {
         Path path = Paths.get(relative);
-        if (!Files.exists(path)) path = Paths.get("app").resolve(relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

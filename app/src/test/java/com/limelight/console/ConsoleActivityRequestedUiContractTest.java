@@ -1,13 +1,13 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -72,8 +72,8 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(forget.contains("hostGatewayClient"));
         assertFalse(forget.contains("executor"));
         // Session state ends locally first, then the records go, then host selection returns.
-        assertTrue(forget.indexOf("new SessionEvent.HostForgotten(uuid)")
-                < forget.indexOf("managerBinder.removeComputer(host)"));
+        assertOrdered(forget, "new SessionEvent.HostForgotten(uuid)",
+                "managerBinder.removeComputer(host)");
         assertTrue(forget.contains("hostGatewayStore.remove(uuid)"));
         assertTrue(forget.contains("playniteLibraryRepository.forgetHost(uuid)"));
         assertTrue(forget.contains("LocalHostRecords.sweep("));
@@ -94,7 +94,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(request.contains("busyPanelKey"));
         // The model's close begins before the worker and ends in finally, before any
         // stale-scope return: the status always returns (SessionModelHostTest).
-        com.limelight.GameAutoWarmUpContractTest.assertOrdered(request,
+        assertOrdered(request,
                 "new SessionEvent.LocalCloseBegun(", "executor.execute(", "} finally {",
                 "new SessionEvent.LocalCloseFinished(", "mainHandler.post(");
         assertTrue(completion.contains("return;"));
@@ -116,7 +116,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(request.contains("showSidePanelBusy("));
         assertFalse(source.contains("busyPanelKey"));
         // Also when the task throws: the close ends in finally, not in a posted callback.
-        com.limelight.GameAutoWarmUpContractTest.assertOrdered(controlPlane,
+        assertOrdered(controlPlane,
                 "new SessionEvent.LocalCloseBegun(", "executor.execute(", "} finally {",
                 "new SessionEvent.LocalCloseFinished(", "outcome != null && outcome.streamClosed()",
                 "mainHandler.post(");
@@ -193,8 +193,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(stateStyle.contains("state.setShadowLayer"));
         assertTrue(state.contains("CONSOLE_UI_V2 ? operation.progress + \"%\""));
         assertTrue(state.contains("CONSOLE_UI_V2 ? \"\""));
-        String grid = source("src/main/java/com/limelight/console/ExpandedLibraryGrid.java",
-                "app/src/main/java/com/limelight/console/ExpandedLibraryGrid.java");
+        String grid = source("src/main/java/com/limelight/console/ExpandedLibraryGrid.java");
         assertTrue(grid.contains("CELL_HEIGHT_DP = 123"));
         assertTrue(grid.contains("CELL_MARGIN_DP = 4"));
         assertTrue(source.contains("homeContent.setPadding(dp(54), dp(14), dp(54), dp(27))"));
@@ -444,8 +443,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(loading.contains("item.game.coverKey"));
         assertFalse(loading.contains("\"cover\""));
         assertTrue(loading.contains("bounds.outWidth > bounds.outHeight"));
-        assertTrue(source("src/main/java/com/limelight/console/PlayniteArtworkCache.java",
-                "app/src/main/java/com/limelight/console/PlayniteArtworkCache.java")
+        assertTrue(source("src/main/java/com/limelight/console/PlayniteArtworkCache.java")
                 .contains("\"hero\".equals(kind)"));
     }
 
@@ -506,8 +504,8 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains("private boolean isFreshExactRunningManagedGame("));
         assertTrue(menu.contains("isFreshExactRunningManagedGame(host, item)"));
         String gameCard = gameCardSource();
-        assertTrue(gameCard.indexOf("R.string.overlay_menu_end_game")
-                < gameCard.indexOf("R.string.console_close_session"));
+        assertOrdered(gameCard, "R.string.overlay_menu_end_game",
+                "R.string.console_close_session");
         assertTrue(menu.contains("confirmTerminateSession(host, item.stableId())"));
         assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true, confirmedKey.profileId)"));
         assertTrue(stop.contains("refreshSessionState(host.uuid)"));
@@ -545,7 +543,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains(
                 "facts.gameRunning = isFreshExactRunningManagedGame(host, item);"));
         assertTrue(confirm.contains("if (!isFreshExactRunningManagedGame(host, item)) return;"));
-        com.limelight.GameAutoWarmUpContractTest.assertOrdered(request,
+        assertOrdered(request,
                 "!isFreshExactRunningManagedGame(host, item)", "new SessionEvent.LocalCloseBegun(");
     }
 
@@ -567,32 +565,27 @@ public class ConsoleActivityRequestedUiContractTest {
     }
 
     private static String consoleActivitySource() throws IOException {
-        return source("src/main/java/com/limelight/console/ConsoleActivity.java",
-                "app/src/main/java/com/limelight/console/ConsoleActivity.java");
+        return source("src/main/java/com/limelight/console/ConsoleActivity.java");
     }
 
     private static String topBarSource() throws IOException {
-        return source("src/main/java/com/limelight/console/ConsoleTopBar.java",
-                "app/src/main/java/com/limelight/console/ConsoleTopBar.java");
+        return source("src/main/java/com/limelight/console/ConsoleTopBar.java");
     }
 
     private static String gameCardSource() throws IOException {
-        return source("src/main/java/com/limelight/console/ConsoleGameCard.java",
-                "app/src/main/java/com/limelight/console/ConsoleGameCard.java");
+        return source("src/main/java/com/limelight/console/ConsoleGameCard.java");
     }
 
     private static String hostPanelSource() throws IOException {
-        return source("src/main/java/com/limelight/console/ConsoleHostPanel.java",
-                "app/src/main/java/com/limelight/console/ConsoleHostPanel.java");
+        return source("src/main/java/com/limelight/console/ConsoleHostPanel.java");
     }
 
     private static String resource(String relative) throws IOException {
-        return source("src/main/res/" + relative, "app/src/main/res/" + relative);
+        return source("src/main/res/" + relative);
     }
 
-    private static String source(String modulePath, String repositoryPath) throws IOException {
+    private static String source(String modulePath) throws IOException {
         Path source = Paths.get(modulePath);
-        if (!Files.exists(source)) source = Paths.get(repositoryPath);
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 }

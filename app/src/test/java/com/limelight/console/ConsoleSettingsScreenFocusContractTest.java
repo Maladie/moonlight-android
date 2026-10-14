@@ -1,10 +1,9 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -55,10 +54,7 @@ public class ConsoleSettingsScreenFocusContractTest {
 
     @Test public void screenRoutesFocusAndRowReplacementThroughTheRebuild() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/ConsoleSettingsScreen.java");
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/console/ConsoleSettingsScreen.java");
-        }
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = SourceText.read(source);
         assertTrue(text.contains("if (focused && !rebuild.active()) select(position);"));
         assertTrue(text.contains("rebuild.run(() -> replaceCategories(next, category));"));
         assertTrue(text.contains("rebuild.run(() -> panel.render(content,"));

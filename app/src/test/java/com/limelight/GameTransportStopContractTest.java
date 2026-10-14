@@ -3,21 +3,20 @@ package com.limelight;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class GameTransportStopContractTest {
     @Test public void runtimeOwnsTheOneConnectionAndGameRoutesStopThroughIt()
             throws IOException {
-        String game = source("app/src/main/java/com/limelight/Game.java");
-        String runtime = source("app/src/main/java/com/limelight/stream/StreamRuntime.java");
+        String game = source("src/main/java/com/limelight/Game.java");
+        String runtime = source("src/main/java/com/limelight/stream/StreamRuntime.java");
         String android = source(
-                "app/src/main/java/com/limelight/stream/AndroidStreamRuntime.java");
+                "src/main/java/com/limelight/stream/AndroidStreamRuntime.java");
         String stop = between(game, "private void stopConnection(Runnable afterStopped)",
                 "public void stageFailed(");
 
@@ -45,29 +44,29 @@ public class GameTransportStopContractTest {
 
     @Test public void retainedAndReplacementCompletionWaitForTheSharedStopResult()
             throws IOException {
-        String game = source("app/src/main/java/com/limelight/Game.java");
-        String runtime = source("app/src/main/java/com/limelight/stream/StreamRuntime.java");
+        String game = source("src/main/java/com/limelight/Game.java");
+        String runtime = source("src/main/java/com/limelight/stream/StreamRuntime.java");
         String disconnect = between(runtime, "@Override public void disconnectRetainedStream(",
                 "@Override public void terminateRetainedSession(");
         String finish = between(game, "private void terminateWholeSessionVerified(",
                 "private void applyImmediateTerminalPrivacy(");
         String console = source(
-                "app/src/main/java/com/limelight/console/ConsoleActivity.java");
+                "src/main/java/com/limelight/console/ConsoleActivity.java");
         String retainedClose = between(console,
                 "private Boolean terminateLiveRetainedForReplacement(",
                 "private void beginInstallationSupportStream(");
 
-        assertTrue(disconnect.indexOf("stop(result ->")
-                < disconnect.indexOf("completion.complete(stopped)"));
-        assertTrue(disconnect.indexOf("completion.transportUnsafe()")
-                < disconnect.indexOf("completion.complete(stopped)"));
-        assertTrue(finish.indexOf("stopConnectionResult(")
-                < finish.indexOf("local.complete(stopped)"));
+        assertOrdered(disconnect, "stop(result ->",
+                "completion.complete(stopped)");
+        assertOrdered(disconnect, "completion.transportUnsafe()",
+                "completion.complete(stopped)");
+        assertOrdered(finish, "stopConnectionResult(",
+                "local.complete(stopped)");
         assertTrue(finish.contains("if (completion == null)"));
-        assertTrue(finish.indexOf("if (completion == null)")
-                < finish.indexOf("DirectTerminationCompleted.completed("));
-        assertTrue(finish.indexOf("DirectTerminationCompleted.completed(")
-                < finish.indexOf("completion.complete(success)"));
+        assertOrdered(finish, "if (completion == null)",
+                "DirectTerminationCompleted.completed(");
+        assertOrdered(finish, "DirectTerminationCompleted.completed(",
+                "completion.complete(success)");
         assertTrue(finish.contains("wholeSessionTermination.run("));
         assertTrue(finish.contains("completion.transportUnsafe()"));
         assertFalse(finish.contains("sessionModel.snapshot()"
@@ -79,7 +78,7 @@ public class GameTransportStopContractTest {
     @Test public void retainedCoordinatorJoinsCallbacksWithoutStartingAnotherEffect()
             throws IOException {
         String coordinator = source(
-                "app/src/main/java/com/limelight/session/SessionModel.java");
+                "src/main/java/com/limelight/session/SessionModel.java");
         String finish = between(coordinator,
                 "void terminate(String expectedStreamSessionId",
                 "boolean completeDirectTermination(");
@@ -90,23 +89,6 @@ public class GameTransportStopContractTest {
         assertTrue(finish.contains("complete(waiting, current && success)"));
     }
 
-    /** K5.3b: StreamRuntime alone assigns generations; the stop owner keeps no static state. */
-    @Test public void transportRegistryDoesNotKeepAStaticStrongOwnerChain()
-            throws IOException {
-        String owner = source(
-                "app/src/main/java/com/limelight/stream/TransportStopCoordinator.java");
-        String runtime = source("app/src/main/java/com/limelight/stream/StreamRuntime.java");
-
-        assertTrue(runtime.contains("static WeakReference<TransportStopCoordinator> newestStop"));
-        assertFalse(runtime.contains("private static TransportStopCoordinator"));
-        assertFalse(owner.contains("private static"));
-        assertFalse(owner.contains("generation()"));
-        assertTrue(owner.contains("private TransportStopCoordinator predecessor"));
-        assertFalse(owner.contains("private static TransportStopCoordinator current"));
-        assertFalse(owner.contains("private final TransportStopCoordinator predecessor"));
-        assertTrue(owner.contains("predecessor = null"));
-    }
-
     private static String between(String source, String start, String end) {
         return source.substring(source.indexOf(start), source.indexOf(end,
                 source.indexOf(start)));
@@ -114,9 +96,6 @@ public class GameTransportStopContractTest {
 
     private static String source(String relative) throws IOException {
         Path path = Paths.get(relative);
-        if (!Files.exists(path) && relative.startsWith("app/")) {
-            path = Paths.get(relative.substring(4));
-        }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

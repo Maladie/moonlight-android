@@ -1,13 +1,12 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -57,13 +56,11 @@ public class ConsoleTopBarTest {
 
     private static String source(String relative) throws Exception {
         Path path = Paths.get("src/main/java", relative);
-        if (!Files.exists(path)) path = Paths.get("app/src/main/java", relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return SourceText.read(path);
     }
 
     private static String resource(String relative) throws Exception {
         Path path = Paths.get("src/main/res", relative);
-        if (!Files.exists(path)) path = Paths.get("app/src/main/res", relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return SourceText.read(path);
     }
 }

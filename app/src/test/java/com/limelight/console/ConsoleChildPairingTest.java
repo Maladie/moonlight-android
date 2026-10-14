@@ -1,10 +1,9 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Paths;
 
 import static org.junit.Assert.assertTrue;
@@ -18,9 +17,8 @@ public class ConsoleChildPairingTest {
 
     @Test public void authenticatedRepairUsesPinnedHttpsWhileLegacyUnpairStaysPendingOnly()
             throws IOException {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/nvstream/http/NvHTTP.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/nvstream/http/NvHTTP.java"));
         String authenticated = between(source, "public boolean unpairAuthenticated()",
                 "public InputStream getBoxArt");
         String legacy = between(source, "public void unpair()",
@@ -33,9 +31,8 @@ public class ConsoleChildPairingTest {
     }
 
     @Test public void childPairingFailureOffersExplicitHostRepair() throws IOException {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String failure = between(source, "private String childLaunchFailureMessage(",
                 "private void refreshWarmUpObservation(");
         String pairHost = between(source, "private void pairHost(ComputerDetails host)",
@@ -69,9 +66,8 @@ public class ConsoleChildPairingTest {
     }
 
     @Test public void freshSelectedChildProfileRefreshStartsIdentityBinding() throws IOException {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String refresh = between(source, "private void refreshHostProfiles(",
                 "private void refreshVisibleHostProfiles(");
 

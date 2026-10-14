@@ -428,7 +428,7 @@ public class SessionModelHostTest {
             String actor, long processStartedUnixMs) {
         HostGatewayClient.SessionObservation seen = new HostGatewayClient.SessionObservation(
                 boot, revision, 1_000L, 15_000L,
-                "running", 1_000L, actor, "parent", ordinal, "", "operation", session, 1L,
+                "running", 1_000L, actor, "parent", ordinal, "operation", session, 1L,
                 1L, "running", HostGatewayClient.Evidence.VERIFIED, "running",
                 HostGatewayClient.Evidence.VERIFIED, gameId,
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
@@ -440,7 +440,7 @@ public class SessionModelHostTest {
 
     private static HostGatewayClient.SessionObservation idle(String boot, long ordinal) {
         return new HostGatewayClient.SessionObservation(boot, ordinal, 1_000L, 15_000L,
-                "idle", 1_000L, "parent", "parent", ordinal, "", "operation", "", 0L, 1L,
+                "idle", 1_000L, "parent", "parent", ordinal, "operation", "", 0L, 1L,
                 "idle", HostGatewayClient.Evidence.VERIFIED, "idle",
                 HostGatewayClient.Evidence.ABSENT, "", HostGatewayClient.Evidence.ABSENT, 0, "",
                 HostGatewayClient.Evidence.ABSENT, false, "game", 0, "no_running_game",

@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -13,8 +15,6 @@ import com.limelight.ui.overlay.OverlayMenuView;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -109,16 +109,14 @@ public class DiscordOverlayControllerTest {
     @Test
     public void acceptedSendStartForcesTheSingleSendingProjection() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/DiscordOverlayController.java");
-        if (!Files.exists(source)) source = Paths.get(
-                "app/src/main/java/com/limelight/console/DiscordOverlayController.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String text = SourceText.read(source);
         String method = text.substring(text.indexOf("public void onDiscordCommunitySendChat("),
                 text.indexOf("public void onDiscordCommunityOpenMessageInDiscord("));
 
-        assertTrue(method.indexOf("directMessages.beginSend")
-                < method.indexOf("lastCommunitySignature = null"));
-        assertTrue(method.indexOf("lastCommunitySignature = null")
-                < method.indexOf("renderCommunity()"));
+        assertOrdered(method, "directMessages.beginSend",
+                "lastCommunitySignature = null");
+        assertOrdered(method, "lastCommunitySignature = null",
+                "renderCommunity()");
     }
 
     @Test
@@ -221,9 +219,7 @@ public class DiscordOverlayControllerTest {
                 "self", "self-avatar", Collections.emptyList()));
 
         Path source = Paths.get("src/main/java/com/limelight/console/DiscordOverlayController.java");
-        if (!Files.exists(source)) source = Paths.get(
-                "app/src/main/java/com/limelight/console/DiscordOverlayController.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String text = SourceText.read(source);
         assertTrue(text.contains("id.equals(friend.userId)"));
         assertFalse(text.contains("friend.displayName.equals"));
         assertTrue(text.contains("participant.avatarUrl"));
@@ -251,9 +247,7 @@ public class DiscordOverlayControllerTest {
     @Test
     public void joinAndLeaveForceRefreshSourceContract() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/DiscordOverlayController.java");
-        if (!Files.exists(source)) source = Paths.get(
-                "app/src/main/java/com/limelight/console/DiscordOverlayController.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String text = SourceText.read(source);
         String join = text.substring(text.indexOf("public void onDiscordCommunityJoinChannel("),
                 text.indexOf("public void onDiscordCommunityOpenFriendChat("));
         String leave = text.substring(text.indexOf("public void leave()"), text.indexOf("public void rejoin()"));

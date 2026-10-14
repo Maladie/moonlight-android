@@ -1,13 +1,12 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -50,7 +49,7 @@ public class DiscordDmToastViewContractTest {
 
     @Test public void viewIsPassiveAnimatedAndAnnouncedOnceByContract() throws IOException {
         String source = projectFile("src/main/java/com/limelight/console/DiscordDmToastView.java",
-                "app/src/main/java/com/limelight/console/DiscordDmToastView.java");
+                "src/main/java/com/limelight/console/DiscordDmToastView.java");
 
         assertTrue(source.contains("implements DiscordDmNotificationCoordinator.Host"));
         assertTrue(source.contains("FOCUS_BLOCK_DESCENDANTS"));
@@ -71,9 +70,9 @@ public class DiscordDmToastViewContractTest {
 
     @Test public void bothRootsContainTheSameViewWithoutCoveringTheGameOverlay() throws IOException {
         String game = projectFile("src/main/res/layout/activity_game.xml",
-                "app/src/main/res/layout/activity_game.xml");
+                "src/main/res/layout/activity_game.xml");
         String console = projectFile("src/main/java/com/limelight/console/ConsoleActivity.java",
-                "app/src/main/java/com/limelight/console/ConsoleActivity.java");
+                "src/main/java/com/limelight/console/ConsoleActivity.java");
 
         int dock = game.indexOf("@+id/discordDockView");
         int toast = game.indexOf("@+id/discordDmToastView");
@@ -86,9 +85,9 @@ public class DiscordDmToastViewContractTest {
 
     @Test public void localizedCopyContainsNoTechnicalIdentifiers() throws IOException {
         String english = projectFile("src/main/res/values/discord_dm_notification_strings.xml",
-                "app/src/main/res/values/discord_dm_notification_strings.xml");
+                "src/main/res/values/discord_dm_notification_strings.xml");
         String polish = projectFile("src/main/res/values-pl/discord_dm_notification_strings.xml",
-                "app/src/main/res/values-pl/discord_dm_notification_strings.xml");
+                "src/main/res/values-pl/discord_dm_notification_strings.xml");
 
         assertTrue(english.contains("%1$s\\n“%2$s”"));
         assertTrue(english.contains("%1$s\\nNew message or attachment"));
@@ -105,7 +104,6 @@ public class DiscordDmToastViewContractTest {
 
     private static String projectFile(String first, String second) throws IOException {
         Path path = Paths.get(first);
-        if (!Files.exists(path)) path = Paths.get(second);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

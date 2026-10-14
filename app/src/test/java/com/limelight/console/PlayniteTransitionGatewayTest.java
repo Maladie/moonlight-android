@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import com.limelight.session.MemoryPreferences;
 import com.limelight.session.SessionModel;
 
@@ -10,8 +11,6 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -386,9 +385,7 @@ public class PlayniteTransitionGatewayTest {
             throws IOException {
         Path source = Paths.get(
                 "src/main/java/com/limelight/console/PlayniteTransitionGateway.java");
-        if (!Files.exists(source)) source = Paths.get(
-                "app/src/main/java/com/limelight/console/PlayniteTransitionGateway.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String text = SourceText.read(source);
         String connect = text.substring(text.indexOf(
                         "public static PlayniteTransitionGateway connect("),
                 text.indexOf("public Snapshot snapshot()"));
@@ -516,12 +513,11 @@ public class PlayniteTransitionGatewayTest {
     }
 
     private static Path sourceRoot() {
-        Path root = Paths.get("src/main/java/com/limelight");
-        return Files.exists(root) ? root : Paths.get("app/src/main/java/com/limelight");
+        return SourceText.MAIN_JAVA;
     }
 
     private static String read(Path path) throws IOException {
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 
     private static int occurrences(String text, String needle) {
@@ -588,7 +584,6 @@ public class PlayniteTransitionGatewayTest {
                                                     ? "parent" : connection.profileId()))
                             .put("correlation", new JSONObject()
                                     .put("request_ordinal", ordinal)
-                                    .put("caller_transition_id", "")
                                     .put("operation_id", operationId)
                                     .put("stream_session_id", streamSessionId)
                                     .put("control_generation", controlGeneration)

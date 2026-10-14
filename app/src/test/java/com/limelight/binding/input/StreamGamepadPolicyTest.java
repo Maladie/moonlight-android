@@ -1,5 +1,6 @@
 package com.limelight.binding.input;
 
+import com.limelight.SourceText;
 import android.view.InputDevice;
 
 import com.limelight.binding.input.StreamGamepadPolicy.DeviceKind;
@@ -7,12 +8,11 @@ import com.limelight.binding.input.StreamGamepadPolicy.DeviceKind;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -160,12 +160,11 @@ public class StreamGamepadPolicyTest {
 
     @Test public void controllerHandlerHasNoHardcodedSharedNumber() throws IOException {
         Path path = Paths.get("src/main/java/com/limelight/binding/input/ControllerHandler.java");
-        if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        String source = SourceText.read(path);
         assertFalse(source.contains("hardcoded as controller 0"));
         assertFalse(source.contains("currentControllers"));
         String send = source.substring(source.indexOf("private void sendControllerInputPacket("));
-        assertTrue(send.indexOf("isStreamGamepad(originalContext)")
-                < send.indexOf("assignControllerNumberIfNeeded(originalContext)"));
+        assertOrdered(send, "isStreamGamepad(originalContext)",
+                "assignControllerNumberIfNeeded(originalContext)");
     }
 }

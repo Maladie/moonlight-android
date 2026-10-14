@@ -2,11 +2,10 @@ package com.limelight;
 
 import org.junit.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -16,17 +15,17 @@ public class S05ControlPlaneContractTest {
         String connection = source("com/limelight/nvstream/NvConnection.java");
         String start = between(connection, "private boolean startApp(",
                 "private boolean startAppEffect(");
-        int permit = start.indexOf("controlBinding.client.acquire(");
-        int effect = start.indexOf("startAppEffect(", permit);
-        assertTrue(permit >= 0 && effect > permit);
-        assertTrue(effect < start.indexOf("controlBinding.client.complete(", effect));
+        assertOrdered(start, "controlBinding.client.acquire(", "startAppEffect(",
+                "controlBinding.client.complete(");
         assertTrue(start.contains("controlBinding.expectedGeneration, currentAppId"));
 
         String host = source("com/limelight/stream/HostSessionTermination.java");
-        assertTrue(host.indexOf("getComputerDetails(true)")
-                < host.indexOf("control.acquire("));
-        assertTrue(host.indexOf("control.acquire(") < host.indexOf("provider.stopEvidenceWithinControl("));
-        assertTrue(host.indexOf("provider.stopGame(") < host.indexOf("http.quitApp()"));
+        assertOrdered(host, "getComputerDetails(true)",
+                "control.acquire(");
+        assertOrdered(host, "control.acquire(",
+                "provider.stopEvidenceWithinControl(");
+        assertOrdered(host, "provider.stopGameWithinControl(",
+                "http.quitApp()");
 
         assertFalse(source("com/limelight/Game.java").contains(".quitApp("));
         assertFalse(source("com/limelight/console/ConsoleActivity.java")
@@ -39,15 +38,14 @@ public class S05ControlPlaneContractTest {
         String start = between(connection, "private boolean startApp(",
                 "private boolean startAppEffect(");
         // A lost acquire answer: reconcile first, then the declaration, never an effect.
-        int lost = start.indexOf("catch (IOException unavailable)");
-        int lostAbandon = start.indexOf("abandonControlStart(operationId, app.getAppId(), 0L)", lost);
-        assertTrue(lost >= 0 && start.indexOf("controlBinding.client.reconcile(", lost) < lostAbandon);
         // Cancel before the effect: the permit is abandoned and the launch is never sent.
+        assertOrdered(start, "catch (IOException unavailable)", "controlBinding.client.reconcile(",
+                "abandonControlStart(operationId, app.getAppId(), 0L)",
+                "if (startAbandoned && currentAppId == 0 && !replayed) {",
+                "abandonControlStart(permit.operationId, app.getAppId(), permit.generation)",
+                "succeeded = startAppEffect(");
         int cancelled = start.indexOf("if (startAbandoned && currentAppId == 0 && !replayed) {");
-        int abandon = start.indexOf(
-                "abandonControlStart(permit.operationId, app.getAppId(), permit.generation)");
         int effect = start.indexOf("succeeded = startAppEffect(");
-        assertTrue(lostAbandon < cancelled && cancelled < abandon && abandon < effect);
         String branch = start.substring(cancelled, effect);
         assertTrue(branch.contains("controlGeneration = abandoned.generation;"));
         assertTrue(branch.contains("startReleased = true;"));
@@ -228,8 +226,8 @@ public class S05ControlPlaneContractTest {
         assertTrue(resume.contains("Game.EXTRA_CONTROL_INTENT, \"reauthorize\""));
         assertTrue(resume.contains("Game.EXTRA_PROFILE_ID, intent.profileId"));
         assertTrue(resume.contains("Game.EXTRA_EXECUTION_PROFILE_ID"));
-        assertTrue(resume.indexOf("if (actorHandoff)")
-                < resume.indexOf("resume.removeExtra(Game.EXTRA_CHILD_SESSION_ID)"));
+        assertOrdered(resume, "if (actorHandoff)",
+                "resume.removeExtra(Game.EXTRA_CHILD_SESSION_ID)");
         String game = source("com/limelight/Game.java");
         assertTrue(game.contains(
                 "launch|resume|reconnect|replacement|warm_up|reauthorize"));
@@ -243,8 +241,8 @@ public class S05ControlPlaneContractTest {
         assertTrue(console.contains("records.recentlyEndedForExecution("));
         String compensation = between(console, "private void failClosedActorHandoff(",
                 "private SessionOrchestrator.CloseResult switchRetainedProviderGame(");
-        assertTrue(compensation.indexOf("releaseNewChildTimeAttachmentAndWait(newBinding)")
-                < compensation.indexOf("terminateKnownControlPlane("));
+        assertOrdered(compensation, "releaseNewChildTimeAttachmentAndWait(newBinding)",
+                "terminateKnownControlPlane(");
         assertTrue(compensation.contains("client.end("));
         assertTrue(compensation.contains("client.status("));
         assertTrue(compensation.contains("SystemClock.elapsedRealtime() + 30_000L"));
@@ -258,8 +256,7 @@ public class S05ControlPlaneContractTest {
 
     private static String source(String relative) throws Exception {
         Path path = Paths.get("src/main/java", relative);
-        if (!Files.exists(path)) path = Paths.get("app/src/main/java", relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 
     private static String between(String source, String start, String end) {

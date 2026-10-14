@@ -385,45 +385,6 @@ public class SessionOrchestratorTest {
         }
     }
 
-    @Test public void warmUpWakeDecisionUsesLocalBridgeAndMoonlightEvidence() {
-        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.HOME_LIVE, false,
-                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.PARKED_LIVE, false,
-                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.PREPARING, false,
-                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.TERMINATING, false,
-                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.NONE, true,
-                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.NONE, false,
-                com.limelight.nvstream.http.ComputerDetails.State.ONLINE));
-        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.NONE, false,
-                com.limelight.nvstream.http.ComputerDetails.State.UNKNOWN));
-        assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.NONE, false,
-                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-        assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.RECONNECT_REQUIRED,
-                false, com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-    }
-
-    @Test public void warmUpWakeDecisionIsPureAndDoesNotOwnSendState() {
-        assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.NONE, false,
-                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-        assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
-                SessionModel.State.NONE, false,
-                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
-    }
-
     @Test public void matchingRetainedTargetReturnsWithoutReadinessOrLaunch() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42,
@@ -919,7 +880,7 @@ public class SessionOrchestratorTest {
         effects.snapshot = new SessionSnapshot("host", "default", "default",
                 SessionSnapshot.State.ACTIVE, 42, "parent-game", true, false, false, false,
                 false, "", true, SessionSnapshot.ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 42, false);
         effects.retainedGame = "parent-game";
         effects.closeResult = SessionOrchestrator.CloseResult.REUSED;
@@ -984,7 +945,7 @@ public class SessionOrchestratorTest {
                 new SessionSnapshot("host", "default", "default", SessionSnapshot.State.ACTIVE,
                         7, "other", false, false, false, false, false, "", false,
                         SessionSnapshot.ObservationState.PENDING, false,
-                        "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                        "", 0L, 0L, 0L, 0L, 0L, "", "",
                         "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 7, false));
 
         orchestrator(effects).prepareHost("host", "default");
@@ -1690,7 +1651,7 @@ public class SessionOrchestratorTest {
         return new SessionSnapshot("host", "default", "default",
                 SessionSnapshot.State.ACTIVE, appId, gameId, true, false, false, false, false,
                 "", false, SessionSnapshot.ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, true);
     }
 
@@ -1718,7 +1679,7 @@ public class SessionOrchestratorTest {
         return new SessionSnapshot("host", "default", "default", state, 0, "",
                 false, false, false, true, false, "", false,
                 SessionSnapshot.ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
@@ -1751,7 +1712,7 @@ public class SessionOrchestratorTest {
         return new SessionSnapshot("host", "default", "default", state, appId, gameId,
                 retained, suspended, false, false, false, suspendId, neutral,
                 observation, correlated,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
@@ -1795,7 +1756,7 @@ public class SessionOrchestratorTest {
         return new SessionSnapshot("host", "default", "default", SessionSnapshot.State.ACTIVE,
                 42, "", true, false, false, false, false, "", true,
                 SessionSnapshot.ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 42, false);
     }
 

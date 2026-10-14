@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
@@ -57,16 +58,14 @@ public class SessionFailureControlRejectionTest {
         assertTrue(failed.indexOf("ConsoleActivity.offerHardTerminate(Game.this, hostId)",
                 pending) > 0);
         for (String strings : new String[] {"values", "values-pl"}) {
-            assertTrue(new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(
-                    "src/main/res/" + strings + "/strings.xml")),
-                    java.nio.charset.StandardCharsets.UTF_8)
+            assertTrue(SourceText.read(java.nio.file.Paths.get(
+                    "src/main/res/" + strings + "/strings.xml"))
                     .contains("<string name=\"control_operation_pending\">"));
         }
     }
 
     private static String source(String path) throws Exception {
-        return new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(
-                "src/main/java/com/limelight/" + path)),
-                java.nio.charset.StandardCharsets.UTF_8);
+        return SourceText.read(java.nio.file.Paths.get(
+                "src/main/java/com/limelight/" + path));
     }
 }

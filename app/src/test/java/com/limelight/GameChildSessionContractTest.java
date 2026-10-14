@@ -3,8 +3,6 @@ package com.limelight;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -86,9 +84,6 @@ public class GameChildSessionContractTest {
 
     private static String source() throws IOException {
         Path path = Paths.get("src/main/java/com/limelight/Game.java");
-        if (!Files.exists(path)) {
-            path = Paths.get("app/src/main/java/com/limelight/Game.java");
-        }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

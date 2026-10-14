@@ -1,9 +1,8 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertTrue;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -35,10 +34,6 @@ public class DiscordSocialPanelControllerContractTest {
     private static String source() throws Exception {
         Path path = Paths.get("src/main/java/com/limelight/console/"
                 + "DiscordSocialPanelController.java");
-        if (!Files.exists(path)) {
-            path = Paths.get("app/src/main/java/com/limelight/console/"
-                    + "DiscordSocialPanelController.java");
-        }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

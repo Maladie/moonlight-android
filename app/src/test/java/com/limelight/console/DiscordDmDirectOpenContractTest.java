@@ -1,21 +1,20 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
 public class DiscordDmDirectOpenContractTest {
     @Test public void gameReusesExistingHoldAndFallsBackToVisibleRoot() throws IOException {
         String game = projectFile("src/main/java/com/limelight/Game.java",
-                "app/src/main/java/com/limelight/Game.java");
+                "src/main/java/com/limelight/Game.java");
         String handler = projectFile("src/main/java/com/limelight/binding/input/ControllerHandler.java",
-                "app/src/main/java/com/limelight/binding/input/ControllerHandler.java");
+                "src/main/java/com/limelight/binding/input/ControllerHandler.java");
 
         assertTrue(game.contains("runOnUiThread(Game.this::openDiscordDmShortcutOrOverlay)"));
         int showRoot = game.indexOf("showOverlayMenuWithBattery();",
@@ -29,7 +28,7 @@ public class DiscordDmDirectOpenContractTest {
 
     @Test public void consoleConsumesSequenceBeforeAndAfterDialogOpens() throws IOException {
         String console = projectFile("src/main/java/com/limelight/console/ConsoleActivity.java",
-                "app/src/main/java/com/limelight/console/ConsoleActivity.java");
+                "src/main/java/com/limelight/console/ConsoleActivity.java");
 
         assertTrue(occurrences(console,
                 "discordDmShortcut != null && discordDmShortcut.handle(event)") >= 2);
@@ -41,10 +40,10 @@ public class DiscordDmDirectOpenContractTest {
     @Test public void directOpenRequiresExactPeerScopeAndLease() throws IOException {
         String stream = projectFile(
                 "src/main/java/com/limelight/console/DiscordOverlayController.java",
-                "app/src/main/java/com/limelight/console/DiscordOverlayController.java");
+                "src/main/java/com/limelight/console/DiscordOverlayController.java");
         String console = projectFile(
                 "src/main/java/com/limelight/console/DiscordSocialPanelController.java",
-                "app/src/main/java/com/limelight/console/DiscordSocialPanelController.java");
+                "src/main/java/com/limelight/console/DiscordSocialPanelController.java");
 
         assertTrue(stream.contains("findFriend(friendId) != null"));
         assertTrue(stream.contains("DiscordSocialClient.tryAcquireMessageEventLease()"));
@@ -56,9 +55,9 @@ public class DiscordDmDirectOpenContractTest {
 
     @Test public void hostsPublishLifecycleAndExactVisiblePeer() throws IOException {
         String game = projectFile("src/main/java/com/limelight/Game.java",
-                "app/src/main/java/com/limelight/Game.java");
+                "src/main/java/com/limelight/Game.java");
         String console = projectFile("src/main/java/com/limelight/console/ConsoleActivity.java",
-                "app/src/main/java/com/limelight/console/ConsoleActivity.java");
+                "src/main/java/com/limelight/console/ConsoleActivity.java");
 
         assertTrue(game.contains("discordOverlayController.setVisiblePeerListener"));
         assertTrue(game.contains("discordDmNotifications.activateHost"));
@@ -73,7 +72,7 @@ public class DiscordDmDirectOpenContractTest {
     @Test public void consoleDirectOpenNeverInvokesSystemKeyboard() throws IOException {
         String community = projectFile(
                 "src/main/java/com/limelight/console/DiscordCommunityView.java",
-                "app/src/main/java/com/limelight/console/DiscordCommunityView.java");
+                "src/main/java/com/limelight/console/DiscordCommunityView.java");
 
         assertTrue(community.contains("directComposer.setShowSoftInputOnFocus(false)"));
     }
@@ -87,7 +86,6 @@ public class DiscordDmDirectOpenContractTest {
 
     private static String projectFile(String first, String second) throws IOException {
         Path path = Paths.get(first);
-        if (!Files.exists(path)) path = Paths.get(second);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

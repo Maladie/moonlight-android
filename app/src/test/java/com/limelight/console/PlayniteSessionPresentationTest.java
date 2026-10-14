@@ -185,7 +185,7 @@ public class PlayniteSessionPresentationTest {
         return new SessionSnapshot("host", "default", "default", state, appId, gameId,
                 state == SessionSnapshot.State.ACTIVE, false, false, false, false,
                 "", neutralStreamTarget, SessionSnapshot.ObservationState.PENDING, false,
-                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 

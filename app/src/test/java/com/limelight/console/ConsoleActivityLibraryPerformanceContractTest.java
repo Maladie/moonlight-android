@@ -1,13 +1,13 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -207,13 +207,13 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         String update = audio.substring(audio.indexOf("private synchronized void updateAmbient("),
                 audio.indexOf("private synchronized void applyFadeStep("));
         assertTrue(audio.contains("private static int ambientPositionMs;"));
-        assertTrue(update.indexOf("ambientPlayer.seekTo(ambientPositionMs);")
-                < update.indexOf("ambientPlayer.start();"));
+        assertOrdered(update, "ambientPlayer.seekTo(ambientPositionMs);",
+                "ambientPlayer.start();");
         assertFalse(audio.contains("ambientPlayer.pause();\n        }"));
         String pause = audio.substring(audio.indexOf("private void pauseAmbient()"),
                 audio.indexOf("private void setAmbientVolume("));
-        assertTrue(pause.indexOf("ambientPositionMs = ambientPlayer.getCurrentPosition();")
-                < pause.indexOf("ambientPlayer.pause();"));
+        assertOrdered(pause, "ambientPositionMs = ambientPlayer.getCurrentPosition();",
+                "ambientPlayer.pause();");
         assertEquals(1, audio.split("ambientPlayer\\.pause\\(\\)", -1).length - 1);
     }
 
@@ -223,9 +223,6 @@ public class ConsoleActivityLibraryPerformanceContractTest {
 
     private static String source(String file) throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/console/" + file);
-        if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/console/" + file);
-        }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(source);
     }
 }

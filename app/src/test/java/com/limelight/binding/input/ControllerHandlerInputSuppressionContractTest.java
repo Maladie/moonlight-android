@@ -1,13 +1,13 @@
 package com.limelight.binding.input;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertTrue;
 
 public class ControllerHandlerInputSuppressionContractTest {
@@ -20,10 +20,9 @@ public class ControllerHandlerInputSuppressionContractTest {
         String release = between(source, "private void releaseAllControllerInputs()",
                 "private static void resetControllerInput(");
 
-        assertTrue(publicMethod.indexOf("inputSuppressed = false")
-                < publicMethod.indexOf("releaseAllControllerInputs()"));
-        assertTrue(publicMethod.indexOf("releaseAllControllerInputs()")
-                < publicMethod.lastIndexOf("inputSuppressed = true"));
+        assertOrdered(publicMethod, "inputSuppressed = false",
+                "releaseAllControllerInputs()");
+        assertOrdered(publicMethod, "releaseAllControllerInputs()", "inputSuppressed = true");
         assertTrue(release.contains("resetControllerInput(inputDeviceContexts.valueAt(i))"));
         assertTrue(release.contains("resetControllerInput(usbDeviceContexts.valueAt(i))"));
         assertTrue(release.contains("resetControllerInput(defaultContext)"));
@@ -48,7 +47,6 @@ public class ControllerHandlerInputSuppressionContractTest {
     private static String source() throws IOException {
         Path path = Paths.get(
                 "src/main/java/com/limelight/binding/input/ControllerHandler.java");
-        if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

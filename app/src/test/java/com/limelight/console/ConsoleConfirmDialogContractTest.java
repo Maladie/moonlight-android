@@ -1,10 +1,9 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -34,8 +33,6 @@ public class ConsoleConfirmDialogContractTest {
 
     private static String source() throws IOException {
         Path path = Paths.get("src/main/java/com/limelight/console/ConsoleConfirmDialog.java");
-        if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n")
-                .replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }

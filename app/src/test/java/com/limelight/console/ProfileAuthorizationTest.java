@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.SourceText;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -7,8 +8,6 @@ import static org.junit.Assert.assertTrue;
 import org.junit.After;
 import org.junit.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -46,9 +45,8 @@ public class ProfileAuthorizationTest {
 
     /** StreamHomeActivity is a second console over the main one; its destruction must not revoke. */
     @Test public void destroyingAConsoleDoesNotRevokeTheProcessWideGrant() throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         int from = source.indexOf("protected void onDestroy()");
         int to = source.indexOf("public void onBackPressed()", from);
         assertTrue(from >= 0 && to > from);
@@ -61,9 +59,8 @@ public class ProfileAuthorizationTest {
      * to the gate or host selection does.
      */
     @Test public void onlyUserInitiatedReturnsRevokeTheGrant() throws Exception {
-        String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String source = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         for (String automatic : new String[] {
                 "private void resolveInitialHostSelection()", "private void showHostSelection(",
                 "private void resolveProfileGate(", "private void showProfileGate(",

@@ -1,14 +1,14 @@
 package com.limelight.stream;
 
+import com.limelight.SourceText;
 import com.limelight.gateway.GatewayTransport;
 
 import org.junit.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -94,8 +94,8 @@ public class HostSessionTerminationTest {
                 "private HostSessionTermination.Outcome terminateKnownControlPlane("),
                 console.indexOf("private long knownControlGeneration("));
         assertTrue(known.contains("HostSessionTermination.run("));
-        assertTrue(known.indexOf("if (stopped.streamClosed()) {")
-                < known.indexOf("new SessionEvent.Cleared(sessionId)"));
+        assertOrdered(known, "if (stopped.streamClosed()) {",
+                "new SessionEvent.Cleared(sessionId)");
         assertTrue(source("src/main/java/com/limelight/Game.java").contains(
                 "resolved = HostSessionTermination.closeAbandonedStart(application,"));
     }
@@ -105,10 +105,8 @@ public class HostSessionTerminationTest {
         String connection = source("src/main/java/com/limelight/nvstream/NvConnection.java");
         String lost = connection.substring(connection.indexOf("catch (IOException unavailable)"),
                 connection.indexOf("boolean replayed = permit.succeeded();"));
-        int abandon = lost.indexOf("abandonControlStart(operationId, app.getAppId(), 0L);");
-        int handed = lost.indexOf(
-                "context.connListener.startLeftOnHost(abandoned.generation);");
-        assertTrue(abandon > 0 && handed > abandon && lost.indexOf("throw abandoned", handed) > 0);
+        assertOrdered(lost, "abandonControlStart(operationId, app.getAppId(), 0L);",
+                "context.connListener.startLeftOnHost(abandoned.generation);", "throw abandoned");
         String runtime = source("src/main/java/com/limelight/stream/StreamRuntime.java");
         assertTrue(runtime.contains("@Override public void startLeftOnHost(long controlGeneration) {\n"
                 + "        closeAbandonedLaunch(controlGeneration);"));
@@ -122,28 +120,25 @@ public class HostSessionTerminationTest {
         assertFalse(HostSessionTermination.Outcome.OTHER_STREAM.streamClosed());
         // The abandoned launch's close reports every outcome through the one notice owner:
         // no blanket hiding of a foreign stream.
-        String runtime = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/stream/AndroidStreamRuntime.java")),
-                StandardCharsets.UTF_8);
+        String runtime = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/stream/AndroidStreamRuntime.java"));
         assertFalse(runtime.contains("reportsAbandonedLaunchClose"));
         assertTrue(runtime.replace("\r\n", "\n").contains(
                 "new Thread(() -> Game.reportGameLeftOnHost(app,\n"
                         + "                    HostSessionTermination.closeAbandonedStart("));
-        String console = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+        String console = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
         String finish = console.substring(console.indexOf("private void finishTerminateSession("));
-        assertTrue(finish.indexOf("outcome == HostSessionTermination.Outcome.NOTHING_TO_CLOSE) return;")
-                < finish.indexOf("R.string.console_terminate_session_success"));
+        assertOrdered(finish, "outcome == HostSessionTermination.Outcome.NOTHING_TO_CLOSE) return;",
+                "R.string.console_terminate_session_success");
     }
 
     @Test public void knownRunningGameIsTheStopTarget() throws Exception {
         assertEquals(GAME, HostSessionTermination.stopTarget(GAME, "running", GAME));
         // run() stops exactly that verified target inside the permit before quitting Sunshine.
         String host = source("src/main/java/com/limelight/stream/HostSessionTermination.java");
-        int target = host.indexOf("String exact = verifiedStopGame(");
-        int stop = host.indexOf("provider.stopGameWithinControl(exact, permit)");
-        assertTrue(target > 0 && stop > target && host.indexOf("http.quitApp()") > stop);
+        assertOrdered(host, "String exact = verifiedStopGame(",
+                "provider.stopGameWithinControl(exact, permit)", "http.quitApp()");
     }
 
     @Test public void idleProviderNeedsNoGame() {
@@ -201,8 +196,8 @@ public class HostSessionTerminationTest {
         assertTrue(game.contains("host.complete(outcome.streamClosed());"));
         String headless = source("src/main/java/com/limelight/stream/AndroidStreamRuntime.java");
         assertTrue(headless.contains("host.complete(outcome.streamClosed());"));
-        assertTrue(headless.indexOf("host.complete(outcome.streamClosed());")
-                < headless.indexOf("completion.gameLeftOnHost();"));
+        assertOrdered(headless, "host.complete(outcome.streamClosed());",
+                "completion.gameLeftOnHost();");
     }
 
     @Test public void missingOrDifferentGameIsRejectedAsUnverified() {
@@ -249,7 +244,6 @@ public class HostSessionTerminationTest {
 
     private static String source(String relative) throws Exception {
         Path path = Paths.get(relative);
-        if (!Files.exists(path)) path = Paths.get("app").resolve(relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        return SourceText.read(path);
     }
 }
