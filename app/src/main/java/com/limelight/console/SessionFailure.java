@@ -11,7 +11,7 @@ import java.io.IOException;
  * from the TV names exactly one path.
  */
 public enum SessionFailure {
-    // ConsoleActivity closePreviousSession, before any path is chosen.
+    // SessionOrchestrator.closePath: the host is unknown, before any path is chosen or asked.
     CLOSE_HOST_UNAVAILABLE("close.host_unavailable",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
     // path=retained-live: the live retained transport reported an unsuccessful termination.
@@ -38,7 +38,7 @@ public enum SessionFailure {
     // path=direct-nonretained: the host-side control-plane termination did not confirm.
     CLOSE_DIRECT_NOT_CLOSED("close.direct_not_closed",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
-    // Any other exception escaping closePreviousSession.
+    // Any other exception escaping the switch or close effect.
     CLOSE_UNEXPECTED_ERROR("close.unexpected_error",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
     // SessionOrchestrator: close returned CLOSED, but local facts still show another session
@@ -46,7 +46,7 @@ public enum SessionFailure {
     CLOSE_SNAPSHOT_NOT_IDLE("close.snapshot_not_idle_after_close",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
 
-    // Retained provider switch (closePreviousSession -> switchRetainedProviderGame).
+    // Retained provider switch (Effects.switchRetained -> switchRetainedProviderGame).
     SWITCH_NOT_ELIGIBLE("switch.not_eligible",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
     SWITCH_REFUSED("switch.refused_not_eligible",
@@ -181,12 +181,15 @@ public enum SessionFailure {
 
     /** Classifies the failure reason reported by the attached stream for a retained switch. */
     static Raised switchFailed(String reason) {
+        return new Raised(ofSwitchFailure(reason), reason == null ? "" : reason);
+    }
+
+    public static SessionFailure ofSwitchFailure(String reason) {
         String value = reason == null ? "" : reason;
-        SessionFailure failure = "retained_switch_not_eligible".equals(value) ? SWITCH_REFUSED
+        return "retained_switch_not_eligible".equals(value) ? SWITCH_REFUSED
                 : SWITCH_OTHER_ACTOR_REASON.equals(value) ? SESSION_HELD_BY_OTHER_ACTOR
                 : value.contains("game_stop_timeout") ? SWITCH_PROVIDER_STOP_TIMEOUT
                 : SWITCH_FAILED;
-        return new Raised(failure, value);
     }
 
     /** Records this failure with its correlation and the session state at that moment. */

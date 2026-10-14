@@ -745,6 +745,47 @@ public class LaunchTransitionControllerTest {
         assertFalse(controller.gameReadyConfirmed());
     }
 
+    /** A restart after a dead transport never starts a running game a second time. */
+    @Test
+    public void restartOfAConfirmedCommittedGameOnlyReconnectsToIt() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        // Not confirmed ready: the start is replayed, committed or not.
+        assertEquals(LaunchTransitionType.GAME,
+                controller.restartType(LaunchTransitionType.GAME, true));
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST, LaunchTransitionType.GAME, GAME);
+        assertEquals(LaunchTransitionType.GAME_CONNECTION,
+                controller.restartType(LaunchTransitionType.GAME, true));
+        // An uncommitted launch is the one the dead transport cleans up: started again.
+        assertEquals(LaunchTransitionType.GAME,
+                controller.restartType(LaunchTransitionType.GAME, false));
+        for (LaunchTransitionType type : LaunchTransitionType.values()) {
+            if (type != LaunchTransitionType.GAME) {
+                assertEquals(type, controller.restartType(type, true));
+            }
+        }
+    }
+
+    /**
+     * TV 2026-10-14 13:55: a failed switch of the neutral stream kept a GAME_CONNECTION without a
+     * game, which waited for a game window and timed out under its cover. The neutral stream is
+     * kept as the plain neutral stream; a stream with a game observes that game again.
+     */
+    @Test
+    public void failedSwitchKeepsANeutralStreamNeutralAndARevealedGameRecreatesAsObservation() {
+        assertEquals(LaunchTransitionType.GENERIC,
+                LaunchTransitionController.retainedRecoveryType(""));
+        assertEquals(LaunchTransitionType.GAME_CONNECTION,
+                LaunchTransitionController.retainedRecoveryType("steam:952060"));
+        assertEquals(LaunchTransitionType.GAME_CONNECTION, LaunchTransitionController
+                .recoveredTransitionType(LaunchTransitionType.GAME, true));
+        assertEquals(LaunchTransitionType.GAME, LaunchTransitionController
+                .recoveredTransitionType(LaunchTransitionType.GAME, false));
+        assertEquals(LaunchTransitionType.GAME_CONNECTION, LaunchTransitionController
+                .recoveredTransitionType(LaunchTransitionType.GAME_CONNECTION, true));
+    }
+
     @Test
     public void manualRevealDoesNotConfirmTheGameReady() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);

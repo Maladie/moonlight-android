@@ -36,10 +36,12 @@ public class ConsoleStreamTransitionCoordinatorTest {
     private static final String GAME = "11111111-2222-3333-4444-555555555555";
     private static final String PROCESS_TOKEN =
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    /** The process's provider owners as one test sees them; a new process per test. */
+    private static ProviderOwnership owners = new ProviderOwnership();
 
     @Before
     public void resetProviderOwnership() throws Exception {
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         resetRetainedStream();
     }
 
@@ -124,7 +126,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 phaseOne.controller.snapshot().state);
         assertFalse(phaseOne.states.contains(LaunchTransitionState.GAME_PROCESS_RUNNING));
 
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         Harness phaseTwo = new Harness(LaunchTransitionType.GAME, gatewayWith(
                 snapshot(true, true, "starting", GAME, 42, false, "game", 0,
                         "waiting_for_game_window")));
@@ -153,7 +155,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 stale.controller.snapshot().state);
         assertFalse(stale.states.contains(LaunchTransitionState.GAME_PROCESS_RUNNING));
 
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         Harness current = new Harness(LaunchTransitionType.GAME, gatewayWith(
                 aged("running", GAME, 42, "waiting_for_game_window", 0L)));
         current.controller.streamConnected("transition-1");
@@ -313,7 +315,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                         "game_start_timeout", 0L),
                 aged("failed", GAME, 0, "game_start_timeout", 60_000L)};
         for (PlayniteTransitionGateway.Snapshot cleanupRead : unrelated) {
-            ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+            owners = new ProviderOwnership();
             FakeGateway gateway = gatewayWith(
                     aged("failed", GAME, 0, "game_start_timeout", 0L), cleanupRead);
             Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
@@ -480,7 +482,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionController controller = providerController(providerSpec);
         FakeGateway gateway = stoppingObservationGateway();
         gateway.startError = new IOException("host_session_locked");
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, controller, gateway, new InlineExecutor(), new FakeClock(),
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -874,7 +876,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         });
         gateway.snapshotActions.add(() -> clock.value = 44_999L);
         gateway.snapshotActions.add(() -> clock.value = 45_000L);
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 spec(LaunchTransitionType.PLAYNITE), controller, gateway,
                 new InlineExecutor(), clock, new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -911,7 +913,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         gateway.snapshots.add(new IOException("one"));
         gateway.snapshots.add(new IOException("two"));
         gateway.snapshots.add(new IOException("three"));
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 spec, controller, gateway, new InlineExecutor(), new FakeClock(),
                 new ResetSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -943,7 +945,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         };
         ExecutorService executor = Executors.newSingleThreadExecutor();
         LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION, null);
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 spec(LaunchTransitionType.GAME_CONNECTION), controller, gateway, executor,
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -981,7 +983,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             }
         };
         ExecutorService executor = Executors.newSingleThreadExecutor();
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 spec(LaunchTransitionType.GAME_CONNECTION),
                 started(LaunchTransitionType.GAME_CONNECTION, null), gateway, executor,
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
@@ -1044,7 +1046,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         FakeGateway gateway = new FakeGateway();
         gateway.snapshots.add(new IOException("stop observation"));
         ConsoleStreamTransitionCoordinator coordinator =
-                new ConsoleStreamTransitionCoordinator(
+                new ConsoleStreamTransitionCoordinator(owners,
                         providerSpec, controller, gateway, new InlineExecutor(),
                         new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                         new FakeCallbacks());
@@ -1070,7 +1072,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         FakeCallbacks callbacks = new FakeCallbacks();
         callbacks.controlAuthorized = false;
         ConsoleStreamTransitionCoordinator coordinator =
-                new ConsoleStreamTransitionCoordinator(providerSpec, controller, gateway,
+                new ConsoleStreamTransitionCoordinator(owners, providerSpec, controller, gateway,
                         new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
                         (action, delay) -> { }, callbacks);
 
@@ -1085,11 +1087,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
     @Test
     public void providerLaunchWaitsForControllerTransportWithoutOpeningPrivacyGate() {
         for (String gameId : Arrays.asList("epic:Cowbird", "playnite:" + GAME, GAME)) {
-            ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+            owners = new ProviderOwnership();
             LaunchTransitionSpec target = providerSpec("cold-" + gameId, gameId, false);
             LaunchTransitionController controller = providerController(target);
             FakeGateway gateway = stoppingObservationGateway();
-            ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+            ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                     target, controller, gateway, new InlineExecutor(), new FakeClock(),
                     new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -1113,7 +1115,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec target = providerSpec(
                 "cold-cancel", "epic:Cowbird", false);
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 target, providerController(target), gateway, new InlineExecutor(), new FakeClock(),
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -1167,7 +1169,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 cleanupCalled.countDown();
             }
         };
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, controller, gateway, executor, providerExecutor,
                 new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, callbacks);
@@ -1213,7 +1215,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             }
         };
         ExecutorService executor = Executors.newFixedThreadPool(2);
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, controller, gateway, executor, new FakeClock(),
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -1262,7 +1264,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             }
         };
         ExecutorService executor = Executors.newFixedThreadPool(2);
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, controller, gateway, executor, new FakeClock(),
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -1301,7 +1303,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         gateway.startError = new IOException("launcher_interaction_required");
         FakeCallbacks callbacks = new FakeCallbacks();
         ConsoleStreamTransitionCoordinator coordinator =
-                new ConsoleStreamTransitionCoordinator(
+                new ConsoleStreamTransitionCoordinator(owners,
                         providerSpec, controller, gateway, new InlineExecutor(),
                         new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                         callbacks);
@@ -1348,7 +1350,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec providerSpec = providerSpec("failed-stream", "steam:289070");
         LaunchTransitionController controller = providerController(providerSpec);
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, controller, gateway, new InlineExecutor(), new FakeClock(),
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -1365,7 +1367,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void observerFailureAfterRevealCannotStopCommittedProviderGame() {
         LaunchTransitionSpec providerSpec = providerSpec("revealed", "steam:289070");
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, providerController(providerSpec), gateway,
                 new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -1385,7 +1387,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec providerSpec = providerSpec("repeated-failure", "steam:289070");
         LaunchTransitionController controller = providerController(providerSpec);
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, controller, gateway, new InlineExecutor(), new FakeClock(),
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -1414,7 +1416,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 true, "game", 1, "", false, replacementToken));
         FakeCallbacks callbacks = new FakeCallbacks();
         ConsoleStreamTransitionCoordinator coordinator =
-                new ConsoleStreamTransitionCoordinator(
+                new ConsoleStreamTransitionCoordinator(owners,
                         spec, providerController(spec), gateway, new InlineExecutor(),
                         new FakeClock(), new InterruptingSleeper(),
                         (action, delay) -> { }, callbacks);
@@ -1471,12 +1473,12 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "replacement", HOST, LaunchTransitionType.GAME_CONNECTION, 42,
                 "steam:289070", 1_000L);
         ExecutorService provider = Executors.newSingleThreadExecutor();
-        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(owners,
                 ownerSpec, providerController(ownerSpec), gateway, new InlineExecutor(), provider,
                 new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
         ConsoleStreamTransitionCoordinator replacement =
-                new ConsoleStreamTransitionCoordinator(
+                new ConsoleStreamTransitionCoordinator(owners,
                         replacementSpec, providerController(replacementSpec), gateway,
                         new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
                         (action, delay) -> { }, new FakeCallbacks());
@@ -1525,7 +1527,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void recreatedPresentationJoinsTheOneInFlightStartWithoutAccepting()
             throws Exception {
         for (boolean succeed : new boolean[]{true, false}) {
-            ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+            owners = new ProviderOwnership();
             LaunchTransitionSpec spec = providerSpec("recreated-" + succeed, "steam:289070");
             CountDownLatch startEntered = new CountDownLatch(1);
             CountDownLatch releaseStart = new CountDownLatch(1);
@@ -1550,7 +1552,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             ExecutorService newProvider = Executors.newSingleThreadExecutor();
             FakeCallbacks oldCallbacks = new FakeCallbacks();
             FakeCallbacks newCallbacks = new FakeCallbacks();
-            ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(
+            ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(owners,
                     spec, providerController(spec), gateway,
                     Executors.newSingleThreadExecutor(), oldProvider, new FakeClock(), 0L,
                     new InterruptingSleeper(), (action, delay) -> { }, oldCallbacks);
@@ -1558,7 +1560,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             assertTrue(startEntered.await(2, TimeUnit.SECONDS));
 
             old.detachForRecreation();
-            ConsoleStreamTransitionCoordinator adopter = new ConsoleStreamTransitionCoordinator(
+            ConsoleStreamTransitionCoordinator adopter = new ConsoleStreamTransitionCoordinator(owners,
                     spec, providerController(spec), gateway,
                     Executors.newSingleThreadExecutor(), newProvider, new FakeClock(), 0L,
                     new InterruptingSleeper(), (action, delay) -> { }, newCallbacks);
@@ -1589,7 +1591,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     @Test
     public void detachedOwnerWithoutObservedProcessIsNeverReportedStopped() throws Exception {
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         LaunchTransitionSpec spec = providerSpec("detached-end", "steam:289070");
         CountDownLatch startEntered = new CountDownLatch(1);
         CountDownLatch releaseStart = new CountDownLatch(1);
@@ -1610,7 +1612,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         };
         ExecutorService provider = Executors.newSingleThreadExecutor();
         FakeCallbacks callbacks = new FakeCallbacks();
-        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(owners,
                 spec, providerController(spec), gateway, Executors.newSingleThreadExecutor(),
                 provider, new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, callbacks);
@@ -1618,7 +1620,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertTrue(startEntered.await(2, TimeUnit.SECONDS));
         old.detachForRecreation();
 
-        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);  // runtime ended, no adopter
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(owners, HOST);  // runtime ended, no adopter
         releaseStart.countDown();
         provider.submit(() -> { }).get(2, TimeUnit.SECONDS);
         provider.submit(() -> { }).get(2, TimeUnit.SECONDS);
@@ -1633,7 +1635,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     @Test
     public void holderlessOwnerStopsTheObservableExactProcessOnce() throws Exception {
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         LaunchTransitionSpec spec = providerSpec("detached-exact", "steam:289070");
         CountDownLatch startEntered = new CountDownLatch(1);
         CountDownLatch releaseStart = new CountDownLatch(1);
@@ -1657,7 +1659,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         };
         ExecutorService provider = Executors.newSingleThreadExecutor();
         FakeCallbacks callbacks = new FakeCallbacks();
-        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(owners,
                 spec, providerController(spec), gateway, Executors.newSingleThreadExecutor(),
                 provider, new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, callbacks);
@@ -1665,7 +1667,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertTrue(startEntered.await(2, TimeUnit.SECONDS));
         old.detachForRecreation();
 
-        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(owners, HOST);
         releaseStart.countDown();
         provider.submit(() -> { }).get(2, TimeUnit.SECONDS);
         provider.submit(() -> { }).get(2, TimeUnit.SECONDS);
@@ -1675,7 +1677,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(PROCESS_TOKEN, gateway.stoppedProcessToken);
         assertEquals(1, callbacks.cleanupCalls);
         assertTrue(callbacks.lastCleanupSuccess);
-        ConsoleStreamTransitionCoordinator probe = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator probe = new ConsoleStreamTransitionCoordinator(owners,
                 spec, providerController(spec), gateway, new InlineExecutor(), new FakeClock(),
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
         assertEquals("owner retired", ConsoleStreamTransitionCoordinator.OwnerState.NONE,
@@ -1685,10 +1687,10 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     @Test
     public void detachForRecreationReleasesTheOldObservationPool() throws Exception {
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         LaunchTransitionSpec spec = providerSpec("detached-pool", "steam:289070");
         ExecutorService observation = Executors.newFixedThreadPool(2);
-        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(owners,
                 spec, providerController(spec), stoppingObservationGateway(), observation,
                 new InlineExecutor(), new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -1702,7 +1704,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     @Test
     public void queuedButNeverInvokedStartIsAdoptedAndStartedExactlyOnce() {
         for (boolean succeed : new boolean[]{true, false}) {
-            ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+            owners = new ProviderOwnership();
             LaunchTransitionSpec spec = providerSpec("queued-" + succeed, "steam:289070");
             FakeGateway gateway = stoppingObservationGateway();
             if (!succeed) gateway.startError = new IOException("failed");
@@ -1710,7 +1712,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             java.util.ArrayDeque<Runnable> newQueue = new java.util.ArrayDeque<>();
             FakeCallbacks oldCallbacks = new FakeCallbacks();
             FakeCallbacks newCallbacks = new FakeCallbacks();
-            ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(
+            ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(owners,
                     spec, providerController(spec), gateway, Executors.newSingleThreadExecutor(),
                     oldQueue::add, new FakeClock(), 0L, new InterruptingSleeper(),
                     (action, delay) -> { }, oldCallbacks);
@@ -1720,7 +1722,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                     old.ownerState());
 
             old.detachForRecreation();
-            ConsoleStreamTransitionCoordinator adopter = new ConsoleStreamTransitionCoordinator(
+            ConsoleStreamTransitionCoordinator adopter = new ConsoleStreamTransitionCoordinator(owners,
                     spec, providerController(spec), gateway, Executors.newSingleThreadExecutor(),
                     newQueue::add, new FakeClock(), 0L, new InterruptingSleeper(),
                     (action, delay) -> { }, newCallbacks);
@@ -1743,18 +1745,18 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     @Test
     public void mismatchedSpecCannotAdoptAQueuedReservation() {
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         LaunchTransitionSpec spec = providerSpec("queued-exact", "steam:289070");
         java.util.ArrayDeque<Runnable> queue = new java.util.ArrayDeque<>();
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(owners,
                 spec, providerController(spec), gateway, Executors.newSingleThreadExecutor(),
                 queue::add, new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
         old.start();
         old.detachForRecreation();
         LaunchTransitionSpec other = providerSpec("queued-other", "steam:289070");
-        ConsoleStreamTransitionCoordinator stale = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator stale = new ConsoleStreamTransitionCoordinator(owners,
                 other, providerController(other), gateway, Executors.newSingleThreadExecutor(),
                 queue::add, new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -1766,18 +1768,18 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     @Test
     public void endedRuntimeReleasesANeverInvokedReservationWithoutStopping() {
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         LaunchTransitionSpec spec = providerSpec("queued-end", "steam:289070");
         java.util.ArrayDeque<Runnable> queue = new java.util.ArrayDeque<>();
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator old = new ConsoleStreamTransitionCoordinator(owners,
                 spec, providerController(spec), gateway, Executors.newSingleThreadExecutor(),
                 queue::add, new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
         old.start();
         old.detachForRecreation();
 
-        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(owners, HOST);
         while (!queue.isEmpty()) queue.poll().run();
 
         assertEquals(0, gateway.startGameCalls);
@@ -1787,11 +1789,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     @Test
     public void cleanupWinningBeforeReservationLeavesNoOwnerAndNextAttemptStarts() {
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
         LaunchTransitionSpec spec = providerSpec("cleanup-first", "steam:289070", false);
         FakeGateway gateway = stoppingObservationGateway();
         java.util.ArrayDeque<Runnable> queue = new java.util.ArrayDeque<>();
-        ConsoleStreamTransitionCoordinator cancelled = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator cancelled = new ConsoleStreamTransitionCoordinator(owners,
                 spec, providerController(spec), gateway, Executors.newSingleThreadExecutor(),
                 queue::add, new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -1809,7 +1811,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         LaunchTransitionSpec next = providerSpec("cleanup-next", "steam:289070");
         FakeCallbacks nextCallbacks = new FakeCallbacks();
-        ConsoleStreamTransitionCoordinator attempt = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator attempt = new ConsoleStreamTransitionCoordinator(owners,
                 next, providerController(next), gateway, Executors.newSingleThreadExecutor(),
                 queue::add, new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, nextCallbacks);
@@ -1828,7 +1830,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionController controller = providerController(providerSpec);
         FakeGateway gateway = stoppingObservationGateway();
         gateway.startError = new IOException("failed");
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, controller, gateway, new InlineExecutor(), new FakeClock(),
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
@@ -1849,7 +1851,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         FakeGateway gateway = stoppingObservationGateway();
         QueuedExecutor provider = new QueuedExecutor();
         QueuedScheduler scheduler = new QueuedScheduler();
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 providerSpec, controller, gateway, new InlineExecutor(), provider,
                 new FakeClock(), 0L, new InterruptingSleeper(), scheduler,
                 new FakeCallbacks());
@@ -1900,12 +1902,12 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec newSpec = providerSpec("new", "steam:same");
         FakeCallbacks oldCallbacks = new FakeCallbacks();
         ConsoleStreamTransitionCoordinator oldCoordinator =
-                new ConsoleStreamTransitionCoordinator(oldSpec,
+                new ConsoleStreamTransitionCoordinator(owners, oldSpec,
                         providerController(oldSpec), gateway, new InlineExecutor(),
                         new FakeClock(), new InterruptingSleeper(),
                         (action, delay) -> { }, oldCallbacks);
         ConsoleStreamTransitionCoordinator newCoordinator =
-                new ConsoleStreamTransitionCoordinator(newSpec,
+                new ConsoleStreamTransitionCoordinator(owners, newSpec,
                         providerController(newSpec), gateway, new InlineExecutor(),
                         new FakeClock(), new InterruptingSleeper(),
                         (action, delay) -> { }, new FakeCallbacks());
@@ -1950,11 +1952,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 game.id, game.hostId, LaunchTransitionType.GAME_CONNECTION,
                 game.sunshineAppId, game.playniteGameId, game.createdAtMillis);
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(owners,
                 game, providerController(game), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(owners,
                 observation, providerController(observation), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -1974,7 +1976,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void detachForSwitchReleasesExactOwnerWithoutProviderStop() {
         LaunchTransitionSpec oldSpec = providerSpec("old-switch", "steam:old");
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -1990,7 +1992,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void committedLaunchClosedWithItsStreamDoesNotBlockLaterReconnectSwitch() {
         LaunchTransitionSpec launch = providerSpec("re3-launch", "steam:952060");
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(owners,
                 launch, providerController(launch), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2004,7 +2006,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec reconnect = new LaunchTransitionSpec("re3-reconnect", HOST,
                 launch.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
                 2_000L, false);
-        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(owners,
                 reconnect, providerController(reconnect), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2018,7 +2020,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void committedLaunchDetachedForRecreationEndsWithItsTransport() {
         LaunchTransitionSpec launch = providerSpec("re3-recreated", "steam:952060");
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(owners,
                 launch, providerController(launch), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2026,12 +2028,12 @@ public class ConsoleStreamTransitionCoordinatorTest {
         Thread.interrupted();
         launched.commitProviderLaunch();
         launched.detachForRecreation();
-        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(owners, HOST);
 
         LaunchTransitionSpec reconnect = new LaunchTransitionSpec("re3-reconnect-2", HOST,
                 launch.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
                 2_000L, false);
-        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(owners,
                 reconnect, providerController(reconnect), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2056,13 +2058,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec reconnect = new LaunchTransitionSpec("other", HOST,
                 launch.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
                 2_000L, false);
-        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(owners,
                 reconnect, providerController(reconnect), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
         assertFalse("the owed cleanup still owns the host", observer.detachForSwitch());
 
-        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(owners, HOST);
         provider.runAll();
 
         assertEquals("the unrevealed game is stopped once", 1, gateway.stopGameCalls);
@@ -2087,7 +2089,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         next.start();
         provider.runAll();
         Thread.interrupted();
-        ConsoleStreamTransitionCoordinator.endDetachedOwner(HOST);  // the old transport ends
+        ConsoleStreamTransitionCoordinator.endDetachedOwner(owners, HOST);  // the old transport ends
         provider.runAll();
 
         assertEquals(1, gateway.startGameCalls);
@@ -2111,7 +2113,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         gateway.observeStartedProcessThenStop = true;
         QueuedExecutor provider = new QueuedExecutor();
         FakeCallbacks callbacks = new FakeCallbacks();
-        launched[0] = new ConsoleStreamTransitionCoordinator(
+        launched[0] = new ConsoleStreamTransitionCoordinator(owners,
                 launch, providerController(launch), gateway, new InlineExecutor(), provider,
                 new FakeClock(), 0L, new InterruptingSleeper(), (action, delay) -> { },
                 callbacks);
@@ -2122,7 +2124,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec reconnect = new LaunchTransitionSpec("later", HOST,
                 launch.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
                 2_000L, false);
-        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(owners,
                 reconnect, providerController(reconnect), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2135,7 +2137,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void transferredObservationOwnerKeepsItsProcessAcrossRecreation() {
         LaunchTransitionSpec game = providerSpec("transfer-game", "steam:952060");
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator launched = new ConsoleStreamTransitionCoordinator(owners,
                 game, providerController(game), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2144,7 +2146,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec observation = new LaunchTransitionSpec("transfer-observer", HOST,
                 game.profileId, LaunchTransitionType.GAME_CONNECTION, 42, "steam:952060",
                 2_000L, false);
-        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(owners,
                 observation, providerController(observation), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2153,7 +2155,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         // Activity recreation with a surviving transport.
         observer.detachForRecreation();
-        ConsoleStreamTransitionCoordinator recreated = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator recreated = new ConsoleStreamTransitionCoordinator(owners,
                 observation, providerController(observation), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2170,13 +2172,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void confirmedStopCanDetachAfterExactOwnerWasAlreadyCleared() {
         LaunchTransitionSpec spec = providerSpec("confirmed-stop", "steam:old");
         FakeGateway gateway = stoppingObservationGateway();
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 spec, providerController(spec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
         coordinator.start();
         Thread.interrupted();
-        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        owners = new ProviderOwnership();
 
         assertTrue(coordinator.detachAfterConfirmedGameStop());
         assertEquals(1, gateway.startGameCalls);
@@ -2189,12 +2191,12 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec stale = providerSpec("stale", "steam:old");
         FakeGateway gateway = stoppingObservationGateway();
         ConsoleStreamTransitionCoordinator newerCoordinator =
-                new ConsoleStreamTransitionCoordinator(
+                new ConsoleStreamTransitionCoordinator(owners,
                         newer, providerController(newer), gateway, new InlineExecutor(),
                         new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                         new FakeCallbacks());
         ConsoleStreamTransitionCoordinator staleCoordinator =
-                new ConsoleStreamTransitionCoordinator(
+                new ConsoleStreamTransitionCoordinator(owners,
                         stale, providerController(stale), gateway, new InlineExecutor(),
                         new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                         new FakeCallbacks());
@@ -2212,7 +2214,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         FakeGateway gateway = stoppingObservationGateway();
         LaunchTransitionSpec ownerSpec = providerSpec(
                 "same-owner", "child-a", "steam:old");
-        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(owners,
                 ownerSpec, providerController(ownerSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2223,11 +2225,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "same-owner", "child-b", "steam:old");
         LaunchTransitionSpec replacementSpec = providerSpec(
                 "replacement", "child-b", "steam:old");
-        ConsoleStreamTransitionCoordinator stale = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator stale = new ConsoleStreamTransitionCoordinator(owners,
                 staleSpec, providerController(staleSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(owners,
                 replacementSpec, providerController(replacementSpec), gateway,
                 new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -2249,19 +2251,19 @@ public class ConsoleStreamTransitionCoordinatorTest {
             throws Exception {
         for (String[] actors : new String[][] {
                 {"parent", "child-a"}, {"child-a", "parent"}, {"child-a", "child-b"}}) {
-            ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+            owners = new ProviderOwnership();
             resetRetainedStream();
             FakeGateway gateway = stoppingObservationGateway();
             LaunchTransitionSpec oldSpec = providerSpec("old-" + actors[0], actors[0], GAME);
             LaunchTransitionSpec nextSpec = new LaunchTransitionSpec(
                     "next-" + actors[1], HOST, actors[1], LaunchTransitionType.GAME_CONNECTION,
                     42, GAME, 2L, false);
-            ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(
+            ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(owners,
                     oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
                     new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                     new FakeCallbacks());
             ConsoleStreamTransitionCoordinator replacement =
-                    new ConsoleStreamTransitionCoordinator(
+                    new ConsoleStreamTransitionCoordinator(owners,
                             nextSpec, providerController(nextSpec), gateway, new InlineExecutor(),
                             new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                             new FakeCallbacks());
@@ -2308,7 +2310,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec observation = new LaunchTransitionSpec(
                 "snapshot-fallback", HOST, "child-a", LaunchTransitionType.GAME_CONNECTION,
                 42, GAME, 1L, false);
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 observation, providerController(observation), new FakeGateway(),
                 new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -2357,11 +2359,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
         FakeGateway gateway = stoppingObservationGateway();
         LaunchTransitionSpec oldSpec = providerSpec("old", "parent", GAME);
         LaunchTransitionSpec nextSpec = providerSpec("next", "child", GAME);
-        ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(owners,
                 oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(owners,
                 nextSpec, providerController(nextSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2393,11 +2395,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec newSpec = new LaunchTransitionSpec(
                 "new-child-observer", HOST, "child-a", LaunchTransitionType.GAME_CONNECTION,
                 42, "steam:old", 2L, false);
-        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(owners,
                 oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator newObserver = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator newObserver = new ConsoleStreamTransitionCoordinator(owners,
                 newSpec, providerController(newSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2421,11 +2423,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "owner-child-b", HOST, "child-b", LaunchTransitionType.GAME_CONNECTION,
                 42, "steam:old", 2L, false);
         FakeGateway gateway = new FakeGateway();
-        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(owners,
                 ownerSpec, providerController(ownerSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator other = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator other = new ConsoleStreamTransitionCoordinator(owners,
                 otherSpec, providerController(otherSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2435,16 +2437,47 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertTrue(owner.detachForSwitch());
     }
 
+    /** K5 decision 5: the provider owners are the process session model's; no static map. */
+    @Test
+    public void providerOwnersBelongToTheProcessSessionModel() {
+        SessionModelDriver process = new SessionModelDriver();
+        ProviderOwnership processOwners = process.model.providerOwnership();
+        assertTrue(processOwners == process.model.providerOwnership());
+        LaunchTransitionSpec first = new LaunchTransitionSpec("process-a", HOST, "default",
+                LaunchTransitionType.GAME_CONNECTION, 42, "steam:old", 1L, false);
+        LaunchTransitionSpec second = new LaunchTransitionSpec("process-b", HOST, "default",
+                LaunchTransitionType.GAME_CONNECTION, 42, "steam:old", 2L, false);
+        ConsoleStreamTransitionCoordinator owner = observer(processOwners, first);
+        ConsoleStreamTransitionCoordinator sameProcess = observer(processOwners, second);
+        ConsoleStreamTransitionCoordinator otherProcess = observer(
+                new SessionModelDriver().model.providerOwnership(), second);
+
+        assertTrue(owner.adoptDetachedProviderOwnership());
+        // The same process sees the host's owner; another process's model holds its own.
+        assertFalse(sameProcess.adoptDetachedProviderOwnership());
+        assertTrue(otherProcess.adoptDetachedProviderOwnership());
+        // Released by its owner, the host's slot is free again in this process.
+        assertTrue(owner.detachForSwitch());
+        assertTrue(sameProcess.adoptDetachedProviderOwnership());
+    }
+
+    private static ConsoleStreamTransitionCoordinator observer(ProviderOwnership ownership,
+                                                               LaunchTransitionSpec spec) {
+        return new ConsoleStreamTransitionCoordinator(ownership, spec, providerController(spec),
+                new FakeGateway(), new InlineExecutor(), new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+    }
+
     @Test
     public void failedSwitchRecoveryCannotReplaceNewerProviderOwner() {
         FakeGateway gateway = stoppingObservationGateway();
         LaunchTransitionSpec oldSpec = providerSpec("old-switch", "steam:old");
         LaunchTransitionSpec newSpec = providerSpec("new-switch", "steam:new");
-        ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(owners,
                 oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator newCoordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator newCoordinator = new ConsoleStreamTransitionCoordinator(owners,
                 newSpec, providerController(newSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2470,11 +2503,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec newSpec = new LaunchTransitionSpec(
                 "new-observer", HOST, LaunchTransitionType.GAME_CONNECTION,
                 42, "steam:old", 2L);
-        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(owners,
                 oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator newObserver = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator newObserver = new ConsoleStreamTransitionCoordinator(owners,
                 newSpec, providerController(newSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2495,7 +2528,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec observation = new LaunchTransitionSpec(
                 "restored-observer", HOST, LaunchTransitionType.GAME_CONNECTION,
                 42, "steam:old", 1L);
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 observation, providerController(observation), gateway,
                 new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -2513,7 +2546,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         LaunchTransitionSpec observation = new LaunchTransitionSpec(
                 "neutral-observer", HOST, LaunchTransitionType.GAME_CONNECTION,
                 42, "", 1L);
-        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(owners,
                 observation, providerController(observation), gateway,
                 new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -2535,15 +2568,15 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "replacement", HOST, LaunchTransitionType.GAME_CONNECTION,
                 42, "steam:old", 2L);
         LaunchTransitionSpec newerSpec = providerSpec("newer", "steam:new");
-        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(owners,
                 oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(owners,
                 replacementSpec, providerController(replacementSpec), gateway,
                 new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
-        ConsoleStreamTransitionCoordinator newer = new ConsoleStreamTransitionCoordinator(
+        ConsoleStreamTransitionCoordinator newer = new ConsoleStreamTransitionCoordinator(owners,
                 newerSpec, providerController(newerSpec), gateway, new InlineExecutor(),
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
@@ -2640,7 +2673,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     private static ConsoleStreamTransitionCoordinator coordinator(
             LaunchTransitionSpec spec, LaunchTransitionController controller,
             FakeGateway gateway, Executor providerExecutor) {
-        return new ConsoleStreamTransitionCoordinator(
+        return new ConsoleStreamTransitionCoordinator(owners,
                 spec, controller, gateway, new InlineExecutor(), providerExecutor,
                 new FakeClock(), 0L, new InterruptingSleeper(),
                 (action, delay) -> { }, new FakeCallbacks());
@@ -2747,7 +2780,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 ConsoleStreamTransitionCoordinator.Scheduler scheduler) {
             controller = started(type, states);
             if (gateway instanceof FakeGateway) ((FakeGateway) gateway).clock = clock;
-            coordinator = new ConsoleStreamTransitionCoordinator(spec(type), controller, gateway,
+            coordinator = new ConsoleStreamTransitionCoordinator(owners, spec(type), controller, gateway,
                     new InlineExecutor(), clock, sleeper, scheduler, callbacks);
         }
 

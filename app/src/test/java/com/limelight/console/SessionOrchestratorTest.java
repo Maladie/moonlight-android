@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionModelDriver;
+import com.limelight.session.SessionResumeManager;
 
 import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.nvstream.http.NvApp;
@@ -47,7 +48,7 @@ public class SessionOrchestratorTest {
         remembered.onRefresh = () -> remembered.snapshot =
                 snapshot(SessionSnapshot.State.NONE, 0, "");
         SessionOrchestrator orchestrator = orchestrator(remembered);
-        assertTrue(orchestrator.prepareHost("host") > 0L);
+        assertTrue(orchestrator.prepareHost("host", "default") > 0L);
         assertEquals(1, remembered.prepareCalls);
         orchestrator.play(game());
         assertNull(remembered.rejection);
@@ -59,7 +60,7 @@ public class SessionOrchestratorTest {
         unpaired.paired = false;
         unpaired.hostOnline = false;
         orchestrator = orchestrator(unpaired);
-        assertEquals(0L, orchestrator.prepareHost("host"));
+        assertEquals(0L, orchestrator.prepareHost("host", "default"));
         orchestrator.play(game());
         assertEquals(SessionOrchestrator.Rejection.UNPAIRED, unpaired.rejection);
         assertEquals(0, unpaired.loadings);
@@ -117,7 +118,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         orchestrator.play(game());
 
         assertEquals(1, effects.loadings);
@@ -138,7 +139,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         worker.runNext();
         main.runNext();
 
@@ -156,7 +157,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         // The preparation itself is not held back: only the launch waits.
         worker.runNext();
         main.runNext();
@@ -181,7 +182,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         worker.runNext();
         main.runNext();
         effects.mayOpenPreparedHost = true;
@@ -206,7 +207,7 @@ public class SessionOrchestratorTest {
             QueuedDispatcher main = new QueuedDispatcher();
             SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-            orchestrator.prepareHost("host");
+            orchestrator.prepareHost("host", "default");
             worker.runNext();
             main.runNext();
             // A pause or a profile change, a host change, the console's end.
@@ -227,7 +228,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         worker.runNext();
         orchestrator.play(game());
         main.runNext();
@@ -247,7 +248,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         orchestrator.play(game());
         worker.runNext();
         main.runAll();
@@ -262,10 +263,10 @@ public class SessionOrchestratorTest {
         Fake effects = new Fake();
         SessionOrchestrator orchestrator = orchestrator(effects);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         assertEquals(1L, effects.prepareRequest);
         orchestrator.play(game());
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
 
         assertEquals(3L, effects.prepareRequest);
     }
@@ -277,11 +278,11 @@ public class SessionOrchestratorTest {
             QueuedDispatcher main = new QueuedDispatcher();
             SessionOrchestrator orchestrator = new SessionOrchestrator(
                     effects, worker, main);
-            orchestrator.prepareHost("host");
+            orchestrator.prepareHost("host", "default");
             worker.runNext();
             if (action == 0) orchestrator.cancel();
             else if (action == 1) orchestrator.close();
-            else orchestrator.prepareHost("host");
+            else orchestrator.prepareHost("host", "default");
 
             main.runNext();
 
@@ -296,7 +297,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         worker.runNext();
         main.runNext();
         orchestrator.play(game());
@@ -313,7 +314,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         orchestrator.play(game());
         worker.runNext();
         main.runAll();
@@ -330,7 +331,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        assertTrue(orchestrator.prepareHost("host") > 0L);
+        assertTrue(orchestrator.prepareHost("host", "default") > 0L);
         assertTrue(orchestrator.hasPreparationForHost("host"));
         assertFalse(orchestrator.cancelPreparation("other"));
         assertTrue(orchestrator.hasPreparationForHost("host"));
@@ -344,7 +345,7 @@ public class SessionOrchestratorTest {
         QueuedDispatcher main = new QueuedDispatcher();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
 
-        orchestrator.prepareHost("host");
+        orchestrator.prepareHost("host", "default");
         orchestrator.play(PlayIntent.playniteGame(
                 "other", 42, "Game", false, "game", "game"));
         worker.runNext();
@@ -361,7 +362,7 @@ public class SessionOrchestratorTest {
             effects.available = !unavailable;
             effects.paired = unavailable;
 
-            assertEquals(0L, orchestrator(effects).prepareHost("host"));
+            assertEquals(0L, orchestrator(effects).prepareHost("host", "default"));
             assertEquals(0, effects.prepareCalls);
         }
     }
@@ -375,7 +376,7 @@ public class SessionOrchestratorTest {
             effects.preparedWarmUp = null;
             SessionOrchestrator orchestrator = orchestrator(effects);
 
-            orchestrator.prepareHost("host");
+            orchestrator.prepareHost("host", "default");
             effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
             orchestrator.play(game());
 
@@ -517,7 +518,7 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.refreshes);
         assertEquals(0, effects.reconnects);
         assertEquals(1, effects.closes);
-        assertEquals(Boolean.TRUE, effects.allowDestructiveCloseSeen);
+        assertEquals(0, effects.switches);
         assertEquals(1, effects.launches);
         assertEquals(42, effects.launchedTarget.getAppId());
         assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
@@ -540,7 +541,6 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.reconnects);
         assertNull(effects.confirmation);
         assertEquals(0, effects.closes);
-        assertNull(effects.allowDestructiveCloseSeen);
         assertEquals(0, effects.launches);
         assertTrue(effects.failures.isEmpty());
     }
@@ -564,7 +564,7 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.refreshes);
         assertEquals(HostLaunchPreflight.Action.LAUNCH, effects.preflightAction);
         assertEquals(1, effects.closes);
-        assertEquals(Boolean.TRUE, effects.allowDestructiveCloseSeen);
+        assertEquals(0, effects.switches);
         assertEquals(1, effects.launches);
     }
 
@@ -597,7 +597,6 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.refreshes);
         assertNotNull(effects.confirmation);
         assertEquals(0, effects.closes);
-        assertNull(effects.allowDestructiveCloseSeen);
         assertEquals(0, effects.reconnects);
         assertEquals(0, effects.launches);
         assertTrue(effects.failures.isEmpty());
@@ -699,8 +698,11 @@ public class SessionOrchestratorTest {
         Fake effects = competing();
         orchestrator(effects).play(game());
 
+        assertEquals(0, effects.loadings);
         effects.confirmation.run();
 
+        // The confirmed replacement runs under the loading layer, where Cancel lives.
+        assertEquals(1, effects.loadings);
         assertEquals(1, effects.closes);
         assertEquals(1, effects.launches);
         assertEquals(LaunchTransitionType.GAME, effects.launchType);
@@ -717,7 +719,7 @@ public class SessionOrchestratorTest {
         assertNull(effects.confirmation);
         assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED,
                 effects.preflightAction);
-        assertEquals(Boolean.FALSE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.switches);
         assertEquals(1, effects.closes);
         assertEquals(1, effects.returned);
         assertEquals(0, effects.launches);
@@ -761,7 +763,7 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.readiness);
         assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, effects.preflightAction);
         assertEquals(1, effects.closes);
-        assertEquals(Boolean.FALSE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.switches);
         assertEquals(1, effects.returned);
         assertEquals(0, effects.launches);
         assertEquals(1, effects.loadings);
@@ -819,7 +821,7 @@ public class SessionOrchestratorTest {
         effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE,
                 42, "", true, "", false);
         effects.canSwitch = true;
-        effects.closeResult = SessionOrchestrator.CloseResult.PRESENTATION_REQUIRED;
+        effects.presentationAttached = false;
 
         orchestrator(effects).play(game());
 
@@ -836,7 +838,7 @@ public class SessionOrchestratorTest {
         effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE,
                 42, "", true, "", false);
         effects.canSwitch = true;
-        effects.closeResult = SessionOrchestrator.CloseResult.PRESENTATION_REQUIRED;
+        effects.presentationAttached = false;
         effects.deferDispatch = true;
         SessionOrchestrator orchestrator = orchestrator(effects);
         orchestrator.play(game());
@@ -913,8 +915,13 @@ public class SessionOrchestratorTest {
      */
     @Test public void childOverAParentGameSwitchesOnTheLiveStreamWithoutConfirmation() {
         Fake effects = new Fake();
-        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42, "parent-game");
-        effects.canSwitch = true;
+        // One host fact: the parent's stream (app 42) carries the game the host runs.
+        effects.snapshot = new SessionSnapshot("host", "default", "default",
+                SessionSnapshot.State.ACTIVE, 42, "parent-game", true, false, false, false,
+                false, "", true, SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 42, false);
+        effects.retainedGame = "parent-game";
         effects.closeResult = SessionOrchestrator.CloseResult.REUSED;
         PlayIntent child = PlayIntent.playniteGame("host", "child", 42, "Game", false,
                 "child-game", "child-game");
@@ -924,7 +931,7 @@ public class SessionOrchestratorTest {
         assertNull(effects.confirmation);
         assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, effects.preflightAction);
         assertEquals(1, effects.closes);
-        assertEquals(Boolean.FALSE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.switches);
         assertEquals(1, effects.returned);
         assertEquals(0, effects.launches);
         assertTrue(effects.failures.isEmpty());
@@ -933,20 +940,94 @@ public class SessionOrchestratorTest {
     @Test public void lostReuseEligibilityRequiresConfirmationBeforeDestructiveClose() {
         Fake effects = competing();
         effects.canSwitch = true;
-        effects.closeResults.add(SessionOrchestrator.CloseResult.NEEDS_CONFIRMATION);
-        effects.closeResults.add(SessionOrchestrator.CloseResult.CLOSED);
+        // The stream refuses the switch as ineligible and is no longer switchable after it.
+        effects.switchFailure = SessionFailure.SWITCH_NOT_ELIGIBLE.raise();
+        effects.onClose = () -> effects.canSwitch = false;
 
         orchestrator(effects).play(game());
 
         assertNotNull(effects.confirmation);
         assertEquals(1, effects.closes);
-        assertEquals(Boolean.FALSE, effects.firstAllowDestructiveCloseSeen);
+        assertEquals(1, effects.switches);
         assertEquals(1, effects.readiness);
+        assertTrue(effects.failures.isEmpty());
         effects.confirmation.run();
         assertEquals(2, effects.closes);
-        assertEquals(Boolean.TRUE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.switches);
+        assertNull("no retained stream left: the host session closes directly",
+                effects.closedRetained);
         assertEquals(1, effects.readiness);
         assertEquals(1, effects.launches);
+    }
+
+    /** The table, not the effect, picks this client's exact retained stream for the close. */
+    @Test public void confirmedCloseOfTheExactRetainedStreamGoesThroughItsOwner() {
+        Fake effects = competing();
+        effects.canSwitch = true;
+        orchestrator(effects).play(PlayIntent.sunshineApp("host", 9, "App", false, ""));
+
+        assertEquals(0, effects.closes);
+        effects.confirmation.run();
+
+        assertEquals(1, effects.closes);
+        assertEquals(0, effects.switches);
+        assertNotNull(effects.closedRetained);
+        assertEquals("s", effects.closedRetained.streamSessionId);
+        assertEquals(1, effects.launches);
+    }
+
+    @Test public void warmUpBesideAnotherRunningAppIsRefusedAndNeverLaunches() {
+        Fake effects = new Fake();
+        effects.preparedWarmUp = new SessionOrchestrator.PreparedWarmUp(
+                new NvApp("MoonWaker Stream", 77, false), null,
+                new HostProfileKey("host", "default"),
+                new SessionSnapshot("host", "default", "default", SessionSnapshot.State.ACTIVE,
+                        7, "other", false, false, false, false, false, "", false,
+                        SessionSnapshot.ObservationState.PENDING, false,
+                        "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                        "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 7, false));
+
+        orchestrator(effects).prepareHost("host", "default");
+
+        assertEquals(1, effects.prepareCalls);
+        assertEquals(java.util.Collections.singletonList(
+                SessionOrchestrator.WarmUpStart.REFUSED), effects.warmUpStatuses);
+        assertEquals(0, effects.preparedLaunches);
+    }
+
+    @Test public void warmUpOfAStreamThatAlreadyLivesTouchesNoHost() {
+        Fake effects = new Fake();
+        effects.canSwitch = true;
+
+        orchestrator(effects).prepareHost("host", "default");
+
+        assertEquals(0, effects.prepareCalls);
+        assertEquals(java.util.Collections.singletonList(
+                SessionOrchestrator.WarmUpStart.LIVE), effects.warmUpStatuses);
+        assertEquals(0, effects.preparedLaunches);
+    }
+
+    @Test public void warmUpOfAnIdleHostOwnsItsFreshSession() {
+        Fake effects = new Fake();
+
+        orchestrator(effects).prepareHost("host", "default");
+
+        assertEquals(1, effects.preparedLaunches);
+        assertTrue(effects.preparedOwnsFreshSession);
+        assertTrue(effects.warmUpStatuses.isEmpty());
+        assertEquals(SessionOrchestrator.WarmUpLaunch.LAUNCH, effects.preparedLaunch);
+    }
+
+    @Test public void warmUpOfASavedNeutralStreamReconnectsIt() {
+        Fake effects = new Fake();
+        // Saved for auto-resume while the model holds nothing (the process restarted).
+        effects.pendingResume = SessionModelDriver.reconnectRecord(
+                "s", "host", "default", "default", 77, "", true, true);
+
+        orchestrator(effects).prepareHost("host", "default");
+
+        assertEquals(1, effects.preparedLaunches);
+        assertEquals(SessionOrchestrator.WarmUpLaunch.RECONNECT, effects.preparedLaunch);
     }
 
     @Test public void retryRepeatsSameIntentWithANewGeneration() {
@@ -1218,7 +1299,6 @@ public class SessionOrchestratorTest {
         assertNotNull(effects.confirmation);
         assertEquals(0, effects.reconnects);
         assertEquals(0, effects.closes);
-        assertNull(effects.allowDestructiveCloseSeen);
         assertEquals(0, effects.launches);
         assertTrue(effects.failures.isEmpty());
     }
@@ -1248,22 +1328,6 @@ public class SessionOrchestratorTest {
         assertEquals(java.util.Collections.singletonList(
                 SessionFailure.UNCERTAIN_AFTER_REFRESH), effects.failures);
         assertEquals(0, effects.readiness);
-    }
-
-    @Test public void evaluationLoopLimitReportsItsOwnCode() {
-        Fake effects = new Fake();
-        effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
-        effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
-        for (int pass = 2; pass <= 10; pass++) {
-            effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
-            effects.snapshots.add(snapshot(SessionSnapshot.State.ACTIVE, 7, "other"));
-        }
-
-        orchestrator(effects).play(PlayIntent.sunshineApp("host", 42, "App", false, ""));
-
-        assertEquals(java.util.Collections.singletonList(
-                SessionFailure.ORCHESTRATION_PASS_LIMIT), effects.failures);
-        assertEquals(0, effects.launches);
     }
 
     @Test public void rejectedWorkerReportsItsOwnCode() {
@@ -1691,6 +1755,47 @@ public class SessionOrchestratorTest {
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false);
     }
 
+    /** The neutral MoonWaker stream app the retained stream runs (app 42). */
+    static NvApp neutralStream() {
+        NvApp app = new NvApp(PlayniteTargetResolver.MOONWAKER_STREAM_NAME, 42, false);
+        app.setAppUuid(PlayniteTargetResolver.MOONWAKER_STREAM_UUID);
+        return app;
+    }
+
+    static final SessionModel.Controller OWNER = new SessionModel.Controller() {
+        @Override public boolean isRetainedTransportLive() { return true; }
+        @Override public SessionModel.ParkOutcome parkRetainedTransport() {
+            return SessionModel.ParkOutcome.PARKED;
+        }
+        @Override public void disconnectRetainedStream(
+                SessionModel.TerminationCallback completion) { }
+        @Override public void terminateRetainedSession(
+                String gameId, SessionModel.TerminationCallback completion) { }
+        @Override public void switchGame(SessionModel.SwitchRequest request,
+                                         SessionModel.SwitchCallback completion) { }
+    };
+
+    /** No retained stream. */
+    static SessionModel.Snapshot noStream() {
+        return new SessionModelDriver().snapshot();
+    }
+
+    /** This client's live neutral stream (no game of its own) on "host", app 42. */
+    static SessionModel.Snapshot liveNeutralStream() {
+        SessionModelDriver driver = new SessionModelDriver();
+        driver.enterHome(OWNER, "s", "host", 42, "");
+        return driver.snapshot();
+    }
+
+    /** The host runs the stream's app 42 and names no game. */
+    static SessionSnapshot runsNeutralStream() {
+        return new SessionSnapshot("host", "default", "default", SessionSnapshot.State.ACTIVE,
+                42, "", true, false, false, false, false, "", true,
+                SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 42, false);
+    }
+
     private static final class Fake implements SessionOrchestrator.Effects {
         int attachedForSwitch;
         long attachedRequest;
@@ -1706,7 +1811,6 @@ public class SessionOrchestratorTest {
         boolean available = true;
         boolean paired = true;
         SessionSnapshot snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
-        final Queue<SessionSnapshot> snapshots = new ArrayDeque<>();
         SessionSnapshot afterClose = snapshot(SessionSnapshot.State.NONE, 0, "");
         final java.util.List<SessionFailure> failures = new java.util.ArrayList<>();
         final java.util.List<Integer> loadingsAtFailure = new java.util.ArrayList<>();
@@ -1715,11 +1819,15 @@ public class SessionOrchestratorTest {
         Runnable onReadiness;
         Runnable onClose;
         Exception closeFailure;
+        Exception switchFailure;
         SessionOrchestrator.CloseResult closeResult =
                 SessionOrchestrator.CloseResult.CLOSED;
-        final Queue<SessionOrchestrator.CloseResult> closeResults = new ArrayDeque<>();
         HostLaunchPreflight.Action preflightAction;
+        /** The retained stream is this client's live neutral stream the game can switch to. */
         boolean canSwitch;
+        /** Non-null: this client's live stream on app 42 carries this game; projection = snapshot. */
+        String retainedGame;
+        boolean presentationAttached = true;
         boolean refreshSuccess = true;
         boolean hostOnline = true;
         boolean wakeAnswers = true;
@@ -1731,21 +1839,26 @@ public class SessionOrchestratorTest {
         boolean deferRefresh;
         Runnable onRefresh;
         Consumer<Boolean> deferredRefresh;
-        Boolean firstAllowDestructiveCloseSeen;
-        Boolean allowDestructiveCloseSeen;
         boolean deferLoading;
         final Queue<Runnable> opaqueCallbacks = new ArrayDeque<>();
         SessionOrchestrator.PreparedWarmUp preparedWarmUp =
                 new SessionOrchestrator.PreparedWarmUp(
-                        new NvApp("MoonWaker Stream", 77, false), null, false);
+                        new NvApp("MoonWaker Stream", 77, false), null,
+                        new HostProfileKey("host", "default"),
+                        snapshot(SessionSnapshot.State.NONE, 0, ""));
         BooleanSupplier prepareCancelled = () -> false;
         long prepareRequest;
         int preparedLaunches;
         long preparedLaunchRequest;
+        boolean preparedOwnsFreshSession;
         PlayIntent preparedGame;
         int prepareCalls;
         int preparationFailures;
+        final java.util.List<SessionOrchestrator.WarmUpStart> warmUpStatuses =
+                new java.util.ArrayList<>();
         boolean mayOpenPreparedHost = true;
+        SessionResumeManager.PendingSession pendingResume;
+        SessionOrchestrator.WarmUpLaunch preparedLaunch;
 
         int returned;
         int reconnects;
@@ -1755,7 +1868,10 @@ public class SessionOrchestratorTest {
         int loadings;
         int refreshes;
 
+        /** Every close attempt: a switch of the retained stream or a close of the session. */
         int closes;
+        int switches;
+        SessionModel.Snapshot closedRetained;
         int launches;
         LaunchTransitionType launchType;
         NvApp launchedTarget;
@@ -1765,10 +1881,24 @@ public class SessionOrchestratorTest {
 
         @Override public boolean isAvailable() { return available; }
         @Override public boolean isPaired(String hostId) { return paired; }
-        @Override public SessionSnapshot resolve(String hostId) {
-            return snapshots.isEmpty() ? snapshot : snapshots.remove();
-        }
+        @Override public SessionSnapshot resolve(HostProfileKey key) { return snapshot; }
         @Override public boolean isHostOnline(String hostId) { return hostOnline; }
+        @Override public SessionOrchestrator.Retained retained(PlayIntent intent) {
+            if (retainedGame != null) {
+                // Built from the same host facts resolve() reports.
+                SessionModelDriver driver = new SessionModelDriver();
+                driver.enterHome(OWNER, "s", "host", 42, retainedGame);
+                return new SessionOrchestrator.Retained(driver.snapshot(), "default", snapshot,
+                        true, true, presentationAttached);
+            }
+            return canSwitch
+                    ? new SessionOrchestrator.Retained(liveNeutralStream(), "default",
+                            runsNeutralStream(), true, true, presentationAttached)
+                    : new SessionOrchestrator.Retained(noStream(), "default", snapshot,
+                            false, false, presentationAttached);
+        }
+        @Override public SessionModel.Snapshot stream() { return retained(null).stream; }
+        @Override public String executionProfileId(PlayIntent intent) { return "default"; }
         @Override public SessionFailure awaitHost(PlayIntent intent, BooleanSupplier cancelled) {
             wakes++;
             refreshesBeforeWake = refreshes;
@@ -1797,13 +1927,6 @@ public class SessionOrchestratorTest {
         @Override public void confirmReplacement(Runnable accepted) {
             confirmation = accepted;
         }
-        @Override public boolean canAttemptRetainedSwitch(PlayIntent intent) {
-            return canSwitch;
-        }
-        boolean retainedGameUnproven;
-        @Override public boolean retainedGameUnproven(PlayIntent intent) {
-            return retainedGameUnproven;
-        }
         @Override public void showLoading(PlayIntent intent, LaunchTransitionType type,
                                           Runnable opaqueFrameReady) {
             loadings++;
@@ -1817,12 +1940,23 @@ public class SessionOrchestratorTest {
             prepareCancelled = cancelled;
             return preparedWarmUp;
         }
+        @Override public void showWarmUpStatus(PlayIntent intent, long request,
+                                               SessionOrchestrator.WarmUpStart status) {
+            warmUpStatuses.add(status);
+        }
         @Override public boolean mayOpenPreparedHost() { return mayOpenPreparedHost; }
+        @Override public SessionResumeManager.PendingSession pendingResume() {
+            return pendingResume;
+        }
         @Override public void launchPreparedHost(
                 SessionOrchestrator.PreparedWarmUp prepared,
+                SessionOrchestrator.WarmUpLaunch launch,
+                SessionResumeManager.PendingSession record, boolean ownsFreshSunshineSession,
                 PlayIntent pendingGame, long request) {
             preparedLaunches++;
+            preparedLaunch = launch;
             preparedLaunchRequest = request;
+            preparedOwnsFreshSession = ownsFreshSunshineSession;
             preparedGame = pendingGame;
         }
         @Override public void preparationFailed() { preparationFailures++; }
@@ -1849,26 +1983,32 @@ public class SessionOrchestratorTest {
             readiness++;
             preflightAction = action;
             if (onReadiness != null) onReadiness.run();
-            return cancelled.getAsBoolean() ? HostLaunchPreflight.Result.cancelled()
-                    : HostLaunchPreflight.Result.ready(
-                    new NvApp(intent.appName,
+            if (cancelled.getAsBoolean()) return HostLaunchPreflight.Result.cancelled();
+            // A switch is prepared on the retained stream's own neutral app.
+            return HostLaunchPreflight.Result.ready(
+                    action == HostLaunchPreflight.Action.SWITCH_RETAINED ? neutralStream()
+                            : new NvApp(intent.appName,
                             intent.sunshineAppId > 0 ? intent.sunshineAppId : 77,
                             intent.hdrSupported));
         }
-        @Override public SessionOrchestrator.CloseResult closePreviousSession(
-                PlayIntent intent, NvApp target, boolean allowDestructiveClose,
+        @Override public SessionOrchestrator.CloseResult switchRetained(
+                PlayIntent intent, NvApp target, BooleanSupplier cancelled) throws Exception {
+            closes++;
+            switches++;
+            if (onClose != null) onClose.run();
+            if (switchFailure != null) throw switchFailure;
+            if (closeFailure != null) throw closeFailure;
+            return closeResult;
+        }
+        @Override public SessionOrchestrator.CloseResult closeSession(
+                PlayIntent intent, SessionModel.Snapshot retained,
                 BooleanSupplier cancelled) throws Exception {
             closes++;
-            if (firstAllowDestructiveCloseSeen == null) {
-                firstAllowDestructiveCloseSeen = allowDestructiveClose;
-            }
-            allowDestructiveCloseSeen = allowDestructiveClose;
+            closedRetained = retained;
             if (onClose != null) onClose.run();
             if (closeFailure != null) throw closeFailure;
-            SessionOrchestrator.CloseResult result = closeResults.isEmpty()
-                    ? closeResult : closeResults.remove();
-            if (result == SessionOrchestrator.CloseResult.CLOSED) snapshot = afterClose;
-            return result;
+            if (closeResult == SessionOrchestrator.CloseResult.CLOSED) snapshot = afterClose;
+            return closeResult;
         }
         @Override public void launch(PlayIntent intent, NvApp target,
                                      LaunchTransitionType type, String sourceSuspendId,

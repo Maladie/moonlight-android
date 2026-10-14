@@ -417,6 +417,8 @@ public final class SessionModel {
     private final Map<String, PolledApp> polledApps = new HashMap<>();
     /** Forgotten hosts (normalized) until a new read or close of them starts again. */
     private final Set<String> forgottenHosts = new HashSet<>();
+    private final com.limelight.console.ProviderOwnership providerOwnership =
+            new com.limelight.console.ProviderOwnership();
 
     private final Executor modelThread;
     private final Executor mainThread;
@@ -484,6 +486,14 @@ public final class SessionModel {
     /** The model of this process (owned by the Application). */
     public static SessionModel of(Context context) {
         return ((Owner) context.getApplicationContext()).sessionModel();
+    }
+
+    /**
+     * The process's provider launch owners. Lock-confined (its own monitor), not model-thread
+     * state: stream presentations claim, hand over and release them synchronously.
+     */
+    public com.limelight.console.ProviderOwnership providerOwnership() {
+        return providerOwnership;
     }
 
     /** Implemented by the Application that owns the process-scoped model. */

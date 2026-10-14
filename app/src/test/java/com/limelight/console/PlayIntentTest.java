@@ -46,7 +46,7 @@ public class PlayIntentTest {
     }
 
     @Test public void autoWarmUpCarriesOnlyTheNeutralHostIntent() {
-        PlayIntent intent = PlayIntent.autoWarmUp(" HOST ");
+        PlayIntent intent = PlayIntent.autoWarmUp(" HOST ", "default");
 
         assertEquals(PlayIntent.Kind.AUTO_WARM_UP, intent.kind);
         assertEquals("HOST", intent.hostId);

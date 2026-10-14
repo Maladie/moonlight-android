@@ -5,7 +5,9 @@ import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.session.SessionModel;
+import com.limelight.session.SessionResumeManager;
 
+import java.io.IOException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
@@ -20,55 +22,180 @@ public final class SessionOrchestrator implements AutoCloseable {
     enum Rejection { INITIALIZING, UNPAIRED, TERMINATING }
     enum CloseResult { CLOSED, REUSED, CANCELLED, NEEDS_CONFIRMATION, PRESENTATION_REQUIRED }
 
+    /** How the table answers a warm-up before anything contacts the host. */
+    enum WarmUpStart {
+        /** Nothing of this client's runs for the host: its warm-up starts. */
+        START,
+        /** Another host or execution profile holds the stream, or it is closing. */
+        REFUSED,
+        /** The stream already lives (Home or parked): nothing to warm up. */
+        LIVE,
+        /** Its start is still PREPARING on the host. */
+        PREPARING
+    }
+
+    /** How a prepared warm-up opens its stream ({@link #warmUpLaunch}). */
+    enum WarmUpLaunch {
+        /** This client's saved neutral stream of the same target resumes. */
+        RECONNECT,
+        /** A new stream starts. */
+        LAUNCH
+    }
+
+    /** How a competing session gives way to the request; decided at effect time. */
+    enum ClosePath {
+        /** The retained neutral stream takes the game itself. */
+        SWITCH,
+        /** That switch must run inside an attaching stream screen. */
+        ATTACH,
+        /** Replacing what runs needs the user's confirmation first. */
+        CONFIRM,
+        /** This client's exact retained stream is closed through its owner. */
+        CLOSE_RETAINED,
+        /** The host session is closed through its control plane. */
+        CLOSE_DIRECT,
+        /** The host is unknown: nothing can be switched or closed, so nothing is asked. */
+        HOST_UNAVAILABLE
+    }
+
+    /** A warm-up whose host answered; the table qualifies it ({@link #warmUpQualifies}). */
     static final class PreparedWarmUp {
         final HostProfileKey profileKey;
         final NvApp target;
         final ComputerDetails host;
-        final boolean ownsFreshSunshineSession;
-
-        PreparedWarmUp(NvApp target, ComputerDetails host, boolean ownsFreshSunshineSession) {
-            this(target, host,
-                    host == null ? null : new HostProfileKey(host.uuid,
-                            com.limelight.gateway.GatewayConnection.DEFAULT_PROFILE_ID),
-                    ownsFreshSunshineSession);
-        }
+        /** The host's session when it answered, before the warm-up observed it. */
+        final SessionSnapshot readyProjection;
 
         PreparedWarmUp(NvApp target, ComputerDetails host, HostProfileKey profileKey,
-                       boolean ownsFreshSunshineSession) {
+                       SessionSnapshot readyProjection) {
             this.target = target;
             this.host = host;
             this.profileKey = profileKey;
-            this.ownsFreshSunshineSession = ownsFreshSunshineSession;
+            this.readyProjection = readyProjection;
+        }
+    }
+
+    /**
+     * This client's retained stream as the table reads it for one intent: plain facts read at
+     * one moment by the effects, never a decision of theirs.
+     */
+    static final class Retained {
+        /** The session model's stream (NONE when there is none). */
+        final SessionModel.Snapshot stream;
+        /** The intent's execution profile (a child plays on its parent's). */
+        final String executionProfileId;
+        /** The host's session for the intent's profile; null while the host is unknown. */
+        final SessionSnapshot projection;
+        /** The stream's app is the neutral MoonWaker stream. */
+        final boolean neutralTarget;
+        /** The session model lets this execution profile switch the stream's game. */
+        final boolean originSwitchable;
+        /** An Activity presents the stream. */
+        final boolean presentationAttached;
+
+        Retained(SessionModel.Snapshot stream, String executionProfileId,
+                 SessionSnapshot projection, boolean neutralTarget, boolean originSwitchable,
+                 boolean presentationAttached) {
+            this.stream = stream;
+            this.executionProfileId = executionProfileId;
+            this.projection = projection;
+            this.neutralTarget = neutralTarget;
+            this.originSwitchable = originSwitchable;
+            this.presentationAttached = presentationAttached;
+        }
+    }
+
+    /** What the refresh this pass follows produced. */
+    private enum Refresh { NONE, OBSERVATION, SESSION, FAILED }
+
+    /** What one Play request carries from pass to pass: its grants and its last effect's result. */
+    private static final class Progress {
+        final boolean replacementAuthorized;
+        final boolean reuseOnly;
+        final boolean opaqueReady;
+        final NvApp target;
+        final int pass;
+        final Refresh refresh;
+        final CloseResult closed;
+
+        Progress(boolean replacementAuthorized, boolean reuseOnly, boolean opaqueReady,
+                 NvApp target, int pass, Refresh refresh, CloseResult closed) {
+            this.replacementAuthorized = replacementAuthorized;
+            this.reuseOnly = reuseOnly;
+            this.opaqueReady = opaqueReady;
+            this.target = target;
+            this.pass = pass;
+            this.refresh = refresh;
+            this.closed = closed;
+        }
+
+        /** The next pass with these grants, under the loading layer. */
+        Progress next(boolean authorized, boolean reuse) {
+            return new Progress(authorized, reuse, true, target, pass + 1, Refresh.NONE, null);
+        }
+
+        Progress next(Action action) {
+            return next(action.replacementAuthorized, action.reuseOnly);
+        }
+
+        /** The next pass once the user confirmed; a loading layer not yet raised still is. */
+        Progress confirmed() {
+            return new Progress(true, false, opaqueReady, target, pass + 1, Refresh.NONE, null);
+        }
+
+        // The three below complete a step already taken with next(): the pass it starts reads
+        // what its effect produced.
+
+        Progress prepared(NvApp prepared) {
+            return new Progress(replacementAuthorized, reuseOnly, true, prepared, pass,
+                    Refresh.NONE, null);
+        }
+
+        Progress refreshed(Refresh result) {
+            return new Progress(replacementAuthorized, reuseOnly, true, target, pass,
+                    result, null);
+        }
+
+        /** After a close only the replacement is left: no confirmation, no reuse. */
+        Progress closed(CloseResult result) {
+            return new Progress(true, false, true, target, pass, Refresh.NONE, result);
         }
     }
 
     private static final class Preparation {
         final long request;
         final String hostId;
+        final PlayIntent intent;
         final HostProfileKey profileKey;
         PlayIntent pendingGame;
         boolean opaqueReady;
         PreparedWarmUp prepared;
         boolean launchClaimed;
 
-        Preparation(long request, HostProfileKey profileKey) {
+        Preparation(long request, PlayIntent intent) {
             this.request = request;
-            this.profileKey = profileKey;
+            this.intent = intent;
+            this.profileKey = intent.profileKey;
             this.hostId = SessionSnapshot.normalize(profileKey.hostId);
         }
     }
 
     interface Dispatcher { void post(Runnable action); }
     interface Effects {
-        boolean isAvailable(); SessionSnapshot resolve(String hostId);
+        boolean isAvailable(); SessionSnapshot resolve(HostProfileKey key);
         /**
          * The host's last poll reported it paired, or no poll has reported its pairing yet and
          * its pairing certificate is saved. A host that answers always reports its pairing.
          */
         boolean isPaired(String hostId);
-        default SessionSnapshot resolve(HostProfileKey key) { return resolve(key.hostId); }
         /** The host answers its polls; only then can its session be refreshed. */
         boolean isHostOnline(String hostId);
+        /** This client's retained stream as the table reads it for this intent, read now. */
+        Retained retained(PlayIntent intent);
+        /** The session model's stream, read now (NONE when there is none); never reads disk. */
+        SessionModel.Snapshot stream();
+        /** The intent's execution profile (a child plays on its parent's). */
+        String executionProfileId(PlayIntent intent);
         /**
          * Shows the waking status, wakes the host and waits, bounded, until it and its Gateway
          * answer. Null once both do; otherwise what never answered. Runs on the worker.
@@ -81,9 +208,6 @@ public final class SessionOrchestrator implements AutoCloseable {
         void attachPresentationForSwitch(long orchestrationId, PlayIntent intent, NvApp target);
         void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
-        boolean canAttemptRetainedSwitch(PlayIntent intent);
-        /** The live stream carries no game and the host names one without process proof. */
-        boolean retainedGameUnproven(PlayIntent intent);
         void showLoading(PlayIntent intent, LaunchTransitionType type, Runnable opaqueFrameReady);
         void refreshSession(PlayIntent intent, BooleanSupplier cancelled,
                             Consumer<Boolean> completion);
@@ -95,22 +219,42 @@ public final class SessionOrchestrator implements AutoCloseable {
         HostLaunchPreflight.Result preflight(PlayIntent intent, HostLaunchPreflight.Action action,
                                              long orchestrationId,
                                              BooleanSupplier cancelled);
-        CloseResult closePreviousSession(PlayIntent intent, NvApp target,
-                                         boolean allowDestructiveClose,
-                                         BooleanSupplier cancelled) throws Exception;
+        /** Switches the retained stream's game: REUSED or CANCELLED, or raises its failure. */
+        CloseResult switchRetained(PlayIntent intent, NvApp target,
+                                   BooleanSupplier cancelled) throws Exception;
+        /**
+         * Closes the host session through {@code retained}, this client's exact retained
+         * stream, or through its control plane when null: CLOSED or CANCELLED, or raises.
+         */
+        CloseResult closeSession(PlayIntent intent, SessionModel.Snapshot retained,
+                                 BooleanSupplier cancelled) throws Exception;
         void launch(PlayIntent intent, NvApp target, LaunchTransitionType type,
                     String sourceSuspendId, boolean ownsFreshSunshineSession);
         void preflightFailed(HostLaunchPreflight.Failure failure);
         /** Shows the failure screen for this exact path; the orchestrator recorded it. */
         void sessionFailed(PlayIntent intent, SessionFailure reason);
+        /**
+         * Wakes, preflights and reads the host for a warm-up the table started; null, its
+         * failure shown as the warm-up status, when it does not answer. Runs on the worker.
+         */
         PreparedWarmUp prepareHost(PlayIntent intent, long request,
                                    BooleanSupplier cancelled);
+        /** Shows how the table answered a warm-up (REFUSED: its error status). */
+        void showWarmUpStatus(PlayIntent intent, long request, WarmUpStart status);
         /**
          * False while opening the stream screen would stall what is on screen (an entry
          * intro); {@link #openPreparedHost} follows once it no longer would.
          */
         boolean mayOpenPreparedHost();
-        void launchPreparedHost(PreparedWarmUp prepared,
+        /** The saved reconnect record, read now; null when there is none. */
+        SessionResumeManager.PendingSession pendingResume();
+        /**
+         * Opens the stream the table chose: RECONNECT resumes {@code record}, the saved record
+         * the table decided on.
+         */
+        void launchPreparedHost(PreparedWarmUp prepared, WarmUpLaunch launch,
+                                SessionResumeManager.PendingSession record,
+                                boolean ownsFreshSunshineSession,
                                 PlayIntent pendingGame, long request);
         void preparationFailed();
     }
@@ -122,9 +266,6 @@ public final class SessionOrchestrator implements AutoCloseable {
     private PlayIntent lastIntent;
     /** The request still being decided; 0 once it was handed off, refused or failed. */
     private long inFlight;
-    /** The request and pass evaluating the refresh of an unresolved observation. */
-    private long refreshedRequest;
-    private int refreshedPass;
     private volatile Preparation preparation;
     private volatile boolean closed;
 
@@ -161,12 +302,8 @@ public final class SessionOrchestrator implements AutoCloseable {
             effects.reject(Rejection.INITIALIZING); return;
         }
         inFlight = request;
-        evaluate(request, intent, false, false, false, null, 0);
-    }
-
-    long prepareHost(String hostId) {
-        return prepareHost(hostId,
-                com.limelight.gateway.GatewayConnection.DEFAULT_PROFILE_ID);
+        evaluate(request, intent,
+                new Progress(false, false, false, null, 0, Refresh.NONE, null));
     }
 
     long prepareHost(String hostId, String profileId) {
@@ -180,13 +317,13 @@ public final class SessionOrchestrator implements AutoCloseable {
         if (!effects.isPaired(intent.hostId)) {
             return 0L;
         }
-        Preparation pending = new Preparation(request, intent.profileKey);
+        Preparation pending = new Preparation(request, intent);
         preparation = pending;
         try {
             executor.execute(() -> {
                 PreparedWarmUp prepared;
                 try {
-                    prepared = effects.prepareHost(
+                    prepared = prepareWarmUp(
                             intent, request, () -> !currentPreparation(pending));
                 } catch (RuntimeException error) {
                     dispatcher.post(() -> failPreparation(pending));
@@ -199,6 +336,22 @@ public final class SessionOrchestrator implements AutoCloseable {
             return 0L;
         }
         return request;
+    }
+
+    /** Runs on the worker: the table qualifies the warm-up, the effects only prepare its host. */
+    private PreparedWarmUp prepareWarmUp(PlayIntent intent, long request,
+                                         BooleanSupplier cancelled) {
+        WarmUpStart start = warmUpStart(intent, effects.retained(intent));
+        if (start != WarmUpStart.START) {
+            if (start != WarmUpStart.REFUSED || !cancelled.getAsBoolean()) {
+                effects.showWarmUpStatus(intent, request, start);
+            }
+            return null;
+        }
+        PreparedWarmUp prepared = effects.prepareHost(intent, request, cancelled);
+        if (prepared == null || warmUpQualifies(prepared)) return prepared;
+        effects.showWarmUpStatus(intent, request, WarmUpStart.REFUSED);
+        return null;
     }
 
     boolean cancelPreparation(String hostId) {
@@ -254,8 +407,7 @@ public final class SessionOrchestrator implements AutoCloseable {
     private void completePreparation(Preparation pending, PreparedWarmUp prepared) {
         if (!currentPreparation(pending)) return;
         if (prepared == null || prepared.target == null
-                || prepared.profileKey != null
-                && !pending.profileKey.equals(prepared.profileKey)) {
+                || !pending.profileKey.equals(prepared.profileKey)) {
             preparation = null;
             inFlight = 0L;
             if (pending.pendingGame != null) effects.preparationFailed();
@@ -273,8 +425,13 @@ public final class SessionOrchestrator implements AutoCloseable {
         pending.launchClaimed = true;
         preparation = null;
         inFlight = 0L;
-        effects.launchPreparedHost(
-                pending.prepared, pending.pendingGame, pending.request);
+        // Read when the stream screen opens: the saved record and the stream at this moment.
+        SessionResumeManager.PendingSession record = effects.pendingResume();
+        effects.launchPreparedHost(pending.prepared,
+                warmUpLaunch(pending.prepared, effects.stream(),
+                        effects.executionProfileId(pending.intent), record),
+                record, ownsFreshSession(pending.prepared.readyProjection),
+                pending.pendingGame, pending.request);
     }
 
     /** The stream screen may open now: a prepared host that waited for this launches. */
@@ -346,6 +503,12 @@ public final class SessionOrchestrator implements AutoCloseable {
         boolean targetPrepared;
         /** This pass evaluates the snapshot a refresh of an unresolved observation produced. */
         boolean observationRefreshed;
+        /** This pass follows a refresh (of the observation or the session) that succeeded. */
+        boolean sessionRefreshed;
+        /** This pass follows a refresh that failed. */
+        boolean refreshFailed;
+        /** What the close or switch this pass follows answered; null after any other effect. */
+        CloseResult closeOutcome;
         /**
          * The host answers its polls and this client did not put it to sleep; a refresh of its
          * session needs that.
@@ -436,11 +599,11 @@ public final class SessionOrchestrator implements AutoCloseable {
         PREFLIGHT,
         CLOSE_COMPETING,
         LAUNCH,
-        /** Launch once the snapshot at effect time is still idle. */
-        LAUNCH_IF_IDLE,
         RETURN_TO_STREAM,
         RECONNECT,
         CONFIRM_REPLACEMENT,
+        /** The retained switch runs inside an attaching stream screen; the request ends here. */
+        ATTACH_PRESENTATION,
         // ---- Back / Cancel on the stream screen ----
         IGNORE,
         /** Back belongs to the cover: its Cancel control, when offered, raises CANCEL. */
@@ -552,6 +715,8 @@ public final class SessionOrchestrator implements AutoCloseable {
     }
 
     private static Action play(State s, PlayIntent intent) {
+        Action settled = afterEffect(s, intent);
+        if (settled != null) return settled;
         // Decided on every pass: a host woken for this request reports its real pairing.
         if (!s.hostPaired) return Action.of(ActionKind.REFUSE_UNPAIRED);
         Action action = playOnHost(s, intent);
@@ -569,6 +734,42 @@ public final class SessionOrchestrator implements AutoCloseable {
                     action.replacementAuthorized, action.reuseOnly);
         }
         return action;
+    }
+
+    /**
+     * What the result of the effect this pass follows decides before anything else; null when
+     * the regular rows decide.
+     */
+    private static Action afterEffect(State s, PlayIntent intent) {
+        // A host that answers and still refused the refresh is a visible failure; one that fell
+        // asleep before its polls noticed refreshed nothing: the rows below wake it.
+        // Deliberate: hostOnline is false for a host this client put to sleep, so it is woken.
+        if (s.refreshFailed && s.hostOnline) {
+            return Action.failing(ActionKind.FAIL, SessionFailure.UNCERTAIN_REFRESH_FAILED);
+        }
+        if (s.sessionRefreshed && s.session.state == SessionSnapshot.State.UNCERTAIN) {
+            return Action.failing(ActionKind.FAIL, SessionFailure.UNCERTAIN_AFTER_REFRESH);
+        }
+        if (s.closeOutcome == null) return null;
+        switch (s.closeOutcome) {
+            // The user's Cancel (of the close or of the switch on the stream) wins: nothing more.
+            case CANCELLED: return Action.of(ActionKind.IGNORE);
+            case NEEDS_CONFIRMATION: return Action.of(ActionKind.CONFIRM_REPLACEMENT);
+            case REUSED: return Action.of(ActionKind.RETURN_TO_STREAM);
+            case PRESENTATION_REQUIRED: return Action.of(ActionKind.ATTACH_PRESENTATION);
+            default: break;
+        }
+        // The verified close is authoritative. UNCERTAIN, or TERMINATING while the closing
+        // confirmation window is open, only means that no host observation newer than the close
+        // has been accepted yet; every local fact already shows nothing left to close.
+        SessionSnapshot.State after = s.session.state;
+        if (after == SessionSnapshot.State.NONE || after == SessionSnapshot.State.UNCERTAIN
+                || after == SessionSnapshot.State.TERMINATING) {
+            return Action.launch(ActionKind.LAUNCH, freshType(intent), "",
+                    s.session.hostGameAppId == 0);
+        }
+        return intent.matches(s.session) ? null
+                : Action.failing(ActionKind.FAIL, SessionFailure.CLOSE_SNAPSHOT_NOT_IDLE);
     }
 
     private static Action playOnHost(State s, PlayIntent intent) {
@@ -695,8 +896,8 @@ public final class SessionOrchestrator implements AutoCloseable {
                         HostLaunchPreflight.Action.LAUNCH,
                         s.replacementAuthorized, s.reuseOnly);
             }
-            // Whether the launch owns a fresh host session is read at effect time.
-            return Action.launch(ActionKind.LAUNCH_IF_IDLE, fresh, "", false);
+            // Read in this pass, right before the launch: an idle host's new session is ours.
+            return Action.launch(ActionKind.LAUNCH, fresh, "", snapshot.hostGameAppId == 0);
         }
         boolean authorized = s.replacementAuthorized || orphaned;
         boolean reuseOnly = s.reuseOnly || !authorized && s.canSwitchRetained;
@@ -800,26 +1001,290 @@ public final class SessionOrchestrator implements AutoCloseable {
                 && s.retainedHomeLive;
     }
 
-    private void evaluate(long request, PlayIntent intent, boolean replacementAuthorized,
-                          boolean reuseOnly, boolean opaqueReady,
-                          NvApp preparedTarget, int pass) {
+    // ---------------------------------------------------------------- qualification rows
+    // Plain functions of facts the effects read; the effects never qualify anything.
+
+    /**
+     * The retained stream can take this game without being closed: the same host and execution
+     * profile, its neutral stream app, an origin the session model lets switch, and a game the
+     * switch keeps ({@link #switchKeepsHostGame}). A start still PREPARING is switched only once
+     * the host proves the game it observes.
+     */
+    static boolean canSwitchRetained(PlayIntent intent, Retained r) {
+        if (intent.kind != PlayIntent.Kind.PLAYNITE_GAME) return false;
+        SessionModel.Snapshot s = r.stream;
+        if (!s.executionProfileId.equals(r.executionProfileId)) return false;
+        boolean eligibleTarget = r.neutralTarget && r.originSwitchable;
+        if (s.state == SessionModel.State.PREPARING) {
+            if (r.projection == null || !s.hostId.equalsIgnoreCase(intent.hostId)) return false;
+            if (s.playniteGameId.isEmpty()) return eligibleTarget;
+            return "VERIFIED".equals(r.projection.processEvidence)
+                    && r.projection.playniteGameId.equalsIgnoreCase(s.playniteGameId)
+                    && eligibleTarget;
+        }
+        return (s.state == SessionModel.State.HOME_LIVE
+                || s.state == SessionModel.State.PARKED_LIVE)
+                && r.projection != null
+                && r.projection.hostRunningAppId == s.appId
+                && switchKeepsHostGame(s.playniteGameId, r.projection, intent.playniteGameId)
+                && s.hostId.equalsIgnoreCase(intent.hostId)
+                && (!s.profileId.equals(intent.profileId)
+                        || !s.playniteGameId.equalsIgnoreCase(intent.playniteGameId))
+                && eligibleTarget;
+    }
+
+    /**
+     * A stream that carries no game holds no process of its own: it takes a game only while the
+     * host names none or verifiably runs exactly that one (the proof the stream's own adoption
+     * needs). Another running game is a replacement the user confirms, never something a switch
+     * stops; a named game without that proof is refreshed first ({@link #namesUnprovenGame}).
+     */
+    static boolean switchKeepsHostGame(String retainedGameId, SessionSnapshot projection,
+                                       String gameId) {
+        return !retainedGameId.isEmpty() || projection.playniteGameId.isEmpty()
+                || projection.verifiedRunningGameId().equals(SessionSnapshot.normalize(gameId));
+    }
+
+    /** The live stream of this intent carries no game and the host names one without proof. */
+    static boolean retainedGameUnproven(PlayIntent intent, Retained r) {
+        SessionModel.Snapshot s = r.stream;
+        return r.projection != null && intent.kind == PlayIntent.Kind.PLAYNITE_GAME
+                && (s.state == SessionModel.State.HOME_LIVE
+                || s.state == SessionModel.State.PARKED_LIVE)
+                && s.hostId.equalsIgnoreCase(intent.hostId)
+                && s.executionProfileId.equals(r.executionProfileId)
+                && namesUnprovenGame(s.playniteGameId, r.projection);
+    }
+
+    /** A stream carrying no game while the host names one without an exact process proof. */
+    static boolean namesUnprovenGame(String retainedGameId, SessionSnapshot projection) {
+        return retainedGameId.isEmpty() && !projection.playniteGameId.isEmpty()
+                && projection.verifiedRunningGameId().isEmpty();
+    }
+
+    /**
+     * How the competing session gives way, read at effect time. Any actor, a child over its
+     * parent's game included, switches on the live stream without asking (owner 2026-10-14):
+     * the host gates the child's start. Everything else needs the user's confirmation; this
+     * client's exact retained stream (the app the host runs) closes through its owner.
+     */
+    static ClosePath closePath(PlayIntent intent, NvApp target, boolean authorized, Retained r) {
+        // Fails before asking: a confirmation of an unknown host's close could not be acted on.
+        if (r.projection == null) return ClosePath.HOST_UNAVAILABLE;
+        SessionModel.Snapshot s = r.stream;
+        if (intent.kind == PlayIntent.Kind.PLAYNITE_GAME
+                && PlayniteTargetResolver.isNeutralStream(target)
+                && s.appId == target.getAppId() && canSwitchRetained(intent, r)) {
+            // No Activity presents the retained transport: the switch must run inside an
+            // attaching stream screen, never against a headless runtime.
+            return r.presentationAttached ? ClosePath.SWITCH : ClosePath.ATTACH;
+        }
+        if (!authorized) return ClosePath.CONFIRM;
+        boolean exactRetained = !s.streamSessionId.isEmpty()
+                && s.hostId.equalsIgnoreCase(intent.hostId)
+                && s.executionProfileId.equals(r.executionProfileId)
+                && r.projection != null && s.appId == r.projection.hostRunningAppId;
+        return exactRetained ? ClosePath.CLOSE_RETAINED : ClosePath.CLOSE_DIRECT;
+    }
+
+    /** A switch the stream refused as ineligible asks before anything is closed. */
+    static boolean switchRefusalAsks(SessionFailure reason, boolean authorized) {
+        return !authorized && (reason == SessionFailure.SWITCH_NOT_ELIGIBLE
+                || reason == SessionFailure.SWITCH_REFUSED);
+    }
+
+    /** A warm-up starts only while no other host, profile or close holds this client's stream. */
+    static WarmUpStart warmUpStart(PlayIntent intent, Retained r) {
+        SessionModel.Snapshot s = r.stream;
+        boolean sameScope = s.hostId.equalsIgnoreCase(intent.hostId)
+                && s.executionProfileId.equals(r.executionProfileId);
+        if (s.state != SessionModel.State.NONE && !sameScope
+                || s.state == SessionModel.State.TERMINATING) {
+            return WarmUpStart.REFUSED;
+        }
+        if (s.state == SessionModel.State.PREPARING) return WarmUpStart.PREPARING;
+        if (s.state == SessionModel.State.HOME_LIVE
+                || s.state == SessionModel.State.PARKED_LIVE) {
+            return WarmUpStart.LIVE;
+        }
+        return WarmUpStart.START;
+    }
+
+    /** A warm-up never runs beside another app the host runs. */
+    static boolean warmUpQualifies(PreparedWarmUp prepared) {
+        return !anotherAppRuns(prepared.readyProjection, prepared.target.getAppId());
+    }
+
+    /**
+     * A prepared warm-up resumes this client's saved neutral stream of the same host, execution
+     * profile and app: the stream the session model still holds as RECONNECT_REQUIRED under the
+     * record's stream id, or a record saved for auto-resume while the model holds none. Anything
+     * else starts a new stream.
+     */
+    static WarmUpLaunch warmUpLaunch(PreparedWarmUp prepared, SessionModel.Snapshot s,
+                                     String executionProfileId,
+                                     SessionResumeManager.PendingSession pending) {
+        boolean exactPending = pending != null && pending.neutralStreamTarget
+                && pending.hostUuid.equalsIgnoreCase(prepared.profileKey.hostId)
+                && pending.executionProfileId.equals(executionProfileId)
+                && pending.appId == prepared.target.getAppId();
+        if (!exactPending) return WarmUpLaunch.LAUNCH;
+        boolean modelReconnect = s.state == SessionModel.State.RECONNECT_REQUIRED
+                && s.hostId.equalsIgnoreCase(pending.hostUuid)
+                && s.executionProfileId.equals(pending.executionProfileId)
+                && s.appId == pending.appId
+                && s.streamSessionId.equals(pending.streamSessionId);
+        boolean recordOnly = pending.autoResume && s.state == SessionModel.State.NONE;
+        return modelReconnect || recordOnly ? WarmUpLaunch.RECONNECT : WarmUpLaunch.LAUNCH;
+    }
+
+    /** The host runs an app other than {@code appId}. */
+    static boolean anotherAppRuns(SessionSnapshot projection, int appId) {
+        return projection.hostRunningAppId != 0 && projection.hostRunningAppId != appId;
+    }
+
+    /** A stream started while the host runs no app owns the fresh host session. */
+    static boolean ownsFreshSession(SessionSnapshot projection) {
+        return projection.hostRunningAppId == 0;
+    }
+
+    // ---------------------------------------------------------------- stream-screen rows
+    // What the stream screen (Game) does with its session at a decision point; it only executes.
+
+    /** The host's answer when it has not yet confirmed the new game's actor authorization. */
+    public static final String RETAINED_AUTHORIZATION_UNCONFIRMED =
+            "retained_authorization_unconfirmed";
+
+    /** Only a new game after a stopped one retries its authorization, and only once. */
+    public static boolean retriesRetainedAuthorization(boolean reuseRunningGame, int attempt) {
+        return !reuseRunningGame && attempt == 0;
+    }
+
+    /**
+     * The previous game is stopped and the host still refused the new game's authorization:
+     * the stream stays open and the user decides (Retry starts the chosen game again).
+     */
+    public static boolean offersRetainedAuthorizationRetry(boolean failClosed,
+                                                           boolean reuseRunningGame,
+                                                           String error) {
+        return !failClosed && !reuseRunningGame
+                && RETAINED_AUTHORIZATION_UNCONFIRMED.equals(error);
+    }
+
+    /** A launch that starts a game and was never revealed owes its cleanup when it fails. */
+    public static boolean shouldCleanupUnrevealedProviderLaunch(boolean startsProviderGame,
+                                                                boolean streamEverRevealed) {
+        return startsProviderGame && !streamEverRevealed;
+    }
+
+    /**
+     * A failed fresh neutral start closes the host session it began. A start the host refused
+     * ({@code hostRefusedStart}) began none: closing would act without a control generation,
+     * be rejected and report a session left on the host that this attempt never started.
+     */
+    public static boolean shouldTerminateFreshOwnedSunshineSession(
+            boolean ownsFreshSession, boolean neutralTarget,
+            LaunchTransitionType type, boolean startsProviderGame,
+            boolean streamEverRevealed, boolean retainedSession, boolean hostRefusedStart) {
+        return ownsFreshSession && neutralTarget && type == LaunchTransitionType.GAME
+                && startsProviderGame && !streamEverRevealed && !retainedSession
+                && !hostRefusedStart;
+    }
+
+    /** Only a parent may end the stale earlier launch's game; a child reveals or cancels. */
+    public static boolean offersPreviousGameStop(boolean childSession) {
+        return !childSession;
+    }
+
+    /**
+     * A recreated stream screen takes the hidden warm-up over: its exact PREPARING start once
+     * the session model accepted its Home frame, otherwise the warm-up stream it still owns.
+     */
+    public static boolean shouldResumeAcceptedWarmUp(boolean exactPreparing,
+                                                     boolean frameAccepted,
+                                                     boolean retainedWarmUp) {
+        return exactPreparing ? frameAccepted : retainedWarmUp;
+    }
+
+    /**
+     * A console that still waits shows its own Home on a Cancel and its own failure screen
+     * otherwise; every other settled switch (the console no longer waits, the user cancelled on
+     * this stream before REUSED, or the stream submitted it) shows the stream's Home instead of
+     * leaving the neutral stream's closing cover.
+     */
+    public static boolean switchSettlesOnHome(boolean cancelled, boolean consoleSignalled,
+                                              boolean streamSubmitted,
+                                              boolean requesterCancelled) {
+        return consoleSignalled || (cancelled || streamSubmitted) && !requesterCancelled;
+    }
+
+    /**
+     * A retained switch is cancelled by the console's Cancel while the console still waits, or
+     * by the stream's own Cancel unless a Retry replaced it.
+     */
+    public static boolean retainedSwitchCancelled(boolean consoleSignalled,
+                                                  boolean consoleCancelled,
+                                                  boolean cancelRequested,
+                                                  boolean retryRequested) {
+        return (!consoleSignalled && consoleCancelled) || (cancelRequested && !retryRequested);
+    }
+
+    // ---------------------------------------------------------------- sequencing
+    // The order of host-facing steps an effect runs; the steps themselves stay the effect's.
+
+    /** The host-facing steps of stopping the game a switch replaces. */
+    public interface RetainedStop {
+        /** Null when the child may play now; otherwise the host's refusal reason. */
+        String childRefusal() throws IOException;
+        boolean cancelled();
+        void stop() throws IOException;
+    }
+
+    /**
+     * A child replacing a game asks the host's read-only eligibility first: a child without
+     * time or outside its schedule never stops that game for nothing. The host's child start
+     * after the stop stays the real gate. False when a Cancel came before anything stopped.
+     */
+    public static boolean stopRetainedGame(boolean targetIsChild, RetainedStop steps)
+            throws IOException {
+        if (targetIsChild) {
+            String refusal = steps.childRefusal();
+            if (refusal != null) throw new IOException(refusal);
+        }
+        if (steps.cancelled()) return false;
+        steps.stop();
+        return true;
+    }
+
+    // ---------------------------------------------------------------- executing Play
+
+    /**
+     * One pass: the facts at this moment, the table's action, its effect; the effect's result
+     * comes back as a fact of the next pass. The table has no cycle of its own, but facts can
+     * keep flapping (a host that falls asleep again between its wake and its refresh feeds
+     * wake -> refresh -> wake); the pass limit bounds that. Only steps taken with next() or
+     * confirmed() count; the limit sits above the longest chain a host that answers needs
+     * (loading, warm-up wait, refreshes, wake, preflight, a refused switch then confirmed,
+     * close), so only flapping facts reach it.
+     */
+    private void evaluate(long request, PlayIntent intent, Progress p) {
         if (!current(request)) return;
-        // The longest chain of a host that answers takes passes 0..8. A host found asleep adds
-        // one WAKE_HOST pass; one that fell asleep unnoticed adds the failed refresh and then
-        // the wake. A host that keeps flapping runs into this limit.
-        if (pass > 10) {
+        if (p.pass > 10) {
             fail(request, intent, SessionFailure.ORCHESTRATION_PASS_LIMIT, "");
             return;
         }
-
         SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
-        State state = State.forPlay(snapshot,
-                effects.canAttemptRetainedSwitch(intent), effects.warmUpCarriesGame(),
-                replacementAuthorized, reuseOnly, opaqueReady, preparedTarget != null,
-                evaluatesRefresh(request, pass), effects.isHostOnline(intent.hostId),
-                effects.isPaired(intent.hostId));
-        state.retainedGameUnproven = effects.retainedGameUnproven(intent);
+        Retained retained = effects.retained(intent);
+        State state = State.forPlay(snapshot, canSwitchRetained(intent, retained),
+                effects.warmUpCarriesGame(), p.replacementAuthorized, p.reuseOnly,
+                p.opaqueReady, p.target != null, p.refresh == Refresh.OBSERVATION,
+                effects.isHostOnline(intent.hostId), effects.isPaired(intent.hostId));
+        state.retainedGameUnproven = retainedGameUnproven(intent, retained);
+        state.sessionRefreshed = p.refresh == Refresh.OBSERVATION
+                || p.refresh == Refresh.SESSION;
+        state.refreshFailed = p.refresh == Refresh.FAILED;
+        state.closeOutcome = p.closed;
         Action action = transition(state, UserIntent.play(intent));
         switch (action.kind) {
             case REFUSE_UNPAIRED:
@@ -839,49 +1304,31 @@ public final class SessionOrchestrator implements AutoCloseable {
                 fail(request, intent, action.failure, "");
                 break;
             case SHOW_LOADING:
-                awaitOpaque(request, intent, action.type, action.replacementAuthorized,
-                        action.reuseOnly, preparedTarget, pass);
+                effects.showLoading(intent, action.type, () ->
+                        evaluate(request, intent, p.next(action)));
                 break;
             case REFRESH_OBSERVATION:
-                refreshThenEvaluate(request, intent, action.replacementAuthorized,
-                        action.reuseOnly, preparedTarget, pass);
+                refresh(request, intent, p.next(action), Refresh.OBSERVATION);
                 break;
             case REFRESH_SESSION:
-                awaitFreshSession(request, intent, action.replacementAuthorized,
-                        action.reuseOnly, preparedTarget, pass);
+                refresh(request, intent, p.next(action), Refresh.SESSION);
                 break;
             case AWAIT_PREPARED:
-                effects.awaitPrepared(() -> !current(request), () -> dispatcher.post(() -> {
-                    if (current(request)) evaluate(request, intent, replacementAuthorized,
-                            reuseOnly, true, preparedTarget, pass + 1);
-                }));
+                effects.awaitPrepared(() -> !current(request), () -> dispatcher.post(() ->
+                        evaluate(request, intent, p.next(p.replacementAuthorized, p.reuseOnly))));
                 break;
             case WAKE_HOST:
-                awaitHost(request, intent, action.replacementAuthorized,
-                        action.reuseOnly, preparedTarget, pass);
+                awaitHost(request, intent, p.next(action));
                 break;
             case PREFLIGHT:
-                awaitPreflight(request, intent, action.replacementAuthorized,
-                        action.reuseOnly, pass, action.preflight);
+                awaitPreflight(request, intent, p.next(action), action.preflight);
                 break;
             case CLOSE_COMPETING:
-                closeCompetingSession(request, intent, preparedTarget,
-                        action.replacementAuthorized, action.reuseOnly, pass);
+                closeCompeting(request, intent, p.next(action));
                 break;
             case LAUNCH:
-                launch(request, intent, preparedTarget, action.type, action.sourceSuspendId,
+                launch(request, intent, p.target, action.type, action.sourceSuspendId,
                         action.ownsFreshSunshineSession);
-                break;
-            case LAUNCH_IF_IDLE:
-                SessionSnapshot latest = effects.resolve(intent.profileKey);
-                if (!current(request)) return;
-                if (latest.state == SessionSnapshot.State.NONE) {
-                    launch(request, intent, preparedTarget, action.type, "",
-                            latest.hostGameAppId == 0);
-                } else {
-                    evaluate(request, intent, replacementAuthorized, reuseOnly,
-                            true, preparedTarget, pass + 1);
-                }
                 break;
             case RETURN_TO_STREAM:
                 returnToRetained(request, intent);
@@ -890,27 +1337,21 @@ public final class SessionOrchestrator implements AutoCloseable {
                 reconnect(request, intent);
                 break;
             case CONFIRM_REPLACEMENT:
-                effects.confirmReplacement(() -> {
-                    if (current(request)) evaluate(request, intent, true, false,
-                            opaqueReady, preparedTarget, pass + 1);
-                });
+                effects.confirmReplacement(() -> evaluate(request, intent, p.confirmed()));
+                break;
+            case ATTACH_PRESENTATION:
+                diagnostic("INFO", "orchestration.presentation_required", request, intent);
+                inFlight = 0L;
+                effects.attachPresentationForSwitch(request, intent, p.target);
+                break;
+            case IGNORE:
                 break;
             default:
                 throw new IllegalStateException("Not a Play action: " + action.kind);
         }
     }
 
-    private void awaitOpaque(long request, PlayIntent intent, LaunchTransitionType type,
-                             boolean replacementAuthorized, boolean reuseOnly,
-                             NvApp preparedTarget, int pass) {
-        effects.showLoading(intent, type, () -> {
-            if (current(request)) evaluate(request, intent, replacementAuthorized,
-                    reuseOnly, true, preparedTarget, pass + 1);
-        });
-    }
-
-    private void awaitPreflight(long request, PlayIntent intent, boolean replacementAuthorized,
-                                boolean reuseOnly, int pass,
+    private void awaitPreflight(long request, PlayIntent intent, Progress step,
                                 HostLaunchPreflight.Action action) {
         execute(request, intent, () -> {
             HostLaunchPreflight.Result result = effects.preflight(
@@ -928,14 +1369,12 @@ public final class SessionOrchestrator implements AutoCloseable {
                     effects.preflightFailed(result.failure);
                 }
                 else if (result.status == HostLaunchPreflight.Status.READY)
-                    evaluate(request, intent, replacementAuthorized, reuseOnly,
-                            true, result.target, pass + 1);
+                    evaluate(request, intent, step.prepared(result.target));
             });
         });
     }
 
-    private void awaitHost(long request, PlayIntent intent, boolean replacementAuthorized,
-                           boolean reuseOnly, NvApp preparedTarget, int pass) {
+    private void awaitHost(long request, PlayIntent intent, Progress step) {
         diagnostic("INFO", "orchestration.wake_started", request, intent);
         execute(request, intent, () -> {
             SessionFailure unanswered = effects.awaitHost(intent, () -> !current(request));
@@ -946,71 +1385,23 @@ public final class SessionOrchestrator implements AutoCloseable {
                     fail(request, intent, unanswered, "");
                     return;
                 }
-                evaluate(request, intent, replacementAuthorized, reuseOnly,
-                        true, preparedTarget, pass + 1);
+                evaluate(request, intent, step);
             });
         });
     }
 
-    /** Whether this pass evaluates the snapshot a refresh of an unresolved observation produced. */
-    private boolean evaluatesRefresh(long request, int pass) {
-        return refreshedRequest == request && refreshedPass == pass;
-    }
-
-    private void refreshThenEvaluate(long request, PlayIntent intent,
-                                     boolean replacementAuthorized, boolean reuseOnly,
-                                     NvApp preparedTarget, int pass) {
-        refreshedRequest = request;
-        refreshedPass = pass + 1;
-        awaitFreshSession(request, intent, replacementAuthorized, reuseOnly, preparedTarget, pass);
-    }
-
-    private void awaitFreshSession(long request, PlayIntent intent,
-                                   boolean replacementAuthorized, boolean reuseOnly,
-                                   NvApp preparedTarget, int pass) {
+    private void refresh(long request, PlayIntent intent, Progress step, Refresh kind) {
         effects.refreshSession(intent, () -> !current(request), success ->
-                dispatcher.post(() -> {
-                    if (!current(request)) return;
-                    if (!success) {
-                        if (effects.isHostOnline(intent.hostId)) {
-                            fail(request, intent, SessionFailure.UNCERTAIN_REFRESH_FAILED, "");
-                            return;
-                        }
-                        // The host fell asleep before its polls noticed: nothing was
-                        // refreshed, so the table decides again and wakes it.
-                        refreshedRequest = 0L;
-                        evaluate(request, intent, replacementAuthorized, reuseOnly,
-                                true, preparedTarget, pass + 1);
-                        return;
-                    }
-                    if (effects.resolve(intent.profileKey).state
-                            == SessionSnapshot.State.UNCERTAIN) {
-                        fail(request, intent, SessionFailure.UNCERTAIN_AFTER_REFRESH, "");
-                        return;
-                    }
-                    evaluate(request, intent, replacementAuthorized, reuseOnly,
-                            true, preparedTarget, pass + 1);
-                }));
+                dispatcher.post(() -> evaluate(request, intent,
+                        step.refreshed(success ? kind : Refresh.FAILED))));
     }
 
-    private void closeCompetingSession(long request, PlayIntent intent, NvApp preparedTarget,
-                                       boolean replacementAuthorized, boolean reuseOnly,
-                                       int pass) {
-        SessionSnapshot beforeClose = effects.resolve(intent.profileKey);
-        if (!current(request)) return;
-        if ((beforeClose.state == SessionSnapshot.State.NONE || intent.matches(beforeClose))
-                && !effects.canAttemptRetainedSwitch(intent)) {
-            evaluate(request, intent, replacementAuthorized, reuseOnly,
-                    true, preparedTarget, pass + 1);
-            return;
-        }
+    private void closeCompeting(long request, PlayIntent intent, Progress step) {
         execute(request, intent, () -> {
             CloseResult closeResult;
             SessionFailure.Raised closeFailure = null;
             diagnostic("INFO", "orchestration.close_started", request, intent);
-            try { closeResult = effects.closePreviousSession(
-                    intent, preparedTarget, replacementAuthorized,
-                    () -> !current(request)); }
+            try { closeResult = close(intent, step, () -> !current(request)); }
             catch (Exception error) {
                 closeResult = null;
                 closeFailure = error instanceof SessionFailure.Raised
@@ -1026,42 +1417,32 @@ public final class SessionOrchestrator implements AutoCloseable {
             SessionFailure.Raised failure = closeFailure;
             dispatcher.post(() -> {
                 if (!current(request)) return;
-                if (result == null) { fail(request, intent, failure.reason, failure.detail); return; }
-                if (result == CloseResult.CANCELLED) return;
-                if (result == CloseResult.NEEDS_CONFIRMATION) {
-                    effects.confirmReplacement(() -> {
-                        if (current(request)) evaluate(request, intent, true,
-                                false, true, preparedTarget, pass + 1);
-                    });
-                    return;
-                }
-                if (result == CloseResult.REUSED) {
-                    returnToRetained(request, intent);
-                    return;
-                }
-                if (result == CloseResult.PRESENTATION_REQUIRED) {
-                    diagnostic("INFO", "orchestration.presentation_required", request, intent);
-                    inFlight = 0L;
-                    effects.attachPresentationForSwitch(request, intent, preparedTarget);
-                    return;
-                }
-                SessionSnapshot afterClose = effects.resolve(intent.profileKey);
-                if (!current(request)) return;
-                // The verified close is authoritative. UNCERTAIN, or TERMINATING while the
-                // closing confirmation window is open, only means that no host observation
-                // newer than the close has been accepted yet; every local fact already
-                // shows nothing left to close.
-                if (afterClose.state == SessionSnapshot.State.NONE
-                        || afterClose.state == SessionSnapshot.State.UNCERTAIN
-                        || afterClose.state == SessionSnapshot.State.TERMINATING) {
-                    launch(request, intent, preparedTarget, freshType(intent), "",
-                            afterClose.hostGameAppId == 0);
-                } else if (intent.matches(afterClose)) {
-                    evaluate(request, intent, true, false,
-                            true, preparedTarget, pass + 1);
-                } else fail(request, intent, SessionFailure.CLOSE_SNAPSHOT_NOT_IDLE, "");
+                if (result == null) fail(request, intent, failure.reason, failure.detail);
+                else evaluate(request, intent, step.closed(result));
             });
         });
+    }
+
+    /** Runs on the worker: the table picks the path from facts read now, the effects run it. */
+    private CloseResult close(PlayIntent intent, Progress step, BooleanSupplier cancelled)
+            throws Exception {
+        Retained retained = effects.retained(intent);
+        switch (closePath(intent, step.target, step.replacementAuthorized, retained)) {
+            case ATTACH: return CloseResult.PRESENTATION_REQUIRED;
+            case CONFIRM: return CloseResult.NEEDS_CONFIRMATION;
+            case HOST_UNAVAILABLE: throw SessionFailure.CLOSE_HOST_UNAVAILABLE.raise();
+            case SWITCH:
+                try {
+                    return effects.switchRetained(intent, step.target, cancelled);
+                } catch (SessionFailure.Raised refused) {
+                    if (switchRefusalAsks(refused.reason, step.replacementAuthorized)) {
+                        return CloseResult.NEEDS_CONFIRMATION;
+                    }
+                    throw refused;
+                }
+            case CLOSE_RETAINED: return effects.closeSession(intent, retained.stream, cancelled);
+            default: return effects.closeSession(intent, null, cancelled);
+        }
     }
 
     private void execute(long request, PlayIntent intent, Runnable action) {

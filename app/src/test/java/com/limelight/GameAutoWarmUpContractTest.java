@@ -28,7 +28,7 @@ public class GameAutoWarmUpContractTest {
         assertTrue(create.indexOf("beginAutoWarmUpPreparing(")
                 < create.lastIndexOf("openPreparingConsoleHome()"));
         String resume = between(game, "private boolean resumeAcceptedWarmUp()",
-                "static boolean shouldResumeAcceptedWarmUp(");
+                "private void resumeAttachedTransport()");
         assertTrue(resume.indexOf("isPreparingHomeFrameAccepted(")
                 < resume.indexOf("transitionCoordinator.start()"));
         String warmUp = create.substring(create.lastIndexOf(
@@ -167,7 +167,7 @@ public class GameAutoWarmUpContractTest {
         assertTrue(accepted.indexOf("coverScreen();")
                 < accepted.indexOf("startConnectionIfReady("));
         String resumed = between(game, "private boolean resumeAcceptedWarmUp()",
-                "static boolean shouldResumeAcceptedWarmUp(");
+                "private void resumeAttachedTransport()");
         assertTrue(resumed.indexOf("autoWarmUpHomeFrameAccepted.set(true);")
                 < resumed.indexOf("coverScreen();"));
         String apply = between(game, "private void applyRetainedTransition(",

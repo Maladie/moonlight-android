@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static com.limelight.GameAutoWarmUpContractTest.assertOrdered;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -260,10 +261,11 @@ public class ConsoleActivityEnsureContractTest {
     @Test public void destructiveReplacementUsesExactRetainedTerminationBeforeFallback()
             throws IOException {
         String source = consoleActivitySource();
+        // Which close runs is the table's (SessionOrchestrator.closePath); the effect runs it.
         String effects = source.substring(source.indexOf(
-                        "@Override public SessionOrchestrator.CloseResult closePreviousSession("),
+                        "@Override public SessionOrchestrator.CloseResult closeSession("),
                 source.indexOf("@Override public void launch(", source.indexOf(
-                        "@Override public SessionOrchestrator.CloseResult closePreviousSession(")));
+                        "@Override public SessionOrchestrator.CloseResult closeSession(")));
         String helper = source.substring(source.indexOf(
                         "private Boolean terminateLiveRetainedForReplacement("),
                 source.indexOf("private void beginInstallationSupportStream("));
@@ -272,7 +274,6 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(effects.contains("terminateKnownControlPlane(host, intent.profileId"));
         assertTrue(effects.matches("(?s).*new SessionEvent\\.DirectTerminationBegun\\(retained\\).*"));
         assertFalse(effects.contains(".restoreReconnectIfTerminating("));
-        assertFalse(effects.contains("closePreviousSession(ready"));
         assertTrue(helper.contains("new SessionEvent.TerminateRequested("));
         assertTrue(helper.contains("cancelled.getAsBoolean()"));
     }
@@ -402,7 +403,7 @@ public class ConsoleActivityEnsureContractTest {
         // waking status, with the existing bounded wake; the refresh itself never wakes.
         String wake = orchestration.substring(orchestration.indexOf(
                         "@Override public SessionFailure awaitHost("),
-                orchestration.indexOf("@Override public SessionSnapshot resolve(String hostId)"));
+                orchestration.indexOf("@Override public SessionSnapshot resolve(HostProfileKey"));
         assertTrue(orchestration.contains("@Override public boolean isHostOnline(String hostId)"));
         assertTrue(wake.contains("HostReadiness.await("));
         assertTrue(wake.contains("getString(R.string.console_status_waking)"));
@@ -411,14 +412,11 @@ public class ConsoleActivityEnsureContractTest {
         // woken while its polls still call it online. The Gateway is awaited after the port.
         assertTrue(wake.contains(
                 "ConsoleHostPresentation.hasWakeAddress(host) ? host : null, cancelled,"));
-        assertTrue(wake.indexOf("HostReadiness.awaitDown(current, cancelled)")
-                < wake.indexOf("HostReadiness.await("));
-        assertTrue(wake.indexOf("HostReadiness.await(")
-                < wake.indexOf("if (!ConsoleActionCatalog.isPaired(ready)) return null;"));
-        assertTrue(wake.indexOf("if (!ConsoleActionCatalog.isPaired(ready)) return null;")
-                < wake.indexOf("getString(R.string.transition_waiting_gateway)"));
-        assertTrue(wake.indexOf("getString(R.string.transition_waiting_gateway)")
-                < wake.indexOf("hostLaunchPreflight.awaitGateway("));
+        assertOrdered(wake, "HostReadiness.awaitDown(current, cancelled)",
+                "HostReadiness.await(current,",
+                "if (!ConsoleActionCatalog.isPaired(ready)) return null;",
+                "getString(R.string.transition_waiting_gateway)",
+                "hostLaunchPreflight.awaitGateway(");
         assertTrue(wake.contains("? null : SessionFailure.HOST_GATEWAY_TIMEOUT"));
         assertTrue(wake.contains("new SessionEvent.HostSleepCleared(host.uuid)"));
         assertFalse(wake.contains("WakeOnLanSender"));
@@ -463,45 +461,13 @@ public class ConsoleActivityEnsureContractTest {
         String preflight = source.substring(source.indexOf(
                         "private HostLaunchPreflight createHostLaunchPreflight()"),
                 source.indexOf("private String preflightStageMessage("));
-        String close = source.substring(source.indexOf(
-                        "@Override public SessionOrchestrator.CloseResult closePreviousSession("),
-                source.indexOf("@Override public void launch(", source.indexOf(
-                        "@Override public SessionOrchestrator.CloseResult closePreviousSession(")));
-
-        assertTrue(preflight.indexOf("Action.SWITCH_RETAINED")
-                < preflight.indexOf("HostReadiness.requestWake("));
+        assertOrdered(preflight, "Action.SWITCH_RETAINED", "HostReadiness.requestWake(");
         assertFalse(preflight.contains("HostReadiness.await("));
         assertFalse(preflight.contains("HostReadiness.awaitAfterWakeDecision("));
         assertTrue(preflight.contains("State.HOME_LIVE"));
         assertTrue(preflight.contains("State.PREPARING"));
-        assertTrue(close.contains("PlayniteTargetResolver.isNeutralStream(target)"));
-        assertTrue(close.contains("retained.appId == target.getAppId()"));
-        assertTrue(close.contains("switchRetainedProviderGame"));
-    }
-
-    @Test public void noPromptRetainedSwitchRequiresExactLiveNeutralSession()
-            throws IOException {
-        String source = consoleActivitySource();
-        String method = source.substring(source.indexOf(
-                        "@Override public boolean canAttemptRetainedSwitch("),
-                source.indexOf("@Override public void showLoading(", source.indexOf(
-                        "@Override public boolean canAttemptRetainedSwitch(")));
-
-        assertTrue(method.contains("PlayIntent.Kind.PLAYNITE_GAME"));
-        assertTrue(method.contains("State.HOME_LIVE"));
-        assertTrue(method.contains("State.PREPARING"));
-        assertTrue(method.contains("if (retained.playniteGameId.isEmpty())"));
-        assertTrue(method.indexOf("if (retained.playniteGameId.isEmpty())")
-                < method.indexOf("SessionSnapshot projection = resolveSessionSnapshot("));
-        assertTrue(method.contains("\"VERIFIED\".equals(projection.processEvidence)"));
-        assertTrue(method.contains(".hostRunningAppId == retained.appId"));
-        // switchKeepsHostGame / retainedGameUnproven: behaviour-tested
-        // with the table in SessionTransitionTableTest.
-        assertTrue(method.contains("retained.hostId.equalsIgnoreCase(intent.hostId)"));
-        assertTrue(method.contains("!retained.playniteGameId.equalsIgnoreCase("));
-        assertTrue(method.contains("PlayniteTargetResolver.findById("));
-        assertTrue(method.contains("PlayniteTargetResolver.isNeutralStream(retainedTarget)"));
-        assertTrue(method.contains("sessionModel.canSwitchOrigin("));
+        // When a close switches the retained stream: SessionTransitionTableTest
+        // competingSessionGivesWayBySwitchConfirmationOrTheExactClose.
     }
 
     @Test public void retryKeepsIntentAndFreshObservationRestoresResumePresentation()
@@ -660,9 +626,7 @@ public class ConsoleActivityEnsureContractTest {
                 "name=\"console_status_paused_stream\">Wstrzymany stream<"));
         assertFalse(status.contains("&& warmUpStatus == WARM_UP_PREPARING) {\n"
                 + "            return getString(R.string.console_warm_up_preparing);"));
-        int preflight = worker.indexOf("hostLaunchPreflight.run(");
-        int streamer = worker.indexOf("refreshWarmUpHost(host)");
-        assertTrue(preflight >= 0 && streamer > preflight);
+        assertOrdered(worker, "hostLaunchPreflight.run(", "refreshWarmUpHost(host)");
         assertFalse(worker.contains("HostReadiness.await("));
         assertFalse(worker.contains("HostReadiness.awaitAfterWakeDecision("));
         assertTrue(source.contains("return HostReadiness.mergeFreshDetails(\n"

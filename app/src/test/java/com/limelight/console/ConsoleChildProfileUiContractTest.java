@@ -66,7 +66,7 @@ public class ConsoleChildProfileUiContractTest {
     @Test public void childStartsOnlyAfterOrchestratorHasResolvedPreviousSession() throws Exception {
         String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
         String preflight = between(activity, "@Override public HostLaunchPreflight.Result preflight(",
-                "@Override public SessionOrchestrator.CloseResult closePreviousSession(");
+                "@Override public SessionOrchestrator.CloseResult switchRetained(");
         assertFalse(preflight.contains("startChildSession("));
         String launch = between(activity, "@Override public void launch(PlayIntent intent, NvApp app,",
                 "private void launchStream(PlayIntent intent, NvApp app,");
