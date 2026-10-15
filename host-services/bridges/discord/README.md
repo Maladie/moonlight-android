@@ -5,10 +5,12 @@ Gateway. It translates a deliberately limited HTTP API into Discord desktop RPC
 commands and also exposes the audio and VirtualHere controls consumed by the
 Gateway.
 
-Run `Configure-DiscordBridge.ps1` as the Windows user whose Discord client will
-be controlled. The client secret and OAuth token are protected with that user's
-DPAPI credentials. Start and test the service with `Start-DiscordBridge.ps1`
-and `Test-DiscordBridge.ps1`.
+Host Control's tray runs it from the installation with `-ProfileDirectory
+<install>\profiles\<id>\discord` once that profile is configured (Host Control's
+**Integracje**); the directory holds only its configuration, DPAPI-protected client
+secret and OAuth token, state and logs. `/repair-bridge` and `/shutdown` end the
+process and the tray starts it again. `Test-DiscordBridge.ps1 -ProfileDirectory ...`
+calls a running instance.
 
 One instance is required per Windows/Discord profile. Give every concurrently
 installed profile a distinct loopback port. Discord desktop itself can only own

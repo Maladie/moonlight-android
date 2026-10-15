@@ -54,7 +54,6 @@ try {
         "host-services/control" `
         "host-services/gateway" `
         "host-services/install" `
-        "host-services/profile-agent" `
         "host-services/updater" `
         "host-services/windows-login" `
         "host-services/version.json"
@@ -65,6 +64,7 @@ try {
     # first commit that contains them.
     $tracked = @($tracked) + @(
         "host-services/bridges/playnite/GameProviderBridge.py",
+        "host-services/bridges/playnite/AgentGuard.py",
         "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1",
         "host-services/install/Prepare-MoonWakerHost.ps1",
         "host-services/control/MoonWakerHostConfigurator.cs",
@@ -100,9 +100,6 @@ try {
         }
     $tracked = @($tracked) + @($windowsLogin) | Sort-Object -Unique
     foreach ($relative in $tracked) {
-        if ($relative -eq "host-services/install/Install-MoonWakerHostBundle.ps1") {
-            continue
-        }
         if ($relative -match "(^|/)(dist|__pycache__)(/|$)" -or
                 $relative -match "\.pyc$") {
             continue

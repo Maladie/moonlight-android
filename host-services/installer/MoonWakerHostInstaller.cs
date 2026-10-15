@@ -37,6 +37,80 @@ namespace MoonWaker.HostInstaller
             ref SecurityAttributes securityAttributes);
     }
 
+    // Starts a program through the signed-in user's Explorer (the desktop shell view's
+    // IShellDispatch2.ShellExecute), so it runs with that user's standard token rather than
+    // inheriting this elevated installer's. Must run on an STA thread.
+    internal static class UnelevatedShell
+    {
+        [ComImport, Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39")]
+        private class ShellWindows { }
+
+        [ComImport, Guid("85CB6900-4D95-11CF-960C-0080C7F4EE85"),
+         InterfaceType(ComInterfaceType.InterfaceIsDual)]
+        private interface IShellWindows
+        {
+            // Slots before FindWindowSW: get_Count, Item, _NewEnum, Register, RegisterPending,
+            // Revoke, OnNavigate, OnActivated. They are never called.
+            void Slot1(); void Slot2(); void Slot3(); void Slot4();
+            void Slot5(); void Slot6(); void Slot7(); void Slot8();
+            [return: MarshalAs(UnmanagedType.IDispatch)]
+            object FindWindowSW(ref object location, ref object locationRoot, int windowClass,
+                out int window, int options);
+        }
+
+        [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IServiceProvider
+        {
+            [return: MarshalAs(UnmanagedType.IUnknown)]
+            object QueryService(ref Guid service, ref Guid interfaceId);
+        }
+
+        [ComImport, Guid("000214E2-0000-0000-C000-000000000046"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellBrowser
+        {
+            // IOleWindow (2) and IShellBrowser methods before QueryActiveShellView (10).
+            void Slot1(); void Slot2(); void Slot3(); void Slot4(); void Slot5(); void Slot6();
+            void Slot7(); void Slot8(); void Slot9(); void Slot10(); void Slot11(); void Slot12();
+            IShellView QueryActiveShellView();
+        }
+
+        [ComImport, Guid("000214E3-0000-0000-C000-000000000046"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellView
+        {
+            // IOleWindow (2) and IShellView methods before GetItemObject (10).
+            void Slot1(); void Slot2(); void Slot3(); void Slot4(); void Slot5(); void Slot6();
+            void Slot7(); void Slot8(); void Slot9(); void Slot10(); void Slot11(); void Slot12();
+            [return: MarshalAs(UnmanagedType.IDispatch)]
+            object GetItemObject(uint item, ref Guid interfaceId);
+        }
+
+        private const int SwcDesktop = 8;
+        private const int SwfoNeedDispatch = 1;
+        private const uint SvgioBackground = 0;
+
+        internal static void Start(string file, string arguments, string directory)
+        {
+            object location = null, locationRoot = null;
+            int window;
+            object desktop = ((IShellWindows)new ShellWindows()).FindWindowSW(ref location,
+                ref locationRoot, SwcDesktop, out window, SwfoNeedDispatch);
+            if (desktop == null) throw new InvalidOperationException("Explorer desktop is not running.");
+            Guid topLevelBrowser = new Guid("4C96BE40-915C-11CF-99D3-00AA004AE837");
+            Guid shellBrowser = typeof(IShellBrowser).GUID;
+            IShellBrowser browser = (IShellBrowser)((IServiceProvider)desktop).QueryService(
+                ref topLevelBrowser, ref shellBrowser);
+            Guid dispatch = new Guid("00020400-0000-0000-C000-000000000046");
+            object folderView = browser.QueryActiveShellView().GetItemObject(SvgioBackground, ref dispatch);
+            object shell = folderView.GetType().InvokeMember("Application",
+                BindingFlags.GetProperty, null, folderView, null);
+            shell.GetType().InvokeMember("ShellExecute", BindingFlags.InvokeMethod, null, shell,
+                new object[] { file, arguments, directory, "open", 1 });
+        }
+    }
+
     internal static class Program
     {
         [STAThread]
@@ -81,7 +155,10 @@ namespace MoonWaker.HostInstaller
         private Panel moonWakerDetectionCard;
         private Label systemCaveat;
 
-        private readonly TextBox installPath = new TextBox();
+        // Fixed, never chosen: the machine-wide Run entry starts code from here in every
+        // account, so its parent must be one that ordinary users cannot rename or create in.
+        private static readonly string InstallDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "MoonWaker");
         private readonly CheckBox installMachine = new CheckBox();
         private readonly Label installationStatus = new Label();
 
@@ -157,13 +234,7 @@ namespace MoonWaker.HostInstaller
             BuildOptionsPage();
             BuildProgressPage();
 
-            installPath.Text = DetectInstallDirectory();
-            installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
-
-            installPath.TextChanged += delegate {
-                installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
-                RefreshInstallationStatus();
-            };
+            installMachine.Checked = SharedComponentsNeedUpdate(InstallDirectory);
             ApplyLanguage(this);
             RefreshInstallationStatus();
             ShowPage(0);
@@ -314,11 +385,7 @@ namespace MoonWaker.HostInstaller
                 13F, FontStyle.Bold, 24, 15, 400, 28);
             AddLocalizedLabel(locationCard, "Installation folder", "Katalog instalacji",
                 9F, FontStyle.Regular, 24, 51, 260, 22);
-            ConfigureTextBox(installPath, 24, 74, 492, false);
-            locationCard.Controls.Add(installPath);
-            Button browse = MakeLocalizedButton("Browse…", "Wybierz…", 534, 74, 142, 34);
-            browse.Click += delegate { BrowseInstallDirectory(); };
-            locationCard.Controls.Add(browse);
+            AddLabel(locationCard, InstallDirectory, 10F, FontStyle.Bold, 24, 74, 652, 34);
             installationStatus.SetBounds(24, 119, 652, 75);
             installationStatus.ForeColor = Muted;
             locationCard.Controls.Add(installationStatus);
@@ -408,8 +475,6 @@ namespace MoonWaker.HostInstaller
             }
             if (currentPage == 3)
             {
-                string error = ValidateInput();
-                if (error != null) { ShowWarning(error); return; }
                 await InstallAsync(); return;
             }
             if (currentPage == 4)
@@ -432,7 +497,7 @@ namespace MoonWaker.HostInstaller
             navigation.Visible = index != 0;
             back.Visible = index > 1 && index < 4;
             next.Visible = index > 0;
-            uninstall.Visible = index == 3 && SharedComponentsInstalled(installPath.Text.Trim());
+            uninstall.Visible = index == 3 && SharedComponentsInstalled(InstallDirectory);
             next.Enabled = true;
             next.Text = index == 3 ? T("Install", "Zainstaluj") : T("Continue", "Dalej");
             if (index == 4)
@@ -517,8 +582,8 @@ namespace MoonWaker.HostInstaller
             }
             UpdateSystemPageLayout();
             RefreshVibepolloStatus();
-            bool sharedInstalled = SharedComponentsInstalled(installPath.Text.Trim());
-            bool updateRequired = SharedComponentsNeedUpdate(installPath.Text.Trim());
+            bool sharedInstalled = SharedComponentsInstalled(InstallDirectory);
+            bool updateRequired = SharedComponentsNeedUpdate(InstallDirectory);
             if (!sharedInstalled)
                 SetStatus(moonWakerDetectionStatus,
                     T("Not installed — all host components will be added",
@@ -660,8 +725,6 @@ namespace MoonWaker.HostInstaller
 
         private async Task InstallAsync()
         {
-            string validation = ValidateInput();
-            if (validation != null) { ShowWarning(validation); return; }
             if (!PrepareHostControlUpdate(installMachine.Checked, true)) return;
             installationCompleted = false;
             installationFailed = false;
@@ -698,11 +761,10 @@ namespace MoonWaker.HostInstaller
 
         private async Task UninstallAsync()
         {
-            string directory = Path.GetFullPath(installPath.Text.Trim());
-            if (!SharedComponentsInstalled(directory))
+            if (!SharedComponentsInstalled(InstallDirectory))
             {
-                ShowWarning(T("No MoonWaker installation was found in this folder.",
-                    "W tym katalogu nie znaleziono instalacji MoonWaker."));
+                ShowWarning(T("No MoonWaker installation was found.",
+                    "Nie znaleziono instalacji MoonWaker."));
                 return;
             }
             DialogResult answer = MessageBox.Show(this, T(
@@ -724,7 +786,7 @@ namespace MoonWaker.HostInstaller
             log.Text = progressDetail.Text + "\r\n";
             try
             {
-                string output = await Task.Run<string>(() => RunUninstaller(directory));
+                string output = await Task.Run<string>(() => RunUninstaller());
                 log.AppendText(output);
                 progress.Value = 100;
                 progressTitle.Text = T("MoonWaker was removed", "MoonWaker został usunięty");
@@ -768,7 +830,7 @@ namespace MoonWaker.HostInstaller
                     ReportProgress(28, T("Checking required components and drivers…",
                         "Sprawdzanie wymaganych składników i sterowników…"));
                     combinedOutput.Append(RunMachineInstall(hostScript, machineWrapper,
-                        prerequisiteScript, Path.GetFullPath(installPath.Text.Trim()), temporary,
+                        prerequisiteScript, temporary,
                         installMachine.Checked, enableWakeOnLan, ensureVibepollo, ensureViGEmBus,
                         true, true));
                 }
@@ -787,7 +849,7 @@ namespace MoonWaker.HostInstaller
             }
         }
 
-        private string RunUninstaller(string directory)
+        private string RunUninstaller()
         {
             string temporary = CreateProtectedStagingDirectory();
             Exception uninstallError = null;
@@ -799,8 +861,7 @@ namespace MoonWaker.HostInstaller
                 if (!File.Exists(script)) throw new InvalidOperationException(T(
                     "The embedded uninstaller is missing.", "Brakuje osadzonego deinstalatora."));
                 string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " +
-                    Quote(script) + " -InstallDirectory " + Quote(directory) +
-                    " -PurgeCredentials -RemoveFiles";
+                    Quote(script) + " -PurgeCredentials -RemoveFiles";
                 ProcessStartInfo info = new ProcessStartInfo(WindowsPowerShellPath(), arguments);
                 info.UseShellExecute = false; info.CreateNoWindow = true;
                 info.RedirectStandardOutput = true; info.RedirectStandardError = true;
@@ -826,7 +887,7 @@ namespace MoonWaker.HostInstaller
         }
 
         private static string RunMachineInstall(string hostScript, string wrapper,
-            string prerequisiteScript, string directory, string temporaryDirectory,
+            string prerequisiteScript, string temporaryDirectory,
             bool installHost, bool enableWakeOnLan, bool ensureVibepollo, bool ensureViGEmBus,
             bool ensurePython, bool ensureOpenSsl)
         {
@@ -836,8 +897,6 @@ namespace MoonWaker.HostInstaller
             string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(wrapper) +
                 " -HostInstallScript " + Quote(hostScript) +
                 " -PrerequisiteScript " + Quote(prerequisiteScript) +
-                " -InstallDirectory " + Quote(directory) +
-                " -GatewayDirectory " + Quote(Path.Combine(directory, "gateway")) +
                 " -ProtectedStagingDirectory " + Quote(temporaryDirectory) +
                 " -ResultPath " + Quote(resultPath);
             if (!installHost) arguments += " -SkipMoonWakerHost";
@@ -934,10 +993,10 @@ namespace MoonWaker.HostInstaller
         {
             if (!restartHostControl) return;
             restartHostControl = false;
-            string executable = Path.GetFullPath(Path.Combine(
-                installPath.Text.Trim(), "control", "MoonWakerHostControl.exe"));
+            string executable = Path.Combine(InstallDirectory, "control", "MoonWakerHostControl.exe");
             if (!File.Exists(executable)) return;
-            try { Process.Start(new ProcessStartInfo(executable) { UseShellExecute = true }); }
+            // The tray hosts profile processes only with the user's standard token.
+            try { UnelevatedShell.Start(executable, "--tray", Path.GetDirectoryName(executable)); }
             catch (Exception error)
             {
                 log.AppendText("\r\n" + T("Could not restart Host Control: ",
@@ -945,32 +1004,10 @@ namespace MoonWaker.HostInstaller
             }
         }
 
-        private string ValidateInput()
-        {
-            string path = installPath.Text.Trim();
-            if (String.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
-                return T("Choose an absolute installation path.", "Wybierz bezwzględną ścieżkę instalacji.");
-            string full;
-            string root;
-            try { full = Path.GetFullPath(path); root = Path.GetPathRoot(full); }
-            catch
-            {
-                return T("The installation path is invalid.", "Ścieżka instalacji jest nieprawidłowa.");
-            }
-            if (String.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
-                return T("The selected drive is unavailable.", "Wybrany dysk jest niedostępny.");
-            if (!installMachine.Checked && !File.Exists(Path.Combine(
-                    full, "gateway", "gateway.json")))
-                return T("Install shared MoonWaker components first or select an existing installation.",
-                    "Najpierw zainstaluj wspólne komponenty MoonWaker albo wybierz istniejącą instalację.");
-            return null;
-        }
-
         private void RefreshInstallationStatus()
         {
-            string root = installPath.Text.Trim();
-            bool sharedInstalled = SharedComponentsInstalled(root);
-            bool updateRequired = SharedComponentsNeedUpdate(root);
+            bool sharedInstalled = SharedComponentsInstalled(InstallDirectory);
+            bool updateRequired = SharedComponentsNeedUpdate(InstallDirectory);
             if (!sharedInstalled)
             {
                 installationStatus.ForeColor = Warning;
@@ -982,7 +1019,7 @@ namespace MoonWaker.HostInstaller
             {
                 installationStatus.ForeColor = Warning;
                 installationStatus.Text = T("Update ", "Aktualizacja ") +
-                    DisplayInstalledVersion(root) + " → " + payloadVersion + T(
+                    DisplayInstalledVersion(InstallDirectory) + " → " + payloadVersion + T(
                     ". Existing profiles, certificates, pairing and encrypted tokens will be preserved.",
                     ". Istniejące profile, certyfikaty, parowanie i zaszyfrowane tokeny zostaną zachowane.");
             }
@@ -994,17 +1031,6 @@ namespace MoonWaker.HostInstaller
                     "Wspólne komponenty są aktualne. Profile Windows dodasz lub zmienisz w Host Control.");
             }
             uninstall.Visible = currentPage == 3 && sharedInstalled;
-        }
-
-        private void BrowseInstallDirectory()
-        {
-            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
-            {
-                dialog.Description = T("Choose the MoonWaker Host installation folder",
-                    "Wybierz katalog instalacji MoonWaker Host");
-                if (Directory.Exists(installPath.Text)) dialog.SelectedPath = installPath.Text;
-                if (dialog.ShowDialog(this) == DialogResult.OK) installPath.Text = dialog.SelectedPath;
-            }
         }
 
         private static string RunHiddenProcess(string fileName, string arguments, int timeoutMilliseconds)
@@ -1211,14 +1237,6 @@ namespace MoonWaker.HostInstaller
             return "v?";
         }
 
-        private static string DetectInstallDirectory()
-        {
-            string configured = Environment.GetEnvironmentVariable("MOONWAKER_INSTALL_DIRECTORY");
-            if (!String.IsNullOrWhiteSpace(configured)) return configured;
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "MoonWaker");
-        }
-
         private bool SharedComponentsNeedUpdate(string root)
         {
             if (!SharedComponentsInstalled(root)) return true;
@@ -1311,15 +1329,6 @@ namespace MoonWaker.HostInstaller
             string[] translations = root.Tag as string[];
             if (translations != null && translations.Length == 2) root.Text = translations[language];
             foreach (Control child in root.Controls) ApplyLanguage(child);
-        }
-
-        private void ConfigureTextBox(TextBox box, int left, int top, int width, bool password)
-        {
-            box.SetBounds(left, top, width, 34);
-            box.BorderStyle = BorderStyle.FixedSingle;
-            box.BackColor = Color.FromArgb(32, 38, 52);
-            box.ForeColor = Color.White;
-            box.UseSystemPasswordChar = password;
         }
 
         private void ConfigureCheckBox(CheckBox box, string english, string polish, int left, int top)

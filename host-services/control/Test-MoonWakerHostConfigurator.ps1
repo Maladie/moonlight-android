@@ -134,24 +134,24 @@ try {
     $profileInstaller = Get-Content -LiteralPath (
         Join-Path (Split-Path -Parent $PSScriptRoot) "install\Install-WakePlayProfile.ps1") -Raw
     foreach ($required in @(
-        'LogonType Interactive', '$provisioningOwner.sid', '$MachineProvisioning',
+        '$provisioningOwner.sid', '$MachineProvisioning',
         'Machine profile root must be exactly', 'Protect-ProfileTree $true',
         '$GatewayConfigPath.lock')) {
         if (-not $profileInstaller.Contains($required)) {
             throw "Profile provisioning contract is missing: $required"
         }
     }
-    if ($profileInstaller -match '(?i)OwnerPassword|TaskPassword' -or
-        $profileInstaller -match 'New-ScheduledTaskAction -Execute "powershell\.exe"') {
-        throw "Profile startup would store a password or use a mutable executable lookup."
+    # Host Control's tray starts the profile's processes; provisioning registers no
+    # startup task and copies no Bridge code into the profile.
+    if ($profileInstaller -match '(?i)OwnerPassword|TaskPassword|ScheduledTask|GameProviderBridge\.py|Startup') {
+        throw "Profile provisioning registers startup or copies Bridge code into the profile."
     }
-
-    $profileAgent = Get-Content -LiteralPath (Join-Path (
-        Split-Path -Parent $PSScriptRoot) "profile-agent\MoonWakerProfileBridge.ps1") -Raw
-    if ($profileAgent -notmatch 'Get-ProfileAuthority' -or
-        $profileAgent -notmatch 'profile_authority_revoked' -or
-        $profileAgent -notmatch 'windows_account_sid') {
-        throw "Profile supervisor does not stop after its profile authority is revoked."
+    $agentGuard = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
+        "bridges\playnite\AgentGuard.py") -Raw
+    if ($agentGuard -notmatch 'AUTHORITY_LOST_EXIT_CODE = 78' -or
+        $agentGuard -notmatch 'windows_account_sid' -or
+        $agentGuard -notmatch 'deletion_tombstone') {
+        throw "The Agent does not stop after its profile authority is revoked."
     }
 
     Write-Output "MoonWaker Host Control runas/password tests passed."

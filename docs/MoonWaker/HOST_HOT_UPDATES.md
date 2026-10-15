@@ -53,10 +53,14 @@ never executed. Its allowlist is fixed to top-level `.py` files in `gateway` and
 `bridges/playnite`, and `.ps1`/`.psm1` files in `bridges/discord`. Every size and SHA-256 hash must match, undeclared ZIP entries are
 rejected, and versions cannot be replayed or downgraded.
 
-The updater stops Gateway and active profile tasks with bounded waits, stages complete
-copies beside each affected runtime directory, renames them into place, restarts the
-same runtime, and requires Gateway plus the previously active Bridge ports to become
-healthy within 30 seconds. Health means the expected `/api/v1/hello` or `/health`
+Bridge code exists only in the installation (`bridge-source`); profile directories
+hold data, so they are never staged or switched. The updater stops Gateway and its
+workers with bounded waits, stages complete copies beside each affected runtime
+directory, renames them into place and starts Gateway again. It then ends every
+Agent and Discord Bridge process running from the installation; each account's Host
+Control tray starts them again on the activated code. Gateway plus the Bridge ports
+of the profiles whose processes ran before the update must become healthy within
+30 seconds. Health means the expected `/api/v1/hello` or `/health`
 contract response from the expected listener PID, script path and profile; Gateway
 also verifies its Windows service executable and the SHA-256 reported by the newly
 started Python process. A failed switch or health check rolls all switched directories
@@ -70,9 +74,9 @@ back before returning failure.
   or machine components.
 - Staging, version state, updater scripts, and the service executable are writable
   only by SYSTEM and administrators.
-- Before touching Gateway, the updater rejects a custom host root whose parent ACL
-  lets an unpinned account create, delete, or replace children. Use the full installer
-  to repair such a location; the default Program Files location is the intended setup.
+- Before touching Gateway, the updater rejects a host root (always
+  `%ProgramFiles%\MoonWaker`) whose ACL lets an unpinned account create, delete, or
+  replace children. Use the full installer to repair it.
 - Existing bootstrap paths containing reparse points or foreign ACL entries are rejected;
   replacement binaries are compiled outside the destination and copied only after the
   protected administrator-owned target exists.

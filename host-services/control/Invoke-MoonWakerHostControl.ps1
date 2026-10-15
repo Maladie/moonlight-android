@@ -3,7 +3,6 @@
 param(
     [Parameter(Mandatory)]
     [ValidateSet("Status", "StartGateway", "StopGateway", "RestartGateway", "PairGateway",
-        "StartProfile", "StopProfile", "RestartProfile", "RecoverAll",
         "ConfigureSteamWebApi", "DisconnectSteam", "ConnectEpic", "DisconnectEpic",
         "ConnectPlaynite", "DisconnectPlaynite",
         "ConfigureIntegrations", "CloseSession",
@@ -30,10 +29,6 @@ function Get-InstallRoot {
 }
 
 function Get-GatewayDirectory {
-    foreach ($candidate in @((Join-Path (Get-InstallRoot) "gateway"),
-        "C:\Tools\WakePlayHost\gateway", "C:\Tools\WakePlayGateway")) {
-        if (Test-Path -LiteralPath (Join-Path $candidate "gateway.json")) { return $candidate }
-    }
     return (Join-Path (Get-InstallRoot) "gateway")
 }
 
@@ -161,8 +156,6 @@ function Export-Diagnostics {
                 $root = Get-ProfileRoot $property.Value ([string]$property.Name)
                 if ([string]::IsNullOrWhiteSpace($root)) { continue }
                 $profileDestination = Join-Path $staging ("profiles\" + $id)
-                $count += Copy-DiagnosticSeries $root "profile-bridge.jsonl" `
-                    (Join-Path $profileDestination "supervisor")
                 $count += Copy-DiagnosticSeries (Join-Path (Get-GameProviderDirectory $root) "logs") `
                     "provider-diagnostics.jsonl" (Join-Path $profileDestination "provider")
             }
@@ -296,36 +289,6 @@ function Get-ProfileRoot([object]$Entry, [string]$Id) {
         }
         return $resolved
     } catch { return "" }
-}
-
-function Get-SupervisorStatus([string]$Root) {
-    if ([string]::IsNullOrWhiteSpace($Root)) { return "unavailable" }
-    if (Test-Path -LiteralPath (Join-Path $Root "profile-bridge-manually-stopped")) {
-        return "manually_stopped"
-    }
-    $statePath = Join-Path $Root "profile-bridge-state.json"
-    try {
-        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-        $process = Get-Process -Id ([int]$state.supervisor_pid) -ErrorAction SilentlyContinue
-        if ($process -and -not $process.HasExited) { return "running" }
-    } catch {}
-    return "stopped"
-}
-
-function Get-ProfileProcessId([string]$Root, [string]$Name) {
-    if ([string]::IsNullOrWhiteSpace($Root)) { return 0 }
-    try {
-        $state = Get-Content -LiteralPath (Join-Path $Root "profile-bridge-state.json") -Raw | ConvertFrom-Json
-        if ($Name -eq "supervisor") { return [int]$state.supervisor_pid }
-        if ($state.components -and $state.components.PSObject.Properties[$Name]) {
-            return [int]$state.components.$Name.pid
-        }
-    } catch {}
-    return 0
-}
-
-function Test-GatewayManualStop([string]$Directory) {
-    return Test-Path -LiteralPath (Join-Path $Directory "gateway-manually-stopped")
 }
 
 function Get-MicrophoneReadiness([object]$Gateway, [string]$Directory) {
@@ -473,7 +436,6 @@ function Set-ProfileIntegrations([string]$Id) {
             }
         }
 
-        if ((Get-SupervisorStatus $profile.root) -eq "running") { Restart-Profile $Id }
         return [ordered]@{
             ok = $true
             profile_id = $Id
@@ -531,37 +493,6 @@ function Test-LegendaryConnection([string]$Root) {
     } catch { return $false } finally { $env:LEGENDARY_CONFIG_PATH = $previous }
 }
 
-function Ensure-BackgroundServices([object]$Gateway, [string]$GatewayDirectory, [int]$GatewayPort) {
-    if (-not (Test-TcpPort "127.0.0.1" $GatewayPort) -and -not (Test-GatewayManualStop $GatewayDirectory)) {
-        try { Start-Gateway } catch {}
-    }
-    if (-not $Gateway.profiles) { return }
-    $currentProfilesRoot = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles"))
-    foreach ($property in $Gateway.profiles.PSObject.Properties) {
-        if (Test-ChildProfile $property.Value) { continue }
-        $id = [string]$property.Name
-        if ($null -ne $property.Value.PSObject.Properties["deletion_tombstone"] -and
-            $null -ne $property.Value.deletion_tombstone) { continue }
-        if ($null -ne $property.Value.PSObject.Properties["enabled"] -and
-            -not [bool]$property.Value.enabled) { continue }
-        $root = Get-ProfileRoot $property.Value $id
-        # A profile contains user-DPAPI-protected credentials. Starting it from
-        # another Windows account makes it look alive while every protected
-        # integration fails immediately.
-        if (-not (Test-CurrentProfileOwner $property.Value)) { continue }
-        if ([string]::IsNullOrWhiteSpace($root) -or
-            (Test-Path -LiteralPath (Join-Path $root "profile-bridge-manually-stopped"))) { continue }
-        try {
-            $resolvedRoot = [IO.Path]::GetFullPath($root)
-            if (-not $resolvedRoot.StartsWith($currentProfilesRoot + [IO.Path]::DirectorySeparatorChar,
-                [StringComparison]::OrdinalIgnoreCase)) { continue }
-            if ((Get-SupervisorStatus $root) -ne "running") {
-                Invoke-ProfileControl $id "start"
-            }
-        } catch {}
-    }
-}
-
 function Get-Status {
     $gatewayDirectory = Get-GatewayDirectory
     $configPath = Join-Path $gatewayDirectory "gateway.json"
@@ -569,7 +500,6 @@ function Get-Status {
         Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
     } else { [pscustomobject]@{ listen_port = 8785; profiles = [pscustomobject]@{}; clients = @() } }
     $port = if ($gateway.PSObject.Properties["listen_port"]) { [int]$gateway.listen_port } else { 8785 }
-    Ensure-BackgroundServices $gateway $gatewayDirectory $port
     $runtime = $null
     try { $runtime = Get-Content -LiteralPath (Join-Path $gatewayDirectory "runtime-status.json") -Raw | ConvertFrom-Json } catch {}
     $gatewayRuntime = $null
@@ -589,8 +519,6 @@ function Get-Status {
             $entry = $property.Value
             if (Test-ChildProfile $entry) { continue }
             $root = Get-ProfileRoot $entry $id
-            $manuallyStopped = -not [string]::IsNullOrWhiteSpace($root) -and
-                (Test-Path -LiteralPath (Join-Path $root "profile-bridge-manually-stopped"))
             $steamConnected = Test-SteamConnection $root
             $discordEndpoint = Get-ProfileEndpoint $entry "discord_bridge"
             $gameProviderEndpoint = Get-ProfileEndpoint $entry "game_provider_bridge"
@@ -617,14 +545,9 @@ function Get-Status {
                     [bool]$entry.remote_sign_in_enabled) { "unavailable" } else { "disabled" }
                 profile_root = $root
                 current_user = Test-CurrentProfileOwner $entry
-                supervisor = Get-SupervisorStatus $root
-                supervisor_pid = Get-ProfileProcessId $root "supervisor"
-                discord = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth $discordEndpoint }
-                discord_pid = Get-ProfileProcessId $root "discord"
-                game_provider = if ($manuallyStopped) { "manually_stopped" } else {
-                    Test-HttpHealth $gameProviderEndpoint '/observation'
-                }
-                game_provider_pid = Get-ProfileProcessId $root "game-provider"
+                # Host Control's tray hosts these processes; their state here is their health.
+                discord = Test-HttpHealth $discordEndpoint
+                game_provider = Test-HttpHealth $gameProviderEndpoint '/observation'
                 steam_web_api_configured = $steamConnected
                 steam_connected = $steamConnected
                 epic_connected = Test-LegendaryConnection $root
@@ -701,39 +624,6 @@ function Stop-Gateway {
     }
     if (-not (Wait-GatewayState -Running $false -Directory $directory)) {
         throw "Gateway did not stop."
-    }
-}
-
-function Wait-ProfileState([string]$Id, [bool]$Running, [int]$TimeoutSeconds = 20) {
-    $profile = Resolve-Profile $Id
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    while ([DateTime]::UtcNow -lt $deadline) {
-        $state = Get-SupervisorStatus $profile.root
-        if ($Running -and $state -eq "running") { return $true }
-        if (-not $Running -and $state -in @("stopped", "manually_stopped")) { return $true }
-        Start-Sleep -Milliseconds 200
-    }
-    return $false
-}
-
-function Restart-Profile([string]$Id) {
-    Invoke-ProfileControl $Id "stop"
-    if (-not (Wait-ProfileState $Id $false)) { throw "Profile '$Id' did not stop." }
-    Invoke-ProfileControl $Id "start"
-    if (-not (Wait-ProfileState $Id $true)) { throw "Profile '$Id' did not start." }
-}
-
-function Recover-All {
-    Stop-Gateway
-    Start-Gateway
-    $status = Get-Status
-    $failures = @()
-    foreach ($profile in @($status.profiles)) {
-        if (-not $profile.current_user -or $profile.supervisor -eq "unavailable") { continue }
-        try { Restart-Profile ([string]$profile.id) } catch { $failures += $_.Exception.Message }
-    }
-    if ($failures.Count) {
-        throw "Gateway was repaired, but profile repair failed: $($failures -join '; ')"
     }
 }
 
@@ -828,44 +718,6 @@ function Close-HostSession {
         }
     }
     return [ordered]@{ ok = $false; state = "accepted"; reason = "result_timeout" }
-}
-
-function Invoke-ProfileControl([string]$Id, [string]$Mode) {
-    $profile = Resolve-Profile $Id
-    if ($Mode -ne "stop" -and
-        $null -ne $profile.entry.PSObject.Properties["enabled"] -and
-        -not [bool]$profile.entry.enabled) {
-        throw "Profile '$Id' is disabled. Enable it in MoonWaker Host Configurator first."
-    }
-    if (-not (Test-CurrentProfileOwner $profile.entry)) {
-        # A legacy Host Control may already have started this profile under the
-        # wrong account. Let that same account stop its own accidental process,
-        # but never let it start or restart another user's profile.
-        $stateOwner = ""
-        try {
-            $stateOwner = [string](Get-Content -LiteralPath (Join-Path $profile.root "profile-bridge-state.json") `
-                -Raw | ConvertFrom-Json).owner
-        } catch {}
-        $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-        if ($Mode -ne "stop" -or -not $stateOwner.Equals($currentUser, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Profile '$Id' belongs to $([string]$profile.entry.owner). Sign in to that Windows account to control its Bridge."
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($profile.root)) { throw "This profile must be controlled from its Windows account." }
-    $currentProfileRoot = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles"))
-    $resolvedProfileRoot = [IO.Path]::GetFullPath($profile.root)
-    if (-not $resolvedProfileRoot.StartsWith($currentProfileRoot + [IO.Path]::DirectorySeparatorChar,
-        [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Sign in to the Windows account that owns profile '$Id' to control its Bridge."
-    }
-    $scriptName = if ($Mode -eq "start") {
-        "Start-MoonWakerProfileBridge.ps1"
-    } else {
-        "Stop-MoonWakerProfileBridge.ps1"
-    }
-    $script = Join-Path $profile.root $scriptName
-    if (-not (Test-Path -LiteralPath $script)) { throw "Profile Bridge controller is not installed for '$Id'." }
-    & $script -ProfileRoot $profile.root
 }
 
 function Clear-DiscordData([string]$Id) {
@@ -1046,7 +898,7 @@ function Set-PlayniteConnection([string]$Id, [bool]$Enabled, [string]$Directory 
                 $config | Add-Member -NotePropertyName $setting.Key -NotePropertyValue $setting.Value
             } else { $config.($setting.Key) = $setting.Value }
         }
-        $patch = Join-Path $providerDirectory "Install-WakePlayConnectorPatch.ps1"
+        $patch = Join-Path (Get-InstallRoot) "bridge-source\playnite\Install-WakePlayConnectorPatch.ps1"
         if (-not (Test-Path -LiteralPath $patch -PathType Leaf)) {
             throw "The installed Playnite connector patch is missing."
         }
@@ -1066,7 +918,6 @@ function Set-PlayniteConnection([string]$Id, [bool]$Enabled, [string]$Directory 
         $config | ConvertTo-Json -Depth 20 |
             Set-Content -LiteralPath $configPath -Encoding UTF8
     }
-    Restart-Profile $Id
     return [ordered]@{ ok = $true; profile_id = $Id; connected = $Enabled }
 }
 
@@ -1077,18 +928,6 @@ try {
         "StopGateway" { Stop-Gateway; [ordered]@{ ok = $true } }
         "RestartGateway" { Stop-Gateway; Start-Gateway; [ordered]@{ ok = $true } }
         "PairGateway" { [ordered]@{ ok = $true; pairing_code = Set-PairingCode; expires_minutes = 10 } }
-        "StartProfile" {
-            Invoke-ProfileControl $ProfileId "start"
-            if (-not (Wait-ProfileState $ProfileId $true)) { throw "Profile '$ProfileId' did not start." }
-            [ordered]@{ ok = $true }
-        }
-        "StopProfile" {
-            Invoke-ProfileControl $ProfileId "stop"
-            if (-not (Wait-ProfileState $ProfileId $false)) { throw "Profile '$ProfileId' did not stop." }
-            [ordered]@{ ok = $true }
-        }
-        "RestartProfile" { Restart-Profile $ProfileId; [ordered]@{ ok = $true } }
-        "RecoverAll" { Recover-All; [ordered]@{ ok = $true } }
         "ConfigureSteamWebApi" { Set-SteamWebApiKey -Id $ProfileId `
             -FromStdin:$SteamWebApiKeyFromStdin `
             -ProtectedFromEnvironment:$SteamWebApiKeyProtectedFromEnvironment }

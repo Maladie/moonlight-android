@@ -5,11 +5,13 @@ Epic/Legendary and Playnite providers. It also uses the existing `launcher`
 role exposed by the installed Sunshine Playnite Connector for Playnite IPC and
 never automates the Playnite UI with keystrokes.
 
-New profiles install the service in `game-provider` and register the Gateway key
-`game_provider_bridge`. The old `playnite` directory, `playnite_bridge` key,
-legacy API paths and `Start/Stop-PlayniteBridge.ps1` names remain compatibility
-aliases for one migration cycle. They all start or address
-`GameProviderBridge.py`.
+It is the profile's **Agent**: Host Control's tray runs it from the installation
+(`bridge-source\playnite`) with `--config <install>\profiles\<id>\game-provider\config.json`;
+that profile directory holds only its configuration, caches, journal, logs and DPAPI
+secrets. The Gateway key is `game_provider_bridge`. `AgentGuard.py` makes the Agent
+exit with code 78 when its profile authority is lost (including a child profile), with
+code 74 when the registry stays unreadable, with code 75 when another Agent already
+serves its port, and with code 70 when its HTTP loop or state lock hangs; see `host-services/README.md` ("Profile processes").
 
 The Bridge exposes one provider-neutral library, current-game state, readiness
 and lifecycle events to the authenticated host Gateway. Steam, Epic/Legendary

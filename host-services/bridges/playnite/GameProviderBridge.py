@@ -16,6 +16,7 @@ import ntpath
 import os
 import queue
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -35,6 +36,10 @@ from GameOperations import (
 )
 from OperationJournal import ACTIVE_STATES, OperationJournal
 from ControlEffectFence import ControlEffectFence
+from AgentGuard import (
+    AUTHORIZED, PORT_IN_USE_EXIT_CODE, AuthorityMonitor, Watchdog, authority_exit,
+    current_user_sid, lock_probe, profile_authority, start_guard,
+)
 
 
 PLAYNITE_ID_PATTERN = re.compile(
@@ -6011,12 +6016,24 @@ class GameProviderHandler(BaseHTTPRequestHandler):
 
 
 class GameProviderServer(ThreadingHTTPServer):
+    # One Agent per port: no address reuse, and on Windows an exclusive bind, so a second
+    # Agent of the same profile cannot share or take over a port that is already served.
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = False
 
-    def __init__(self, address: tuple[str, int], state: BridgeState) -> None:
+    def __init__(self, address: tuple[str, int], state: BridgeState | None) -> None:
         super().__init__(address, GameProviderHandler)
         self.state = state
+        self.heartbeat = time.monotonic()
+
+    def server_bind(self) -> None:
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+    def service_actions(self) -> None:
+        # serve_forever calls this every poll_interval; the Agent watchdog reads it.
+        self.heartbeat = time.monotonic()
 
 
 def ensure_playnite_desktop(desktop_executable: str) -> None:
@@ -6041,20 +6058,43 @@ def ensure_playnite_desktop(desktop_executable: str) -> None:
         creationflags=subprocess.CREATE_NO_WINDOW)
 
 
+def exit_agent(code: int, event: str, reason: str) -> None:
+    """End the Agent at once; Host Control's tray decides whether it starts again."""
+    DIAGNOSTICS.record(event, level="ERROR", reason=reason)
+    closer = threading.Thread(target=DIAGNOSTICS.close, daemon=True)
+    closer.start()
+    closer.join(2.0)
+    os._exit(code)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="config.json")
+    parser.add_argument("--config", required=True)
     args = parser.parse_args()
+    # The code runs from the installation; the profile directory holds only data:
+    # <install>\profiles\<id>\game-provider\config.json.
     config_path = Path(args.config).resolve()
+    profile_root = config_path.parent.parent
+    install_root = profile_root.parent.parent
     DIAGNOSTICS.start(config_path.parent / "logs")
+    user_sid = current_user_sid()
+    authority = AuthorityMonitor(
+        lambda: profile_authority(install_root, profile_root, user_sid))
+    initial_authority = authority.wait()
+    if initial_authority != AUTHORIZED:
+        exit_agent(*authority_exit(initial_authority))
     config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     listen_host = str(config.get("listen_host", "127.0.0.1"))
     if listen_host not in {"127.0.0.1", "localhost"}:
         raise ValueError("Game Provider Bridge must remain on loopback.")
+    # Bind before any startup effect (journal, Playnite, pipe, workers): a second Agent of
+    # this profile ends here without touching anything.
+    try:
+        server = GameProviderServer((listen_host, int(config.get("listen_port", 8780))), None)
+    except OSError as error:
+        exit_agent(PORT_IN_USE_EXIT_CODE, "agent.port-in-use", str(error))
     expected_display = str(config.get("streamed_display", "")).strip()
     journal = OperationJournal(config_path.with_name("operations.sqlite3"))
-    profile_root = config_path.parent.parent
-    install_root = profile_root.parent.parent
     provider_artwork_cache = profile_root / "cache" / "provider-artwork"
     legendary_path = str(config.get("legendary_path", "")).strip()
     steam_provider = SteamProvider(
@@ -6073,7 +6113,7 @@ def main() -> None:
             artwork_cache_path=provider_artwork_cache))
     audit_path = config_path.with_name("playnite-operation-audit.jsonl")
     state = BridgeState(expected_display, config_path.with_name("library-cache.json"),
-                        config_path.parent.parent / "moonwaker-version.json",
+                        install_root / "version.json",
                         active_game_path=config_path.with_name("active-game.json"),
                         game_operations=game_operations,
                         operation_audit=lambda event, payload: append_operation_audit(
@@ -6110,7 +6150,11 @@ def main() -> None:
     pipe = WindowsPipeClient(state) if playnite_enabled else None
     if pipe is not None:
         threading.Thread(target=pipe.run, name="PlaynitePipe", daemon=True).start()
-    server = GameProviderServer((listen_host, int(config.get("listen_port", 8780))), state)
+    server.state = state
+    start_guard(authority, Watchdog({
+        "http_server": lambda: time.monotonic() - server.heartbeat < 10.0,
+        "state_lock": lock_probe(state.lock),
+    }), exit_agent)
     print(f"Game Provider Bridge listening on http://{listen_host}:{server.server_port}", flush=True)
     try:
         server.serve_forever(poll_interval=0.25)

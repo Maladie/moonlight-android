@@ -166,6 +166,522 @@ namespace MoonWaker.HostControl
         }
     }
 
+    // Picks the one standard profile of a Windows account (the Configurator allows one per
+    // account; child profiles have no processes of their own). Authority itself is checked
+    // by the Agent, which is the only owner of that decision.
+    internal static class AgentProfileSelector
+    {
+        internal static string Select(Dictionary<string, object> registry, string sid)
+        {
+            object value;
+            Dictionary<string, object> profiles = registry != null &&
+                registry.TryGetValue("profiles", out value) ? value as Dictionary<string, object> : null;
+            if (profiles == null || String.IsNullOrWhiteSpace(sid)) return null;
+            string found = null;
+            foreach (KeyValuePair<string, object> item in profiles)
+            {
+                Dictionary<string, object> entry = item.Value as Dictionary<string, object>;
+                if (entry == null || String.Equals(Text(entry, "kind"), "child",
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !String.Equals(Text(entry, "windows_account_sid"), sid,
+                        StringComparison.OrdinalIgnoreCase)) continue;
+                if (found != null) return null;
+                found = item.Key;
+            }
+            return found != null && System.Text.RegularExpressions.Regex.IsMatch(
+                found, "^[A-Za-z0-9._-]{1,64}$") ? found : null;
+        }
+
+        internal static string Text(Dictionary<string, object> entry, string key)
+        {
+            object value;
+            return entry.TryGetValue(key, out value) && value != null ? value.ToString() : "";
+        }
+    }
+
+    // Restart decision of one hosted child: backoff 2 s doubling to 30 s, reset after a
+    // stable run; after the Agent's authority-lost exit no restart until the profile's
+    // registry entry changes.
+    internal sealed class ChildRestartPolicy
+    {
+        internal const int AuthorityLostExitCode = 78;
+        internal static readonly TimeSpan StableRun = TimeSpan.FromSeconds(60);
+        private int failures;
+        private string blockedStamp;
+
+        internal bool Blocked { get { return blockedStamp != null; } }
+
+        internal TimeSpan OnExit(int exitCode, TimeSpan ranFor, string registryStamp)
+        {
+            if (exitCode == AuthorityLostExitCode)
+            {
+                blockedStamp = registryStamp ?? "";
+                failures = 0;
+                return TimeSpan.Zero;
+            }
+            failures = ranFor >= StableRun ? 1 : failures + 1;
+            return Delay(failures);
+        }
+
+        internal bool MayStart(string registryStamp)
+        {
+            if (blockedStamp == null) return true;
+            if (String.Equals(blockedStamp, registryStamp, StringComparison.Ordinal)) return false;
+            Reset();
+            return true;
+        }
+
+        internal void Reset()
+        {
+            failures = 0;
+            blockedStamp = null;
+        }
+
+        internal static TimeSpan Delay(int failures)
+        {
+            if (failures < 1) return TimeSpan.Zero;
+            return TimeSpan.FromSeconds(Math.Min(30, 2 << Math.Min(failures - 1, 4)));
+        }
+    }
+
+    // Children are assigned to a job that kills them when the tray's handle closes (the tray
+    // exits, crashes or is killed). A child is created suspended and runs only once it is in
+    // the job, so no crash of the tray can leave an orphan. Their own children break away
+    // silently, so games, Steam or Playnite started by the Agent never die with the tray.
+    internal sealed class ChildProcessJob : IDisposable
+    {
+        private const int ExtendedLimitInformation = 9;
+        private const uint KillOnJobClose = 0x2000;
+        private const uint SilentBreakawayOk = 0x1000;
+        private const uint CreateSuspended = 0x4;
+        private const uint CreateNoWindow = 0x08000000;
+        private IntPtr handle;
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct StartupInfo
+        {
+            internal int Size;
+            internal string Reserved, Desktop, Title;
+            internal int X, Y, XSize, YSize, XCountChars, YCountChars, FillAttribute, Flags;
+            internal short ShowWindow, Reserved2Size;
+            internal IntPtr Reserved2, StandardInput, StandardOutput, StandardError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ProcessInformation
+        {
+            internal IntPtr Process, Thread;
+            internal int ProcessId, ThreadId;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode,
+            EntryPoint = "CreateProcessW")]
+        private static extern bool CreateProcess(string application, StringBuilder commandLine,
+            IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint flags,
+            IntPtr environment, string directory, ref StartupInfo startup,
+            out ProcessInformation information);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint ResumeThread(IntPtr thread);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BasicLimitInformation
+        {
+            internal long PerProcessUserTimeLimit;
+            internal long PerJobUserTimeLimit;
+            internal uint LimitFlags;
+            internal UIntPtr MinimumWorkingSetSize;
+            internal UIntPtr MaximumWorkingSetSize;
+            internal uint ActiveProcessLimit;
+            internal UIntPtr Affinity;
+            internal uint PriorityClass;
+            internal uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IoCounters
+        {
+            internal ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+            internal ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ExtendedLimitInformationData
+        {
+            internal BasicLimitInformation BasicLimitInformation;
+            internal IoCounters IoInfo;
+            internal UIntPtr ProcessMemoryLimit;
+            internal UIntPtr JobMemoryLimit;
+            internal UIntPtr PeakProcessMemoryUsed;
+            internal UIntPtr PeakJobMemoryUsed;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetInformationJobObject(IntPtr job, int infoClass,
+            ref ExtendedLimitInformationData info, int length);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        internal ChildProcessJob()
+        {
+            handle = CreateJobObject(IntPtr.Zero, null);
+            if (handle == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
+            ExtendedLimitInformationData info = new ExtendedLimitInformationData();
+            info.BasicLimitInformation.LimitFlags = KillOnJobClose | SilentBreakawayOk;
+            if (!SetInformationJobObject(handle, ExtendedLimitInformation, ref info,
+                Marshal.SizeOf(typeof(ExtendedLimitInformationData))))
+            {
+                int error = Marshal.GetLastWin32Error();
+                CloseHandle(handle);
+                handle = IntPtr.Zero;
+                throw new System.ComponentModel.Win32Exception(error);
+            }
+        }
+
+        // Command line: "<FileName>" <Arguments>, hidden, in WorkingDirectory.
+        internal Process Start(ProcessStartInfo info)
+        {
+            StartupInfo startup = new StartupInfo();
+            startup.Size = Marshal.SizeOf(typeof(StartupInfo));
+            startup.Flags = 0x1; // STARTF_USESHOWWINDOW with SW_HIDE
+            ProcessInformation created;
+            if (!CreateProcess(info.FileName, new StringBuilder("\"" + info.FileName + "\" " + info.Arguments),
+                    IntPtr.Zero, IntPtr.Zero, false, CreateSuspended | CreateNoWindow, IntPtr.Zero,
+                    String.IsNullOrEmpty(info.WorkingDirectory) ? null : info.WorkingDirectory,
+                    ref startup, out created))
+                throw new System.ComponentModel.Win32Exception();
+            Process process = null;
+            bool running = false;
+            try
+            {
+                if (!AssignProcessToJobObject(handle, created.Process))
+                    throw new System.ComponentModel.Win32Exception();
+                // Our handle pins the id; the Process object opens its own before ours closes.
+                process = Process.GetProcessById(created.ProcessId);
+                GC.KeepAlive(process.Handle);
+                if (ResumeThread(created.Thread) == UInt32.MaxValue)
+                    throw new System.ComponentModel.Win32Exception();
+                running = true;
+                return process;
+            }
+            finally
+            {
+                if (!running)
+                {
+                    TerminateProcess(created.Process, 1);
+                    if (process != null) process.Dispose();
+                }
+                CloseHandle(created.Thread);
+                CloseHandle(created.Process);
+            }
+        }
+
+        public void Dispose()
+        {
+            IntPtr current = Interlocked.Exchange(ref handle, IntPtr.Zero);
+            if (current != IntPtr.Zero) CloseHandle(current);
+        }
+    }
+
+    // Hosts the processes of the current Windows account's profile: the Agent
+    // (GameProviderBridge.py under pythonw) and, while the Agent runs and Discord is
+    // configured, Discord Bridge. Code runs from the installation; the profile directory holds
+    // only data and configuration. A tray with an elevated token hosts nothing: profile
+    // processes run only with the account's standard token.
+    internal sealed class ProfileProcessHost : IDisposable
+    {
+        internal const string ElevatedStatus = "TRAY JAKO ADMIN";
+
+        private sealed class Child
+        {
+            internal readonly ChildRestartPolicy Policy = new ChildRestartPolicy();
+            internal Process Process;
+            // Killed and not yet exited: nothing new starts until it is gone.
+            internal bool Stopping;
+            internal DateTime StartedUtc;
+            internal DateTime NotBeforeUtc;
+            internal bool StartFailed;
+
+            internal bool Running
+            {
+                get { return Process != null && !Stopping && !Process.HasExited; }
+            }
+        }
+
+        private readonly string installRoot;
+        private readonly string sid;
+        private readonly bool elevated;
+        private readonly Func<string, ProcessStartInfo> agentStartInfo;
+        private readonly Func<string, ProcessStartInfo> discordStartInfo;
+        private readonly ChildProcessJob job = new ChildProcessJob();
+        private readonly Child agent = new Child();
+        private readonly Child discord = new Child();
+        private readonly JavaScriptSerializer json = new JavaScriptSerializer();
+        private readonly object gate = new object();
+        private System.Threading.Timer timer;
+        private int restartRequested;
+        private string profileId;
+        private bool disposed;
+
+        internal ProfileProcessHost(string installRoot)
+            : this(installRoot, CurrentSid(), TokenElevated(), null, null)
+        {
+            timer = new System.Threading.Timer(delegate { Tick(); }, null, 0, 1000);
+        }
+
+        // Without a timer: the caller drives Tick (headless tests).
+        internal ProfileProcessHost(string installRoot, string sid, bool elevated,
+            Func<string, ProcessStartInfo> agentStartInfo, Func<string, ProcessStartInfo> discordStartInfo)
+        {
+            this.installRoot = Path.GetFullPath(installRoot).TrimEnd('\\');
+            this.sid = sid ?? "";
+            this.elevated = elevated;
+            this.agentStartInfo = agentStartInfo ?? AgentStartInfo;
+            this.discordStartInfo = discordStartInfo ?? DiscordStartInfo;
+        }
+
+        internal string ProfileId { get { lock (gate) return profileId; } }
+
+        // A tray started at sign-in stays only for an account that owns a profile.
+        internal static bool AccountHasProfile(string installRoot)
+        {
+            Dictionary<string, object> registry = ReadRegistry(Path.Combine(installRoot,
+                "gateway", "gateway.json"), new JavaScriptSerializer());
+            return registry == null || AgentProfileSelector.Select(registry, CurrentSid()) != null;
+        }
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool GetTokenInformation(IntPtr token, int informationClass,
+            out int information, int length, out int returnLength);
+
+        internal static bool TokenElevated()
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                int elevation, size;
+                if (!GetTokenInformation(identity.Token, 20 /* TokenElevation */, out elevation,
+                        sizeof(int), out size))
+                    throw new System.ComponentModel.Win32Exception();
+                return elevation != 0;
+            }
+        }
+
+        private static string CurrentSid()
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                return identity.User == null ? "" : identity.User.Value;
+        }
+
+        // Never waits on the UI thread: the next tick (within 1 s) stops the children and
+        // starts them again once they are gone.
+        internal void RestartAll()
+        {
+            Interlocked.Exchange(ref restartRequested, 1);
+        }
+
+        // Null while the child runs (its /health or /observation then decides the label).
+        internal string Describe(string id, bool discordChild)
+        {
+            lock (gate)
+            {
+                if (disposed || id == null || id != profileId) return null;
+                if (elevated) return ElevatedStatus;
+                Child child = discordChild ? discord : agent;
+                if (agent.Policy.Blocked) return "BRAK UPRAWNIEŃ";
+                if (child.Process != null) return child.Stopping ? "ZATRZYMYWANIE" : null;
+                if (child.StartFailed) return "BŁĄD STARTU";
+                int seconds = (int)Math.Ceiling((child.NotBeforeUtc - DateTime.UtcNow).TotalSeconds);
+                return seconds > 0 ? "RESTART ZA " + seconds + " s" : null;
+            }
+        }
+
+        internal int ProcessId(bool discordChild)
+        {
+            lock (gate)
+            {
+                Child child = discordChild ? discord : agent;
+                return child.Process == null ? 0 : child.Process.Id;
+            }
+        }
+
+        internal void Tick()
+        {
+            if (!Monitor.TryEnter(gate)) return;
+            try
+            {
+                if (disposed) return;
+                Dictionary<string, object> registry = ReadRegistry(Path.Combine(installRoot,
+                    "gateway", "gateway.json"), json);
+                if (registry == null)
+                {
+                    Reap(agent, "unreadable");
+                    Reap(discord, "unreadable");
+                    return;
+                }
+                string id = AgentProfileSelector.Select(registry, sid);
+                Dictionary<string, object> entry = id == null ? null :
+                    ((Dictionary<string, object>)registry["profiles"])[id] as Dictionary<string, object>;
+                string stamp = entry == null ? "" : json.Serialize(entry);
+                Reap(agent, stamp);
+                Reap(discord, stamp);
+                if (Interlocked.Exchange(ref restartRequested, 0) == 1 || id != profileId)
+                {
+                    foreach (Child child in new[] { agent, discord })
+                    {
+                        Stop(child);
+                        child.Policy.Reset();
+                        child.NotBeforeUtc = DateTime.MinValue;
+                    }
+                    profileId = id;
+                }
+                string root = id == null ? null : Path.Combine(installRoot, "profiles", id);
+                bool agentWanted = !elevated && id != null && agent.Policy.MayStart(stamp);
+                if (agentWanted) EnsureRunning(agent, stamp, root, agentStartInfo);
+                else Stop(agent);
+                // Discord serves the profile only beside a running Agent.
+                if (agentWanted && agent.Running && DiscordConfigured(entry, root))
+                    EnsureRunning(discord, stamp, root, discordStartInfo);
+                else Stop(discord);
+            }
+            catch { }
+            finally { Monitor.Exit(gate); }
+        }
+
+        private static void Reap(Child child, string stamp)
+        {
+            if (child.Process == null || !child.Process.HasExited) return;
+            if (!child.Stopping)
+            {
+                TimeSpan delay = child.Policy.OnExit(child.Process.ExitCode,
+                    DateTime.UtcNow - child.StartedUtc, stamp);
+                child.NotBeforeUtc = DateTime.UtcNow + delay;
+            }
+            child.Process.Dispose();
+            child.Process = null;
+            child.Stopping = false;
+        }
+
+        private void EnsureRunning(Child child, string stamp, string root,
+            Func<string, ProcessStartInfo> startInfo)
+        {
+            if (child.Process != null || DateTime.UtcNow < child.NotBeforeUtc) return;
+            try
+            {
+                child.StartedUtc = DateTime.UtcNow;
+                child.Process = job.Start(startInfo(root));
+                child.StartFailed = false;
+            }
+            catch
+            {
+                child.StartFailed = true;
+                child.NotBeforeUtc = DateTime.UtcNow + child.Policy.OnExit(-1, TimeSpan.Zero, stamp);
+            }
+        }
+
+        // Kills without waiting; Reap forgets the process once it has really exited.
+        private static void Stop(Child child)
+        {
+            if (child.Process == null || child.Stopping) return;
+            child.Stopping = true;
+            try { child.Process.Kill(); } catch { }
+        }
+
+        private ProcessStartInfo AgentStartInfo(string root)
+        {
+            string data = Path.Combine(root, "game-provider");
+            string script = Path.Combine(installRoot, "bridge-source", "playnite", "GameProviderBridge.py");
+            return HiddenStartInfo(GatewayPythonw(), Quote(script) + " --config " +
+                Quote(Path.Combine(data, "config.json")), data);
+        }
+
+        private ProcessStartInfo DiscordStartInfo(string root)
+        {
+            string data = Path.Combine(root, "discord");
+            string script = Path.Combine(installRoot, "bridge-source", "discord", "DiscordBridge.ps1");
+            string powershell = Path.Combine(Environment.SystemDirectory,
+                "WindowsPowerShell", "v1.0", "powershell.exe");
+            return HiddenStartInfo(powershell, "-NoProfile -NonInteractive -WindowStyle Hidden " +
+                "-ExecutionPolicy Bypass -File " + Quote(script) + " -ProfileDirectory " + Quote(data), data);
+        }
+
+        // ChildProcessJob starts it hidden as "<file>" <arguments>; the updater matches that shape.
+        private static ProcessStartInfo HiddenStartInfo(string file, string arguments, string directory)
+        {
+            ProcessStartInfo info = new ProcessStartInfo(file, arguments);
+            info.WorkingDirectory = directory;
+            return info;
+        }
+
+        private static bool DiscordConfigured(Dictionary<string, object> entry, string root)
+        {
+            return entry != null &&
+                !String.IsNullOrWhiteSpace(AgentProfileSelector.Text(entry, "discord_bridge")) &&
+                File.Exists(Path.Combine(root, "discord", "discord_bridge_config.json")) &&
+                File.Exists(Path.Combine(root, "discord", "client_secret.dpapi"));
+        }
+
+        // The one Python the installation already trusts: the Gateway service's --python.
+        private static string GatewayPythonw()
+        {
+            using (Microsoft.Win32.RegistryKey service = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Services\MoonWakerGateway", false))
+            {
+                string image = service == null ? "" : Convert.ToString(service.GetValue("ImagePath", ""));
+                string python = PythonFromServiceImage(image);
+                if (python == null) throw new FileNotFoundException("Usługa Gateway nie ma ścieżki Pythona.");
+                string pythonw = Path.Combine(Path.GetDirectoryName(python), "pythonw.exe");
+                if (!File.Exists(pythonw)) throw new FileNotFoundException("Brak pythonw.exe.", pythonw);
+                return pythonw;
+            }
+        }
+
+        internal static string PythonFromServiceImage(string image)
+        {
+            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(
+                image ?? "", "(?:^|\\s)--python\\s+(?:\"(?<quoted>[^\"]+)\"|(?<plain>\\S+))(?=\\s|$)");
+            if (!match.Success) return null;
+            string value = match.Groups["quoted"].Success ? match.Groups["quoted"].Value
+                : match.Groups["plain"].Value;
+            return Path.IsPathRooted(value) ? Path.GetFullPath(value) : null;
+        }
+
+        // Delete sharing: this periodic reader must not block the registry's atomic replacement.
+        private static Dictionary<string, object> ReadRegistry(string path, JavaScriptSerializer json)
+        {
+            try
+            {
+                using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
+                    return json.Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
+            }
+            catch { return null; }
+        }
+
+        private static string Quote(string value) { return "\"" + value.Replace("\"", "\\\"") + "\""; }
+
+        public void Dispose()
+        {
+            lock (gate)
+            {
+                if (disposed) return;
+                disposed = true;
+            }
+            if (timer != null) timer.Dispose();
+            job.Dispose();
+        }
+    }
+
     internal static class Program
     {
         [STAThread]
@@ -175,6 +691,7 @@ namespace MoonWaker.HostControl
             using (HostControlInstance instance = HostControlInstance.CreateForCurrentUser())
             {
                 if (!instance.ShouldRun(startInTray)) return;
+                if (startInTray && !ProfileProcessHost.AccountHasProfile(ControlForm.InstallRoot)) return;
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new ControlForm(startInTray, instance.ActivationEvent));
@@ -210,8 +727,8 @@ namespace MoonWaker.HostControl
         private readonly WaitHandle activationEvent;
         private HostControlActivationListener activationListener;
         private readonly bool startInTray;
+        private readonly ProfileProcessHost processHost;
         private bool refreshing;
-        private bool exiting;
         private bool sessionClosePending;
         private bool legendaryInstalled;
         private readonly string hostVersion;
@@ -220,10 +737,16 @@ namespace MoonWaker.HostControl
         private const uint StreamHotkeyModifiers = 0x0001 | 0x0002 | 0x0004 | 0x4000;
         private const uint StreamHotkeyKey = 0x23;
 
+        internal static string InstallRoot
+        {
+            get { return Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..")); }
+        }
+
         public ControlForm(bool startInTray, WaitHandle activationEvent)
         {
             this.startInTray = startInTray;
             this.activationEvent = activationEvent;
+            processHost = new ProfileProcessHost(InstallRoot);
             script = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Invoke-MoonWakerHostControl.ps1");
             hostVersion = ReadHostVersion();
             Text = "MoonWaker Host Control " + hostVersion;
@@ -262,8 +785,6 @@ namespace MoonWaker.HostControl
             Button pair = AddActionButton(gatewayPanel, "Sparuj TV", 802, 27, delegate { PairGateway(); }, 142);
             pair.BackColor = accent;
             pair.FlatAppearance.BorderSize = 0;
-            AddActionButton(gatewayPanel, "Napraw wszystko", 430, 74,
-                delegate { RunAction("RecoverAll", null); }, 160);
             AddActionButton(gatewayPanel, "Vibepollo…", 598, 74,
                 delegate { LaunchConfigurator("vibepollo", null); }, 150);
             AddActionButton(gatewayPanel, "Eksportuj diagnostykę", 756, 74,
@@ -313,7 +834,7 @@ namespace MoonWaker.HostControl
             Label profileTitle = MakeLabel("Profile i Bridge'e", 16F, FontStyle.Bold, Color.White);
             profileTitle.SetBounds(24, 16, 400, 32);
             profilePanel.Controls.Add(profileTitle);
-            Label profileHint = MakeLabel("Jeden nadzorca Bridge na każde konto Windows", 9F, FontStyle.Regular, muted);
+            Label profileHint = MakeLabel("Agent profilu działa w trayu konta Windows, które jest jego właścicielem", 9F, FontStyle.Regular, muted);
             profileHint.SetBounds(26, 48, 500, 24);
             profilePanel.Controls.Add(profileHint);
             profiles.SetBounds(24, 82, 924, 136);
@@ -324,11 +845,10 @@ namespace MoonWaker.HostControl
             profiles.BackColor = Color.FromArgb(20, 24, 33);
             profiles.ForeColor = Color.White;
             profiles.BorderStyle = BorderStyle.None;
-            profiles.Columns.Add("Profil", 204);
-            profiles.Columns.Add("Użytkownik", 216);
-            profiles.Columns.Add("Nadzorca / PID", 126);
-            profiles.Columns.Add("Discord / PID", 116);
-            profiles.Columns.Add("Provider / PID", 116);
+            profiles.Columns.Add("Profil", 230);
+            profiles.Columns.Add("Użytkownik", 250);
+            profiles.Columns.Add("Discord", 130);
+            profiles.Columns.Add("Agent", 130);
             profiles.Columns.Add("PIN aplikacji", 94);
             profiles.Columns.Add("Logowanie", 88);
             profiles.SelectedIndexChanged += delegate { UpdateConnectionControls(); };
@@ -349,12 +869,8 @@ namespace MoonWaker.HostControl
             remove.ForeColor = Color.FromArgb(255, 180, 180);
             AddActionButton(profilePanel, "Profile dzieci", 749, 232,
                 delegate { LaunchSelectedConfigurator("children"); }, 160);
-            AddActionButton(profilePanel, "Uruchom Bridge", 24, 282,
-                delegate { RunProfileAction("StartProfile"); }, 140);
-            AddActionButton(profilePanel, "Zatrzymaj", 174, 282,
-                delegate { RunProfileAction("StopProfile"); }, 120);
-            AddActionButton(profilePanel, "Restart", 304, 282,
-                delegate { RunProfileAction("RestartProfile"); }, 120);
+            AddActionButton(profilePanel, "Napraw", 24, 282,
+                delegate { RepairProfile(); }, 140);
             integrationsButton = AddActionButton(profilePanel, "Integracje…", 434, 282,
                 delegate { ConfigureIntegrations(); }, 150);
             AddActionButton(profilePanel, "Usuń dane Discorda", 594, 282,
@@ -394,13 +910,6 @@ namespace MoonWaker.HostControl
             menu.Items.Add("Odśwież status", null, delegate { RefreshStatus(); });
             menu.Items.Add("Zamknij sesję  (Ctrl+Alt+Shift+End)", null,
                 delegate { CloseSession(); });
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Zakończ", null, delegate
-            {
-                exiting = true;
-                trayIcon.Visible = false;
-                Close();
-            });
             trayIcon.Icon = moonWakerIcon;
             trayIcon.Text = "MoonWaker Host Control";
             trayIcon.ContextMenuStrip = menu;
@@ -443,12 +952,14 @@ namespace MoonWaker.HostControl
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            if (!exiting && e.CloseReason == CloseReason.UserClosing)
+            // The tray hosts the profile's Agent, so a user close only hides it.
+            if (e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
                 HideToTray();
                 return;
             }
+            processHost.Dispose();
             if (activationListener != null)
             {
                 activationListener.Dispose();
@@ -650,9 +1161,8 @@ namespace MoonWaker.HostControl
                     row.Name = id;
                     row.Tag = profile;
                     row.SubItems.Add(GetText(profile, "owner", "—"));
-                    row.SubItems.Add(ProcessStatus(profile, "supervisor"));
-                    row.SubItems.Add(ProcessStatus(profile, "discord"));
-                    row.SubItems.Add(ProcessStatus(profile, "game_provider"));
+                    row.SubItems.Add(ProcessStatus(id, profile, "discord"));
+                    row.SubItems.Add(ProcessStatus(id, profile, "game_provider"));
                     row.SubItems.Add(GetBool(profile, "pin_required") ? "WŁ." : "WYŁ.");
                     row.SubItems.Add(RemoteSignInStatus(profile));
                     profiles.Items.Add(row);
@@ -668,17 +1178,16 @@ namespace MoonWaker.HostControl
         private static string StatusLabel(string value)
         {
             if (value == "running" || value == "online") return "ONLINE";
-            if (value == "manually_stopped") return "ZATRZYMANY RĘCZNIE";
             if (value == "disabled") return "WYŁ.";
             if (value == "unavailable") return "INNE KONTO";
             return "OFFLINE";
         }
 
-        private static string ProcessStatus(Dictionary<string, object> profile, string name)
+        // The tray's own process host first; a running child is then judged by its /health.
+        private string ProcessStatus(string id, Dictionary<string, object> profile, string name)
         {
-            string status = StatusLabel(GetText(profile, name, "stopped"));
-            string pid = GetText(profile, name + "_pid", "");
-            return String.IsNullOrWhiteSpace(pid) || pid == "0" ? status : status + "  #" + pid;
+            string hosted = processHost.Describe(id, name == "discord");
+            return hosted ?? StatusLabel(GetText(profile, name, "stopped"));
         }
 
         private static string RemoteSignInStatus(Dictionary<string, object> profile)
@@ -752,11 +1261,18 @@ namespace MoonWaker.HostControl
             }
         }
 
-        private void RunProfileAction(string action)
+        private void RepairProfile()
         {
             string id = SelectedProfileId();
             if (String.IsNullOrWhiteSpace(id)) { MessageBox.Show(this, "Wybierz profil.", "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            RunAction(action, id);
+            if (id != processHost.ProfileId)
+            {
+                MessageBox.Show(this, "Procesy tego profilu działają na jego koncie Windows. Zaloguj się na nie, aby je naprawić.",
+                    "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            processHost.RestartAll();
+            footer.Text = "Uruchamiam ponownie procesy profilu…";
         }
 
         private async void ConfigureSteamWebApi()
@@ -872,6 +1388,7 @@ namespace MoonWaker.HostControl
                         "ConnectPlaynite", id, null, dialog.SelectedPath);
                     if (!IsOk(result)) throw new InvalidOperationException(
                         GetText(result, "error", "Nie udało się połączyć Playnite."));
+                    processHost.RestartAll();
                     MessageBox.Show(this, "Playnite został połączony z profilem.",
                         "MoonWaker Host Control", MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
@@ -892,6 +1409,7 @@ namespace MoonWaker.HostControl
                 footer.Text = "Aktualizuję połączenie platformy…";
                 Dictionary<string, object> result = await RunControlAsync(action, profile);
                 if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error", "Operacja nie powiodła się."));
+                if (action == "DisconnectPlaynite") processHost.RestartAll();
                 MessageBox.Show(this, successMessage, "MoonWaker Host Control",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 RefreshStatus();
@@ -990,8 +1508,9 @@ namespace MoonWaker.HostControl
                         "ConfigureIntegrations", id, null, null, settings);
                     if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error",
                         "Nie udało się skonfigurować integracji."));
+                    processHost.RestartAll();
                     MessageBox.Show(this,
-                        "Integracje profilu zostały zapisane. Jeśli Discord wymaga autoryzacji OAuth, otwórz go i uruchom Bridge ponownie.",
+                        "Integracje profilu zostały zapisane. Jeśli Discord wymaga autoryzacji OAuth, otwórz go i użyj „Napraw”.",
                         "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
@@ -1147,7 +1666,6 @@ namespace MoonWaker.HostControl
                             action == "ConfigureIntegrations" ? 120000 :
                             action == "ConnectPlaynite" ? 90000 :
                             action == "ExportDiagnostics" ? 120000 :
-                            action == "RecoverAll" ? 90000 :
                             action == "CloseSession" ? 120000 :
                             action.EndsWith("Gateway", StringComparison.Ordinal) ? 60000 : 30000;
                         if (!process.WaitForExit(timeout))

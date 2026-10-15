@@ -2,8 +2,6 @@
 [CmdletBinding()]
 param(
     [string]$HostInstallScript = "",
-    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$InstallDirectory,
-    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$GatewayDirectory,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$ResultPath,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$ProtectedStagingDirectory,
     [string]$PrerequisiteScript = "",
@@ -49,8 +47,7 @@ try {
             -not (Test-Path -LiteralPath $HostInstallScript -PathType Leaf)) {
             throw "MoonWaker host install script is missing."
         }
-        $lines += & $HostInstallScript -InstallDirectory $InstallDirectory `
-            -GatewayDirectory $GatewayDirectory *>&1
+        $lines += & $HostInstallScript *>&1
     }
     $output = $lines | Out-String
     Set-Content -LiteralPath $ResultPath -Value $output -Encoding UTF8

@@ -28,14 +28,19 @@ The bridge uses Discord RPC over Windows named pipes:
   \\?\pipe\discord-ipc-0 ... discord-ipc-9
 #>
 
+# Code runs from the installation; the profile's discord directory holds only
+# configuration, DPAPI secrets, state and logs. Host Control's tray starts it.
+param([Parameter(Mandatory)][string]$ProfileDirectory)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ConfigPath = Join-Path $ScriptRoot "discord_bridge_config.json"
-$SecretPath = Join-Path $ScriptRoot "client_secret.dpapi"
-$TokenPath = Join-Path $ScriptRoot "oauth_token.dpapi"
-$LogDir = Join-Path $ScriptRoot "logs"
+$DataRoot = [IO.Path]::GetFullPath($ProfileDirectory)
+$ConfigPath = Join-Path $DataRoot "discord_bridge_config.json"
+$SecretPath = Join-Path $DataRoot "client_secret.dpapi"
+$TokenPath = Join-Path $DataRoot "oauth_token.dpapi"
+$LogDir = Join-Path $DataRoot "logs"
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 $LogPath = Join-Path $LogDir ("bridge_{0}.log" -f (Get-Date -Format "yyyyMMdd"))
@@ -50,7 +55,7 @@ $script:HealthRpcRetrySeconds = 10
 $script:RpcReadTimeoutMs = 18000
 
 # DISCORD_BRIDGE_ADVANCED_V1
-$StatePath = Join-Path $ScriptRoot "discord_remote_state.json"
+$StatePath = Join-Path $DataRoot "discord_remote_state.json"
 $script:SpeakingUsers = @{}
 $script:SpeakingChannelId = ""
 $script:CurrentUserId = ""
@@ -1039,27 +1044,13 @@ function Restart-VirtualHereClient {
 }
 
 function Start-DelayedBridgeRestart {
+    # Host Control's tray owns this process and starts it again after it exits.
     Write-BridgeLog "Repair: restart bridge requested."
-    $bridgeScript = Join-Path $ScriptRoot "DiscordBridge.ps1"
-    if (-not (Test-Path -LiteralPath $bridgeScript)) {
-        throw "Missing bridge script: $bridgeScript"
-    }
-
-    # Keep the replacement process in this same PowerShell child. Calling the
-    # start wrapper created a short-lived grandchild that could disappear when
-    # the original interactive session was disconnected.
-    $command = 'Start-Sleep -Seconds 3; & ''{0}''' -f $bridgeScript.Replace("'", "''")
-    Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList @(
-        "-NoProfile",
-        "-WindowStyle", "Hidden",
-        "-ExecutionPolicy", "Bypass",
-        "-Command", $command
-    )
     $script:Running = $false
 }
 
 function Export-BridgeDiagnostics {
-    $diagnosticsRoot = Join-Path $ScriptRoot "diagnostics"
+    $diagnosticsRoot = Join-Path $DataRoot "diagnostics"
     New-Item -ItemType Directory -Path $diagnosticsRoot -Force | Out-Null
     $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $staging = Join-Path $diagnosticsRoot "staging_$stamp"
@@ -2140,7 +2131,7 @@ function Write-HttpResponse {
 }
 
 # One instance per user/session.
-$mutexScope = $ScriptRoot.ToLowerInvariant() -replace '[^a-z0-9]', '_'
+$mutexScope = $DataRoot.ToLowerInvariant() -replace '[^a-z0-9]', '_'
 $mutexName = "Local\DiscordUnifiedRemoteRpcBridge_$mutexScope"
 $createdNew = $false
 $mutex = [System.Threading.Mutex]::new($true, $mutexName, [ref]$createdNew)

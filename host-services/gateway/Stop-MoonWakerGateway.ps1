@@ -16,15 +16,6 @@ function Get-ListeningOwnerPids([int]$Port) {
 }
 
 $GatewayDirectory = [IO.Path]::GetFullPath($GatewayDirectory)
-$gatewayDirectories = @($GatewayDirectory)
-foreach ($legacyDirectory in @("C:\Tools\WakePlayHost\gateway", "C:\Tools\WakePlayGateway")) {
-    if (-not $legacyDirectory.Equals($GatewayDirectory, [StringComparison]::OrdinalIgnoreCase) -and
-        (Test-Path -LiteralPath (Join-Path $legacyDirectory "gateway.json") -PathType Leaf)) {
-        $gatewayDirectories += $legacyDirectory
-        New-Item -ItemType File -Path (Join-Path $legacyDirectory "gateway-manually-stopped"),
-            (Join-Path $legacyDirectory "gateway-supervisor-stop") -Force | Out-Null
-    }
-}
 $service = Get-Service -Name "MoonWakerGateway" -ErrorAction SilentlyContinue
 if ($null -ne $service) {
     if ($service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
@@ -40,16 +31,14 @@ New-Item -ItemType File -Path (Join-Path $GatewayDirectory "gateway-supervisor-s
 $port = 8785
 try { $port = [int](Get-Content -LiteralPath (Join-Path $GatewayDirectory "gateway.json") -Raw | ConvertFrom-Json).listen_port } catch {}
 $runtimes = @()
-foreach ($directory in $gatewayDirectories) {
-    try {
-        $runtime = Get-Content -LiteralPath (Join-Path $directory "gateway-runtime.json") -Raw |
-            ConvertFrom-Json
-        $runtimes += [pscustomobject]@{
-            pid = [int]$runtime.pid
-            started_at = [int64]$runtime.started_at
-        }
-    } catch {}
-}
+try {
+    $runtime = Get-Content -LiteralPath (Join-Path $GatewayDirectory "gateway-runtime.json") -Raw |
+        ConvertFrom-Json
+    $runtimes += [pscustomobject]@{
+        pid = [int]$runtime.pid
+        started_at = [int64]$runtime.started_at
+    }
+} catch {}
 
 $owners = @(Get-ListeningOwnerPids $port)
 $stoppedOwnerPids = @()

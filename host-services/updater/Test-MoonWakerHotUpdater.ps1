@@ -86,7 +86,7 @@ try {
     [void]$pending.Add(@{ target = $target; backup = $backup; failed = $failed;
         root_acl = Get-AclBase64 $backup })
     $events = [Collections.ArrayList]::new()
-    Invoke-TransactionRecovery $pending @{ gateway_was_running = $false; tasks = @() } `
+    Invoke-TransactionRecovery $pending @{ gateway_was_running = $false; hosted = @() } `
         { [void]$events.Add("stop") } { param($plan) [void]$events.Add("start") } $false
     if (-not (Test-Path -LiteralPath (Join-Path $target "old.txt")) -or
         (Test-Path -LiteralPath $backup) -or ($events -join ",") -ne "stop,start") {
@@ -178,7 +178,7 @@ try {
     Import-ApplyFunction "Invoke-StopSequence"
     $events.Clear()
     try {
-        Invoke-StopSequence @{ gateway_was_running = $true; tasks = @() } `
+        Invoke-StopSequence @{ gateway_was_running = $true; hosted = @() } `
             { [void]$events.Add("gateway-stop") } `
             { [void]$events.Add("remainder"); throw "injected stop failure" } `
             { [void]$events.Add("restore") }
@@ -235,13 +235,59 @@ try {
             Start-Sleep -Milliseconds 50
         }
         $endpoint = @{ component = "discord"; scheme = "http"; port = $port;
-            path = "/health"; root = $temporary; script = "--dummy-http" }
+            path = "/health"; profile = "default" }
         if (Test-EndpointHealth $endpoint) { throw "Dummy TCP/HTTP listener passed runtime health." }
     } finally {
         if (-not $dummy.HasExited) { $dummy.Kill() }
         [void]$dummy.WaitForExit(5000); $dummy.Dispose()
     }
     Write-Host "PASS: dummy TCP listener fails the health contract"
+
+    # Only processes this installation's tray started from its code are stopped or counted.
+    Import-ApplyFunction "Get-GatewayPython"
+    Import-ApplyFunction "Get-HostedProcesses"
+    $script:HostRoot = "C:\MW Test"
+    $trayStart = [DateTime]::new(2026, 1, 1)
+    $powershell = Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"
+    function New-FakeProcess([int]$Id, [int]$Parent, [string]$Executable, [string]$Line,
+            [int]$AgeSeconds = 10) {
+        [pscustomobject]@{ ProcessId = $Id; ParentProcessId = $Parent; ExecutablePath = $Executable
+            CommandLine = $Line; CreationDate = $trayStart.AddSeconds($AgeSeconds) }
+    }
+    function Get-AgentLine([string]$Python = "C:\Python312\pythonw.exe",
+            [string]$Root = "C:\MW Test", [string]$Profile = "default") {
+        "`"$Python`" `"$Root\bridge-source\playnite\GameProviderBridge.py`" --config " +
+            "`"C:\MW Test\profiles\$Profile\game-provider\config.json`""
+    }
+    $discordLine = "`"$powershell`" -NoProfile -NonInteractive -WindowStyle Hidden " +
+        "-ExecutionPolicy Bypass -File `"C:\MW Test\bridge-source\discord\DiscordBridge.ps1`" " +
+        "-ProfileDirectory `"C:\MW Test\profiles\default\discord`""
+    $script:fakeProcesses = @(
+        (New-FakeProcess 10 1 "C:\MW Test\control\MoonWakerHostControl.exe" "tray" 0),
+        (New-FakeProcess 11 10 "C:\Python312\pythonw.exe" (Get-AgentLine)),
+        (New-FakeProcess 12 10 $powershell $discordLine),
+        (New-FakeProcess 20 1 "C:\Windows\explorer.exe" "explorer" 0),
+        (New-FakeProcess 13 20 "C:\Python312\pythonw.exe" (Get-AgentLine)),
+        (New-FakeProcess 14 10 "C:\Other\pythonw.exe" (Get-AgentLine "C:\Other\pythonw.exe")),
+        (New-FakeProcess 15 10 "C:\Python312\pythonw.exe" (Get-AgentLine -Root "C:\MW Test2")),
+        (New-FakeProcess 16 10 "C:\Python312\pythonw.exe" ((Get-AgentLine) + " --extra")),
+        (New-FakeProcess 17 10 "C:\Python312\pythonw.exe" (Get-AgentLine) -5),
+        (New-FakeProcess 18 10 "C:\Python312\pythonw.exe" (Get-AgentLine -Profile "a\b")))
+    function script:Get-CimInstance {
+        [CmdletBinding()] param([string]$ClassName, [string]$Filter, [string[]]$Property)
+        if ($ClassName -eq "Win32_Service") {
+            return [pscustomobject]@{ PathName = '"C:\MW Test\gateway\MoonWakerGatewayService.exe" ' +
+                '--python "C:\Python312\python.exe"' }
+        }
+        return $script:fakeProcesses
+    }
+    try { $hostedFound = @(Get-HostedProcesses | ForEach-Object {
+            "$($_.ProcessId):$($_.Profile)/$($_.Component)" }) -join "," }
+    finally { Remove-Item Function:\Get-CimInstance }
+    if ($hostedFound -ne "11:default/game-provider,12:default/discord") {
+        throw "Hosted process matching is not exact: $hostedFound"
+    }
+    Write-Host "PASS: only tray-hosted installation processes are stopped or counted"
 
     $installPath = Join-Path $PSScriptRoot "Install-MoonWakerHotUpdater.ps1"
     $installTokens = $null; $installErrors = $null

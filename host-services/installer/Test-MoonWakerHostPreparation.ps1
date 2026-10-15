@@ -10,8 +10,8 @@ $paths = [ordered]@{
     Host = Join-Path $root "install\Install-WakePlayHost.ps1"
     Uninstall = Join-Path $root "install\Uninstall-MoonWakerHostServices.ps1"
     Profile = Join-Path $root "install\Install-WakePlayProfile.ps1"
-    ProfileStop = Join-Path $root "profile-agent\Stop-MoonWakerProfileBridge.ps1"
     Gateway = Join-Path $root "gateway\Install-WakePlayGateway.ps1"
+    UpdaterInstaller = Join-Path $root "updater\Install-MoonWakerHotUpdater.ps1"
     GatewayRuntime = Join-Path $root "gateway\wakeplay_gateway.py"
     BrokerInstaller = Join-Path $root "windows-login\login-broker\Install-MoonWakerLoginBroker.ps1"
     StartGateway = Join-Path $root "gateway\Start-WakePlayGateway.ps1"
@@ -89,36 +89,36 @@ foreach ($profileInput in @('"-ProfileId ', '"-ProfileName ', '"-ProfileOnly"'))
     }
 }
 
-Assert-Contains "Wrapper" @("-GatewayDirectory `$GatewayDirectory", "-ProtectedStagingDirectory", "-EnsureViGEmBus", "-EnsurePython", "-EnsureOpenSsl")
+Assert-Contains "Wrapper" @('& $HostInstallScript *>&1', "-ProtectedStagingDirectory", "-EnsureViGEmBus", "-EnsurePython", "-EnsureOpenSsl")
 Assert-Contains "Wrapper" @(
     'Installer stage: $stage',
     '[string]::IsNullOrWhiteSpace($PrerequisiteScript)',
     '[string]::IsNullOrWhiteSpace($HostInstallScript)',
     '[Console]::Error.WriteLine($details)'
 )
-if ($sources.Wrapper.Contains("-GatewayDirectory `$GatewayDirectory -SkipStart")) {
+if ($sources.Wrapper.Contains("-SkipStart")) {
     throw "The elevated wrapper still leaves the machine services stopped after install."
 }
 Assert-Contains "Host" @(
     "Assert-MoonWakerProcessesStopped",
-    '& $gatewayInstaller -InstallDirectory $GatewayDirectory',
+    '& $gatewayInstaller -Port $GatewayPort',
     "-SkipStart",
     'Join-Path $GatewayDirectory "gateway.json.lock"',
-    "The selected nonempty directory is not a MoonWaker installation.",
+    "is nonempty and is not a MoonWaker installation.",
     "Install-MoonWakerLoginBroker.ps1",
     "Install-MoonWakerCredentialProvider.ps1",
     "The MoonWaker Login Broker package is incomplete.",
     "The MoonWaker Credential Provider package is incomplete.",
     "MoonWaker Host Control.lnk",
-    '$profilesToRestart',
-    'Join-Path $_.FullName "moonwaker-version.json"',
-    'Remove-Item -LiteralPath (Join-Path $profileRoot "profile-bridge-manually-stopped")',
-    '@{ source = "discord"; destination = "discord" }',
-    '& $packagedProfileStop -ProfileRoot $_.FullName',
+    '"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"',
+    '-Name "MoonWaker Host Control" -Value (''"{0}" --tray'' -f $controlExe)',
     '& $packagedProviderUninstall -Confirm:$false'
 )
+# Profiles hold only data: the installer no longer copies code or supervisors into them.
+if ($sources.Host -match 'profile-agent|moonwaker-version|Start-ScheduledTask') {
+    throw "The host installer still manages per-profile code or supervisor tasks."
+}
 foreach ($mutableInstallerScript in @(
-    '& $stopProfile -ProfileRoot $_.FullName',
     '& $installedProviderUninstall -Confirm:$false')) {
     if ($sources.Host.Contains($mutableInstallerScript)) {
         throw "The elevated installer still invokes mutable installed code: $mutableInstallerScript"
@@ -132,16 +132,20 @@ Assert-Contains "Uninstall" @(
     'Remove-Item -LiteralPath $root -Recurse -Force',
     "Remove-MoonWakerLoginCredentials.ps1",
     '& $credentialCleanup -GatewayConfigPath',
-    '"MoonWaker Profile Bridge ("',
-    '"MoonWaker Host Control.lnk"',
+    '-Name "MoonWaker Host Control" -ErrorAction SilentlyContinue',
     '& $providerUninstall -Confirm:$false',
     '& $brokerUninstall -InstallDirectory'
 )
-foreach ($unsafeLaunch in @("taskkill.exe", "Stop-Process", "Start-Process")) {
+foreach ($unsafeLaunch in @("taskkill.exe", "Start-Process")) {
     if ($sources.Host.Contains($unsafeLaunch)) {
         throw "Elevated host install starts or kills mutable runtime code: $unsafeLaunch"
     }
 }
+# The only process the install stops is the tray running from the protected control directory.
+if (([regex]::Matches($sources.Host, "Stop-Process")).Count -ne 1) {
+    throw "Elevated host install stops processes other than the Host Control trays."
+}
+Assert-Contains "Host" @('$controlPrefix = (Join-Path $InstallDirectory "control") + "\"')
 
 Assert-Contains "Gateway" @(
     '$config.profiles = [pscustomobject]@{}',
@@ -175,8 +179,6 @@ Assert-Contains "GatewayRuntime" @(
     'platform.python_version()'
 )
 Assert-Contains "StopGateway" @(
-    '"C:\Tools\WakePlayHost\gateway"',
-    '"C:\Tools\WakePlayGateway"',
     '$runtimes | Where-Object { $_.pid -eq $ownerPid }'
 )
 Assert-Contains "BrokerInstaller" @(
@@ -193,14 +195,10 @@ Assert-Contains "MachineStartGateway" @(
     'Remove-Item -LiteralPath (Join-Path $GatewayDirectory "gateway-manually-stopped")'
 )
 Assert-Contains "DiscordBridge" @(
-    '$mutexScope = $ScriptRoot.ToLowerInvariant()',
+    '$mutexScope = $DataRoot.ToLowerInvariant()',
     'DiscordUnifiedRemoteRpcBridge_$mutexScope'
 )
 Assert-Contains "Profile" @('$GatewayRegistryLockPath = "$GatewayConfigPath.lock"')
-Assert-Contains "ProfileStop" @(
-    '[ValidateNotNullOrEmpty()][string]$ProfileRoot',
-    '$ProfileRoot = [IO.Path]::GetFullPath($ProfileRoot)'
-)
 Assert-Contains "Configurator" @(
     'RegistryLockPath = ConfigPath + ".lock";',
     "FileMode.OpenOrCreate",
@@ -239,7 +237,7 @@ Assert-Contains "Installer" @(
     "RedirectStandardError = true",
     'if (installError == null) throw;',
     'if (uninstallError == null) throw;',
-    'The installation path is invalid.',
+    'Environment.SpecialFolder.ProgramFiles), "MoonWaker");',
     '" -PurgeCredentials -RemoveFiles"',
     '"Uninstall", "Odinstaluj"'
 )
@@ -254,13 +252,30 @@ foreach ($unsafeCom in @("launchHostControl", "Shell.Application", "WScript.Shel
     }
 }
 
-foreach ($name in @("Prepare", "Wrapper", "Host", "Uninstall", "Profile", "ProfileStop", "Gateway", "BrokerInstaller", "StartGateway", "MachineStartGateway", "StopGateway", "DiscordBridge")) {
+foreach ($name in @("Prepare", "Wrapper", "Host", "Uninstall", "Profile", "Gateway", "UpdaterInstaller", "BrokerInstaller", "StartGateway", "MachineStartGateway", "StopGateway", "DiscordBridge")) {
     $tokens = $null
     $errors = $null
-    [void][Management.Automation.Language.Parser]::ParseFile(
+    $ast = [Management.Automation.Language.Parser]::ParseFile(
         $paths[$name], [ref]$tokens, [ref]$errors)
     if ($errors.Count -gt 0) {
         throw "$name has PowerShell syntax errors: $($errors[0].Message)"
+    }
+    # The installation lives only in %ProgramFiles%\MoonWaker: no script run by the
+    # installer accepts another root, and no legacy location is consulted.
+    if ($name -in @("Wrapper", "Host", "Uninstall", "Gateway", "UpdaterInstaller") -and
+        $null -ne $ast.ParamBlock -and @($ast.ParamBlock.Parameters | Where-Object {
+            $_.Name.VariablePath.UserPath -in @("InstallDirectory", "GatewayDirectory") }).Count) {
+        throw "$name still accepts a caller-chosen installation directory."
+    }
+}
+foreach ($entry in $sources.GetEnumerator()) {
+    if ($entry.Value.IndexOf("C:\Tools", [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        throw "$($entry.Key) still refers to a legacy C:\Tools installation."
+    }
+}
+foreach ($chosenPath in @("MOONWAKER_INSTALL_DIRECTORY", "FolderBrowserDialog", '" -InstallDirectory "')) {
+    if ($sources.Installer.Contains($chosenPath)) {
+        throw "The GUI installer still lets the installation directory be chosen: $chosenPath"
     }
 }
 

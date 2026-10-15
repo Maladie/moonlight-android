@@ -23,8 +23,6 @@ $closeListenerProcess = $null
 $uiSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostControl.cs") -Raw
 $configuratorSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs") -Raw
 $hostControlSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "Invoke-MoonWakerHostControl.ps1") -Raw
-$profileAgentSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
-    "profile-agent\MoonWakerProfileBridge.ps1") -Raw
 
 function Test-ProviderStatusFixture {
     # Execute the real status caller with all file/network/service effects replaced.
@@ -39,22 +37,16 @@ function Test-ProviderStatusFixture {
             Invoke-Expression $definition[0].Extent.Text
         }
         function Get-GatewayDirectory { 'fixture-gateway' }
-        function Ensure-BackgroundServices { }
         function Get-MoonWakerVersion { [pscustomobject]@{ version='test'; build='test' } }
         function Get-ProfileRoot { 'fixture-profile' }
         function Test-SteamConnection { $false }
         function Test-LegendaryConnection { $false }
         function Test-PlayniteConnection { $false }
         function Test-CurrentProfileOwner { $true }
-        function Get-SupervisorStatus { 'running' }
-        function Get-ProfileProcessId { 123 }
         function Get-LegendaryExecutable { '' }
         function Get-MicrophoneReadiness { [pscustomobject]@{ ready=$false } }
         function Test-TcpPort { $false }
-        function Test-Path([string]$LiteralPath) {
-            $LiteralPath -eq 'fixture-gateway\gateway.json' -or
-                ($LiteralPath -eq 'fixture-profile\profile-bridge-manually-stopped' -and $manuallyStopped)
-        }
+        function Test-Path([string]$LiteralPath) { $LiteralPath -eq 'fixture-gateway\gateway.json' }
         function Get-Content([string]$LiteralPath) {
             if ($LiteralPath -ne 'fixture-gateway\gateway.json') { throw 'fixture_optional_file_absent' }
             @{ listen_port=8785; clients=@(); profiles=@{ parent=@{
@@ -71,20 +63,20 @@ function Test-ProviderStatusFixture {
             @{ endpoint='http://127.0.0.1:45999/'; reply='online'; stopped=$false; expected='online'; count=1 },
             @{ endpoint='http://127.0.0.1:45999'; reply='error'; stopped=$false; expected='error'; count=1 },
             @{ endpoint='http://127.0.0.1:45999'; reply='offline'; stopped=$false; expected='offline'; count=1 },
-            @{ endpoint=''; reply='online'; stopped=$false; expected='disabled'; count=0 },
-            @{ endpoint='http://127.0.0.1:45999'; reply='online'; stopped=$true; expected='manually_stopped'; count=0 }
+            @{ endpoint=''; reply='online'; stopped=$false; expected='disabled'; count=0 }
         )
         foreach ($case in $cases) {
-            $endpoint=$case.endpoint; $reply=$case.reply; $manuallyStopped=$case.stopped
+            $endpoint=$case.endpoint; $reply=$case.reply
             $calls = New-Object 'Collections.Generic.List[string]'
             $status = Get-Status
             $profileStatus = @($status.profiles)[0]
             if ($profileStatus.game_provider -ne $case.expected -or $calls.Count -ne $case.count -or
-                $profileStatus.Contains('playnite') -or $profileStatus.Contains('playnite_pid')) {
+                $profileStatus.Contains('playnite') -or $profileStatus.Contains('game_provider_pid') -or
+                $profileStatus.Contains('supervisor')) {
                 throw 'provider_status_route_or_result_regressed'
             }
         }
-        Write-Output 'Host Control provider status: 5/5 isolated cases passed.'
+        Write-Output 'Host Control provider status: 4/4 isolated cases passed.'
     } $hostControlSource
 }
 
@@ -109,8 +101,15 @@ if (-not $configuratorSource.Contains(
     -not $configuratorSource.Contains('DialogResult = DialogResult.OK;')) {
     throw "The elevated profile configurator does not report successful profile creation."
 }
-if (-not $profileAgentSource.Contains('return Start-HiddenProcess $python')) {
-    throw "Profile Bridges do not use the resolved Python executable."
+# The tray hosts the profile's processes: it cannot be exited, and no script starts,
+# stops or adopts them any more.
+if ($uiSource.Contains('menu.Items.Add("Zako') -or $uiSource.Contains('"RecoverAll"') -or
+    $uiSource.Contains('"StartProfile"') -or
+    -not $uiSource.Contains('KillOnJobClose | SilentBreakawayOk') -or
+    -not $uiSource.Contains('@"SYSTEM\CurrentControlSet\Services\MoonWakerGateway"') -or
+    -not $uiSource.Contains('"bridge-source", "playnite", "GameProviderBridge.py"') -or
+    $hostControlSource -match 'Ensure-BackgroundServices|profile-bridge|Start-MoonWakerProfileBridge') {
+    throw "Host Control does not host the profile processes from the installation."
 }
 if (-not $uiSource.Contains('Ctrl+Alt+Shift+End') -or
     -not $uiSource.Contains('RegisterHotKey(Handle, StreamHotkeyId') -or
@@ -133,7 +132,7 @@ function Get-FreeTcpPort {
     finally { $listener.Stop() }
 }
 
-function Test-HostControlSingleton {
+function Test-HostControlHeadless([string]$TestSource, [string]$MainClass) {
     $compiler = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
     if (-not (Test-Path -LiteralPath $compiler)) {
         $compiler = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
@@ -154,12 +153,12 @@ function Test-HostControlSingleton {
     try {
         $testExecutable = Join-Path $testRoot "HostControlSingletonTests.exe"
         $compilerArguments = @(
-            "/nologo", "/target:exe", "/main:MoonWaker.HostControl.SingletonTests",
+            "/nologo", "/target:exe", "/main:$MainClass",
             "/out:$testExecutable", "/reference:System.dll", "/reference:System.Core.dll",
             "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
             "/reference:System.Web.Extensions.dll", "/reference:System.Security.dll",
             (Join-Path $PSScriptRoot "MoonWakerHostControl.cs"),
-            (Join-Path $PSScriptRoot "Test-MoonWakerHostControlSingleton.cs"))
+            (Join-Path $PSScriptRoot $TestSource))
         $compilerOutput = & $compiler @compilerArguments 2>&1
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $testExecutable)) {
             throw ("Headless Host Control singleton test compilation failed: " +
@@ -196,7 +195,8 @@ function Protect-TestValue([string]$Value) {
 }
 
 try {
-    Test-HostControlSingleton
+    Test-HostControlHeadless "Test-MoonWakerHostControlSingleton.cs" "MoonWaker.HostControl.SingletonTests"
+    Test-HostControlHeadless "Test-MoonWakerHostControlProcessHost.cs" "MoonWaker.HostControl.ProcessHostTests"
     New-Item -ItemType Directory -Path $control, $gateway, (Join-Path $profile "game-provider"), `
         (Join-Path $profile "discord"), $legendaryState, `
         $foreignProfile -Force | Out-Null
@@ -425,8 +425,6 @@ try {
         (Join-Path $gateway "gateway-supervisor.jsonl.1") = '{"event":"supervisor.stopped"}'
         (Join-Path $gateway "logs\gateway-diagnostics.jsonl") = '{"event":"request.failed"}'
         (Join-Path $gateway "logs\gateway-diagnostics.jsonl.1") = '{"event":"request.started"}'
-        (Join-Path $profile "profile-bridge.jsonl") = '{"event":"component.exited"}'
-        (Join-Path $profile "profile-bridge.jsonl.2") = '{"event":"supervisor.started"}'
         (Join-Path $profile "game-provider\logs\provider-diagnostics.jsonl") = '{"event":"lifecycle"}'
         (Join-Path $profile "game-provider\logs\provider-diagnostics.jsonl.3") = '{"event":"request.failed"}'
     }
@@ -442,7 +440,7 @@ try {
     & $scriptPath -Action ExportDiagnostics -DiagnosticsOutputDirectory $exportDirectory `
         -ResultPath $resultPath | Out-Null
     $export = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-    if (-not $export.ok -or $export.files -ne 8 -or
+    if (-not $export.ok -or $export.files -ne 6 -or
         -not (Test-Path -LiteralPath $export.path -PathType Leaf)) {
         throw "Diagnostic export did not return the expected archive."
     }
@@ -455,8 +453,6 @@ try {
             "gateway/supervisor/gateway-supervisor.jsonl.1",
             "gateway/service/gateway-diagnostics.jsonl",
             "gateway/service/gateway-diagnostics.jsonl.1",
-            "profiles/default/supervisor/profile-bridge.jsonl",
-            "profiles/default/supervisor/profile-bridge.jsonl.2",
             "profiles/default/provider/provider-diagnostics.jsonl",
             "profiles/default/provider/provider-diagnostics.jsonl.3",
             "manifest.json")
@@ -474,7 +470,7 @@ try {
         $manifestEntry = @($archive.Entries | Where-Object FullName -eq "manifest.json")[0]
         $reader = [IO.StreamReader]::new($manifestEntry.Open())
         try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
-        if ($manifest.schema_version -ne 1 -or $manifest.file_count -ne 8 -or
+        if ($manifest.schema_version -ne 1 -or $manifest.file_count -ne 6 -or
             $manifest.version -ne "test" -or $manifest.build -ne "test" -or
             $manifest.PSObject.Properties["path"] -or
             $manifest.PSObject.Properties["profiles"]) {

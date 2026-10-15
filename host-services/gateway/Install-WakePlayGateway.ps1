@@ -2,7 +2,6 @@
 #requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-    [ValidateNotNullOrEmpty()][string]$InstallDirectory = "C:\Tools\WakePlayGateway",
     [ValidateRange(1, 65535)][int]$Port = 8785,
     [switch]$SkipFirewall,
     [switch]$SkipStart
@@ -31,10 +30,8 @@ $files = @(
     "README.md"
 )
 
-$InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
-if ($InstallDirectory -eq [IO.Path]::GetPathRoot($InstallDirectory)) {
-    throw "Choose a dedicated Gateway installation directory."
-}
+$InstallDirectory = Join-Path ([Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::ProgramFiles)) "MoonWaker\gateway"
 
 function Get-MachinePythonExecutable {
     $candidates = @()

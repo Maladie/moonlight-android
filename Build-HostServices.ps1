@@ -42,13 +42,10 @@ $payloadRoot = Join-Path $temporary "payload\host-services"
 $zipPath = Join-Path $temporary "host-services.zip"
 New-Item -ItemType Directory -Path $payloadRoot, $OutputDirectory -Force | Out-Null
 try {
-    foreach ($directory in @("bridges", "gateway", "install", "profile-agent", "updater",
-            "windows-login")) {
+    foreach ($directory in @("bridges", "gateway", "install", "updater", "windows-login")) {
         Copy-Item -LiteralPath (Join-Path $hostServices $directory) `
             -Destination $payloadRoot -Recurse -Force
     }
-    Remove-Item -LiteralPath (Join-Path $payloadRoot `
-        "install\Install-MoonWakerHostBundle.ps1") -Force
     & (Join-Path $hostServices "bridges\microphone\Build-MoonWakerMicrophoneWorker.ps1") `
         -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
     & (Join-Path $hostServices "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
@@ -94,9 +91,8 @@ try {
         -OutputDirectory $controlTarget | Out-Host
 
     foreach ($required in @(
-            "version.json", "bridges", "gateway", "profile-agent", "control", "tools",
+            "version.json", "bridges", "gateway", "control", "tools",
             "updater", "windows-login",
-            "profile-agent\Stop-MoonWakerProfileBridge.ps1",
             "windows-login\credential-provider\Uninstall-MoonWakerCredentialProvider.ps1")) {
         if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $required))) {
             throw "Incomplete MoonWaker host payload. Missing: $required"

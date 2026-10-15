@@ -1,12 +1,10 @@
 #requires -Version 5.1
 #requires -RunAsAdministrator
 [CmdletBinding()]
-param(
-    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$InstallDirectory,
-    [switch]$SkipStart
-)
+param([switch]$SkipStart)
 $ErrorActionPreference = "Stop"
-$InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
+$InstallDirectory = Join-Path ([Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::ProgramFiles)) "MoonWaker"
 $source = $PSScriptRoot
 $target = Join-Path $InstallDirectory "updater"
 $stateRoot = Join-Path $env:ProgramData "MoonWaker\HotUpdater"

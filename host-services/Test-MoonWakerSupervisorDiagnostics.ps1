@@ -14,8 +14,7 @@ $temporary = Join-Path ([IO.Path]::GetTempPath()) ("moonwaker-diagnostics-" + [G
 New-Item -ItemType Directory -Path $temporary | Out-Null
 try {
     foreach ($writer in @(
-        @{ path = Join-Path $PSScriptRoot "gateway\MoonWakerGatewaySupervisor.ps1"; name = "Write-SupervisorDiagnosticEvent"; init = "Initialize-SupervisorDiagnostics"; root = "GatewayDirectory"; file = "gateway-supervisor.jsonl"; component = "host.gateway-supervisor" },
-        @{ path = Join-Path $PSScriptRoot "profile-agent\MoonWakerProfileBridge.ps1"; name = "Write-AgentDiagnosticEvent"; init = "Initialize-AgentDiagnostics"; root = "ProfileRoot"; file = "profile-bridge.jsonl"; component = "host.profile-supervisor"; child = "game-provider" })) {
+        @{ path = Join-Path $PSScriptRoot "gateway\MoonWakerGatewaySupervisor.ps1"; name = "Write-SupervisorDiagnosticEvent"; init = "Initialize-SupervisorDiagnostics"; root = "GatewayDirectory"; file = "gateway-supervisor.jsonl"; component = "host.gateway-supervisor" })) {
         $writerDirectory = Join-Path $temporary $writer.component
         New-Item -ItemType Directory -Path $writerDirectory | Out-Null
         Invoke-Expression (Get-WriterText $writer.path $writer.init)

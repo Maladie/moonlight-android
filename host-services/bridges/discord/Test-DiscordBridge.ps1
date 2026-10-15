@@ -1,4 +1,5 @@
-$configPath = Join-Path $PSScriptRoot "discord_bridge_config.json"
+param([Parameter(Mandatory)][string]$ProfileDirectory)
+$configPath = Join-Path $ProfileDirectory "discord_bridge_config.json"
 $port = 8765
 
 if (Test-Path -LiteralPath $configPath) {

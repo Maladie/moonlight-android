@@ -10,7 +10,6 @@ param(
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "WakePlayHost\profiles"),
     [string]$GatewayConfigPath = "",
     [string]$GatewayDirectory = "",
-    [string]$HostControlExecutable = "",
     [ValidatePattern('^S-[0-9]+(?:-[0-9]+){2,15}$')][string]$OwnerSid = "",
     [string]$OwnerName = "",
     [switch]$MachineProvisioning,
@@ -25,7 +24,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $trustedModuleRoot = [IO.Path]::GetFullPath((Join-Path $PSHOME "Modules"))
 $env:PSModulePath = $trustedModuleRoot
-foreach ($module in @("CimCmdlets", "ScheduledTasks")) {
+foreach ($module in @("CimCmdlets")) {
     $manifest = Join-Path $trustedModuleRoot "$module\$module.psd1"
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
         throw "Required trusted Windows PowerShell module is missing: $module"
@@ -73,27 +72,13 @@ function Resolve-ProvisioningOwner {
 
 $provisioningOwner = Resolve-ProvisioningOwner
 if ($MachineProvisioning) {
-    # An elevated provisioning process must never execute a target-owned Bridge.
+    # An elevated provisioning process never starts profile processes; the owner's
+    # Host Control tray does.
     $SkipStart = $true
     if (-not $SkipGatewayRegistration) {
         throw "Machine provisioning may not read or write the mutable Gateway registry as administrator."
     }
 }
-
-function Get-TrustedWindowsPowerShell {
-    $systemDirectory = [Environment]::SystemDirectory
-    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
-        $windowsDirectory = Split-Path -Parent $systemDirectory
-        $systemDirectory = Join-Path $windowsDirectory "Sysnative"
-    }
-    $executable = [IO.Path]::GetFullPath((Join-Path $systemDirectory `
-        "WindowsPowerShell\v1.0\powershell.exe"))
-    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-        throw "Trusted Windows PowerShell was not found."
-    }
-    return $executable
-}
-$windowsPowerShellPath = Get-TrustedWindowsPowerShell
 
 function Get-RegisteredEndpointPort {
     param([object]$Entry, [string]$Property)
@@ -694,50 +679,24 @@ function Publish-MachineProfileRoot {
     Assert-MachineProfileRoot
 }
 
-$hostVersionPath = Join-Path (Split-Path -Parent $InstallRoot) "version.json"
 if ($MachineProvisioning) {
     Initialize-MachineProfileRoot
 } else {
     New-Item -ItemType Directory -Path $profileRoot -Force | Out-Null
-    $existingProfileStop = Join-Path $profileRoot "Stop-MoonWakerProfileBridge.ps1"
-    if (Test-Path -LiteralPath $existingProfileStop -PathType Leaf) {
-        & $existingProfileStop -ProfileRoot $profileRoot
-    }
-}
-if (Test-Path -LiteralPath $hostVersionPath) {
-    Copy-Item -LiteralPath $hostVersionPath -Destination (Join-Path $profileRoot "moonwaker-version.json") -Force
-}
-$agentSource = Join-Path $hostServicesRoot "profile-agent"
-if (-not (Test-Path -LiteralPath $agentSource)) {
-    $agentSource = Join-Path (Split-Path -Parent $PSScriptRoot) "profile-agent-source"
-}
-if (-not (Test-Path -LiteralPath $agentSource)) {
-    throw "Profile Bridge supervisor package was not found next to the installer."
 }
 
-function Install-BridgeFiles {
-    param([string]$SourceName, [string[]]$Files, [string]$DestinationName = "")
-    if ([string]::IsNullOrWhiteSpace($DestinationName)) { $DestinationName = $SourceName }
-    $source = Join-Path $sourceRoot $SourceName
+# A profile holds only data, configuration and secrets; Bridge code runs from the
+# installation. Create the data directory and seed its configuration once.
+function Initialize-ProfileData {
+    param([string]$SourceName, [string]$DestinationName, [string]$ExampleName, [string]$ConfigName)
     $destination = Join-Path $profileRoot $DestinationName
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
-    foreach ($file in $Files) {
-        Copy-Item -LiteralPath (Join-Path $source $file) -Destination $destination -Force
+    $config = Join-Path $destination $ConfigName
+    if (-not (Test-Path -LiteralPath $config)) {
+        Copy-Item -LiteralPath (Join-Path (Join-Path $sourceRoot $SourceName) $ExampleName) `
+            -Destination $config
     }
     return $destination
-}
-
-function Stop-InstalledBridge {
-    param([string]$BridgeName, [string]$StopScriptName)
-    if ($MachineProvisioning) { return }
-    $directory = Join-Path $profileRoot $BridgeName
-    $stopScript = Join-Path $directory $StopScriptName
-    if (-not (Test-Path -LiteralPath $stopScript)) { return }
-    try {
-        & $stopScript
-    } catch {
-        Write-Warning "Unable to stop the existing $BridgeName Bridge cleanly: $($_.Exception.Message)"
-    }
 }
 
 function Set-ConfigPort {
@@ -765,7 +724,7 @@ function Set-ConfigValue {
 function Initialize-DiscordConfig {
     param([string]$Directory, [string]$ConfigPath, [int]$Port)
     if (-not $NonInteractiveConfiguration) {
-        & (Join-Path $Directory "Configure-DiscordBridge.ps1")
+        & (Join-Path $sourceRoot "discord\Configure-DiscordBridge.ps1") -ProfileDirectory $Directory
         return
     }
     $clientId = [string]$env:MOONWAKER_DISCORD_CLIENT_ID
@@ -792,149 +751,26 @@ function Initialize-DiscordConfig {
     }
 }
 
-function Remove-LegacyBridgeStartup {
-    foreach ($name in @("Wake & Play Discord Bridge ($ProfileId)",
-        "Wake & Play Game Provider Bridge ($ProfileId)",
-        "Wake & Play Playnite Bridge ($ProfileId)")) {
-        try { ScheduledTasks\Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-    }
-    if (-not $MachineProvisioning) {
-        $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-        try {
-            $item = Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue
-            foreach ($property in $item.PSObject.Properties) {
-                if ($property.Name -like "MoonWaker*Bridge*$ProfileId*") {
-                    Remove-ItemProperty -Path $runKey -Name $property.Name -ErrorAction SilentlyContinue
-                }
-            }
-        } catch {}
-        $startupShortcut = Join-Path $env:APPDATA (
-            "Microsoft\Windows\Start Menu\Programs\Startup\MoonWaker Profile Bridge ($ProfileId).lnk")
-        Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Register-ProfileAgent {
-    param([string]$StartScript)
-    $Name = "MoonWaker Profile Bridge ($ProfileId)"
-    $profileAgent = Join-Path (Split-Path -Parent $StartScript) "MoonWakerProfileBridge.ps1"
-    $identity = $provisioningOwner.sid
-    try {
-        $action = ScheduledTasks\New-ScheduledTaskAction -Execute $windowsPowerShellPath -Argument (
-            '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -ProfileRoot "{1}" -ProfileId "{2}"' -f `
-                $profileAgent, (Split-Path -Parent $StartScript), $ProfileId)
-        $trigger = ScheduledTasks\New-ScheduledTaskTrigger -AtLogOn -User $identity
-        $settings = ScheduledTasks\New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
-            -ExecutionTimeLimit (New-TimeSpan -Days 3650) -AllowStartIfOnBatteries `
-            -DontStopIfGoingOnBatteries -StartWhenAvailable
-        # ScheduledTasks calls the passwordless Task Scheduler logon type
-        # "InteractiveToken" simply "Interactive".
-        $principal = ScheduledTasks\New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
-        ScheduledTasks\Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger -Settings $settings `
-            -Principal $principal -Force | Out-Null
-        Write-Host "Registered per-user Profile Bridge recovery task."
-    } catch {
-        if ($MachineProvisioning) { throw }
-        Write-Warning "Could not register the Profile Bridge recovery task: $($_.Exception.Message)"
-    }
-    if ($MachineProvisioning) { return }
-    # Keep a per-user Startup shortcut as a fallback for Windows editions where
-    # task registration is restricted. The supervisor mutex makes this safe.
-    $startup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
-    New-Item -ItemType Directory -Path $startup -Force | Out-Null
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut((Join-Path $startup "MoonWaker Profile Bridge ($ProfileId).lnk"))
-    $shortcut.TargetPath = $windowsPowerShellPath
-    $shortcut.Arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -ProfileRoot "{1}" -ProfileId "{2}"' -f `
-        $profileAgent, (Split-Path -Parent $StartScript), $ProfileId
-    $shortcut.WorkingDirectory = Split-Path -Parent $profileAgent
-    $shortcut.Description = "MoonWaker Profile Bridge supervisor ($ProfileId)"
-    $shortcut.Save()
-    Write-Host "Registered per-user Profile Bridge startup shortcut."
-}
-
-function Remove-LegacyGatewayStartup {
-    try {
-        ScheduledTasks\Unregister-ScheduledTask -TaskName "MoonWaker Gateway Supervisor" `
-            -Confirm:$false -ErrorAction SilentlyContinue
-    } catch {}
-    if ($MachineProvisioning) { return }
-    $shortcut = Join-Path $env:APPDATA `
-        "Microsoft\Windows\Start Menu\Programs\Startup\MoonWaker Gateway.lnk"
-    Remove-Item -LiteralPath $shortcut -Force -ErrorAction SilentlyContinue
-}
-
-function Register-UserStartup {
-    param([string]$Name, [string]$TargetPath, [string]$Arguments, [string]$Description)
-    if ([string]::IsNullOrWhiteSpace($TargetPath)) { return }
-    if (-not [IO.Path]::IsPathRooted($TargetPath)) {
-        $command = Get-Command $TargetPath -ErrorAction SilentlyContinue
-        if ($null -eq $command) { return }
-        $TargetPath = $command.Source
-    }
-    if (-not (Test-Path -LiteralPath $TargetPath)) { return }
-    $startup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
-    New-Item -ItemType Directory -Path $startup -Force | Out-Null
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut((Join-Path $startup "$Name.lnk"))
-    $shortcut.TargetPath = $TargetPath
-    $shortcut.Arguments = $Arguments
-    $shortcut.WorkingDirectory = Split-Path -Parent $TargetPath
-    $shortcut.Description = $Description
-    $shortcut.Save()
-}
-
-Remove-LegacyBridgeStartup
-Remove-LegacyGatewayStartup
-foreach ($file in @("MoonWakerProfileBridge.ps1", "Start-MoonWakerProfileBridge.ps1",
-    "Stop-MoonWakerProfileBridge.ps1")) {
-    Copy-Item -LiteralPath (Join-Path $agentSource $file) -Destination (Join-Path $profileRoot $file) -Force
-}
 if ([string]::IsNullOrWhiteSpace($GatewayDirectory)) { $GatewayDirectory = Split-Path -Parent $GatewayConfigPath }
 $gatewayStart = Join-Path $GatewayDirectory "Start-MoonWakerGateway.ps1"
-if (-not $MachineProvisioning) {
-    Register-UserStartup "MoonWaker Host Control" $HostControlExecutable "--tray" "MoonWaker Host Control"
-}
 
 $discordDirectory = $null
 if (-not $SkipDiscord) {
-    Stop-InstalledBridge "discord" "Stop-DiscordBridge.ps1"
-    $discordDirectory = Install-BridgeFiles "discord" @(
-        "DiscordBridge.ps1", "Configure-DiscordBridge.ps1",
-        "discord_bridge_config.example.json", "Start-DiscordBridge.ps1",
-        "Stop-DiscordBridge.ps1", "Test-DiscordBridge.ps1", "WindowsAudio.cs", "README.md")
+    $discordDirectory = Join-Path $profileRoot "discord"
     $discordConfig = Join-Path $discordDirectory "discord_bridge_config.json"
-    if ($MachineProvisioning -and -not (Test-Path -LiteralPath $discordConfig)) {
-        Copy-Item -LiteralPath (Join-Path $discordDirectory "discord_bridge_config.example.json") `
-            -Destination $discordConfig
-    } elseif (-not (Test-Path -LiteralPath $discordConfig) -or
-        ($NonInteractiveConfiguration -and -not [string]::IsNullOrWhiteSpace($env:MOONWAKER_DISCORD_CLIENT_ID))) {
+    $discordConfigured = Test-Path -LiteralPath $discordConfig
+    [void](Initialize-ProfileData "discord" "discord" "discord_bridge_config.example.json" `
+        "discord_bridge_config.json")
+    if (-not $MachineProvisioning -and (-not $discordConfigured -or
+        ($NonInteractiveConfiguration -and -not [string]::IsNullOrWhiteSpace($env:MOONWAKER_DISCORD_CLIENT_ID)))) {
         Initialize-DiscordConfig $discordDirectory $discordConfig $DiscordPort
     }
     Set-ConfigPort $discordConfig "port" $DiscordPort
 }
 
-$legacyProviderDirectory = Join-Path $profileRoot "playnite"
-$gameProviderDirectory = Join-Path $profileRoot "game-provider"
-Stop-InstalledBridge "game-provider" "Stop-PlayniteBridge.ps1"
-Stop-InstalledBridge "playnite" "Stop-PlayniteBridge.ps1"
-if (-not (Test-Path -LiteralPath $gameProviderDirectory) -and
-    (Test-Path -LiteralPath $legacyProviderDirectory)) {
-    Move-Item -LiteralPath $legacyProviderDirectory -Destination $gameProviderDirectory
-}
-$gameProviderDirectory = Install-BridgeFiles "playnite" @(
-    "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py", "ControlEffectFence.py",
-    "Confirm-SteamOperation.ps1", "Invoke-GameLauncher.ps1",
-    "config.example.json", "Start-PlayniteBridge.ps1", "Stop-PlayniteBridge.ps1",
-    "PatchPlayniteConnector.py", "Install-WakePlayConnectorPatch.ps1", "README.md") `
-    "game-provider"
-Remove-Item -LiteralPath (Join-Path $gameProviderDirectory "PlayniteBridge.py") `
-    -Force -ErrorAction SilentlyContinue
+$gameProviderDirectory = Initialize-ProfileData "playnite" "game-provider" `
+    "config.example.json" "config.json"
 $gameProviderConfig = Join-Path $gameProviderDirectory "config.json"
-if (-not (Test-Path -LiteralPath $gameProviderConfig)) {
-    Copy-Item -LiteralPath (Join-Path $gameProviderDirectory "config.example.json") `
-        -Destination $gameProviderConfig
-}
 Set-ConfigPort $gameProviderConfig "listen_port" $providerPort
 Set-ConfigValue $gameProviderConfig "epic_legendary_enabled" $true
 Set-ConfigValue $gameProviderConfig "playnite_enabled" (-not $SkipPlaynite)
@@ -1042,21 +878,13 @@ if (-not $SkipGatewayRegistration) {
     }
 }
 
-if ($MachineProvisioning) {
-    Register-ProfileAgent (Join-Path $finalProfileRoot "Start-MoonWakerProfileBridge.ps1")
-    Protect-ProfileTree $true
-} else {
-    Register-ProfileAgent (Join-Path $finalProfileRoot "Start-MoonWakerProfileBridge.ps1")
+if ($MachineProvisioning) { Protect-ProfileTree $true }
+
+# The owner's Host Control tray (machine Run entry, --tray) starts the Agent at sign-in.
+if (-not $SkipStart -and (Test-Path -LiteralPath $gatewayStart)) {
+    & $gatewayStart -GatewayDirectory $GatewayDirectory
 }
 
-if (-not $SkipStart) {
-    if (Test-Path -LiteralPath $gatewayStart) {
-        & $gatewayStart -GatewayDirectory $GatewayDirectory
-    }
-    & (Join-Path $profileRoot "Start-MoonWakerProfileBridge.ps1") -ProfileRoot $profileRoot -ProfileId $ProfileId
-}
-
-# Never leak Host Control-provided secrets into Bridge child processes.
 $env:MOONWAKER_DISCORD_CLIENT_SECRET = $null
 
 Write-Host "Wake & Play integration profile '$ProfileId' installed for $($provisioningOwner.name)." -ForegroundColor Green

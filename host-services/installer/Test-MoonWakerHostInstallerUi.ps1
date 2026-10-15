@@ -67,9 +67,6 @@ try {
         $payloadStream, [IO.Compression.ZipArchiveMode]::Read, $false)
     try {
         $payloadNames = @($payload.Entries | ForEach-Object { $_.FullName })
-        if ($payloadNames -contains "host-services/install/Install-MoonWakerHostBundle.ps1") {
-            throw "The GUI installer still embeds the legacy profile-owning bundle entry point."
-        }
         if ($payloadNames -notcontains "host-services/install/Install-WakePlayProfile.ps1") {
             throw "Host Control profile provisioning script is missing from the installer payload."
         }

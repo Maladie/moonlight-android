@@ -2372,7 +2372,6 @@ namespace MoonWaker.HostConfigurator
         internal static void Provision(GatewayRegistryStore store, ProfileRecord profile)
         {
             string script = TrustedInstalledFile(store, "install", "Install-WakePlayProfile.ps1");
-            string hostControl = TrustedInstalledFile(store, "control", "MoonWakerHostControl.exe");
             List<string> args = new List<string>();
             args.Add("-NoProfile");
             args.Add("-ExecutionPolicy");
@@ -2386,7 +2385,6 @@ namespace MoonWaker.HostConfigurator
             args.Add("-InstallRoot"); args.Add(store.ProfilesRoot);
             args.Add("-GatewayConfigPath"); args.Add(store.ConfigPath);
             args.Add("-GatewayDirectory"); args.Add(store.GatewayDirectory);
-            args.Add("-HostControlExecutable"); args.Add(hostControl);
             args.Add("-DiscordPort"); args.Add(profile.DiscordPort.ToString());
             args.Add("-GameProviderPort"); args.Add(profile.GameProviderPort.ToString());
             args.Add("-SkipPlaynite");
@@ -2404,20 +2402,6 @@ namespace MoonWaker.HostConfigurator
             string expected = Path.GetFullPath(Path.Combine(store.ProfilesRoot, profile.Id));
             string actual = String.IsNullOrWhiteSpace(profile.Root)
                 ? expected : Path.GetFullPath(profile.Root);
-            string taskScheduler = TrustedSystemExecutable("schtasks.exe");
-            foreach (string taskName in new string[] {
-                "Wake & Play Discord Bridge (" + profile.Id + ")",
-                "Wake & Play Game Provider Bridge (" + profile.Id + ")",
-                "Wake & Play Playnite Bridge (" + profile.Id + ")",
-                "MoonWaker Profile Bridge (" + profile.Id + ")" })
-            {
-                if (TaskExists(taskScheduler, taskName))
-                    Run(taskScheduler, JoinArguments(new List<string> {
-                        "/Delete", "/TN", taskName, "/F" }), 15000, false);
-                if (TaskExists(taskScheduler, taskName))
-                    throw new InvalidOperationException(
-                        "Nie udało się potwierdzić usunięcia zadania startowego profilu.");
-            }
             bool exactRoot = String.Equals(expected.TrimEnd('\\'), actual.TrimEnd('\\'),
                 StringComparison.OrdinalIgnoreCase);
             if (!exactRoot) return;
@@ -2515,9 +2499,10 @@ namespace MoonWaker.HostConfigurator
 
         private static void RequireNoRunningOwnerProcesses(ProfileRecord profile, string profileRoot)
         {
+            // Host Control's tray runs the Agent and Discord Bridge from the installation with
+            // this profile's data directory as an argument.
             string rootPrefix = profileRoot.TrimEnd('\\') + "\\";
-            string[] markers = new string[] { "MoonWakerProfileBridge.ps1", "DiscordBridge.ps1",
-                "GameProviderBridge.py", "PlayniteBridge.py" };
+            string[] markers = new string[] { "DiscordBridge.ps1", "GameProviderBridge.py" };
             using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
                 "SELECT ProcessId,CommandLine FROM Win32_Process"))
             using (ManagementObjectCollection processes = searcher.Get())
@@ -2529,17 +2514,13 @@ namespace MoonWaker.HostConfigurator
                     if (processId <= 4) continue;
                     bool matchesRoot = commandLine.IndexOf(rootPrefix,
                         StringComparison.OrdinalIgnoreCase) >= 0;
-                    string escapedId = System.Text.RegularExpressions.Regex.Escape(profile.Id);
-                    bool matchesProfileId = System.Text.RegularExpressions.Regex.IsMatch(commandLine,
-                        "(?:^|\\s)-ProfileId\\s+(?:\"" + escapedId + "\"|" + escapedId +
-                        ")(?:\\s|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     bool known = false;
                     foreach (string marker in markers)
                         if (commandLine.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0)
                         { known = true; break; }
                     if (!HasValidSid(profile.Sid))
                     {
-                        if (known && (matchesRoot || matchesProfileId))
+                        if (known && matchesRoot)
                             throw new InvalidOperationException(
                                 "Starszy profil nie ma SID i nadal działa. Zatrzymaj go lub wyloguj konto, a potem ponów usunięcie.");
                         continue;
@@ -2751,37 +2732,6 @@ namespace MoonWaker.HostConfigurator
                         ? "Instalator profilu zakończył się błędem." : message.Trim());
                 }
                 return process.ExitCode;
-            }
-        }
-
-        private static bool TaskExists(string taskScheduler, string taskName)
-        {
-            ProcessStartInfo info = new ProcessStartInfo(taskScheduler, "/Query /FO CSV /NH");
-            info.UseShellExecute = false;
-            info.CreateNoWindow = true;
-            info.RedirectStandardOutput = true;
-            info.RedirectStandardError = true;
-            using (Process process = Process.Start(info))
-            {
-                string output = process.StandardOutput.ReadToEnd();
-                string error = process.StandardError.ReadToEnd();
-                if (!process.WaitForExit(15000))
-                    throw new TimeoutException("Nie można potwierdzić stanu zadań profilu.");
-                if (process.ExitCode != 0)
-                    throw new InvalidOperationException(String.IsNullOrWhiteSpace(error)
-                        ? "Nie można potwierdzić stanu Harmonogramu zadań."
-                        : error.Trim());
-                foreach (string line in output.Split(new string[] { "\r\n", "\n" },
-                    StringSplitOptions.RemoveEmptyEntries))
-                {
-                    if (!line.StartsWith("\"", StringComparison.Ordinal)) continue;
-                    int end = line.IndexOf("\",", 1, StringComparison.Ordinal);
-                    if (end < 0) continue;
-                    string scheduledName = line.Substring(1, end - 1).Replace("\"\"", "\"");
-                    if (String.Equals(scheduledName.TrimStart('\\'), taskName,
-                            StringComparison.OrdinalIgnoreCase)) return true;
-                }
-                return false;
             }
         }
 

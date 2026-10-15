@@ -397,18 +397,24 @@ loading. A protected selection is persisted only after Gateway verification,
 and a protected profile cannot remain the per-host automatic app profile.
 Selecting or refreshing an app profile has no Windows-session side effect.
 
-### 5.3 Profile Bridge supervisor
+### 5.3 Host Control tray hosts the profile Agent
 
-The Profile Bridge supervisor already owns:
+Host Control's tray, started at every sign-in by one machine `Run` entry, owns the
+per-user process lifecycle of the signed-in account's profile: the Agent
+(`GameProviderBridge.py` under `pythonw`) and the optional Discord Bridge, both run
+from the installation in a kill-on-close Job Object, restarted after an exit with a
+2–30 s backoff. Its status for Host Control comes from this host plus the
+children's `/health` and `/observation`; there is no state file and no process
+adoption by port or PID.
 
-- per-user process lifecycle;
-- Playnite and Discord health checks;
-- restart behavior;
-- profile ownership;
-- runtime status;
-- process adoption.
+Profile authority has one owner, the Agent (`AgentGuard.py`): it exits with code 78
+when its registry entry is disabled, tombstoned, re-rooted, a child profile or bound to
+another SID, and the tray does not restart it until that entry changes; an unreadable
+registry (code 74) is only a backoff. A tray with an elevated token hosts nothing. Its watchdog ends a hung
+process (code 70) so the tray restarts it.
 
-Guardian should use host-side repair actions rather than reimplement process supervision on Android.
+Guardian should use host-side repair actions (Host Control's **Napraw**) rather than
+reimplement process supervision on Android.
 
 ### 5.4 Game Provider Bridge
 
