@@ -58,7 +58,6 @@ class ChildTimeContractTest(unittest.TestCase):
                     "windows_account_name": "TESTPC\\Player",
                     "account_mapping_status": "resolved",
                     "game_provider_bridge": "http://127.0.0.1:8780",
-                    "playnite_bridge": "http://127.0.0.1:8780",
                 },
                 "kid": {
                     "id": "kid",

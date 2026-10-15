@@ -39,9 +39,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
                     "id": "parent", "kind": "standard", "name": "Parent",
                     "enabled": True,
                     "windows_account_sid": "S-1-5-21-1-2-3-1001",
-                    "owner_sid": "S-1-5-21-1-2-3-1001",
                     "windows_account_name": "TESTPC\\Parent",
-                    "owner": "TESTPC\\Parent",
                     "account_mapping_status": "resolved",
                 },
                 "kid": {

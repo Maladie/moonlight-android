@@ -117,7 +117,6 @@ try {
         }
         $source = Join-Path $repoRoot ($relative -replace "/", "\")
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            if ($relative -eq "host-services/bridges/playnite/PlayniteBridge.py") { continue }
             throw "Required host payload file is missing: $relative"
         }
         $destination = Join-Path $payloadRoot ($relative -replace "/", "\")

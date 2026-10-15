@@ -3,7 +3,6 @@
 param(
     [int]$GatewayPort = 8785,
     [switch]$SkipFirewall,
-    [switch]$SkipScheduledTask,
     [switch]$SkipStart
 )
 
@@ -86,9 +85,7 @@ function Assert-MoonWakerProcessesStopped {
             Where-Object {
                 $commandLine = [string]$_.CommandLine
                 $commandLine.IndexOf($GatewayDirectory, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-                ($commandLine.IndexOf("wakeplay_gateway.py", [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-                 $commandLine.IndexOf("MoonWakerGatewaySupervisor.ps1", [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-                 $commandLine.IndexOf("Start-MoonWakerGateway.ps1", [StringComparison]::OrdinalIgnoreCase) -ge 0)
+                $commandLine.IndexOf("wakeplay_gateway.py", [StringComparison]::OrdinalIgnoreCase) -ge 0
             })
     } catch {
         throw "Cannot verify that MoonWaker Gateway is stopped. Retry the installation."
@@ -194,8 +191,6 @@ if (Test-Path -LiteralPath (Join-Path $bridgeSource "discord\DiscordBridge.ps1")
     }
 }
 Copy-Item -LiteralPath (Join-Path $bridgeSource "playnite") -Destination $sourceDirectory -Recurse -Force
-Remove-Item -LiteralPath (Join-Path $sourceDirectory "playnite\PlayniteBridge.py") `
-    -Force -ErrorAction SilentlyContinue
 Copy-Item -Path (Join-Path $windowsLoginSource "*") -Destination $windowsLoginDirectory -Recurse -Force
 
 # Profile roots hold only data and configuration; Bridge code runs from bridge-source.
@@ -237,18 +232,6 @@ if (-not (Test-Path -LiteralPath $registryLockPath -PathType Leaf)) {
 }
 
 & (Join-Path $updaterSource "Install-MoonWakerHotUpdater.ps1") -SkipStart
-
-# Remove obsolete per-user tasks from older installers. New profile tasks are
-# created explicitly by Host Control for the selected account.
-if (-not $SkipScheduledTask) {
-    Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
-        $_.TaskName -like "Wake & Play Host Gateway*" -or
-        $_.TaskName -eq "MoonWaker Gateway Supervisor" -or
-        $_.TaskName -like "Wake & Play * Bridge*"
-    } | ForEach-Object {
-        try { Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction Stop } catch {}
-    }
-}
 
 $controlExe = Join-Path $controlDirectory "MoonWakerHostControl.exe"
 if (Test-Path -LiteralPath $controlExe -PathType Leaf) {

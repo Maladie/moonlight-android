@@ -15,13 +15,10 @@ from datetime import datetime, timezone
 import GameProviderBridge
 
 from PatchPlayniteConnector import (
-    ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR, PATCH_MARKER, PATCH_MARKER_V8,
-    PATCH_MARKER_V16,
-    INSTALL_EVENT_ANCHOR, INSTALL_READER_REPLACEMENT, INSTALL_UI_ANCHOR,
-    INSTALL_UI_REPLACEMENT, INSTALLING_PAYLOAD_ANCHOR,
-    READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR, SNAPSHOT_FUNCTION, STARTED_ANCHOR,
-    SOURCE_PAYLOAD_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_OBJECT_REPLACEMENT,
-    STATUS_PARAM_ANCHOR, patch_text,
+    ARTWORK_LOOKUP_ANCHOR, GAME_PAYLOAD_ANCHOR, PATCH_MARKER,
+    INSTALL_EVENT_ANCHOR, UI_BRIDGE_ANCHOR, INSTALLING_PAYLOAD_ANCHOR,
+    READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR, STARTED_ANCHOR,
+    STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
 )
 from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
@@ -4239,10 +4236,10 @@ class BridgeStateTest(unittest.TestCase):
 
     def test_connector_patch_is_guarded_and_idempotent(self):
         fixture = "\n".join([
-            INSTALL_UI_ANCHOR,
+            UI_BRIDGE_ANCHOR,
             READER_ANCHOR, STATUS_PARAM_ANCHOR, STATUS_OBJECT_ANCHOR,
             SEND_PARAM_ANCHOR, SEND_BUILD_ANCHOR, STARTED_ANCHOR,
-            ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR,
+            ARTWORK_LOOKUP_ANCHOR, GAME_PAYLOAD_ANCHOR,
             INSTALLING_PAYLOAD_ANCHOR, INSTALL_EVENT_ANCHOR,
             "function Start-ConnectorLoop {", "}",
         ])
@@ -4273,27 +4270,18 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(changed_again)
         self.assertEqual(patched, second)
 
-    def test_v16_connector_is_upgraded_with_emulator_window_identity(self):
-        source = PATCH_MARKER_V16 + "\n" + STATUS_OBJECT_REPLACEMENT
-
-        patched, changed = patch_text(source)
-
-        self.assertTrue(changed)
-        self.assertIn(PATCH_MARKER, patched)
-        self.assertNotIn(PATCH_MARKER_V16, patched)
-        self.assertIn("$play.EmulatorId", patched)
-        self.assertIn("$PlayniteApi.Database.Emulators", patched)
-
-    def test_connector_v8_is_upgraded_with_library_source(self):
-        patched, changed = patch_text(PATCH_MARKER_V8 + "\n"
-                                      + INSTALL_UI_REPLACEMENT + "\n"
-                                      + INSTALL_READER_REPLACEMENT + "\n"
-                                      + SOURCE_PAYLOAD_ANCHOR + "\n"
-                                      + STATUS_OBJECT_REPLACEMENT + "\n"
-                                      + SNAPSHOT_FUNCTION)
-        self.assertTrue(changed)
-        self.assertIn(PATCH_MARKER, patched)
-        self.assertIn("source          =", patched)
+    def test_connector_with_an_older_patch_is_unsupported(self):
+        fixture = "\n".join([
+            UI_BRIDGE_ANCHOR, READER_ANCHOR, STATUS_PARAM_ANCHOR, STATUS_OBJECT_ANCHOR,
+            SEND_PARAM_ANCHOR, SEND_BUILD_ANCHOR, STARTED_ANCHOR,
+            ARTWORK_LOOKUP_ANCHOR, GAME_PAYLOAD_ANCHOR,
+            INSTALLING_PAYLOAD_ANCHOR, INSTALL_EVENT_ANCHOR,
+            "function Start-ConnectorLoop {", "}",
+        ])
+        patched, _changed = patch_text(fixture)
+        older = patched.replace(PATCH_MARKER, "# WAKEPLAY-CONSOLE-BRIDGE-V16")
+        with self.assertRaisesRegex(ValueError, "Unsupported Sunshine Playnite Connector"):
+            patch_text(older)
 
     def test_game_readiness_requires_sustained_stability_and_closes_immediately(self):
         self._put_native_game()

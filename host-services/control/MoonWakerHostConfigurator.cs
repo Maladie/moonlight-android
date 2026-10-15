@@ -587,10 +587,8 @@ namespace MoonWaker.HostConfigurator
                 if (Value(parent, "pin_verifier") == null)
                     throw new InvalidOperationException(
                         "Rodzic profilu dziecka musi mieć ustawiony PIN aplikacji.");
-                if (!IsSid(Text(parent, "windows_account_sid",
-                        Text(parent, "owner_sid", ""))) ||
-                    String.IsNullOrWhiteSpace(Text(parent, "windows_account_name",
-                        Text(parent, "owner", ""))) ||
+                if (!IsSid(Text(parent, "windows_account_sid", "")) ||
+                    String.IsNullOrWhiteSpace(Text(parent, "windows_account_name", "")) ||
                     !String.Equals(Text(parent, "account_mapping_status", ""),
                         "resolved", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException(
@@ -882,15 +880,12 @@ namespace MoonWaker.HostConfigurator
                 profile["id"] = id;
                 profile["name"] = displayName.Trim();
                 profile["display_name"] = displayName.Trim();
-                profile["owner_sid"] = account.Sid;
                 profile["windows_account_sid"] = account.Sid;
-                profile["owner"] = account.QualifiedName;
                 profile["windows_account_name"] = account.QualifiedName;
                 profile["enabled"] = false;
                 profile["profile_root"] = root;
                 profile["discord_bridge"] = "http://127.0.0.1:" + ports[0];
                 profile["game_provider_bridge"] = "http://127.0.0.1:" + ports[1];
-                profile["playnite_bridge"] = "http://127.0.0.1:" + ports[1];
                 profile["remote_sign_in_enabled"] = false;
                 profile["account_mapping_status"] = "resolved";
                 profile["reservation_nonce"] = Guid.NewGuid().ToString("N");
@@ -1201,8 +1196,6 @@ namespace MoonWaker.HostConfigurator
                 EnsureRemovalIdentity(profile, expected);
                 EnsureDeletionTombstone(profile, expected);
                 string expectedRoot = Path.GetFullPath(Path.Combine(ProfilesRoot, expected.Id));
-                string actualRoot = String.IsNullOrWhiteSpace(expected.Root)
-                    ? expectedRoot : Path.GetFullPath(expected.Root);
                 if (!PathSafety.IsConclusiveAbsent(expectedRoot))
                     throw new InvalidOperationException(
                         "Katalog profilu nadal istnieje. Zamknij programy profilu i ponów usunięcie.");
@@ -1377,9 +1370,9 @@ namespace MoonWaker.HostConfigurator
                         throw new InvalidOperationException("Profil dziecka wskazuje profil bez konta Windows.");
                 }
                 foreach (string forbidden in new string[] {
-                    "windows_account_sid", "owner_sid", "windows_account_name", "owner",
+                    "windows_account_sid", "windows_account_name",
                     "profile_root", "discord_bridge",
-                    "game_provider_bridge", "playnite_bridge", "integration_token",
+                    "game_provider_bridge", "integration_token",
                     "pin_verifier", "account_mapping_status", "reservation_nonce",
                     "remote_sign_in_enabled",
                     "ratings", "minimum_age", "age_rating", "pegi", "esrb" })
@@ -1498,10 +1491,8 @@ namespace MoonWaker.HostConfigurator
             if (!BooleanValue(parent, "enabled") ||
                 Value(parent, "deletion_tombstone") != null)
                 throw new InvalidOperationException("Rodzic profilu dziecka jest wyłączony.");
-            if (!IsSid(Text(parent, "windows_account_sid",
-                    Text(parent, "owner_sid", ""))) ||
-                String.IsNullOrWhiteSpace(Text(parent, "windows_account_name",
-                    Text(parent, "owner", ""))) ||
+            if (!IsSid(Text(parent, "windows_account_sid", "")) ||
+                String.IsNullOrWhiteSpace(Text(parent, "windows_account_name", "")) ||
                 !String.Equals(Text(parent, "account_mapping_status", ""),
                     "resolved", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException(
@@ -1875,8 +1866,7 @@ namespace MoonWaker.HostConfigurator
 
         internal static ProfileRecord ToProfile(string id, Dictionary<string, object> profile)
         {
-            string provider = Text(profile, "game_provider_bridge",
-                Text(profile, "playnite_bridge", ""));
+            string provider = Text(profile, "game_provider_bridge", "");
             List<string> allowedGameKeys = new List<string>();
             IEnumerable allowed = Value(profile, "allowed_game_keys") as IEnumerable;
             if (allowed != null && !(allowed is string))
@@ -1892,8 +1882,8 @@ namespace MoonWaker.HostConfigurator
                 PolicyRevision = IntValue(profile, "policy_revision"),
                 AllowedGameKeys = allowedGameKeys,
                 DisplayName = Text(profile, "display_name", Text(profile, "name", id)),
-                Sid = Text(profile, "windows_account_sid", Text(profile, "owner_sid", "")),
-                AccountName = Text(profile, "windows_account_name", Text(profile, "owner", "")),
+                Sid = Text(profile, "windows_account_sid", ""),
+                AccountName = Text(profile, "windows_account_name", ""),
                 Root = Text(profile, "profile_root", ""),
                 DiscordEndpoint = Text(profile, "discord_bridge", ""),
                 GameProviderEndpoint = provider,
@@ -2017,8 +2007,7 @@ namespace MoonWaker.HostConfigurator
             {
                 if (String.Equals(item.Key, exceptId, StringComparison.Ordinal)) continue;
                 Dictionary<string, object> profile = item.Value as Dictionary<string, object>;
-                if (profile != null && SameSid(Text(profile, "windows_account_sid",
-                    Text(profile, "owner_sid", "")), sid))
+                if (profile != null && SameSid(Text(profile, "windows_account_sid", ""), sid))
                     throw new InvalidOperationException(
                         "To konto Windows ma już profil MoonWaker. Jedno konto może mieć tylko jeden profil.");
             }
@@ -2026,7 +2015,7 @@ namespace MoonWaker.HostConfigurator
 
         private static void EnsureSid(Dictionary<string, object> profile, string expectedSid)
         {
-            string current = Text(profile, "windows_account_sid", Text(profile, "owner_sid", ""));
+            string current = Text(profile, "windows_account_sid", "");
             if (!SameSid(current, expectedSid))
                 throw new InvalidOperationException(
                     "Mapowanie SID profilu zmieniło się. Usuń i utwórz profil ponownie.");
@@ -2036,8 +2025,8 @@ namespace MoonWaker.HostConfigurator
             ProfileRecord expected)
         {
             string id = Text(profile, "id", expected.Id);
-            string sid = Text(profile, "windows_account_sid", Text(profile, "owner_sid", ""));
-            string account = Text(profile, "windows_account_name", Text(profile, "owner", ""));
+            string sid = Text(profile, "windows_account_sid", "");
+            string account = Text(profile, "windows_account_name", "");
             string root = Text(profile, "profile_root", "");
             if (!String.Equals(id, expected.Id, StringComparison.Ordinal) ||
                 !String.Equals(sid, expected.Sid ?? "", StringComparison.OrdinalIgnoreCase) ||
@@ -2110,8 +2099,7 @@ namespace MoonWaker.HostConfigurator
             {
                 Dictionary<string, object> profile = value as Dictionary<string, object>;
                 if (profile == null) continue;
-                foreach (string name in new string[] { "discord_bridge",
-                    "game_provider_bridge", "playnite_bridge" })
+                foreach (string name in new string[] { "discord_bridge", "game_provider_bridge" })
                 {
                     int port = EndpointPort(Text(profile, name, ""));
                     if (port > 0) result.Add(port);
@@ -2332,12 +2320,8 @@ namespace MoonWaker.HostConfigurator
         {
             if (String.IsNullOrWhiteSpace(profile.DeletionNonce))
                 throw new InvalidOperationException("Brak trwałego znacznika usuwania profilu.");
-            string expected = Path.GetFullPath(Path.Combine(store.ProfilesRoot, profile.Id));
-            string actual = String.IsNullOrWhiteSpace(profile.Root)
-                ? expected : Path.GetFullPath(profile.Root);
-            bool exactRoot = String.Equals(expected.TrimEnd('\\'), actual.TrimEnd('\\'),
-                StringComparison.OrdinalIgnoreCase);
-            if (!exactRoot) return;
+            if (RequiresOfflineCleanup(store, profile)) return;
+            string actual = Path.GetFullPath(profile.Root);
             if (File.Exists(actual))
                 throw new InvalidOperationException("Ścieżka danych profilu jest plikiem.");
             Stopwatch clock = Stopwatch.StartNew();
@@ -2406,8 +2390,7 @@ namespace MoonWaker.HostConfigurator
             try
             {
                 string expected = Path.GetFullPath(Path.Combine(store.ProfilesRoot, profile.Id));
-                string actual = String.IsNullOrWhiteSpace(profile.Root)
-                    ? expected : Path.GetFullPath(profile.Root);
+                string actual = Path.GetFullPath(profile.Root);
                 return !String.Equals(expected.TrimEnd('\\'), actual.TrimEnd('\\'),
                     StringComparison.OrdinalIgnoreCase);
             }
@@ -2839,16 +2822,15 @@ namespace MoonWaker.HostConfigurator
                 File.WriteAllText(config,
                     "{\"schema_version\":2,\"child_profiles_enabled\":true,\"unknown_top\":{\"keep\":true},\"profiles\":{" +
                     "\"profile-a\":{\"id\":\"profile-a\",\"name\":\"A\",\"display_name\":\"A\"," +
-                    "\"owner_sid\":\"" + sidA + "\",\"windows_account_sid\":\"" + sidA + "\"," +
-                    "\"owner\":\"PC\\\\A\",\"windows_account_name\":\"PC\\\\A\",\"enabled\":true," +
+                    "\"windows_account_sid\":\"" + sidA + "\"," +
+                    "\"windows_account_name\":\"PC\\\\A\",\"enabled\":true," +
                     "\"profile_root\":\"C:\\\\MoonWaker\\\\profiles\\\\profile-a\"," +
                     "\"discord_bridge\":\"http://127.0.0.1:8765\"," +
                     "\"game_provider_bridge\":\"http://127.0.0.1:8780\"," +
-                    "\"playnite_bridge\":\"http://127.0.0.1:8780\"," +
                     "\"remote_sign_in_enabled\":false,\"account_mapping_status\":\"resolved\"," +
                     "\"unknown_profile\":17},\"default\":{\"id\":\"default\",\"name\":\"Legacy\"," +
-                    "\"display_name\":\"Legacy\",\"owner_sid\":\"\",\"windows_account_sid\":\"\"," +
-                    "\"owner\":\"\",\"windows_account_name\":\"\",\"enabled\":true," +
+                    "\"display_name\":\"Legacy\",\"windows_account_sid\":\"\"," +
+                    "\"windows_account_name\":\"\",\"enabled\":true," +
                     "\"profile_root\":\"" + legacyRecordedRoot.Replace("\\", "\\\\") +
                     "\",\"remote_sign_in_enabled\":false," +
                     "\"account_mapping_status\":\"action_required\"}},\"clients\":[{" +
@@ -2932,7 +2914,7 @@ namespace MoonWaker.HostConfigurator
                 Dictionary<string, object> childRaw = dictionaryValue(
                     dictionaryValue(jsonDocument(File.ReadAllText(config)), "profiles"), child.Id);
                 foreach (string forbidden in new string[] { "windows_account_sid", "profile_root",
-                    "discord_bridge", "game_provider_bridge", "playnite_bridge",
+                    "discord_bridge", "game_provider_bridge",
                     "pin_verifier", "reservation_nonce" })
                     Assert(!childRaw.ContainsKey(forbidden), "Child profile cloned " + forbidden + ".");
                 Dictionary<string, object> weekdays = dictionaryValue(

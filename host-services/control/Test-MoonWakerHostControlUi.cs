@@ -305,14 +305,14 @@ namespace MoonWaker.HostControl
                         true, false, false, false) } },
                 { "profiles", new Dictionary<string, object> {
                     { "mariusz", new Dictionary<string, object> {
-                        { "name", "Mariusz" }, { "owner", "MARIUSZ-PC\\mariusz" }, { "windows_account_sid", Sid },
+                        { "name", "Mariusz" }, { "windows_account_name", "MARIUSZ-PC\\mariusz" }, { "windows_account_sid", Sid },
                         { "account_mapping_status", "resolved" }, { "children_policy_revision", 4 },
                         { "profile_root", profile }, { "enabled", true }, { "remote_sign_in_enabled", true },
                         { "pin_verifier", new Dictionary<string, object> { { "version", 1 } } },
                         { "game_provider_bridge", "http://127.0.0.1:" + agentPort },
                         { "discord_bridge", "http://127.0.0.1:1" } } },
                     { "gosia", new Dictionary<string, object> {
-                        { "name", "Gosia" }, { "owner", "MARIUSZ-PC\\gosia" }, { "windows_account_sid", "S-1-5-21-1-2-3-1002" },
+                        { "name", "Gosia" }, { "windows_account_name", "MARIUSZ-PC\\gosia" }, { "windows_account_sid", "S-1-5-21-1-2-3-1002" },
                         { "profile_root", Path.Combine(root, "profiles", "gosia") }, { "enabled", true } } },
                     { "ania", new Dictionary<string, object> {
                         { "kind", "child" }, { "name", "Ania" }, { "parent_profile_id", "mariusz" }, { "enabled", true },

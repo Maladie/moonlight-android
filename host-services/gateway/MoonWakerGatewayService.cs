@@ -198,24 +198,7 @@ namespace MoonWaker.GatewayService
     {
         private static void Main(string[] args)
         {
-            GatewayServiceSettings settings = GatewayServiceSettings.Parse(args);
-            if (args != null && Array.IndexOf(args, "--console") >= 0)
-            {
-                using (GatewayProcessSupervisor supervisor =
-                    new GatewayProcessSupervisor(settings))
-                using (ManualResetEvent stopped = new ManualResetEvent(false))
-                {
-                    Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e) {
-                        e.Cancel = true;
-                        stopped.Set();
-                    };
-                    supervisor.Start();
-                    Console.WriteLine("MoonWaker Gateway service host is running. Press Ctrl+C to stop.");
-                    stopped.WaitOne();
-                }
-                return;
-            }
-            ServiceBase.Run(new MoonWakerGatewayService(settings));
+            ServiceBase.Run(new MoonWakerGatewayService(GatewayServiceSettings.Parse(args)));
         }
     }
 }

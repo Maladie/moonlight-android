@@ -326,9 +326,11 @@ Migration is intentionally staged:
 Gateway remains the only LAN-facing host API.
 
 `MoonWakerGateway` is an automatic Windows service running under the restricted
-`NT SERVICE\MoonWakerGateway` virtual account. It supervises only the machine
-Gateway process and is available before interactive sign-in. It must not start
-profile Bridges in session 0.
+`NT SERVICE\MoonWakerGateway` virtual account. Its host,
+`MoonWakerGatewayService.exe`, supervises only the machine Gateway process (restart after
+an exit with a 2–16 s backoff, state in `gateway-service-state.json`) and is available
+before interactive sign-in. The service is the Gateway's only launch path: there is no
+PowerShell supervisor or start/stop script. It must not start profile Bridges in session 0.
 
 Keep:
 
@@ -371,10 +373,10 @@ client and profile. Android supplies a transient process UUID through the shared
 Gateway transport in `X-MoonWaker-Profile-Session`. Successful verification creates
 one in-memory authorization per paired client/profile, bound to that UUID and
 the current verifier. An open application process keeps its authorization across
-screensaver idle time. A different or missing UUID cannot reuse it; a new PIN
-verification replaces it. Gateway restart, verifier changes, and existing grant
-checks revoke or reject access. Legacy clients without this header retain their
-fixed five-minute lease. Existing profile-scoped endpoints enforce this boundary;
+screensaver idle time. A different or missing UUID cannot reuse it, and a
+verification without the header is rejected; a new PIN verification replaces it.
+Gateway restart, verifier changes, and existing grant checks revoke or reject access.
+Existing profile-scoped endpoints enforce this boundary;
 no plaintext PIN, session UUID, or host unlock state is persisted on Android.
 
 Before waking an unreachable host, Android may check a device-local PIN verifier

@@ -42,46 +42,6 @@ if ($PurgeCredentials) {
         throw "Login Broker credential cleanup is missing; Login Broker and provider were left installed."
     }
     & $credentialCleanup -GatewayConfigPath (Join-Path $root "gateway\gateway.json")
-
-    $taskPrefixes = @(
-        "MoonWaker Gateway Supervisor",
-        "Wake & Play Host Gateway",
-        "Wake & Play Discord Bridge (",
-        "Wake & Play Game Provider Bridge (",
-        "Wake & Play Playnite Bridge ("
-    )
-    Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
-        $taskName = [string]$_.TaskName
-        @($taskPrefixes | Where-Object {
-            $taskName.StartsWith($_, [StringComparison]::OrdinalIgnoreCase)
-        }).Count -gt 0
-    } | ForEach-Object {
-        Stop-ScheduledTask -TaskName $_.TaskName -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false `
-            -ErrorAction SilentlyContinue
-    }
-
-    $startupDirectories = @(
-        (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"),
-        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup")
-    )
-    foreach ($startup in $startupDirectories) {
-        if (-not (Test-Path -LiteralPath $startup -PathType Container)) { continue }
-        Get-ChildItem -LiteralPath $startup -File -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.Name -eq "MoonWaker Gateway.lnk"
-            } | Remove-Item -Force -ErrorAction SilentlyContinue
-    }
-    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    $runValues = Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue
-    if ($null -ne $runValues) {
-        foreach ($property in $runValues.PSObject.Properties) {
-            if ($property.Name -eq "MoonWaker Gateway") {
-                Remove-ItemProperty -Path $runKey -Name $property.Name `
-                    -ErrorAction SilentlyContinue
-            }
-        }
-    }
 }
 if (Test-Path -LiteralPath $providerUninstall -PathType Leaf) {
     & $providerUninstall -Confirm:$false

@@ -342,7 +342,6 @@ class ChildProfilesGatewayTest(unittest.TestCase):
         other_parent.update({
             "id": "other-parent", "name": "Other parent",
             "windows_account_sid": "S-1-5-21-1-2-3-1002",
-            "owner_sid": "S-1-5-21-1-2-3-1002",
         })
         self.state.config["profiles"]["other-parent"] = other_parent
         self.client["profile_grants"]["living-room"] = [

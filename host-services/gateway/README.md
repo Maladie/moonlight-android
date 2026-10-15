@@ -8,14 +8,15 @@ configuration directory, and the `MoonWaker Stream` application ensured at start
 and rechecked every five minutes; a foreign application holding its name or UUID
 is never overwritten.
 
-For a complete installation use `../install/Install-WakePlayHost.ps1`. For
-development, run `Start-WakePlayGateway.ps1` and enter its six-digit code under
-Wake & Play's host integrations panel within ten minutes.
+For a complete installation use `../install/Install-WakePlayHost.ps1`; pair a TV with
+the code Host Control shows.
 
 The installer registers `MoonWakerGateway` as an automatic Windows service, so
-the HTTPS API is available before anyone signs in. It requires a system-wide
-Python installation under Program Files. Interactive Bridges still start at
-user logon because Discord RPC and user credentials are bound to that session.
+the HTTPS API is available before anyone signs in. The service host
+(`MoonWakerGatewayService.exe`) runs `wakeplay_gateway.py` with a system-wide Python
+installation under Program Files and restarts it after an exit; it is the Gateway's only
+launch path. Interactive Bridges still start at user logon (Host Control's tray) because
+Discord RPC and user credentials are bound to that session.
 
 The first start generates `gateway.json`, a private TLS key and a certificate.
 They are ignored by Git. Paired client tokens are stored only as SHA-256 hashes,
@@ -63,9 +64,8 @@ exit it in the previous profile before switching. Vibepollo is one per computer
 and is shared by every profile.
 
 The profile registry uses stable IDs and authoritative Windows account SIDs.
-Paired clients store `profile_grants` separately for every profile. Legacy
-clients migrate with `use_profile` for retained profiles and without
-`remote_sign_in`; upgrades never turn remote sign-in on automatically.
+Paired clients store `profile_grants` separately for every profile; a client without
+them has no profile.
 An optional four-digit MoonWaker app PIN is stored only as a versioned salted
 verifier. Profile listings expose only `pin_required`. Protected profile routes
 require an in-memory unlock lease. Android sends a fresh UUID in
@@ -73,8 +73,8 @@ require an in-memory unlock lease. Android sends a fresh UUID in
 paired client, profile, verifier and UUID and survives screensaver idle time.
 The UUID is never persisted. A new UUID must verify again, a new verification
 replaces the prior session for that client/profile, and profile grant,
-verifier, or Gateway restart invalidates the authorization. Clients that omit
-the header retain the fixed five-minute lease for compatibility.
+verifier, or Gateway restart invalidates the authorization. A request without
+the header unlocks nothing.
 
 ## API v1
 
@@ -92,9 +92,9 @@ the header retain the fixed five-minute lease for compatibility.
   `X-Microphone-Session-Id`.
 - `GET /api/v1/profiles` - lists safe profile names and Bridge health summaries.
 - `POST /api/v1/profiles/pin/verify` - verifies the selected profile's four-digit
-  app PIN for a paired client with `use_profile`; when
-  `X-MoonWaker-Profile-Session` is present, success creates a process-scoped
-  in-memory unlock lease, otherwise it creates a fixed five-minute lease.
+  app PIN for a paired client with `use_profile` and
+  `X-MoonWaker-Profile-Session` (required); success creates a process-scoped
+  in-memory unlock lease.
   Failures use a per-client/profile cooldown.
 - `POST /api/v1/system/session/ensure` - returns `ready` for an already-active
   selected profile, or starts a bounded remote Windows sign-in attempt when the

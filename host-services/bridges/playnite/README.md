@@ -86,9 +86,11 @@ value, for example when Vibepollo creates its virtual display dynamically.
 The current Sunshine connector already supports the launcher handshake,
 `launch` commands and game start/stop status. The next integration step extends
 that connector with `PatchPlayniteConnector.py`, which Host Control's **Połącz Playnite**
-runs (check, then `--apply`) with the installation's Python. The patch is
-idempotent, validates exact structural anchors and creates a
-`.wakeplay-backup` before changing the installed module. It reuses the
+runs (check, then `--apply`) with the installation's Python. The patch has one
+version (`WAKEPLAY-CONSOLE-BRIDGE-V17`) applied to the unmodified connector: it is
+idempotent, validates exact structural anchors and creates a `.wakeplay-backup` before
+changing the installed module. A connector carrying an older MoonWaker patch lacks the
+anchors and is reported as unsupported; reinstall the connector, then connect again. It reuses the
 connector's existing metadata functions to mirror library snapshots only to the
 requesting Bridge. It also adds Playnite's `StartedProcessId` to lifecycle
 status so the Bridge never accepts an unrelated foreground window. Restart

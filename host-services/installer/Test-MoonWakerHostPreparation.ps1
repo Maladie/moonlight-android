@@ -13,9 +13,6 @@ $paths = [ordered]@{
     UpdaterInstaller = Join-Path $root "updater\Install-MoonWakerHotUpdater.ps1"
     GatewayRuntime = Join-Path $root "gateway\wakeplay_gateway.py"
     BrokerInstaller = Join-Path $root "windows-login\login-broker\Install-MoonWakerLoginBroker.ps1"
-    StartGateway = Join-Path $root "gateway\Start-WakePlayGateway.ps1"
-    MachineStartGateway = Join-Path $root "gateway\Start-MoonWakerGateway.ps1"
-    StopGateway = Join-Path $root "gateway\Stop-MoonWakerGateway.ps1"
     DiscordBridge = Join-Path $root "bridges\discord\DiscordBridge.ps1"
     Configurator = Join-Path $root "control\MoonWakerHostConfigurator.cs"
     Installer = Join-Path $PSScriptRoot "MoonWakerHostInstaller.cs"
@@ -150,12 +147,10 @@ if (([regex]::Matches($sources.Host, "Stop-Process")).Count -ne 1) {
 Assert-Contains "Host" @('$controlPrefix = (Join-Path $InstallDirectory "control") + "\"')
 
 Assert-Contains "Gateway" @(
-    '$config.profiles = [pscustomobject]@{}',
     '$lockPath = "$configPath.lock"',
     'if (-not (Test-Path -LiteralPath $configPath))',
     "-Profile Private",
     "-RemoteAddress LocalSubnet",
-    '"*S-1-5-11" /T /C',
     '"*S-1-5-32-545:(OI)(CI)(RX)"',
     'Invoke-CimMethod -InputObject $serviceConfig -MethodName Change',
     'StartName = "NT SERVICE\$serviceName"',
@@ -170,8 +165,14 @@ Assert-Contains "Gateway" @(
     'Test-Path -LiteralPath $candidate -PathType Leaf',
     'Test-Path -LiteralPath $openssl -PathType Leaf'
 )
+# The Gateway runs only as the MoonWakerGateway service: no PowerShell supervisor or
+# start/stop scripts beside it.
+foreach ($removed in @("gateway\MoonWakerGatewaySupervisor.ps1", "gateway\Start-MoonWakerGateway.ps1",
+        "gateway\Start-WakePlayGateway.ps1", "gateway\Stop-MoonWakerGateway.ps1")) {
+    if (Test-Path -LiteralPath (Join-Path $root $removed)) { throw "$removed is still shipped." }
+}
 Assert-Contains "Gateway" @(
-    '& (Join-Path $InstallDirectory "Stop-MoonWakerGateway.ps1")',
+    '& (Join-Path $sourceDirectory "Stop-MoonWakerGatewayWorkers.ps1") -GatewayDirectory $InstallDirectory',
     'MoonWaker Gateway did not open port',
     'No Python startup error was recorded.'
 )
@@ -180,24 +181,15 @@ Assert-Contains "GatewayRuntime" @(
     'Path("gateway-startup-error.txt").write_text(',
     'platform.python_version()'
 )
-Assert-Contains "StopGateway" @(
-    '$runtimes | Where-Object { $_.pid -eq $ownerPid }'
-)
 Assert-Contains "BrokerInstaller" @(
     'Invoke-CimMethod -InputObject $serviceConfig -MethodName Change',
     'PathName = $quotedBinary',
     'StartMode = "Automatic"',
     'StartName = "LocalSystem"'
 )
-Assert-Contains "StartGateway" @(
-    '$registryLockPath = "$ConfigPath.lock"',
-    '"--registry-lock", $registryLockPath'
-)
 # The Gateway is an automatic service: nothing marks it as stopped by hand.
-foreach ($name in @("MachineStartGateway", "StopGateway", "Gateway")) {
-    if ($sources[$name].Contains("gateway-manually-stopped")) {
-        throw "$name still handles the manual Gateway stop marker."
-    }
+if ($sources.Gateway.Contains("gateway-manually-stopped")) {
+    throw "Gateway still handles the manual Gateway stop marker."
 }
 # Host Control's Configurator provisions profiles in C#; no profile installer is shipped.
 if ($sources.Host.Contains("Install-WakePlayProfile.ps1") -or
@@ -261,7 +253,7 @@ foreach ($unsafeCom in @("launchHostControl", "Shell.Application", "WScript.Shel
     }
 }
 
-foreach ($name in @("Prepare", "Wrapper", "Host", "Uninstall", "Gateway", "UpdaterInstaller", "BrokerInstaller", "StartGateway", "MachineStartGateway", "StopGateway", "DiscordBridge")) {
+foreach ($name in @("Prepare", "Wrapper", "Host", "Uninstall", "Gateway", "UpdaterInstaller", "BrokerInstaller", "DiscordBridge")) {
     $tokens = $null
     $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile(

@@ -136,14 +136,14 @@ namespace MoonWaker.HostControl
                         { "default", new object[] { "use_profile", "remote_sign_in" } } } } } } },
                 { "profiles", new Dictionary<string, object> {
                     { "default", new Dictionary<string, object> {
-                        { "name", "Diagnostic test" }, { "owner", "PC\\test" },
+                        { "name", "Diagnostic test" }, { "windows_account_name", "PC\\test" }, { "enabled", true },
                         { "windows_account_sid", Sid }, { "profile_root", profile },
                         { "pin_verifier", new Dictionary<string, object> { { "version", 1 } } },
                         { "game_provider_bridge", "http://127.0.0.1:" + agentPort },
                         { "discord_bridge", "http://127.0.0.1:" + discordPort } } },
                     // Account names are display only: the same name with another SID is foreign.
                     { "foreign", new Dictionary<string, object> {
-                        { "name", "Foreign" }, { "owner", "PC\\test" },
+                        { "name", "Foreign" }, { "windows_account_name", "PC\\test" },
                         { "windows_account_sid", foreignSid },
                         { "profile_root", Path.Combine(root, "profiles", "foreign") } } },
                     { "child", new Dictionary<string, object> {
@@ -582,13 +582,11 @@ namespace MoonWaker.HostControl
             HostBackend backend = Backend();
             Directory.CreateDirectory(Path.Combine(gateway, "logs"));
             Directory.CreateDirectory(Path.Combine(profile, "game-provider", "logs"));
-            Write(Path.Combine(gateway, "gateway-supervisor.jsonl"), "{\"event\":\"supervisor.started\"}");
-            Write(Path.Combine(gateway, "gateway-supervisor.jsonl.1"), "{\"event\":\"supervisor.stopped\"}");
             Write(Path.Combine(gateway, "logs", "gateway-diagnostics.jsonl"), "{\"event\":\"request.failed\"}");
             Write(Path.Combine(gateway, "logs", "gateway-diagnostics.jsonl.1"), "{\"event\":\"request.started\"}");
             Write(Path.Combine(profile, "game-provider", "logs", "provider-diagnostics.jsonl"), "{\"event\":\"x\"}");
             Write(Path.Combine(profile, "game-provider", "logs", "provider-diagnostics.jsonl.3"), "{\"event\":\"y\"}");
-            Write(Path.Combine(gateway, "gateway-supervisor.jsonl.secret"), "SECRET-MATERIAL");
+            Write(Path.Combine(gateway, "logs", "gateway-diagnostics.jsonl.secret"), "SECRET-MATERIAL");
             Write(Path.Combine(profile, "game-provider", "logs", "provider-diagnostics.jsonl.bak"), "SECRET-MATERIAL");
             Write(Path.Combine(profile, "private-config.json"), "SECRET-MATERIAL");
             // Another account's logs, and a registered id ".." that would name the installation.
@@ -604,7 +602,7 @@ namespace MoonWaker.HostControl
             Write(Path.Combine(gateway, "gateway.json"), Json.Serialize(registry));
             DiagnosticsExport export = backend.ExportDiagnostics(Path.Combine(root, "exports"));
             WriteRegistry(ForeignSid);
-            Expect(export.Files == 6 && File.Exists(export.Path), "the export archive");
+            Expect(export.Files == 4 && File.Exists(export.Path), "the export archive");
             using (ZipArchive archive = ZipFile.OpenRead(export.Path))
             {
                 List<string> names = new List<string>();
@@ -617,14 +615,13 @@ namespace MoonWaker.HostControl
                 names.Sort(StringComparer.Ordinal);
                 Expect(String.Join(",", names.ToArray()) ==
                     "gateway/service/gateway-diagnostics.jsonl,gateway/service/gateway-diagnostics.jsonl.1," +
-                    "gateway/supervisor/gateway-supervisor.jsonl,gateway/supervisor/gateway-supervisor.jsonl.1," +
                     "manifest.json,profiles/default/provider/provider-diagnostics.jsonl," +
                     "profiles/default/provider/provider-diagnostics.jsonl.3", "export entries: " + String.Join(",", names.ToArray()));
                 using (StreamReader reader = new StreamReader(archive.GetEntry("manifest.json").Open()))
                 {
                     Dictionary<string, object> manifest = Json.Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
                     Expect(manifest.Count == 6 && Convert.ToInt32(manifest["schema_version"]) == 1 &&
-                        Convert.ToInt32(manifest["file_count"]) == 6 && (string)manifest["version"] == "test" &&
+                        Convert.ToInt32(manifest["file_count"]) == 4 && (string)manifest["version"] == "test" &&
                         (string)manifest["build"] == "b1", "the export manifest");
                 }
             }

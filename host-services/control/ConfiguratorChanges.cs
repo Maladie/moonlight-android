@@ -484,8 +484,7 @@ namespace MoonWaker.HostConfigurator
         private string RemoveProfile(ChangeSet set, Change change)
         {
             ProfileRecord profile = RemovalTarget(store.Snapshot(set.RegistryRevision), change);
-            bool legacy = String.Equals(profile.Id, "default", StringComparison.OrdinalIgnoreCase) ||
-                ProfileProvisioner.RequiresOfflineCleanup(store, profile);
+            bool offline = ProfileProvisioner.RequiresOfflineCleanup(store, profile);
             // A false policy bit means the profile was never configured or its Broker secret was
             // already deleted, so a profile can be removed while Broker is not installed yet.
             if (profile.RemoteSignInEnabled && !effects.Broker.Delete(profile).Success)
@@ -495,7 +494,7 @@ namespace MoonWaker.HostConfigurator
             effects.RemoveArtifacts(store, profile);
             store.RemoveProfile(profile);
             return "Profil MoonWaker usunięto. Konto Windows nie zostało zmienione." +
-                (legacy ? " Teraz utwórz nowy profil w Host Control." : "");
+                (offline ? " Teraz utwórz nowy profil w Host Control." : "");
         }
 
         private ProfileRecord RemoteProfile(Dictionary<string, object> document, Change change)
@@ -669,8 +668,6 @@ namespace MoonWaker.HostConfigurator
                     "katalogu online. " + (unresolved
                         ? "Po oznaczeniu możesz od razu dodać nowy profil z tym SID; stary katalog sprząta administrator offline."
                         : "Po sprzątaniu offline ponów usunięcie, aby zwolnić SID przed utworzeniem nowego profilu."));
-            else if (String.Equals(profile.Id, "default", StringComparison.OrdinalIgnoreCase))
-                plan.Warnings.Add("To profil zgodności. Usunięcie dotyczy wyłącznie MoonWaker i nigdy nie zmieni konta Windows.");
             plan.ConfirmLabel = offline ? "Wyłącz; sprzątanie offline" : "Usuń dane profilu";
             plan.Danger = true;
         }

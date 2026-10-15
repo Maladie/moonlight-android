@@ -19,7 +19,7 @@ $stage = "initializing the elevated installer"
 try {
     $trustedModuleRoot = [IO.Path]::GetFullPath((Join-Path $PSHOME "Modules"))
     $env:PSModulePath = $trustedModuleRoot
-    foreach ($module in @("CimCmdlets", "ScheduledTasks", "NetAdapter", "NetSecurity")) {
+    foreach ($module in @("CimCmdlets", "NetAdapter", "NetSecurity")) {
         $manifest = Join-Path $trustedModuleRoot "$module\$module.psd1"
         if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
             throw "Required trusted Windows PowerShell module is missing: $module"

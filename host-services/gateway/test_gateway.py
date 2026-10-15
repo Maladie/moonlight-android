@@ -24,6 +24,7 @@ from control_snapshot_fixture import route_vibepollo_through_proxy
 from vibepollo_client import VibepolloError
 
 route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
+SESSION = "01234567-89ab-cdef-0123-456789abcdef"
 
 
 def activate_pairing(state: GatewayState, code: str = "123456", lifetime: int = 600) -> None:
@@ -44,8 +45,14 @@ class GatewayStateTest(unittest.TestCase):
         self.test_directory = tempfile.TemporaryDirectory()
         self.config_path = Path(self.test_directory.name) / "gateway-test-runtime.json"
         self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
             "certificate": "cert.pem",
             "private_key": "key.pem",
+            "profiles": {"default": {
+                "id": "default", "name": "Default", "enabled": True,
+                "discord_bridge": "http://127.0.0.1:8765",
+                "game_provider_bridge": "http://127.0.0.1:8780",
+            }},
             "clients": [],
         }), encoding="utf-8")
 
@@ -60,6 +67,7 @@ class GatewayStateTest(unittest.TestCase):
         handler.headers["Authorization"] = f"Bearer {token}"
         if profile_id is not None:
             handler.headers["X-WakePlay-Profile"] = profile_id
+            handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = SESSION
         handler.server = SimpleNamespace(state=state)
         handler.client_address = ("192.0.2.1", 12345)
         responses = []
@@ -127,7 +135,7 @@ class GatewayStateTest(unittest.TestCase):
             self.assertFalse(wakeplay_gateway.verify_profile_pin("1357", verifier))
         self.assertEqual(2, compare.call_count)
 
-        status, result = state.verify_pin(client, "protected", "2468")
+        status, result = state.verify_pin(client, "protected", "2468", SESSION)
         self.assertEqual(200, status)
         self.assertTrue(result["unlocked"])
 
@@ -139,12 +147,12 @@ class GatewayStateTest(unittest.TestCase):
             "pin_verifier": state.config["profiles"]["protected"]["pin_verifier"],
         }
         with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
-            self.assertEqual(403, state.verify_pin(client, "protected", "1357")[0])
-            self.assertEqual(429, state.verify_pin(client, "protected", "1357")[0])
-            self.assertEqual(403, state.verify_pin(other, "protected", "1357")[0])
-            self.assertEqual(403, state.verify_pin(client, "second", "1357")[0])
+            self.assertEqual(403, state.verify_pin(client, "protected", "1357", SESSION)[0])
+            self.assertEqual(429, state.verify_pin(client, "protected", "1357", SESSION)[0])
+            self.assertEqual(403, state.verify_pin(other, "protected", "1357", SESSION)[0])
+            self.assertEqual(403, state.verify_pin(client, "second", "1357", SESSION)[0])
         with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=101.0):
-            status, result = state.verify_pin(client, "protected", "1357")
+            status, result = state.verify_pin(client, "protected", "1357", SESSION)
             self.assertEqual(403, status)
             self.assertEqual(2, result["retry_after_seconds"])
 
@@ -175,27 +183,12 @@ class GatewayStateTest(unittest.TestCase):
             handler.do_GET()
             self.assertEqual(200, responses[0][0])
 
-        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=401.0):
-            handler, responses = self.request_handler(
-                state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
-            handler.do_GET()
-            self.assertEqual(403, responses[0][0])
-
-    def test_legacy_unlock_lease_expires_after_five_minutes(self):
-        state, client = self.pin_state()
-        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
-            status, result = state.verify_pin(client, "protected", "2468")
-        self.assertEqual(200, status)
-        self.assertEqual(300, result["expires_in_seconds"])
-        self.assertEqual(400.0, state.pin_unlock_leases[("client-1", "protected")][0])
-
-        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=399.0):
-            state.require_profile_unlock(client, "protected")
-        self.assertEqual(400.0, state.pin_unlock_leases[("client-1", "protected")][0])
-
-        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=400.0):
-            with self.assertRaises(PermissionError):
-                state.require_profile_unlock(client, "protected")
+        handler, responses = self.request_handler(
+            state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
+        handler.headers.replace_header(wakeplay_gateway.PROFILE_SESSION_HEADER,
+                                       "fedcba98-7654-3210-fedc-ba9876543210")
+        handler.do_GET()
+        self.assertEqual(403, responses[0][0])
 
     def test_profile_session_unlock_survives_idle_and_replaces_prior_session(self):
         state, client = self.pin_state()
@@ -255,6 +248,7 @@ class GatewayStateTest(unittest.TestCase):
         with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
             handler, responses = self.request_handler(
                 state, "/api/v1/profiles/pin/verify", "pin-token", "protected")
+            del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.read_json = lambda: {"pin": "2468"}
             handler.do_POST()
@@ -265,6 +259,7 @@ class GatewayStateTest(unittest.TestCase):
                     (session_a, 200), (session_b, 403), (None, 403)):
                 handler, responses = self.request_handler(
                     state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
+                del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
                 if session_id is not None:
                     handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_id
                 handler.do_GET()
@@ -272,12 +267,14 @@ class GatewayStateTest(unittest.TestCase):
 
             handler, responses = self.request_handler(
                 state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
+            del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(200, responses[0][0])
 
             handler, responses = self.request_handler(
                 state, "/api/v1/session/observation?request_ordinal=1", "other-token", "protected")
+            del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(403, responses[0][0])
@@ -285,6 +282,7 @@ class GatewayStateTest(unittest.TestCase):
             handler, responses = self.request_handler(
                 state, "/api/v1/session/observation?request_ordinal=1",
                 "pin-token", "protected-other")
+            del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(403, responses[0][0])
@@ -396,115 +394,6 @@ class GatewayStateTest(unittest.TestCase):
                          [profile["id"] for profile in result["profiles"]])
         self.assertIsNotNone(state.client_for_token(result["token"]))
 
-    def test_legacy_schema_migrates_profiles_and_clients_without_remote_grants(self):
-        token_hash = sha256_text("legacy-token")
-        self.config_path.write_text(json.dumps({
-            "certificate": "cert.pem",
-            "private_key": "key.pem",
-            "profiles": {
-                "basia": {
-                    "name": "Basia",
-                    "owner": "HOST\\Basia",
-                    "profile_root": "C:\\MoonWaker\\Basia",
-                    "discord_bridge": "http://127.0.0.1:8865",
-                    "playnite_bridge": "http://127.0.0.1:8880",
-                    "integration_token": "preserved-token",
-                    "remote_sign_in_enabled": True,
-                },
-                "manual": {
-                    "name": "Manual",
-                    "owner": "HOST\\Missing",
-                    "remote_sign_in_enabled": True,
-                },
-                "disabled": {
-                    "name": "Disabled",
-                    "enabled": False,
-                },
-            },
-            "clients": [{
-                "id": "legacy-client",
-                "name": "TV",
-                "token_sha256": token_hash,
-                "paired_at": 123,
-                "profile_grants": {
-                    "basia": ["use_profile", "remote_sign_in"],
-                },
-            }],
-        }), encoding="utf-8")
-        self.config_path.with_suffix(self.config_path.suffix + ".lock").write_bytes(b"0")
-
-        with mock.patch.object(
-                wakeplay_gateway, "resolve_windows_account_sid",
-                side_effect=lambda name: (
-                    "S-1-5-21-1-2-3-1001" if name == "HOST\\Basia" else "")):
-            state = GatewayState(self.config_path)
-
-        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
-                         saved["schema_version"])
-        basia = saved["profiles"]["basia"]
-        self.assertEqual("basia", basia["id"])
-        self.assertEqual("Basia", basia["display_name"])
-        self.assertEqual("S-1-5-21-1-2-3-1001", basia["windows_account_sid"])
-        self.assertEqual(basia["windows_account_sid"], basia["owner_sid"])
-        self.assertEqual("HOST\\Basia", basia["windows_account_name"])
-        self.assertEqual("C:\\MoonWaker\\Basia", basia["profile_root"])
-        self.assertEqual("http://127.0.0.1:8880", basia["game_provider_bridge"])
-        self.assertEqual("preserved-token", basia["integration_token"])
-        self.assertFalse(basia["remote_sign_in_enabled"])
-        manual = saved["profiles"]["manual"]
-        self.assertEqual("action_required", manual["account_mapping_status"])
-        self.assertFalse(manual["remote_sign_in_enabled"])
-        self.assertIn("manual", saved["profiles"])
-        client = saved["clients"][0]
-        self.assertEqual(token_hash, client["token_sha256"])
-        self.assertEqual(
-            {"basia": ["use_profile"], "default": ["use_profile"],
-             "disabled": ["use_profile"],
-             "manual": ["use_profile"]},
-            client["profile_grants"])
-        for permissions in client["profile_grants"].values():
-            self.assertNotIn("remote_sign_in", permissions)
-        with self.assertRaises(PermissionError):
-            state.authorize_profile(client, "basia", "remote_sign_in")
-
-    def test_schema2_to3_preserves_standard_identity_and_grants(self):
-        verifier = {
-            "version": 1, "algorithm": "pbkdf2-sha256", "iterations": 100_000,
-            "salt": "MDEyMzQ1Njc4OWFiY2RlZg==", "digest": "preserved-digest",
-        }
-        self.config_path.write_text(json.dumps({
-            "schema_version": 2,
-            "certificate": "cert.pem", "private_key": "key.pem",
-            "profiles": {"basia": {
-                "id": "basia", "name": "Basia", "display_name": "Basia",
-                "enabled": True, "owner_sid": "S-1-5-21-1-2-3-1001",
-                "windows_account_sid": "S-1-5-21-1-2-3-1001",
-                "owner": "HOST\\Basia", "windows_account_name": "HOST\\Basia",
-                "profile_root": "C:\\MoonWaker\\basia", "pin_verifier": verifier,
-                "remote_sign_in_enabled": True,
-            }},
-            "clients": [{
-                "id": "client-1", "token_sha256": sha256_text("schema2-token"),
-                "profile_grants": {"basia": ["use_profile", "remote_sign_in"]},
-            }],
-        }), encoding="utf-8")
-        with mock.patch.object(
-                wakeplay_gateway, "resolve_windows_account_sid",
-                side_effect=AssertionError("schema2 migration resolved a SID")) as resolver:
-            state = GatewayState(self.config_path)
-        resolver.assert_not_called()
-        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(3, saved["schema_version"])
-        self.assertNotIn("default", saved["profiles"])
-        profile = saved["profiles"]["basia"]
-        self.assertEqual("S-1-5-21-1-2-3-1001", profile["windows_account_sid"])
-        self.assertEqual("C:\\MoonWaker\\basia", profile["profile_root"])
-        self.assertEqual(verifier, profile["pin_verifier"])
-        self.assertEqual({"basia": ["use_profile", "remote_sign_in"]},
-                         saved["clients"][0]["profile_grants"])
-        self.assertEqual("basia", state.config["profiles"]["basia"]["id"])
-
     def test_current_schema_missing_or_malformed_grants_fail_closed(self):
         self.config_path.write_text(json.dumps({
             "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
@@ -523,21 +412,6 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual({}, state.config["clients"][0]["profile_grants"])
         self.assertEqual({}, state.config["clients"][1]["profile_grants"])
 
-    def test_current_schema_does_not_resurrect_removed_compatibility_profile(self):
-        self.config_path.write_text(json.dumps({
-            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
-            "certificate": "cert.pem",
-            "private_key": "key.pem",
-            "profiles": {},
-            "clients": [],
-        }), encoding="utf-8")
-
-        state = GatewayState(self.config_path)
-
-        self.assertEqual({}, state.config["profiles"])
-        self.assertEqual({}, json.loads(
-            self.config_path.read_text(encoding="utf-8"))["profiles"])
-
     def test_tombstoned_profile_stays_disabled_and_cannot_be_used_or_regranted(self):
         token = "existing-client-token"
         tombstone = {"nonce": "deletion-nonce", "generation": 3,
@@ -548,7 +422,6 @@ class GatewayStateTest(unittest.TestCase):
             "private_key": "key.pem",
             "profiles": {"pending": {
                 "id": "pending", "name": "Pending", "enabled": True,
-                "owner_sid": "S-1-5-21-1-2-3-1001",
                 "windows_account_sid": "S-1-5-21-1-2-3-1001",
                 "remote_sign_in_enabled": True,
                 "deletion_tombstone": tombstone,
@@ -638,7 +511,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(1, replace.call_count)
 
-    def test_migration_never_replaces_registry_changed_while_starting(self):
+    def test_startup_never_replaces_registry_changed_while_starting(self):
         replacement = {
             "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
             "certificate": "replacement-cert.pem",
@@ -653,7 +526,7 @@ class GatewayStateTest(unittest.TestCase):
             yield
 
         with mock.patch.object(GatewayState, "registry_update_lock", concurrent_edit):
-            with self.assertRaisesRegex(RuntimeError, "changed during migration"):
+            with self.assertRaisesRegex(RuntimeError, "changed during startup"):
                 GatewayState(self.config_path)
 
         self.assertEqual(
@@ -1370,7 +1243,7 @@ class GatewayStateTest(unittest.TestCase):
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "playnite_bridge": "http://127.0.0.1:8880",
+            "game_provider_bridge": "http://127.0.0.1:8880",
         }
 
         self.assertEqual("basia", state.select_profile("basia"))
@@ -1404,7 +1277,7 @@ class GatewayStateTest(unittest.TestCase):
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "playnite_bridge": "http://127.0.0.1:8880",
+            "game_provider_bridge": "http://127.0.0.1:8880",
         }
 
         state.select_profile("basia", record_use=True)
@@ -1425,7 +1298,7 @@ class GatewayStateTest(unittest.TestCase):
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "playnite_bridge": "http://127.0.0.1:8880",
+            "game_provider_bridge": "http://127.0.0.1:8880",
         }
         state.request_context.request_id = "request-7"
         recorder = mock.Mock()
@@ -2649,7 +2522,11 @@ class GatewayDiagnosticsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "gateway.json"
             config_path.write_text(json.dumps({
+                "schema_version": 3,
                 "certificate": "cert.pem", "private_key": "key.pem", "clients": [],
+                "profiles": {"default": {
+                    "id": "default", "enabled": True,
+                    "game_provider_bridge": "http://127.0.0.1:8780"}},
             }), encoding="utf-8")
             state = GatewayState(config_path)
             captured = []
@@ -2943,7 +2820,7 @@ class LoginBrokerGatewayTest(unittest.TestCase):
             "use_profile", "manage_children"]
         session_id = "01234567-89ab-cdef-0123-456789abcdef"
         self.assertEqual(200, self.state.verify_pin(
-            self.client, "living-room", "2468")[0])
+            self.client, "living-room", "2468", session_id)[0])
         with self.assertRaises(PermissionError):
             self.state.require_child_management(
                 self.client, "living-room", session_id, "play-lease")
@@ -3269,8 +3146,8 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
                 "parent": {
                     "id": "parent", "kind": "standard", "name": "Parent",
                     "enabled": True, "windows_account_sid": sid,
-                    "owner_sid": sid, "windows_account_name": "PC\\Parent",
-                    "owner": "PC\\Parent", "account_mapping_status": "resolved",
+                    "windows_account_name": "PC\\Parent",
+                    "account_mapping_status": "resolved",
                 },
                 "kid": {
                     "id": "kid", "kind": "child", "name": "Kid",

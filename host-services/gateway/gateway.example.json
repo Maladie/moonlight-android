@@ -1,31 +1,11 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "listen_host": "0.0.0.0",
   "listen_port": 8785,
   "certificate": "gateway-cert.pem",
   "private_key": "gateway-key.pem",
   "microphone_worker": "MoonWakerMicrophoneWorker.exe",
   "discord_audio_worker": "MoonWakerDiscordAudioWorker.exe",
-  "discord_bridge": "http://127.0.0.1:8765",
-  "game_provider_bridge": "http://127.0.0.1:8780",
-  "playnite_bridge": "http://127.0.0.1:8780",
-  "profiles": {
-    "default": {
-      "id": "default",
-      "name": "Default",
-      "display_name": "Default",
-      "owner_sid": "",
-      "windows_account_sid": "",
-      "owner": "",
-      "windows_account_name": "",
-      "enabled": true,
-      "profile_root": "",
-      "discord_bridge": "http://127.0.0.1:8765",
-      "game_provider_bridge": "http://127.0.0.1:8780",
-      "playnite_bridge": "http://127.0.0.1:8780",
-      "remote_sign_in_enabled": false,
-      "account_mapping_status": "action_required"
-    }
-  },
+  "profiles": {},
   "clients": []
 }

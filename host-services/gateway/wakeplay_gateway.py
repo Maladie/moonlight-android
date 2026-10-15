@@ -117,7 +117,6 @@ CONTROL_START_PROOF_RESERVE_SECONDS = 10.0
 CONTROL_ABANDON_RETRY_SECONDS = 1.0
 CHILD_TIME_USAGE_FILE = "child-time-usage.json"
 CLIENT_LAST_SEEN_WRITE_SECONDS = 5 * 60
-PIN_UNLOCK_LEASE_SECONDS = 5 * 60
 PIN_FAILURE_WINDOW_SECONDS = 5 * 60
 PIN_MAX_COOLDOWN_SECONDS = 30
 PROFILE_PERMISSIONS = {"use_profile", "remote_sign_in", "manage_children"}
@@ -236,51 +235,6 @@ def verify_profile_pin(pin: str, verifier: Any) -> bool:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def resolve_windows_account_sid(account_name: str) -> str:
-    """Resolve a Windows account name without invoking a shell."""
-    if os.name != "nt" or not account_name.strip():
-        return ""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        lookup = advapi32.LookupAccountNameW
-        lookup.argtypes = [
-            wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPVOID,
-            wintypes.LPDWORD, wintypes.LPWSTR, wintypes.LPDWORD,
-            wintypes.LPDWORD,
-        ]
-        lookup.restype = wintypes.BOOL
-        sid_size = wintypes.DWORD()
-        domain_size = wintypes.DWORD()
-        sid_type = wintypes.DWORD()
-        lookup(None, account_name, None, ctypes.byref(sid_size), None,
-               ctypes.byref(domain_size), ctypes.byref(sid_type))
-        if ctypes.get_last_error() != 122 or sid_size.value <= 0:
-            return ""
-        sid = ctypes.create_string_buffer(sid_size.value)
-        domain = ctypes.create_unicode_buffer(max(1, domain_size.value))
-        if not lookup(None, account_name, sid, ctypes.byref(sid_size), domain,
-                      ctypes.byref(domain_size), ctypes.byref(sid_type)):
-            return ""
-        sid_text = wintypes.LPWSTR()
-        convert = advapi32.ConvertSidToStringSidW
-        convert.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
-        convert.restype = wintypes.BOOL
-        if not convert(sid, ctypes.byref(sid_text)):
-            return ""
-        try:
-            return str(sid_text.value or "")
-        finally:
-            kernel32.LocalFree.argtypes = [wintypes.LPVOID]
-            kernel32.LocalFree.restype = wintypes.LPVOID
-            kernel32.LocalFree(ctypes.cast(sid_text, wintypes.LPVOID))
-    except (AttributeError, OSError, TypeError, ValueError):
-        return ""
 
 
 class LoginBrokerClient:
@@ -790,38 +744,18 @@ class GatewayState:
         before_migration = json.dumps(
             self.config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         try:
-            schema_version = int(self.config.get("schema_version", 1))
-        except (TypeError, ValueError):
+            schema_version = int(self.config["schema_version"])
+        except (KeyError, TypeError, ValueError):
             raise ValueError("Invalid Gateway configuration schema version.") from None
         if schema_version > GATEWAY_SCHEMA_VERSION:
             raise ValueError("Gateway configuration was written by a newer version.")
-        # Schema 1 is the only compatibility migration.  Schema 2 already
-        # has explicit grants and account mapping; 2 -> 3 only adds the
-        # child-profile DTO/version and must not recreate defaults or resolve
-        # a new SID.
-        legacy_schema = schema_version < 2
         self.config.setdefault("listen_host", "0.0.0.0")
         self.config.setdefault("listen_port", 8785)
-        self.config.setdefault("discord_bridge", "http://127.0.0.1:8765")
-        provider_bridge = str(self.config.get("game_provider_bridge") or
-                              self.config.get("playnite_bridge") or
-                              "http://127.0.0.1:8780")
-        self.config.setdefault("game_provider_bridge", provider_bridge)
-        self.config.setdefault("playnite_bridge", provider_bridge)
         self.config.setdefault("microphone_worker", "MoonWakerMicrophoneWorker.exe")
         self.config.setdefault("discord_audio_worker", "MoonWakerDiscordAudioWorker.exe")
         self.config.setdefault("profiles", {})
         if not isinstance(self.config["profiles"], dict):
             raise ValueError("Gateway profiles must be an object.")
-        # Create the compatibility record only while migrating a schema-1
-        # registry.  A schema-2 administrator may deliberately remove it;
-        # restarting the Gateway must not silently resurrect that profile.
-        if legacy_schema:
-            self.config["profiles"].setdefault("default", {
-                "discord_bridge": self.config["discord_bridge"],
-                "game_provider_bridge": self.config["game_provider_bridge"],
-                "playnite_bridge": self.config["playnite_bridge"],
-            })
         for profile_id, profile in self.config["profiles"].items():
             if not isinstance(profile, dict):
                 raise ValueError(f"Gateway profile {profile_id!r} must be an object.")
@@ -830,7 +764,7 @@ class GatewayState:
             ).strip()[:80] or str(profile_id)
             kind = str(profile.get("kind") or STANDARD_PROFILE_KIND).strip().lower()
             if kind == CHILD_PROFILE_KIND:
-                if not legacy_schema and not isinstance(profile.get("enabled"), bool):
+                if not isinstance(profile.get("enabled"), bool):
                     raise ValueError(f"Gateway child profile {profile_id!r} has invalid enabled state.")
                 profile["id"] = str(profile_id)
                 profile["kind"] = CHILD_PROFILE_KIND
@@ -838,10 +772,8 @@ class GatewayState:
                 profile["display_name"] = display_name
                 profile["parent_profile_id"] = str(
                     profile.get("parent_profile_id") or "").strip()
-                profile["enabled"] = (
-                    (profile.get("enabled") is True or
-                     (legacy_schema and "enabled" not in profile)) and
-                    not profile_deletion_pending(profile))
+                profile["enabled"] = (profile["enabled"] and
+                                      not profile_deletion_pending(profile))
                 allowed_game_keys = profile.get("allowed_game_keys", [])
                 if not isinstance(allowed_game_keys, list):
                     raise ValueError(f"Gateway child profile {profile_id!r} has invalid game policy.")
@@ -860,41 +792,22 @@ class GatewayState:
                 continue
             if kind != STANDARD_PROFILE_KIND:
                 raise ValueError(f"Gateway profile {profile_id!r} has an invalid kind.")
-            endpoint = str(profile.get("game_provider_bridge") or
-                           profile.get("playnite_bridge") or provider_bridge)
-            account_name = str(
-                profile.get("windows_account_name") or profile.get("owner") or ""
-            ).strip()
-            sid_candidates = (
-                str(profile.get("windows_account_sid") or "").strip(),
-                str(profile.get("owner_sid") or "").strip(),
-            )
-            account_sid = next((candidate for candidate in sid_candidates
-                                if WINDOWS_SID_PATTERN.fullmatch(candidate)), "")
-            if not account_sid:
-                account_sid = resolve_windows_account_sid(account_name) \
-                    if legacy_schema else ""
+            account_name = str(profile.get("windows_account_name") or "").strip()
+            account_sid = str(profile.get("windows_account_sid") or "").strip()
             mapping_resolved = bool(WINDOWS_SID_PATTERN.fullmatch(account_sid))
+            if not mapping_resolved:
+                account_sid = ""
             profile["id"] = str(profile_id)
             profile["name"] = display_name
             profile["display_name"] = display_name
-            profile["owner_sid"] = account_sid
             profile["windows_account_sid"] = account_sid
-            profile["owner"] = account_name
             profile["windows_account_name"] = account_name
-            profile["enabled"] = (
-                (profile.get("enabled") is True or
-                 (legacy_schema and "enabled" not in profile)) and
-                not profile_deletion_pending(profile)
-            )
+            profile["enabled"] = (profile.get("enabled") is True and
+                                  not profile_deletion_pending(profile))
             profile["profile_root"] = str(profile.get("profile_root") or "")
-            profile.setdefault("discord_bridge", self.config["discord_bridge"])
-            profile.setdefault("game_provider_bridge", endpoint)
-            profile.setdefault("playnite_bridge", endpoint)
             profile["remote_sign_in_enabled"] = (
                 bool(profile.get("remote_sign_in_enabled", False)) and
-                mapping_resolved and not legacy_schema and
-                not profile_deletion_pending(profile))
+                mapping_resolved and not profile_deletion_pending(profile))
             profile["account_mapping_status"] = (
                 "resolved" if mapping_resolved else "action_required")
             profile["kind"] = STANDARD_PROFILE_KIND
@@ -912,18 +825,11 @@ class GatewayState:
                 client_activity = activity_document["clients"]
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             pass
-        existing_profiles = {str(profile_id) for profile_id in self.config["profiles"]}
         for client in self.config["clients"]:
             if not isinstance(client, dict):
                 raise ValueError("Gateway client records must be objects.")
-            grants = ({profile_id: ["use_profile"]
-                       for profile_id in sorted(existing_profiles)
-                       if self._is_standard_profile(
-                           self.config["profiles"].get(profile_id))}
-                      if legacy_schema else client.get("profile_grants"))
-            if grants is None:
-                grants = {}
-            elif not isinstance(grants, dict):
+            grants = client.get("profile_grants")
+            if not isinstance(grants, dict):
                 grants = {}
             normalized_grants = {}
             for profile_id, permissions in grants.items():
@@ -977,11 +883,10 @@ class GatewayState:
         self.network_downloads: set[tuple[str, str]] = set()
         self.pin_failures: dict[tuple[str, str], list[float]] = {}
         self.pin_blocked_until: dict[tuple[str, str], float] = {}
-        # The lease key is always (client_id, profile_id). Its session ID is
-        # transient process authorization: None means a legacy five-minute
-        # lease, while a UUID means the matching process session has no wall-
-        # clock expiry. A new verification replaces the prior lease.
-        self.pin_unlock_leases: dict[tuple[str, str], tuple[float | None, str, str | None]] = {}
+        # The lease key is always (client_id, profile_id): (verifier fingerprint, profile
+        # session ID). The session is transient process authorization without a wall-clock
+        # expiry. A new verification replaces the prior lease.
+        self.pin_unlock_leases: dict[tuple[str, str], tuple[str, str]] = {}
         self.child_management_sessions: dict[
             tuple[str, str, str], tuple[float, str, str]] = {}
         # CP-04 management endpoints stay fail-closed until the complete
@@ -1148,9 +1053,9 @@ class GatewayState:
             # A child is an actor only.  Any executable identity or secret is
             # rejected instead of being silently treated as a parent.
             forbidden = {
-                "windows_account_sid", "owner_sid", "windows_account_name", "owner",
+                "windows_account_sid", "windows_account_name",
                 "profile_root", "discord_bridge",
-                "game_provider_bridge", "playnite_bridge", "integration_token",
+                "game_provider_bridge", "integration_token",
                 "pin_verifier", "account_mapping_status", "reservation_nonce",
                 "remote_sign_in_enabled",
                 "ratings", "minimum_age", "age_rating", "pegi", "esrb",
@@ -1518,7 +1423,7 @@ class GatewayState:
                     self.config_path.read_text(encoding="utf-8-sig") !=
                     expected_registry_text):
                 raise RuntimeError(
-                    "Gateway configuration changed during migration; restart the Gateway.")
+                    "Gateway configuration changed during startup; restart the Gateway.")
             self.replace_registry(self.config)
 
     @contextlib.contextmanager
@@ -2160,8 +2065,10 @@ class GatewayState:
             return HTTPStatus.OK, {"ok": True}, self.pin_verifier_fingerprint(profile)
 
     def verify_pin(self, client: dict[str, Any], profile_id: str,
-                   pin: str, session_id: str | None = None) -> tuple[int, dict[str, Any]]:
+                   pin: str, session_id: str | None) -> tuple[int, dict[str, Any]]:
         session_id = normalize_profile_session_id(session_id)
+        if session_id is None:
+            raise ValueError(f"A valid {PROFILE_SESSION_HEADER} header is required.")
         profile = self.config.get("profiles", {}).get(profile_id)
         if not isinstance(profile, dict) or not profile_pin_required(profile):
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "pin_not_required"}
@@ -2169,19 +2076,9 @@ class GatewayState:
         if status != HTTPStatus.OK:
             return status, result
         key = (self.pin_client_key(client), profile_id)
-        now = time.monotonic()
         with self.lock:
-            self.pin_unlock_leases[key] = (
-                None if session_id is not None else now + PIN_UNLOCK_LEASE_SECONDS,
-                fingerprint,
-                session_id,
-            )
-        result = {"ok": True, "unlocked": True}
-        if session_id is None:
-            result["expires_in_seconds"] = PIN_UNLOCK_LEASE_SECONDS
-        else:
-            result["session_scoped"] = True
-        return HTTPStatus.OK, result
+            self.pin_unlock_leases[key] = (fingerprint, session_id)
+        return HTTPStatus.OK, {"ok": True, "unlocked": True, "session_scoped": True}
 
     def require_profile_unlock(self, client: dict[str, Any], profile_id: str,
                                session_id: str | None = None) -> None:
@@ -2189,26 +2086,17 @@ class GatewayState:
         profile = self.config.get("profiles", {}).get(profile_id)
         if not isinstance(profile, dict) or not profile_pin_required(profile):
             return
-        client_id = self.pin_client_key(client)
-        key = (client_id, profile_id)
-        now = time.monotonic()
+        key = (self.pin_client_key(client), profile_id)
         with self.lock:
             lease = self.pin_unlock_leases.get(key)
             fingerprint_matches = (lease is not None and secrets.compare_digest(
-                lease[1], self.pin_verifier_fingerprint(profile)))
-            session_lease = (session_id is not None and lease is not None and
-                             lease[0] is None and lease[2] == session_id)
-            legacy_lease = (session_id is None and lease is not None and
-                            lease[0] is not None and lease[0] > now and
-                            lease[2] is None)
-            if fingerprint_matches and (session_lease or legacy_lease):
+                lease[0], self.pin_verifier_fingerprint(profile)))
+            if fingerprint_matches and session_id is not None and lease[1] == session_id:
                 return
             # A stale or different process must not be able to invalidate the
-            # currently authorized process. Verifier changes and expiry do
-            # invalidate the stored lease; session mismatches only deny access.
-            if (lease is not None and
-                    (not fingerprint_matches or
-                     (lease[0] is not None and lease[0] <= now))):
+            # currently authorized process. A verifier change invalidates the
+            # stored lease; session mismatches only deny access.
+            if lease is not None and not fingerprint_matches:
                 self.pin_unlock_leases.pop(key, None)
         raise PermissionError("Profile app PIN verification required.")
 
@@ -2275,8 +2163,6 @@ class GatewayState:
         selected = str(profile_id or "").strip()
         if not PROFILE_ID_PATTERN.fullmatch(selected):
             raise ValueError("Invalid integration profile ID.")
-        if selected == "default":
-            raise ValueError("The compatibility default profile cannot be deleted.")
         with self.lock:
             with self.registry_update_lock():
                 current = self.current_registry()
@@ -2346,12 +2232,6 @@ class GatewayState:
         key = "game_provider_bridge" if name in {"game_provider", "playnite"} \
             else f"{name}_bridge"
         base = str(profile.get(key, "")).rstrip("/")
-        if not base and key == "game_provider_bridge":
-            base = str(profile.get("playnite_bridge", "")).rstrip("/")
-        if not base and selected_profile_id == "default":
-            base = str(self.config.get(key) or (
-                self.config.get("playnite_bridge")
-                if key == "game_provider_bridge" else "")).rstrip("/")
         if not base.startswith("http://127.0.0.1:") and not base.startswith("http://localhost:"):
             raise ValueError(f"{name} bridge must remain on loopback")
         return base + path
@@ -9027,11 +8907,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             child_reads = {
                 f"{API_PREFIX}/library": "library",
-                f"{API_PREFIX}/playnite/library/list": "library",
                 f"{API_PREFIX}/artwork": "artwork",
-                f"{API_PREFIX}/playnite/artwork": "artwork",
                 f"{API_PREFIX}/game/events": "events",
-                f"{API_PREFIX}/playnite/events": "events",
                 f"{API_PREFIX}/session/observation": "observation",
             }
             resource = child_reads.get(path)
@@ -9095,21 +8972,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 query.get("request_ordinal", ["0"])[0],
                 query.get("transition_id", [""])[0])
             self.send_json(status, result)
-        elif path in {f"{API_PREFIX}/library",
-                      f"{API_PREFIX}/playnite/library/list"}:
+        elif path == f"{API_PREFIX}/library":
             status, result = self.state.playnite_library(
                 query.get("cursor", [""])[0], query.get("limit", ["50"])[0])
             self.send_json(status, result)
-        elif path in {f"{API_PREFIX}/artwork",
-                      f"{API_PREFIX}/playnite/artwork"}:
+        elif path == f"{API_PREFIX}/artwork":
             status, body, content_type = self.state.playnite_artwork(
                 query.get("game_id", [""])[0], query.get("kind", ["cover"])[0])
             if status == HTTPStatus.OK:
                 self.send_binary(status, body, content_type)
             else:
                 self.send_json(status, {"error": "Game artwork is unavailable."})
-        elif path in {f"{API_PREFIX}/game/events",
-                      f"{API_PREFIX}/playnite/events"}:
+        elif path == f"{API_PREFIX}/game/events":
             status, result = self.state.playnite_events(
                 query.get("after", ["0"])[0],
                 query.get("transition_id", [""])[0])
@@ -9511,16 +9385,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.send_json(status, result)
                     return
                 child_action = path[len(API_PREFIX) + 1:]
-                if child_action.startswith("playnite/"):
-                    child_action = child_action[len("playnite/"):]
                 child_start = child_action in {
                     "game/start", "game/stop-verified", "game/focus", "game/install",
                     "game/uninstall", "game/install/focus", "game/install/verify",
                 }
-                child_refresh = path in {
-                    f"{API_PREFIX}/library/refresh",
-                    f"{API_PREFIX}/playnite/library/refresh",
-                }
+                child_refresh = path == f"{API_PREFIX}/library/refresh"
                 if child_start:
                     if not self._require_child_capability():
                         return
@@ -9644,17 +9513,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 status, result = self.state.idempotent(f"{profile_id}:{request_id}", operation)
                 self.send_json(status, result)
                 return
-            playnite_prefix = f"{API_PREFIX}/playnite/"
-            provider_action = path in {
-                f"{API_PREFIX}/game/start", f"{API_PREFIX}/game/install",
-                f"{API_PREFIX}/game/uninstall",
-                f"{API_PREFIX}/game/stop-verified", f"{API_PREFIX}/game/focus",
-                f"{API_PREFIX}/game/install/focus",
-                f"{API_PREFIX}/game/install/verify",
-                f"{API_PREFIX}/library/refresh"}
-            if path.startswith(playnite_prefix) or provider_action:
-                action = path[len(playnite_prefix):] if path.startswith(playnite_prefix) \
-                    else path[len(API_PREFIX) + 1:]
+            provider_actions = {
+                f"{API_PREFIX}/game/start": "game/start",
+                f"{API_PREFIX}/game/install": "game/install",
+                f"{API_PREFIX}/game/uninstall": "game/uninstall",
+                f"{API_PREFIX}/game/stop-verified": "game/stop-verified",
+                f"{API_PREFIX}/game/focus": "game/focus",
+                f"{API_PREFIX}/game/install/focus": "game/install/focus",
+                f"{API_PREFIX}/game/install/verify": "game/install/verify",
+                f"{API_PREFIX}/library/refresh": "library/refresh",
+                f"{API_PREFIX}/playnite/show-fullscreen": "show-fullscreen",
+            }
+            action = provider_actions.get(path)
+            if action:
                 request_id = self.headers.get("X-Request-Id", "").strip()
                 if not request_id or len(request_id) > 128:
                     self.send_json(HTTPStatus.BAD_REQUEST, {

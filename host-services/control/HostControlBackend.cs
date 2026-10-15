@@ -195,13 +195,13 @@ namespace MoonWaker.HostControl
             ProfileStatus profile = new ProfileStatus();
             profile.Id = id;
             profile.Name = HostFiles.Text(entry, "name", id);
-            profile.Owner = HostFiles.Text(entry, "owner", "");
-            profile.Enabled = HostFiles.Flag(entry, "enabled", true);
+            profile.Owner = HostFiles.Text(entry, "windows_account_name", "");
+            profile.Enabled = HostFiles.Flag(entry, "enabled", false);
             profile.PinRequired = HostFiles.Value(entry, "pin_verifier") != null;
             profile.RemoteSignInEnabled = HostFiles.Flag(entry, "remote_sign_in_enabled", false);
             profile.DeletionPending = HostFiles.Value(entry, "deletion_tombstone") != null;
             profile.CurrentUser = OwnedBy(entry, sid);
-            profile.Sid = HostFiles.Text(entry, "windows_account_sid", HostFiles.Text(entry, "owner_sid", ""));
+            profile.Sid = HostFiles.Text(entry, "windows_account_sid", "");
             profile.Root = HostFiles.Text(entry, "profile_root", "");
             profile.AccountResolved = profile.Sid.Length > 0 &&
                 HostFiles.Text(entry, "account_mapping_status", "") == "resolved";
@@ -627,7 +627,7 @@ namespace MoonWaker.HostControl
             ProcessStartInfo check = new ProcessStartInfo(interpreter, Quote(patcher) + " " + Quote(connector));
             check.CreateNoWindow = true;
             if (RunHidden(check, 60000) != 0)
-                throw new InvalidOperationException("Zainstalowany konektor Playnite nie jest zgodny z łatką MoonWaker.");
+                throw new InvalidOperationException("Zainstalowany konektor Playnite nie jest zgodny z łatką MoonWaker. Przeinstaluj rozszerzenie SunshinePlaynite w Playnite i połącz ponownie.");
             ProcessStartInfo apply = new ProcessStartInfo(interpreter,
                 Quote(patcher) + " " + Quote(connector) + " --apply");
             apply.CreateNoWindow = true;
@@ -781,9 +781,7 @@ namespace MoonWaker.HostControl
             try
             {
                 Directory.CreateDirectory(staging);
-                int count = CopySeries(GatewayDirectory, "gateway-supervisor.jsonl",
-                    Path.Combine(staging, "gateway", "supervisor"));
-                count += CopySeries(Path.Combine(GatewayDirectory, "logs"), "gateway-diagnostics.jsonl",
+                int count = CopySeries(Path.Combine(GatewayDirectory, "logs"), "gateway-diagnostics.jsonl",
                     Path.Combine(staging, "gateway", "service"));
                 Dictionary<string, object> registry = HostFiles.ReadJson(GatewayFile("gateway.json"));
                 Dictionary<string, object> profiles = registry == null ? null :

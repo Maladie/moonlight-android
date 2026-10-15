@@ -2,7 +2,7 @@
 
 ## Current transport
 
-`GET /api/v1/playnite/events` is an authenticated long-poll channel. The Android
+`GET /api/v1/game/events` is an authenticated long-poll channel. The Android
 client sends `after=<sequence>` and `transition_id=<id>`. Gateway validates and
 echoes `transition_id`; the client rejects a mismatched echo and the transition
 controller rejects callbacks for an inactive transition or host.

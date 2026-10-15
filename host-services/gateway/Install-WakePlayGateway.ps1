@@ -19,11 +19,6 @@ $files = @(
     "vibepollo_client.py",
     "MoonWakerGatewayService.exe",
     "MoonWakerMicrophoneWorker.exe",
-    "Start-WakePlayGateway.ps1",
-    "MoonWakerGatewaySupervisor.ps1",
-    "Start-MoonWakerGateway.ps1",
-    "Stop-MoonWakerGateway.ps1",
-    "Stop-MoonWakerGatewayWorkers.ps1",
     "Uninstall-MoonWakerGatewayService.ps1",
     "gateway.example.json",
     "README.md"
@@ -68,6 +63,8 @@ if ($null -ne $existingService -and
     $existingService.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
     Stop-Service -Name $serviceName -Force
 }
+# The stopped service ends Python, not the audio workers it started: they hold their files.
+& (Join-Path $sourceDirectory "Stop-MoonWakerGatewayWorkers.ps1") -GatewayDirectory $InstallDirectory
 
 New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
 foreach ($name in $files) {
@@ -94,8 +91,6 @@ if (-not (Test-Path -LiteralPath $configPath)) {
     $config = Get-Content -LiteralPath (Join-Path $InstallDirectory "gateway.example.json") -Raw |
         ConvertFrom-Json
     $config.listen_port = $Port
-    # Profiles belong to Host Control. A new machine starts with none.
-    $config.profiles = [pscustomobject]@{}
     $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding UTF8
 }
 try {
@@ -110,11 +105,6 @@ $lockPath = "$configPath.lock"
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
     [IO.File]::WriteAllBytes($lockPath, [byte[]]@(0))
 }
-
-# A pre-service Gateway from a legacy installation can otherwise keep the LAN
-# port while Host Control writes pairing state to this installation.
-& (Join-Path $InstallDirectory "Stop-MoonWakerGateway.ps1") `
-    -GatewayDirectory $InstallDirectory
 
 $certificate = Join-Path $InstallDirectory "gateway-cert.pem"
 $privateKey = Join-Path $InstallDirectory "gateway-key.pem"
@@ -216,8 +206,6 @@ $icacls = Join-Path ([Environment]::SystemDirectory) "icacls.exe"
 $pythonDirectory = Split-Path -Parent $python
 & $icacls $pythonDirectory /grant:r "*${serviceSid}:(OI)(CI)(RX)" /T /C | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Unable to grant the Gateway service read access to Python." }
-& $icacls $InstallDirectory /remove:g "*S-1-5-11" /T /C | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Unable to remove the legacy Gateway write ACL." }
 & $icacls $InstallDirectory /inheritance:r /grant:r `
     "*${serviceSid}:(OI)(CI)(M)" "*S-1-5-18:(OI)(CI)(F)" `
     "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-32-545:(OI)(CI)(RX)" | Out-Null
@@ -296,8 +284,7 @@ if (-not $SkipFirewall) {
 $pairingCode = $null
 $processId = $null
 $startupErrorPath = Join-Path $InstallDirectory "gateway-startup-error.txt"
-Remove-Item -LiteralPath (Join-Path $InstallDirectory "gateway-supervisor-stop"), $startupErrorPath `
-    -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $startupErrorPath -Force -ErrorAction SilentlyContinue
 if (-not $SkipStart) {
     $pairingCode = [string](Get-Random -Minimum 100000 -Maximum 999999)
     $sha = [Security.Cryptography.SHA256]::Create()

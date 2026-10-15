@@ -49,8 +49,8 @@ class ChildTimeControlTest(unittest.TestCase):
                 "parent": {
                     "id": "parent", "kind": "standard", "name": "Parent",
                     "enabled": True, "windows_account_sid": sid,
-                    "owner_sid": sid, "windows_account_name": "PARENT",
-                    "owner": "PARENT", "profile_root": "C:/Users/PARENT",
+                    "windows_account_name": "PARENT",
+                    "profile_root": "C:/Users/PARENT",
                 },
                 "kid": {
                     "id": "kid", "kind": "child", "name": "Kid",

@@ -233,7 +233,7 @@ namespace MoonWaker.HostConfigurator
             Rejected(Request(revision), "an empty set");
             Rejected(Request(revision, Change("format_disk")), "an unknown change");
             Dictionary<string, object> extra = Edit("parent", SidA, "Mariusz", true);
-            extra["owner_sid"] = SidB;
+            extra["unexpected"] = SidB;
             Rejected(Request(revision, extra), "an unknown field");
             Dictionary<string, object> missing = Edit("parent", SidA, "Mariusz", true);
             missing.Remove("enabled");
@@ -266,7 +266,7 @@ namespace MoonWaker.HostConfigurator
             games["allowed_game_keys"] = new object[] { "parent/steam:1" };
             Rejected(Request(revision, ChildSave("parent", "", 1, games)), "a child's games in the profile editor");
             Dictionary<string, object> unknown = Draft("Ania", 0, 1440, 0);
-            unknown["owner_sid"] = SidA;
+            unknown["unexpected"] = SidA;
             Rejected(Request(revision, ChildSave("parent", "", 1, unknown)), "an unknown key of a child draft");
             Dictionary<string, object> day = Draft("Ania", 0, 1440, 0);
             ((Dictionary<string, object>)((Dictionary<string, object>)((Dictionary<string, object>)day["schedule"])
@@ -728,7 +728,7 @@ namespace MoonWaker.HostConfigurator
         {
             Dictionary<string, object> profile = new Dictionary<string, object> {
                 { "id", id }, { "kind", "standard" }, { "name", name }, { "display_name", name },
-                { "owner_sid", sid }, { "windows_account_sid", sid }, { "owner", account }, { "windows_account_name", account },
+                { "windows_account_sid", sid }, { "windows_account_name", account },
                 { "enabled", true }, { "profile_root", profileRoot }, { "remote_sign_in_enabled", remote },
                 { "account_mapping_status", "resolved" }, { "children_policy_revision", 1 },
                 { "game_provider_bridge", "http://127.0.0.1:1" } };
