@@ -97,7 +97,7 @@ class ChildProfilesGatewayTest(unittest.TestCase):
             }],
         }), encoding="utf-8")
         self.state = GatewayState(
-            self.config_path, None, broker_client=self.broker)
+            self.config_path, broker_client=self.broker)
         self.client = self.state.config["clients"][0]
 
     def tearDown(self):
@@ -117,8 +117,9 @@ class ChildProfilesGatewayTest(unittest.TestCase):
         }
 
     def test_pairing_creates_grants_only_for_standard_profiles(self):
-        self.state.pairing_code_hash = sha256_text("123456")
-        self.state.pairing_expires_at = time.monotonic() + 60
+        self.state.pairing_control_path.write_text(json.dumps({
+            "code_sha256": sha256_text("123456"), "expires_at": int(time.time()) + 60,
+        }), encoding="utf-8")
 
         result = self.state.pair("192.0.2.1", "123456", "Child test TV")
 

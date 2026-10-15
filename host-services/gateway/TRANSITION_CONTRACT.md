@@ -228,7 +228,9 @@ time session is active. Any other mismatch keeps the record and the former answe
 
 Host Control (tray menu, `Ctrl+Alt+Shift+End`, its secure-desktop pipe) ends the session of
 its Windows account through the Gateway, never through a Bridge. The only local channel is
-a file beside `gateway.json`; the Gateway has no loopback-only route and no pipe.
+a file beside `gateway.json`; the Gateway has no loopback-only route and no pipe. What Host
+Control shows of the running session comes from `gateway-status.json` (README, "Local state
+files"): display facts of the stream record, never a handle the close request refers to.
 
 - `host-close-request.json` is created by the installer. Local accounts and the Gateway
   service may read and overwrite it in place (`(R,W)`), not delete or replace it: an account

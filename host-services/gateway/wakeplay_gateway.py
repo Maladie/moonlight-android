@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover - Python 3.8 fallback
 
 API_PREFIX = "/api/v1"
 PAIRING_LIFETIME_SECONDS = 10 * 60
+PAIRING_CONTROL_MAX_BYTES = 1024
 STREAM_PAIR_TICKET_LIFETIME_SECONDS = 60
 VIBEPOOLLO_IDENTITY_CHALLENGE_LIFETIME_SECONDS = 60
 VIBEPOOLLO_IDENTITY_CHALLENGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
@@ -86,6 +87,10 @@ CHILD_TIME_FAILURE_TOLERANCE_SECONDS = 300.0
 CHILD_TIME_HOUSEKEEPING_INTERVAL_SECONDS = 5.0
 # Host Control's local close request: one file stat per poll, on the housekeeping thread.
 HOST_CLOSE_POLL_SECONDS = 1.0
+# gateway-status.json: the session is published within this period, Vibepollo is checked
+# (and the file rewritten) every VIBEPOLLO_STATUS_SECONDS.
+GATEWAY_STATUS_POLL_SECONDS = 1.0
+VIBEPOLLO_STATUS_SECONDS = 5.0
 HOST_CLOSE_REQUEST_LIFETIME_SECONDS = 60
 HOST_CLOSE_REQUEST_MAX_BYTES = 1024
 HOST_CLOSE_REQUEST_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -761,7 +766,7 @@ def replace_registry_file(source: Path, destination: Path,
 
 
 class GatewayState:
-    def __init__(self, config_path: Path, pairing_code: str | None,
+    def __init__(self, config_path: Path,
                  registry_lock_path: Path | None = None,
                  broker_client: LoginBrokerClient | None = None) -> None:
         self.config_path = config_path.resolve()
@@ -938,8 +943,6 @@ class GatewayState:
                 int(client.get("last_seen_at") or client.get("paired_at") or 0),
                 activity_seen)
         self.config["schema_version"] = GATEWAY_SCHEMA_VERSION
-        self.pairing_code_hash = sha256_text(pairing_code) if pairing_code else None
-        self.pairing_expires_at = time.monotonic() + PAIRING_LIFETIME_SECONDS if pairing_code else 0.0
         self.pairing_control_path = self.config_path.with_name("pairing-code.json")
         self.host_close_request_path = self.config_path.with_name("host-close-request.json")
         # This computer's Vibepollo, with its one token beside gateway.json.
@@ -1057,6 +1060,10 @@ class GatewayState:
             self._control_save_locked()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
         self.gateway_runtime_path = self.config_path.with_name("gateway-runtime.json")
+        self.gateway_status_path = self.config_path.with_name("gateway-status.json")
+        self.gateway_status_written: dict[str, Any] | None = None
+        self.gateway_status_vibepollo = (False, 0)
+        self.gateway_status_next_check = 0.0
         self.started_at = int(time.time())
         self.version_info = self._load_version_info()
         self.last_runtime_profile = ""
@@ -1427,6 +1434,72 @@ class GatewayState:
                              encoding="utf-8")
         os.replace(temporary, self.gateway_runtime_path)
 
+    def gateway_status(self) -> dict[str, Any]:
+        """What Host Control shows of this Gateway: whether Vibepollo's API answers and the
+        stream record, if any. Display facts only: no client, token or process identity."""
+        now = time.monotonic()
+        if now >= self.gateway_status_next_check:
+            # api_online answers from a call in the last 30 s, or makes one cheap request.
+            self.gateway_status_next_check = now + VIBEPOLLO_STATUS_SECONDS
+            self.gateway_status_vibepollo = (bool(self.vibepollo.api_online()), int(time.time()))
+        online, checked_at = self.gateway_status_vibepollo
+        status: dict[str, Any] = {"vibepollo_api_online": online,
+                                  "vibepollo_checked_at": checked_at}
+        with self.lock:
+            stream = self.control_state.get("stream")
+            if not isinstance(stream, dict):
+                return status
+            profiles = self.config.get("profiles", {})
+
+            def name(profile_id: str) -> str:
+                profile = profiles.get(profile_id)
+                if not isinstance(profile, dict):
+                    return profile_id
+                return str(profile.get("display_name") or profile.get("name") or profile_id)[:80]
+
+            client_id = str(stream.get("client_id") or "")
+            client = next((item for item in self.config.get("clients", [])
+                           if isinstance(item, dict) and str(item.get("id") or "") == client_id),
+                          {})
+            actor = str(stream.get("actor_profile_id") or "")
+            execution = str(stream.get("execution_profile_id") or "")
+            session = {
+                "actor_profile_id": actor, "actor_profile_name": name(actor),
+                "execution_profile_id": execution, "execution_profile_name": name(execution),
+                "client_name": str(client.get("name") or "")[:80],
+                "game_id": str(stream.get("provider_game_id") or ""),
+                "stream_started_unix_ms": int(stream.get("stream_started_unix_ms") or 0),
+            }
+        status["session"] = session
+        return status
+
+    def publish_gateway_status(self) -> None:
+        """Replace gateway-status.json when what it says changed. The directory ACL lets local
+        accounts read it, as gateway-runtime.json."""
+        status = self.gateway_status()
+        if status == self.gateway_status_written:
+            return
+        temporary = self.gateway_status_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps({**status, "updated_at": int(time.time())},
+                                        ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # Host Control reads with delete sharing; antivirus may still hold it a moment.
+        replace_registry_file(temporary, self.gateway_status_path, attempts=10, delay_seconds=0.05)
+        self.gateway_status_written = status
+
+    def keep_gateway_status(self, stop: threading.Event) -> None:
+        """Its own thread: a slow Vibepollo check never delays the housekeeping polls."""
+        failed = False
+        while True:
+            try:
+                self.publish_gateway_status()
+                failed = False
+            except Exception as error:  # the publisher must outlive one failed write
+                if not failed:
+                    DIAGNOSTICS.record("gateway-status-write-failed", level="WARN", error=error)
+                failed = True
+            if stop.wait(GATEWAY_STATUS_POLL_SECONDS):
+                return
+
     def path_from_config(self, key: str) -> Path:
         value = Path(str(self.config[key]))
         return value if value.is_absolute() else (self.base_dir / value).resolve()
@@ -1569,25 +1642,38 @@ class GatewayState:
                     return client
         return None
 
-    def refresh_pairing_control(self) -> None:
-        """Loads a short-lived code activated by the local pairing helper."""
+    def pairing_code_hash(self) -> str | None:
+        """The SHA-256 of the code Host Control activated, read from pairing-code.json on every
+        use: the file is the only source, so emptying it cancels the code at once."""
         try:
-            control = json.loads(self.pairing_control_path.read_text(encoding="utf-8-sig"))
-            expires_at = int(control.get("expires_at", 0))
-            digest = str(control.get("code_sha256", ""))
-            remaining = expires_at - int(time.time())
-            if remaining <= 0 or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                return
-            with self.lock:
-                self.pairing_code_hash = digest
-                self.pairing_expires_at = time.monotonic() + min(
-                    remaining, PAIRING_LIFETIME_SECONDS)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return
+            with self.pairing_control_path.open("rb") as stream:
+                raw = stream.read(PAIRING_CONTROL_MAX_BYTES + 1)
+            if len(raw) > PAIRING_CONTROL_MAX_BYTES:
+                return None
+            control = json.loads(raw.decode("utf-8-sig"))
+            expires_at = control.get("expires_at")
+            digest = control.get("code_sha256")
+        except (OSError, ValueError, AttributeError, RecursionError):
+            return None
+        if isinstance(expires_at, bool) or not isinstance(expires_at, int) \
+                or not 0 < expires_at - time.time() <= PAIRING_LIFETIME_SECONDS \
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return None
+        return digest
+
+    def consume_pairing_code(self) -> None:
+        """A code pairs one TV. Empty the file in place, as Host Control's "Anuluj" does: it
+        keeps its ACL and is never created here. The pairing already succeeded, so a failed
+        write is only logged."""
+        try:
+            with self.pairing_control_path.open("r+b") as stream:
+                stream.truncate(0)
+                stream.write(b"{}")
+        except OSError as error:
+            DIAGNOSTICS.record("pairing-code-not-consumed", level="WARN", error=error)
 
     def pairing_active(self) -> bool:
-        self.refresh_pairing_control()
-        return self.pairing_code_hash is not None and time.monotonic() <= self.pairing_expires_at
+        return self.pairing_code_hash() is not None
 
     def pairing_allowed(self, address: str) -> bool:
         now = time.monotonic()
@@ -1597,13 +1683,13 @@ class GatewayState:
             return len(recent) < 5
 
     def pair(self, address: str, code: str, client_name: str) -> dict[str, Any]:
-        self.refresh_pairing_control()
+        expected = self.pairing_code_hash()
         now = time.monotonic()
-        if not self.pairing_code_hash or now > self.pairing_expires_at:
-            raise PermissionError("Pairing is not active. Restart the gateway with a new pairing code.")
+        if expected is None:
+            raise PermissionError("Pairing is not active. Create a new pairing code in Host Control.")
         if not self.pairing_allowed(address):
             raise PermissionError("Too many pairing attempts. Try again in one minute.")
-        if not secrets.compare_digest(self.pairing_code_hash, sha256_text(code)):
+        if not secrets.compare_digest(expected, sha256_text(code)):
             with self.lock:
                 self.failed_pair_attempts.setdefault(address, []).append(now)
             raise PermissionError("Invalid pairing code.")
@@ -1612,6 +1698,10 @@ class GatewayState:
         client_id = secrets.token_hex(12)
         paired_at = int(time.time())
         with self.lock:
+            # Re-read under the lock: a concurrent pair() may already have consumed the code.
+            if self.pairing_code_hash() != expected:
+                raise PermissionError(
+                    "Pairing is not active. Create a new pairing code in Host Control.")
             with self.registry_update_lock():
                 current = self.current_registry()
                 record = {
@@ -1631,6 +1721,7 @@ class GatewayState:
                 current["clients"].append(record)
                 self.replace_registry(current)
                 self.config = current
+            self.consume_pairing_code()
         profiles = []
         for profile_id in record["profile_grants"]:
             profile = current["profiles"][profile_id]
@@ -9614,12 +9705,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="gateway.json")
     parser.add_argument("--registry-lock")
-    parser.add_argument("--pairing-code", default=os.environ.get("WAKEPLAY_PAIRING_CODE"))
     args = parser.parse_args()
 
     config_path = Path(args.config)
     DIAGNOSTICS.start(config_path.resolve().parent / "logs")
-    state = GatewayState(config_path, args.pairing_code,
+    state = GatewayState(config_path,
                          Path(args.registry_lock) if args.registry_lock else None)
     server = GatewayServer((str(state.config["listen_host"]), int(state.config["listen_port"])), state)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -9632,8 +9722,9 @@ def main() -> None:
     threading.Thread(target=state.vibepollo.keep_stream_target,
                      args=(stream_keeper_stop, DIAGNOSTICS.record),
                      name="MoonWaker-vibepollo-stream", daemon=True).start()
+    threading.Thread(target=state.keep_gateway_status, args=(stream_keeper_stop,),
+                     name="MoonWaker-gateway-status", daemon=True).start()
     print(f"Wake & Play Host Gateway listening on https://{state.config['listen_host']}:{state.config['listen_port']}", flush=True)
-    print("Pairing is active for 10 minutes." if args.pairing_code else "Pairing is disabled for this run.", flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:

@@ -67,6 +67,7 @@ namespace MoonWaker.HostControl
                 CreateInstallation();
 
                 TestStatus();
+                TestPublishedStatus();
                 TestProbe();
                 TestPairing();
                 TestSteam();
@@ -81,7 +82,7 @@ namespace MoonWaker.HostControl
                 TestExport();
                 TestCloseSession();
                 Expect(gatewayRestarts == 0, "a Gateway restart outside the repair checks");
-                Console.WriteLine("PASS Host Control backend: status, probe, pairing, Steam, DPAPI, reparse, " +
+                Console.WriteLine("PASS Host Control backend: status, Gateway status file, probe, pairing, Steam, DPAPI, reparse, " +
                     "Discord, Epic, Playnite, microphone, repair, export, close session.");
                 return 0;
             }
@@ -207,6 +208,61 @@ namespace MoonWaker.HostControl
                 "{\"status\":\"running\",\"restart_count\":0,\"process_id\":" + self + "}");
         }
 
+        // gateway-status.json: known only while the Gateway runs and keeps it fresh.
+        private static void TestPublishedStatus()
+        {
+            HostBackend backend = Backend();
+            string path = Path.Combine(gateway, "gateway-status.json");
+            GatewayStatus status = backend.ReadStatus().Gateway;
+            Expect(status.State == "running" && !status.StatusKnown && status.VibepolloOnline == null &&
+                status.Session == null, "no status file: unknown, nothing guessed");
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            Dictionary<string, object> published = new Dictionary<string, object> {
+                { "vibepollo_api_online", true }, { "vibepollo_checked_at", now }, { "updated_at", now },
+                { "session", new Dictionary<string, object> {
+                    { "actor_profile_id", "child" }, { "actor_profile_name", "Ania" },
+                    { "execution_profile_id", "default" }, { "execution_profile_name", "Mariusz" },
+                    { "client_name", "Salon TV" }, { "game_id", "steam:1091500" },
+                    { "stream_started_unix_ms", 1760000000000L } } } };
+            Write(path, Json.Serialize(published));
+            status = backend.ReadStatus().Gateway;
+            ActiveSession session = status.Session;
+            Expect(status.StatusKnown && status.VibepolloOnline == true && session != null &&
+                session.ActorProfileId == "child" && session.ActorProfileName == "Ania" &&
+                session.ExecutionProfileId == "default" && session.ExecutionProfileName == "Mariusz" &&
+                session.ClientName == "Salon TV" && session.GameId == "steam:1091500" &&
+                session.StreamStartedUnixMs == 1760000000000L, "the published session and Vibepollo state");
+
+            // Held open by another reader with delete sharing, as ReadJson opens it, the file
+            // can still be replaced atomically: the Gateway's write is never blocked.
+            published.Remove("session");
+            published["vibepollo_api_online"] = false;
+            string temporary = path + ".tmp";
+            Write(temporary, Json.Serialize(published));
+            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                File.Replace(temporary, path, null);
+            status = backend.ReadStatus().Gateway;
+            Expect(status.StatusKnown && status.VibepolloOnline == false && status.Session == null,
+                "no session field: no session; Vibepollo not answering");
+
+            published["updated_at"] = now - 60;
+            Write(path, Json.Serialize(published));
+            Expect(!backend.ReadStatus().Gateway.StatusKnown, "a status older than 30 s is unknown");
+            published["updated_at"] = now;
+            published["padding"] = new string('x', 64 * 1024);
+            Write(path, Json.Serialize(published));
+            Expect(!backend.ReadStatus().Gateway.StatusKnown, "an oversized status file is not read");
+            published.Remove("padding");
+            Write(path, Json.Serialize(published));
+            string service = Path.Combine(gateway, "gateway-service-state.json");
+            string running = File.ReadAllText(service);
+            Write(service, "{\"status\":\"stopped\",\"process_id\":0}");
+            Expect(backend.ReadStatus().Gateway.VibepolloOnline == null, "a stopped Gateway's file says nothing");
+            Write(service, running);
+            File.Delete(path);
+        }
+
         private static void TestPairing()
         {
             HostBackend backend = Backend();
@@ -221,8 +277,13 @@ namespace MoonWaker.HostControl
                 "only the code's SHA-256 with a 10-minute expiry is stored");
             long seconds = backend.ReadStatus().Gateway.PairingExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             Expect(seconds > 590 && seconds <= 600, "pairing countdown");
+            // "Anuluj": emptied in place, which the Gateway honours on the next attempt.
+            backend.CancelPairingCode();
+            Expect(File.ReadAllText(Path.Combine(gateway, "pairing-code.json")) == "{}" &&
+                backend.ReadStatus().Gateway.PairingExpiresAt == 0, "a cancelled code is gone");
             File.Delete(Path.Combine(gateway, "pairing-code.json"));
             Throws(delegate { backend.CreatePairingCode(); }, "Brak kanału parowania", "the channel is never created");
+            Throws(delegate { backend.CancelPairingCode(); }, "Brak kanału parowania", "cancel never creates the channel");
             Expect(!File.Exists(Path.Combine(gateway, "pairing-code.json")), "no pairing file was created");
             Write(Path.Combine(gateway, "pairing-code.json"), "{}");
         }

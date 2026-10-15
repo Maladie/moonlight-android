@@ -66,7 +66,7 @@ class ChildSharingGatewayTest(unittest.TestCase):
                 },
             }],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.client = self.state.config["clients"][0]
         self.state.config["profiles"]["parent"]["pin_verifier"] = self.pin_verifier()
         self.session_id = "01234567-89ab-cdef-0123-456789abcdef"

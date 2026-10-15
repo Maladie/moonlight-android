@@ -44,7 +44,7 @@ namespace MoonWaker.HostControl
                 using (ProfileProcessHost processes = new ProfileProcessHost(root, Sid, false, null, null))
                     foreach (bool light in new[] { false, true })
                         RenderTheme(backend, processes, light, output);
-                Console.WriteLine("PASS Host Control UI: 6 pages x 2 themes built and rendered" +
+                Console.WriteLine("PASS Host Control UI: 9 page states x 2 themes built and rendered" +
                     (output == null ? "." : " to " + output + "."));
                 return 0;
             }
@@ -77,15 +77,38 @@ namespace MoonWaker.HostControl
             window.Apply(backend.ReadStatus());
             string text = Render(window, HostControlWindow.Overview, "01-przeglad-konfiguracja-" + theme, output);
             Shows(text, "overview with first configuration", "Pierwsza konfiguracja", "3 z 4 gotowe",
-                "Połącz bibliotekę", "Kod wygasa za", "Ukryj kod");
+                "Vibepollo połączone", "Połącz bibliotekę", "Kod wygasa za", "Anuluj");
+            Expect(!text.Contains("Ukryj kod"), "the pairing code is cancelled, not hidden");
+            // A TV paired: the Gateway emptied the file and the window follows it.
+            Write(Path.Combine(root, "gateway", "pairing-code.json"), "{}");
+            window.Apply(backend.ReadStatus());
+            text = Render(window, HostControlWindow.Overview, null, null);
+            Expect(!text.Contains("Kod wygasa za") && text.Contains("Utwórz kod"), "a consumed pairing code is no longer shown");
 
             // A library connected: the first configuration is gone.
             File.WriteAllText(steamKey, Dpapi.Protect(new string('a', 32)) + "\r\n", Encoding.ASCII);
             window.Apply(backend.ReadStatus());
             text = Render(window, HostControlWindow.Overview, "01-przeglad-" + theme, output);
             Expect(!text.Contains("Pierwsza konfiguracja"), "the first configuration disappears once complete");
-            Shows(text, "overview", "Gateway komputera", "Sparowane TV: 2", "Token zapisany",
-                "Profil: Mariusz", "Zamknij sesję");
+            Shows(text, "overview", "Gateway komputera", "Sparowane TV: 2", "Połączone", "Token komputera ważny",
+                "Profil: Mariusz", "Aktywna sesja", "trwa 1:24:", "Gra w toku", "Profil Mariusz  •  Salon TV  •  Steam",
+                "Zamknij sesję");
+
+            // Vibepollo not answering and no stream record; then no status file at all.
+            WriteGatewayStatus(false, false);
+            window.Apply(backend.ReadStatus());
+            text = Render(window, HostControlWindow.Overview, "01-przeglad-bez-sesji-" + theme, output);
+            Shows(text, "overview without a session", "Brak połączenia", "Sprawdź, czy Vibepollo działa", "Odnów token",
+                "Gateway nie prowadzi teraz sesji streamu.", "Zamknij sesję", "Vibepollo połączone");
+            File.Delete(Path.Combine(root, "gateway", "gateway-status.json"));
+            window.Apply(backend.ReadStatus());
+            text = Render(window, HostControlWindow.Overview, "01-przeglad-stan-nieznany-" + theme, output);
+            Shows(text, "overview with an unknown state", "Stan nieznany", "Stan sesji nieznany");
+            Expect(!text.Contains("Pierwsza konfiguracja"), "an unknown Vibepollo state keeps the first configuration done");
+            text = Render(window, HostControlWindow.Integrations, "04-integracje-stan-nieznany-" + theme, output);
+            Shows(text, "integrations with an unknown state", "Stan nieznany", "zapisany");
+            WriteGatewayStatus(true, true);
+            window.Apply(backend.ReadStatus());
 
             window.Fail(HostControlWindow.Profiles, "Epic: nie udało się połączyć.",
                 "Legendary nie jest zalogowane na koncie Mariusz.");
@@ -97,7 +120,8 @@ namespace MoonWaker.HostControl
             Shows(text, "devices", "Salon TV", "sparowano 02.10.2026", "Sypialnia", "Uprawnienia: Gosia");
 
             text = Render(window, HostControlWindow.Integrations, "04-integracje-" + theme, output);
-            Shows(text, "integrations", "Vibepollo", "Pobierz / odnów token", "1204 •••• •••• 7731", "Skonfigurowany");
+            Shows(text, "integrations", "Vibepollo", "Połączone", "zapisany, ważny", "Pobierz / odnów token",
+                "1204 •••• •••• 7731", "Skonfigurowany");
 
             text = Render(window, HostControlWindow.Diagnostics, "05-diagnostyka-" + theme, output);
             Shows(text, "diagnostics", "Discord: ", "0.7.133", "różnica", "Napraw",
@@ -156,6 +180,7 @@ namespace MoonWaker.HostControl
             Write(Path.Combine(gateway, "vibepollo-api.json"), "{\"token\":\"t\"}");
             Write(Path.Combine(gateway, "pairing-code.json"), "{}");
             Write(Path.Combine(gateway, "host-close-request.json"), "{}");
+            WriteGatewayStatus(true, true);
             Write(Path.Combine(profile, "game-provider", "config.json"), "{\"playnite_enabled\":false}");
             Write(Path.Combine(profile, "discord", "discord_bridge_config.json"), "{\"client_id\":\"120412345678907731\"}");
             File.WriteAllText(Path.Combine(profile, "discord", "client_secret.dpapi"), Dpapi.Protect("secret") + "\r\n", Encoding.ASCII);
@@ -181,6 +206,22 @@ namespace MoonWaker.HostControl
                         { "kind", "child" }, { "name", "Ania" }, { "parent_profile_id", "mariusz" } } },
                     { "stas", new Dictionary<string, object> {
                         { "kind", "child" }, { "name", "Staś" }, { "parent_profile_id", "mariusz" } } } } } }));
+        }
+
+        // The Gateway's published status: Vibepollo answering or not, Mariusz streaming a Steam
+        // game to the living room for 1:24:07, or no stream record.
+        private static void WriteGatewayStatus(bool online, bool session)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            Dictionary<string, object> status = new Dictionary<string, object> {
+                { "vibepollo_api_online", online }, { "vibepollo_checked_at", now }, { "updated_at", now } };
+            if (session)
+                status["session"] = new Dictionary<string, object> {
+                    { "actor_profile_id", "mariusz" }, { "actor_profile_name", "Mariusz" },
+                    { "execution_profile_id", "mariusz" }, { "execution_profile_name", "Mariusz" },
+                    { "client_name", "Salon TV" }, { "game_id", "steam:1091500" },
+                    { "stream_started_unix_ms", (now - 5047) * 1000 } };
+            Write(Path.Combine(root, "gateway", "gateway-status.json"), new JavaScriptSerializer().Serialize(status));
         }
 
         private static Dictionary<string, object> Client(string id, string name, DateTime paired, long seen,

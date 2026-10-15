@@ -134,7 +134,7 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
                 },
             }],
         }), encoding="utf-8")
-        self.gateway = GatewayState(self.config_path, None)
+        self.gateway = GatewayState(self.config_path)
         self.client = self.gateway.config["clients"][0]
         self.bridge = BridgeFixture(self.root / "bridge")
         self.gateway.proxy = self.bridge.proxy

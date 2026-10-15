@@ -79,7 +79,7 @@ class ChildTimeContractTest(unittest.TestCase):
                 "vibepollo_client_uuids": {"parent": "vibepollo-parent"},
             }],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.client = self.state.config["clients"][0]
         self.monotonic = 100.0
         self.wall = datetime(2026, 9, 7, 19, 50, tzinfo=timezone.utc)
@@ -351,7 +351,7 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
                 },
             }],
         }), encoding="utf-8")
-        self.gateway = GatewayState(self.config_path, None)
+        self.gateway = GatewayState(self.config_path)
         self.client = self.gateway.config["clients"][0]
         self.monotonic = 100.0
         self.wall = datetime(2026, 9, 7, 19, 50, tzinfo=timezone.utc)

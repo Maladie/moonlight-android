@@ -61,7 +61,7 @@ class HostCloseTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def restart(self):
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.state.proxy = target_aware(self.proxy)
         self.state.proxy_json = self.proxy_json
         self.client = self.state.client_for_token("token")

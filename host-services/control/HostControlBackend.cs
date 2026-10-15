@@ -147,7 +147,31 @@ namespace MoonWaker.HostControl
             else if (serviceState == "starting" || serviceState == "running") gateway.State = "starting";
             else if (serviceState == "recovering") gateway.State = "recovering";
             else gateway.State = "stopped";
+            if (gateway.State == "running") ReadPublishedStatus(gateway);
             return gateway;
+        }
+
+        // gateway-status.json, which the running Gateway rewrites at least every 5 s: whether
+        // Vibepollo's API answers it and its stream record. Missing, unreadable or older than
+        // 30 s (the Gateway hangs): unknown, nothing guessed.
+        private void ReadPublishedStatus(GatewayStatus gateway)
+        {
+            Dictionary<string, object> published = HostFiles.ReadJson(GatewayFile("gateway-status.json"), 64 * 1024);
+            long updated = HostFiles.Number(published, "updated_at");
+            if (Math.Abs(DateTimeOffset.UtcNow.ToUnixTimeSeconds() - updated) > 30) return;
+            gateway.StatusKnown = true;
+            object online = HostFiles.Value(published, "vibepollo_api_online");
+            if (online is bool) gateway.VibepolloOnline = (bool)online;
+            Dictionary<string, object> session = HostFiles.Value(published, "session") as Dictionary<string, object>;
+            if (session == null) return;
+            gateway.Session = new ActiveSession {
+                ActorProfileId = HostFiles.Text(session, "actor_profile_id", ""),
+                ActorProfileName = HostFiles.Text(session, "actor_profile_name", ""),
+                ExecutionProfileId = HostFiles.Text(session, "execution_profile_id", ""),
+                ExecutionProfileName = HostFiles.Text(session, "execution_profile_name", ""),
+                ClientName = HostFiles.Text(session, "client_name", ""),
+                GameId = HostFiles.Text(session, "game_id", ""),
+                StreamStartedUnixMs = HostFiles.Number(session, "stream_started_unix_ms") };
         }
 
         // The token file is readable only by Administrators and the service; its size and time
@@ -341,8 +365,8 @@ namespace MoonWaker.HostControl
         }
 
         // A six-digit code for "Dodaj komputer" on the TV, valid for 10 minutes. The installer
-        // grants local accounts in-place writes to pairing-code.json; the Gateway keeps only the
-        // code's SHA-256.
+        // grants local accounts in-place writes to pairing-code.json, which holds only the
+        // code's SHA-256; the Gateway reads it on every pairing attempt.
         internal string CreatePairingCode()
         {
             if (!File.Exists(GatewayFile("gateway.json")))
@@ -359,6 +383,14 @@ namespace MoonWaker.HostControl
                     { "expires_at", DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeSeconds() } }),
                 "Brak kanału parowania Gatewaya. Zainstaluj ponownie MoonWaker Host.");
             return code;
+        }
+
+        // "Anuluj": the Gateway reads the file on every pairing attempt, so the emptied file ends
+        // the code at once.
+        internal void CancelPairingCode()
+        {
+            HostFiles.OverwriteInPlace(GatewayFile("pairing-code.json"), "{}",
+                "Brak kanału parowania Gatewaya. Zainstaluj ponownie MoonWaker Host.");
         }
 
         // Ends this account's session through the Gateway, which owns the stream record and
@@ -789,6 +821,22 @@ namespace MoonWaker.HostControl
         internal string RuntimeVersion = "";
         internal string RuntimeBuild = "";
         internal bool VersionMismatch;
+        // From gateway-status.json while the Gateway runs and keeps it fresh. Unknown: not
+        // StatusKnown, VibepolloOnline null.
+        internal bool StatusKnown;
+        internal bool? VibepolloOnline;
+        // The Gateway's stream record; null when there is none or StatusKnown is false.
+        internal ActiveSession Session;
+    }
+
+    internal sealed class ActiveSession
+    {
+        internal string ActorProfileId, ActorProfileName, ExecutionProfileId, ExecutionProfileName;
+        internal string ClientName;
+        // "steam:…", "epic:…", a Playnite id or "" (a stream without a game).
+        internal string GameId;
+        // Host clock, Unix milliseconds; 0 when unknown.
+        internal long StreamStartedUnixMs;
     }
 
     internal sealed class PairedClient
@@ -946,14 +994,14 @@ namespace MoonWaker.HostControl
 
         // Delete sharing: a reader never blocks the Gateway's or the Configurator's atomic
         // replacement of the file. Null when it is missing, unreadable or not a JSON object.
-        internal static Dictionary<string, object> ReadJson(string path)
+        internal static Dictionary<string, object> ReadJson(string path, int maxBytes = MaxJsonBytes)
         {
             try
             {
                 using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete))
                 {
-                    if (stream.Length > MaxJsonBytes) return null;
+                    if (stream.Length > maxBytes) return null;
                     using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
                         return Serializer().Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
                 }

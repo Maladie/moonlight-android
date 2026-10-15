@@ -40,7 +40,6 @@ if (-not $NoPairing) {
     if (-not $PairingCode) {
         $PairingCode = [string](Get-Random -Minimum 100000 -Maximum 999999)
     }
-    $arguments += @("--pairing-code", $PairingCode)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         $digest = ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($PairingCode)) |

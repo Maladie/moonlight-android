@@ -413,7 +413,7 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertNotEqual(200, status)
         uncertain = dict(self.gateway.control_state["active"])
         self.assertEqual("uncertain", uncertain["state"])
-        self.gateway = GatewayState(self.fixture.config_path, None)
+        self.gateway = GatewayState(self.fixture.config_path)
         self.gateway.config["clients"][0]["profile_grants"]["parent"] = ["use_profile"]
         self.client = self.gateway.config["clients"][0]
         self.wire(self.gateway)

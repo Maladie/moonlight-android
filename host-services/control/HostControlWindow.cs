@@ -62,6 +62,7 @@ namespace MoonWaker.HostControl
         private string renderedSignature;
         private ScrollViewer scroll;
         private TextBlock pairingCountdown;
+        private TextBlock sessionDuration;
         private Grid pairingBar;
         private TextBlock statusText;
         private System.Windows.Shapes.Ellipse statusDot;
@@ -329,6 +330,7 @@ namespace MoonWaker.HostControl
             renderedSignature = Signature();
             pairingCountdown = null;
             pairingBar = null;
+            sessionDuration = null;
 
             Background = p.Background;
             Grid root = new Grid { Background = p.Background };
@@ -569,11 +571,20 @@ namespace MoonWaker.HostControl
                         : gateway.State == "recovering" ? "Ponowny start" : "Uruchamianie",
                     paired, RepairButton(true));
 
-            UIElement vibepolloCard = status.VibepolloTokenSaved
-                ? Stat("Vibepollo", Tone.Ok, "Token zapisany", "Jeden dla całego komputera", null)
-                : Stat("Vibepollo", Tone.Warn, "Brak tokenu", "Streamy nie wystartują",
+            UIElement vibepolloCard;
+            if (!status.VibepolloTokenSaved)
+                vibepolloCard = Stat("Vibepollo", Tone.Warn, "Brak tokenu", "Streamy nie wystartują",
                     ui.Button("Pobierz token", ButtonKind.Normal, true, true,
                         delegate { LaunchConfigurator("vibepollo", null); }, "vibepollo-token"));
+            else if (gateway.VibepolloOnline == true)
+                vibepolloCard = Stat("Vibepollo", Tone.Ok, "Połączone", "Token komputera ważny", null);
+            else if (gateway.VibepolloOnline == false)
+                vibepolloCard = Stat("Vibepollo", Tone.Error, "Brak połączenia",
+                    "Sprawdź, czy Vibepollo działa, albo odnów token",
+                    ui.Button("Odnów token", ButtonKind.Normal, true, true,
+                        delegate { LaunchConfigurator("vibepollo", null); }, "vibepollo-token"));
+            else
+                vibepolloCard = Stat("Vibepollo", Tone.Off, "Stan nieznany", "Gateway nie podaje stanu", null);
 
             UIElement agentCard;
             if (own == null)
@@ -595,16 +606,16 @@ namespace MoonWaker.HostControl
             Add(content, Columns(SessionCard(), PairingCard()));
 
             // First configuration: shown while any step is not met, so it comes back when one
-            // stops being met.
+            // stops being met. An unknown Vibepollo state does not bring it back.
             bool[] done = {
-                status.VibepolloTokenSaved, gateway.Clients.Count > 0, own != null,
+                status.VibepolloTokenSaved && gateway.VibepolloOnline != false, gateway.Clients.Count > 0, own != null,
                 own != null && (own.SteamConnected || own.EpicConnected || own.PlayniteConnected) };
             int ready = 0;
             foreach (bool step in done) if (step) ready++;
             if (ready == done.Length) return;
             StackPanel setup = new StackPanel();
             setup.Children.Add(ui.Heading("Pierwsza konfiguracja", ui.Muted(ready + " z " + done.Length + " gotowe")));
-            string[] names = { "Vibepollo skonfigurowane", "TV sparowany", "Profil utworzony", "Biblioteka gier połączona" };
+            string[] names = { "Vibepollo połączone", "TV sparowany", "Profil utworzony", "Biblioteka gier połączona" };
             string[] notes = { null, null, null, " — Steam, Epic lub Playnite" };
             int current = Array.IndexOf(done, false);
             for (int index = 0; index < done.Length; index++)
@@ -612,7 +623,8 @@ namespace MoonWaker.HostControl
                 UIElement action = null;
                 if (index == current)
                 {
-                    if (index == 0) action = ui.Button("Pobierz token", ButtonKind.Primary, true, true,
+                    if (index == 0) action = ui.Button(status.VibepolloTokenSaved ? "Odnów token" : "Pobierz token",
+                        ButtonKind.Primary, true, true,
                         delegate { LaunchConfigurator("vibepollo", null); }, "setup-vibepollo");
                     else if (index == 1) action = ui.Button("Sparuj TV", ButtonKind.Primary, true, false, Pair, "setup-pair");
                     else if (index == 2) action = ui.Button("Dodaj profil", ButtonKind.Primary, true, true,
@@ -660,13 +672,40 @@ namespace MoonWaker.HostControl
             return border;
         }
 
-        // The Gateway owns the session record and publishes none of it locally: the card knows
-        // only how to ask for the close.
+        // The Gateway's stream record as gateway-status.json publishes it. The close is offered
+        // in every state: the Gateway also closes a stream it holds no record of.
         private Border SessionCard()
         {
             StackPanel card = new StackPanel();
-            card.Children.Add(ui.Heading("Sesja streamu", null));
-            card.Children.Add(ui.Muted("Szczegóły trwającej sesji prowadzi Gateway. Zamknięcie dotyczy sesji tego konta Windows."));
+            ActiveSession session = status.Gateway.Session;
+            if (session != null && session.StreamStartedUnixMs > 0)
+            {
+                sessionDuration = ui.Muted("");
+                ShowDuration();
+            }
+            card.Children.Add(ui.Heading("Aktywna sesja", sessionDuration));
+            if (session != null)
+            {
+                string profile = "Profil " + session.ActorProfileName + (session.ActorProfileId == session.ExecutionProfileId
+                    ? "" : " (konto " + session.ExecutionProfileName + ")");
+                List<string> detail = new List<string> { profile };
+                if (session.ClientName.Length > 0) detail.Add(session.ClientName);
+                string source = GameSource(session.GameId);
+                if (source != null) detail.Add(source);
+                StackPanel text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                // The Gateway knows the game's library, not its name.
+                text.Children.Add(ui.Bold(session.GameId.Length == 0 ? "Stream bez gry" : "Gra w toku", 15));
+                TextBlock line = ui.Muted(String.Join("  •  ", detail.ToArray()));
+                line.Margin = new Thickness(0, 2, 0, 0);
+                text.Children.Add(line);
+                Border avatar = ui.Avatar(session.ActorProfileName, Math.Max(0,
+                    status.Profiles.FindIndex(item => item.Id == session.ExecutionProfileId)), 44);
+                avatar.Margin = new Thickness(0, 0, 4, 0);
+                card.Children.Add(Row(avatar, text));
+            }
+            else
+                card.Children.Add(ui.Muted(status.Gateway.StatusKnown ? "Gateway nie prowadzi teraz sesji streamu."
+                    : "Stan sesji nieznany: Gateway go nie podaje."));
             Button close = ui.Button(closingSession ? "Zamykam…" : "Zamknij sesję", ButtonKind.Danger, false, false,
                 CloseSession, "close-session");
             close.IsEnabled = !closingSession;
@@ -677,6 +716,21 @@ namespace MoonWaker.HostControl
             row.Margin = new Thickness(0, 14, 0, 0);
             card.Children.Add(row);
             return ui.Card(card);
+        }
+
+        private static string GameSource(string gameId)
+        {
+            if (gameId.StartsWith("steam:")) return "Steam";
+            if (gameId.StartsWith("epic:")) return "Epic";
+            return gameId.Length > 0 ? "Playnite" : null;
+        }
+
+        private void ShowDuration()
+        {
+            long seconds = Math.Max(0, (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() -
+                status.Gateway.Session.StreamStartedUnixMs) / 1000);
+            sessionDuration.Text = "trwa " + (seconds / 3600) + ":" + (seconds / 60 % 60).ToString("00") + ":" +
+                (seconds % 60).ToString("00");
         }
 
         private Border PairingCard()
@@ -707,7 +761,7 @@ namespace MoonWaker.HostControl
                 hint.Margin = new Thickness(0, 10, 0, 0);
                 card.Children.Add(hint);
                 StackPanel buttons = Row(ui.Button("Nowy kod", ButtonKind.Normal, true, false, Pair, "pair"),
-                    ui.Button("Ukryj kod", ButtonKind.Normal, true, false, delegate { pairingCode = null; Render(); }));
+                    ui.Button("Anuluj", ButtonKind.Normal, true, false, CancelPairing, "pair-cancel"));
                 buttons.Margin = new Thickness(0, 8, 0, 0);
                 card.Children.Add(buttons);
             }
@@ -717,15 +771,20 @@ namespace MoonWaker.HostControl
                     ? "Kod parowania jest jeszcze ważny, ale to okno go nie zna. Utwórz nowy kod; poprzedni przestanie działać."
                     : "Na telewizorze wybierz Dodaj komputer, a tutaj utwórz kod ważny 10 minut."));
                 Button pair = ui.Button(left > 0 ? "Nowy kod" : "Utwórz kod", ButtonKind.Primary, false, false, Pair, "pair");
-                pair.Margin = new Thickness(0, 14, 0, 0);
-                card.Children.Add(pair);
+                StackPanel buttons = left > 0
+                    ? Row(pair, ui.Button("Anuluj", ButtonKind.Normal, false, false, CancelPairing, "pair-cancel"))
+                    : Row(pair);
+                buttons.Margin = new Thickness(0, 14, 0, 0);
+                card.Children.Add(buttons);
             }
             return ui.Card(card);
         }
 
-        // Once a second: the pairing countdown, and a render when the code expires.
+        // Once a second: the session's duration, the pairing countdown, and a render when the
+        // code expires.
         private void Tick()
         {
+            if (sessionDuration != null) ShowDuration();
             if (pairingCountdown == null) return;
             long left = PairingSecondsLeft;
             if (left == 0)
@@ -767,7 +826,7 @@ namespace MoonWaker.HostControl
                 pills.Margin = new Thickness(0, 6, 0, 0);
                 text.Children.Add(pills);
                 Border avatar = ui.Avatar(profile.Name, status.Profiles.IndexOf(profile), 44);
-                avatar.Margin = new Thickness(0, 0, 12, 0);
+                avatar.Margin = new Thickness(0, 0, 4, 0);
                 DockPanel line = new DockPanel { Margin = new Thickness(13, 11, 13, 11) };
                 line.Children.Add(avatar);
                 line.Children.Add(text);
@@ -963,15 +1022,18 @@ namespace MoonWaker.HostControl
             Header(content, "Integracje", "Ustawienia całego komputera", null);
             if (status == null) return;
             StackPanel vibepollo = new StackPanel();
-            vibepollo.Children.Add(ui.Heading("Vibepollo", null, status.VibepolloTokenSaved
-                ? ui.Pill("Token zapisany", Tone.Ok) : ui.Pill("Brak tokenu", Tone.Warn)));
+            bool? online = status.Gateway.VibepolloOnline;
+            vibepollo.Children.Add(ui.Heading("Vibepollo", null, !status.VibepolloTokenSaved ? ui.Pill("Brak tokenu", Tone.Warn)
+                : online == true ? ui.Pill("Połączone", Tone.Ok) : online == false ? ui.Pill("Brak połączenia", Tone.Error)
+                : ui.Pill("Stan nieznany", Tone.Off)));
             TextBlock about = ui.Text("MoonWaker używa Vibepollo do streamu obrazu. Jeden token obsługuje cały komputer i wszystkie profile.",
                 13, ui.P.Muted, FontWeights.Normal);
             about.MaxWidth = 640;
             about.HorizontalAlignment = HorizontalAlignment.Left;
             about.Margin = new Thickness(0, 0, 0, 10);
             vibepollo.Children.Add(about);
-            vibepollo.Children.Add(ui.KeyValue(true, "Token komputera", ui.Text(status.VibepolloTokenSaved ? "zapisany" : "brak")));
+            vibepollo.Children.Add(ui.KeyValue(true, "Token komputera", ui.Text(!status.VibepolloTokenSaved ? "brak"
+                : online == true ? "zapisany, ważny" : "zapisany")));
             vibepollo.Children.Add(ui.KeyValue(false, "Ostatni zapis", ui.Text(status.VibepolloTokenSavedAt == null ? "—"
                 : status.VibepolloTokenSavedAt.Value.ToString("dd.MM.yyyy HH:mm"))));
             Button token = ui.Button("Pobierz / odnów token", ButtonKind.Primary, false, true,
@@ -1265,6 +1327,7 @@ namespace MoonWaker.HostControl
         private async void Pair()
         {
             if (busy) return;
+            busy = true;
             try
             {
                 string code = null;
@@ -1273,11 +1336,34 @@ namespace MoonWaker.HostControl
                     code = backend.CreatePairingCode();
                     return backend.ReadStatus();
                 });
+                busy = false;
                 ShowPairingCode(code);
                 Apply(fresh);
                 SetStatus("Kod parowania jest ważny 10 minut.", Tone.Ok);
             }
             catch (Exception error) { Fail(Overview, "Nie udało się utworzyć kodu parowania.", error.Message); }
+            finally { busy = false; }
+        }
+
+        private async void CancelPairing()
+        {
+            if (busy) return;
+            busy = true;
+            try
+            {
+                HostStatus fresh = await Task.Run(delegate
+                {
+                    backend.CancelPairingCode();
+                    return backend.ReadStatus();
+                });
+                busy = false;
+                pairingCode = null;
+                status = fresh;
+                Render();
+                SetStatus("Kod parowania anulowany.", Tone.Ok);
+            }
+            catch (Exception error) { Fail(Overview, "Nie udało się anulować kodu parowania.", error.Message); }
+            finally { busy = false; }
         }
 
         internal void ShowPairingCode(string code)

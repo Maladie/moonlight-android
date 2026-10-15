@@ -82,16 +82,20 @@ remote sign-in, device, child-profile, removal and Vibepollo-token edits open th
 Configurator with its `--mode` (buttons with the UAC shield); Steam key and Discord data are
 asked in WPF dialogs and Playnite's directory in the system folder picker. Paired TVs and
 their grants are shown read-only from `gateway.json` (name, `paired_at`, `last_seen_at` or
-the newer `client-activity.json`, `profile_grants`; never the token digest). The Gateway
-publishes no record of the running session, so **Zamknij sesję** is offered without its
-game, TV or duration. The **Pierwsza konfiguracja** card lists four steps (Vibepollo token,
-a paired TV, this account's profile, a connected library) and is shown exactly while one
-of them is not met.
+the newer `client-activity.json`, `profile_grants`; never the token digest). **Aktywna
+sesja** shows the Gateway's stream record from `gateway-status.json` (profile, TV, the
+game's library, the duration from the stream's start on the host clock; the Gateway knows
+no game names) with **Zamknij sesję**, which is offered in every state. Vibepollo reads
+**Połączone** / **Brak połączenia** from the same file. While the file is missing, older
+than 30 s or the Gateway does not run, both are shown as unknown. The **Pierwsza
+konfiguracja** card lists four steps (Vibepollo connected, a paired TV, this account's
+profile, a connected library) and is shown exactly while one of them is not met.
 
 Host Control's backend (`control\HostControlBackend.cs`) runs inside the tray; no
 PowerShell is involved. Its status refresh (every 2 s) starts no process and changes
 nothing: it reads what the Gateway publishes (`gateway.json`, `gateway-service-state.json`,
-`gateway-runtime.json`, `pairing-code.json`, `client-activity.json`; always with delete sharing, so the atomic
+`gateway-runtime.json`, `gateway-status.json` (at most 64 KiB), `pairing-code.json`,
+`client-activity.json`; always with delete sharing, so the atomic
 replacement of a file is never blocked), the size and time of `vibepollo-api.json` (whether the
 computer's token is saved), the loopback `/health` of each profile's Agent and
 `/health` of its Discord Bridge, the tray's own process host, and, for the signed-in
@@ -100,7 +104,8 @@ settings and the Discord files (with the public Client ID). The microphone worke
 runs only when the window opens and on F5.
 
 The account's actions use the existing channels: a pairing code is written in place into
-`pairing-code.json` (only its SHA-256, valid 10 minutes); **Zamknij sesję** writes
+`pairing-code.json` (only its SHA-256, valid 10 minutes) and **Anuluj** empties it in place,
+which ends the code at once; **Zamknij sesję** writes
 `host-close-request.json` and reads `host-close-result.json`
 (`gateway\TRANSITION_CONTRACT.md`); the Steam Web API key and the Discord client secret
 are encrypted with the account's DPAPI in the tray's process; Epic signs in and out

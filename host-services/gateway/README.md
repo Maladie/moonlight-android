@@ -22,6 +22,32 @@ They are ignored by Git. Paired client tokens are stored only as SHA-256 hashes,
 and Wake & Play pins the certificate received during pairing. The private-LAN
 firewall rule must never be exposed to the Internet.
 
+## Local state files
+
+The Gateway has no loopback-only route; Host Control on this computer talks to it through
+files beside `gateway.json`. Files the Gateway writes are replaced atomically (written to
+`*.tmp`, then renamed) and inherit the directory ACL, which lets local users read them.
+None holds a token, a token digest, a client ID or a process identity.
+
+- `gateway-runtime.json` - the running process: version, build, `pid`, `started_at`,
+  `source_sha256`.
+- `gateway-status.json` - rewritten when it changes, checked every second, and at least
+  every 5 s (each Vibepollo check):
+  `{"vibepollo_api_online": bool, "vibepollo_checked_at": Unix s, "updated_at": Unix s,
+  "session": {...}}`. `vibepollo_api_online` is the Vibepollo client's `api_online`
+  (a call in the last 30 s, or one `GET /api/metadata`). `session` is present only while
+  the Gateway holds a stream record: `actor_profile_id`, `actor_profile_name`,
+  `execution_profile_id`, `execution_profile_name`, `client_name` (the paired TV's name),
+  `game_id` (the provider game, `""` for a stream without one) and
+  `stream_started_unix_ms` (host clock; the start `/session/observation` reports). The
+  Gateway knows no game names. A reader treats a file older than 30 s as unknown.
+- `pairing-code.json` - written in place by Host Control (local users may modify it):
+  `{"code_sha256", "expires_at"}`, at most 10 minutes ahead. It is the only source of the
+  pairing code and is read on every pairing attempt, so emptying it (`{}`) cancels the
+  code at once; the Gateway keeps nothing of it in memory.
+- `host-close-request.json` / `host-close-result.json` - closing the session from Host
+  Control (`TRANSITION_CONTRACT.md`).
+
 ## Profiles
 
 Use one Gateway per physical host and one Bridge instance per Windows

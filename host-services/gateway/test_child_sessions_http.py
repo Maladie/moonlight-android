@@ -63,7 +63,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
                 "vibepollo_client_uuids": {"parent": VIBE_UUID},
             }],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.state.child_profiles_api_enabled = True
         self.client = self.state.client_for_token("child-token")
         self.clock = [0.0, datetime(2026, 1, 3, 12, 0, tzinfo=timezone.utc)]
@@ -818,7 +818,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertTrue(result["recovered"])
         self.assertFalse(result["cleanup_confirmed"])
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted.child_profiles_api_enabled = True
         restarted.child_time_clock = lambda: tuple(self.clock)
         restarted.proxy = self.state.proxy
