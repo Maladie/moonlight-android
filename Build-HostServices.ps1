@@ -4,7 +4,9 @@ param(
     [string]$OutputDirectory = "",
     [string]$CredentialProviderBinary = "",
     [string]$LegendaryBinary = "",
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    # Discord is optional: only this build carries its Bridge and audio worker.
+    [switch]$WithDiscord
 )
 
 Set-StrictMode -Version Latest
@@ -48,8 +50,12 @@ try {
     }
     & (Join-Path $hostServices "bridges\microphone\Build-MoonWakerMicrophoneWorker.ps1") `
         -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
-    & (Join-Path $hostServices "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
-        -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
+    if ($WithDiscord) {
+        & (Join-Path $hostServices "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
+            -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
+    } else {
+        Remove-Item -LiteralPath (Join-Path $payloadRoot "bridges\discord") -Recurse -Force
+    }
     & (Join-Path $hostServices "gateway\Build-MoonWakerGatewayService.ps1") `
         -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
     & (Join-Path $hostServices "windows-login\login-broker\Build-MoonWakerLoginBroker.ps1") `

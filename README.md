@@ -31,7 +31,7 @@ the same source revision.
 | --- | --- |
 | `app/` | Android application. MoonWaker code lives in `com.limelight.console`, `stream`, `gateway`, `discord` and `diagnostics`; the remaining packages are Moonlight. |
 | `app/src/main/jni/moonlight-core/` | Upstream Moonlight streaming core (submodule `moonlight-common-c`). Kept as close to upstream as possible. |
-| `host-services/` | Windows host: Gateway (the only LAN-facing API), an in-process Vibepollo client, per-profile Bridges for Playnite and Discord, Host Control, installer, updater, Login Broker and Credential Provider. See [host-services/README.md](host-services/README.md). |
+| `host-services/` | Windows host: Gateway (the only LAN-facing API), an in-process Vibepollo client, per-profile Bridges for Playnite and (optional) Discord, Host Control, installer, updater, Login Broker and Credential Provider. See [host-services/README.md](host-services/README.md). |
 | `lab/` | Deterministic lab runner for device scenarios. |
 | `docs/` | Agent guides, hardening packet, UX backlog and the [work plan](docs/MoonWaker/PLAN_PL.md). |
 
@@ -69,7 +69,7 @@ the repository. Place it in `local-sdk/discord-social-sdk-1.10.18687` or pass
 `-PdiscordSocialSdkDir=<path>`. Without it the build is configured to leave Discord disabled.
 
 Host installer (runs the host test suites as part of the build, output in
-`host-services/dist`):
+`host-services/dist`; add `-WithDiscord` to include the optional Discord Bridge):
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-HostServices.ps1

@@ -229,7 +229,7 @@ public class ConsoleHostPresentationTest {
     private static HostGatewayClient.IntegrationProfile profile(
             String id, String name, String sessionState) {
         return new HostGatewayClient.IntegrationProfile(id, name,
-                false, false, false, false, false, false, false,
+                false, false, false, false, false, false,
                 true, false, sessionState, "unavailable");
     }
 

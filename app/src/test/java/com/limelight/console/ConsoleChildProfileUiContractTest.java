@@ -330,7 +330,7 @@ public class ConsoleChildProfileUiContractTest {
     private static HostGatewayClient.IntegrationProfile childProfile(
             long remaining, long playable, String reason, String server, String windowEnd) {
         return new HostGatewayClient.IntegrationProfile("child", "Child",
-                false, false, false, false, false, false, false, true, false,
+                false, false, false, false, false, false, true, false,
                 "active", "available", false, false, 0,
                 "child", "parent", "child", "", true, 1L, 1L,
                 remaining, playable, "", server, reason, windowEnd);

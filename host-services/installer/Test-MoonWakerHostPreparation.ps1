@@ -21,6 +21,8 @@ $paths = [ordered]@{
     Configurator = Join-Path $root "control\MoonWakerHostConfigurator.cs"
     Installer = Join-Path $PSScriptRoot "MoonWakerHostInstaller.cs"
     Manifest = Join-Path $PSScriptRoot "MoonWakerHostInstaller.manifest"
+    BuildHostServices = Join-Path (Split-Path -Parent $root) "Build-HostServices.ps1"
+    InstallerBuild = Join-Path $PSScriptRoot "Build-MoonWakerHostInstaller.ps1"
 }
 
 $sources = @{}
@@ -307,5 +309,41 @@ if ($null -eq $openSslResolver) { throw "OpenSSL resolver function is missing." 
         throw "The isolated OpenSSL resolver unexpectedly found an executable."
     }
 } $openSslResolver.Extent.Text
+
+# Discord is optional: only a -WithDiscord build puts its Bridge and audio worker into the
+# payload, and the installers carry over exactly what the package contains (the Gateway
+# installer's audio worker: test_gateway.py).
+foreach ($name in @("BuildHostServices", "InstallerBuild")) {
+    $buildTokens = $null
+    $buildErrors = $null
+    $buildAst = [Management.Automation.Language.Parser]::ParseFile(
+        $paths[$name], [ref]$buildTokens, [ref]$buildErrors)
+    if ($buildErrors.Count -gt 0) { throw "$name has PowerShell syntax errors." }
+    $workerBuilds = @($buildAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
+            $node.Value.EndsWith("Build-MoonWakerDiscordAudioWorker.ps1")
+    }, $true))
+    if ($workerBuilds.Count -ne 1) { throw "$name must build the Discord audio worker exactly once." }
+    $guard = $workerBuilds[0].Parent
+    while ($null -ne $guard -and $guard -isnot [Management.Automation.Language.IfStatementAst]) {
+        $guard = $guard.Parent
+    }
+    if ($null -eq $guard -or $guard.Clauses[0].Item1.Extent.Text -ne '$WithDiscord') {
+        throw "$name builds the Discord audio worker without -WithDiscord."
+    }
+}
+Assert-Contains "BuildHostServices" @(
+    '[switch]$WithDiscord',
+    'Remove-Item -LiteralPath (Join-Path $payloadRoot "bridges\discord") -Recurse -Force'
+)
+Assert-Contains "InstallerBuild" @(
+    '[switch] $WithDiscord',
+    '$_ -notlike "host-services/bridges/discord/*"'
+)
+Assert-Contains "Host" @(
+    'if (Test-Path -LiteralPath (Join-Path $bridgeSource "discord\DiscordBridge.ps1") -PathType Leaf) {',
+    'Remove-Item -LiteralPath $installedDiscord -Recurse -Force -ErrorAction Stop'
+)
 
 Write-Output "MoonWaker host preparation functional test passed."

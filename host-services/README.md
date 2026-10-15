@@ -1,6 +1,6 @@
 # MoonWaker host services
 
-This directory contains the versioned Discord and Playnite Bridges, the
+This directory contains the versioned Playnite and (optional) Discord Bridges, the
 authenticated Gateway (which talks to Vibepollo in process), installers and Host
 Control source. Runtime configuration and secrets are deliberately not stored here.
 
@@ -24,8 +24,19 @@ back at their next sign-in.
   profiles\<id>\game-provider\config.json` under `pythonw.exe` from the directory
   of the Gateway service's `--python` (the one Python the installation trusts).
 - **Discord Bridge** = `bridge-source\discord\DiscordBridge.ps1 -ProfileDirectory
-  profiles\<id>\discord`, only while the Agent runs and when the profile has a
-  `discord_bridge` endpoint, `discord_bridge_config.json` and `client_secret.dpapi`.
+  profiles\<id>\discord`, only while the Agent runs, when Discord is installed and
+  when the profile has a `discord_bridge` endpoint, `discord_bridge_config.json` and
+  `client_secret.dpapi`.
+
+Discord is an optional component. It is installed exactly when
+`bridge-source\discord\DiscordBridge.ps1` exists, which is when the package was built
+with `Build-HostServices.ps1 -WithDiscord`; only such a package also carries
+`gateway\MoonWakerDiscordAudioWorker.exe`. An installation from a package without
+Discord removes both. Without Discord, Host Control shows no Discord column,
+**Integracje…** or **Usuń dane Discorda**, the tray starts no Discord Bridge, and the
+Gateway reports `discord` and `discord_audio` as unavailable, as for an offline
+Bridge. A hot update with `bridges/discord` files is refused by an installation
+without Discord (`Required runtime target is missing`).
 
 Both children are created suspended, assigned to a Job Object with kill-on-close
 (they end with the tray) and only then resumed; silent breakaway lets games, Steam or
@@ -53,6 +64,7 @@ Build and test the complete host installer from the repository root:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-HostServices.ps1
 ```
 
+Add `-WithDiscord` to include the optional Discord Bridge and its audio worker.
 The output is written to `host-services\dist`. The script runs the Python tests,
 compiles Host Control and builds the installer directly from the checked-in C#
 source with the complete host-services payload embedded as a resource.
@@ -71,8 +83,8 @@ so the directory's parent must be one that standard users cannot rename or creat
 
 Upgrades replace program files only. Existing `config.json` files, paired
 Gateway clients, TLS key/certificate files, DPAPI-protected Bridge tokens and the
-Vibepollo token are kept. After adding a profile, use **Integracje** in Host
-Control to enter the Discord application data.
+Vibepollo token are kept. With Discord installed, use **Integracje…** in Host
+Control after adding a profile to enter the Discord application data.
 
 Vibepollo is one per computer and so is its token. **Vibepollo…** in Host
 Control's Gateway panel opens the elevated Configurator, which either requests a

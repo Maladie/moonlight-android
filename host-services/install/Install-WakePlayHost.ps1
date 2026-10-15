@@ -183,7 +183,16 @@ foreach ($codeDirectory in @($sourceDirectory, $controlDirectory, $toolsDirector
     Protect-InstalledCode $codeDirectory
 }
 
-Copy-Item -LiteralPath (Join-Path $bridgeSource "discord") -Destination $sourceDirectory -Recurse -Force
+# Discord is optional (Build-HostServices.ps1 -WithDiscord): the installation has it
+# exactly when this package does.
+if (Test-Path -LiteralPath (Join-Path $bridgeSource "discord\DiscordBridge.ps1") -PathType Leaf) {
+    Copy-Item -LiteralPath (Join-Path $bridgeSource "discord") -Destination $sourceDirectory -Recurse -Force
+} else {
+    $installedDiscord = Join-Path $sourceDirectory "discord"
+    if (Test-Path -LiteralPath $installedDiscord) {
+        Remove-Item -LiteralPath $installedDiscord -Recurse -Force -ErrorAction Stop
+    }
+}
 Copy-Item -LiteralPath (Join-Path $bridgeSource "playnite") -Destination $sourceDirectory -Recurse -Force
 Remove-Item -LiteralPath (Join-Path $sourceDirectory "playnite\PlayniteBridge.py") `
     -Force -ErrorAction SilentlyContinue

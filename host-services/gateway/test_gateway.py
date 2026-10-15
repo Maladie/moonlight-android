@@ -295,12 +295,27 @@ class GatewayStateTest(unittest.TestCase):
         self.assertIsNotNone(files)
         self.assertIn('"MoonWakerMicrophoneWorker.exe"', files.group(1))
 
-    def test_gateway_installer_packages_discord_audio_worker(self):
+    def test_gateway_installer_mirrors_optional_discord_audio_worker(self):
+        # Only a -WithDiscord package carries the worker; the installation mirrors it.
         installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
             encoding="utf-8-sig")
         files = re.search(r"\$files\s*=\s*@\((.*?)\)", installer, re.DOTALL)
         self.assertIsNotNone(files)
-        self.assertIn('"MoonWakerDiscordAudioWorker.exe"', files.group(1))
+        self.assertNotIn("MoonWakerDiscordAudioWorker.exe", files.group(1))
+        self.assertIn('$discordWorker = "MoonWakerDiscordAudioWorker.exe"', installer)
+        self.assertIn("Remove-Item -LiteralPath (Join-Path $InstallDirectory $discordWorker)",
+                      installer)
+
+    def test_capabilities_report_discord_unavailable_without_discord_installed(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"]["default"]["discord_bridge"] = ""
+        state.vibepollo.api_online = lambda: False
+        state.microphone_status = lambda: {"available": False, "reason": "worker_missing"}
+        capabilities = state.capabilities()["capabilities"]
+        self.assertFalse(capabilities["discord"]["available"])
+        self.assertEqual({"available": False, "reason": "worker_missing"},
+                         {key: capabilities["discord_audio"][key]
+                          for key in ("available", "reason")})
 
     def test_gateway_installer_packages_control_policy(self):
         installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
@@ -1492,7 +1507,7 @@ class GatewayStateTest(unittest.TestCase):
             calls.append((name, path, profile_id))
             if name == "game_provider" and path == "/observation":
                 return True, {"provider": {"connector_evidence": "VERIFIED"}}
-            return True, {"installed": (profile_id or state.profile_id) == "basia"}
+            return True, {}
 
         state.proxy = proxy
 
@@ -1508,7 +1523,6 @@ class GatewayStateTest(unittest.TestCase):
         basia = next(item for item in summary["profiles"] if item["id"] == "basia")
         self.assertEqual("Basia", basia["name"])
         self.assertTrue(basia["discord_rpc_connected"])
-        self.assertTrue(basia["virtualhere_available"])
         self.assertNotIn("discord_bridge", basia)
         self.assertFalse(any(name == "game_provider" and path == "/health"
                              for name, path, _profile_id in calls))
@@ -1651,26 +1665,6 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
         self.assertEqual(("discord", "/start-discord"), requests[0])
-
-    def test_virtualhere_action_encodes_allowlisted_device_address(self):
-        state = GatewayState(self.config_path, None)
-        requests = []
-        state.proxy = lambda name, path, timeout=2.5: (requests.append((name, path)) is None, {"message": "ok"})
-
-        status, result = state.virtualhere_action("use", {"address": "gaming-pc.114"})
-
-        self.assertEqual(200, status)
-        self.assertTrue(result["ok"])
-        self.assertEqual("discord", requests[0][0])
-        parsed = urllib.parse.urlsplit(requests[0][1])
-        self.assertEqual("/virtualhere-action", parsed.path)
-        self.assertEqual(["use"], urllib.parse.parse_qs(parsed.query)["action"])
-        self.assertEqual(["gaming-pc.114"], urllib.parse.parse_qs(parsed.query)["address"])
-
-    def test_virtualhere_action_rejects_untrusted_address(self):
-        state = GatewayState(self.config_path, None)
-        with self.assertRaises(ValueError):
-            state.virtualhere_action("stop", {"address": "../../shutdown"})
 
     def test_discord_participant_volume_is_strictly_allowlisted(self):
         state = GatewayState(self.config_path, None)

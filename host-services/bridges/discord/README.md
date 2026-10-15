@@ -2,8 +2,12 @@
 
 Discord Bridge is a loopback-only PowerShell service used by Wake & Play Host
 Gateway. It translates a deliberately limited HTTP API into Discord desktop RPC
-commands and also exposes the audio and VirtualHere controls consumed by the
-Gateway.
+commands and also exposes the audio controls consumed by the Gateway.
+
+It is an optional component: only `Build-HostServices.ps1 -WithDiscord` packages this
+directory (installed as `bridge-source\discord`) and the Gateway's
+`MoonWakerDiscordAudioWorker.exe`. Without it Host Control offers no Discord settings
+and the Gateway reports Discord as unavailable.
 
 Host Control's tray runs it from the installation with `-ProfileDirectory
 <install>\profiles\<id>\discord` once that profile is configured (Host Control's

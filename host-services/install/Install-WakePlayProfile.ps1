@@ -755,7 +755,8 @@ if ([string]::IsNullOrWhiteSpace($GatewayDirectory)) { $GatewayDirectory = Split
 $gatewayStart = Join-Path $GatewayDirectory "Start-MoonWakerGateway.ps1"
 
 $discordDirectory = $null
-if (-not $SkipDiscord) {
+# Discord is optional; without its Bridge in the package the profile gets no Discord data.
+if (-not $SkipDiscord -and (Test-Path -LiteralPath (Join-Path $sourceRoot "discord\DiscordBridge.ps1") -PathType Leaf)) {
     $discordDirectory = Join-Path $profileRoot "discord"
     $discordConfig = Join-Path $discordDirectory "discord_bridge_config.json"
     $discordConfigured = Test-Path -LiteralPath $discordConfig

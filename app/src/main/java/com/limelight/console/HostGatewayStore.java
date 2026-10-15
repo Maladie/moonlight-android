@@ -267,7 +267,6 @@ public final class HostGatewayStore {
                 value.put("playnite_bridge_online", profile.playniteBridgeOnline);
                 value.put("playnite_connector_connected",
                         profile.playniteConnectorConnected);
-                value.put("virtualhere_available", profile.virtualHereAvailable);
                 values.put(value);
             }
             root.put("profiles", values);

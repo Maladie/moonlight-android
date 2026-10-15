@@ -3,7 +3,9 @@
 param(
     [string] $OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) "dist"),
     [string] $CredentialProviderBinary = "",
-    [string] $LegendaryBinary = ""
+    [string] $LegendaryBinary = "",
+    # Discord is optional: only this build carries its Bridge and audio worker.
+    [switch] $WithDiscord
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,6 +101,9 @@ try {
             "host-services/" + $_.FullName.Substring($hostServicesRoot.Length + 1).Replace("\", "/")
         }
     $tracked = @($tracked) + @($windowsLogin) | Sort-Object -Unique
+    if (-not $WithDiscord) {
+        $tracked = @($tracked | Where-Object { $_ -notlike "host-services/bridges/discord/*" })
+    }
     foreach ($relative in $tracked) {
         if ($relative -match "(^|/)(dist|__pycache__)(/|$)" -or
                 $relative -match "\.pyc$") {
@@ -122,9 +127,11 @@ try {
     & (Join-Path $payloadHostServices `
         "bridges\microphone\Build-MoonWakerMicrophoneWorker.ps1") `
         -OutputDirectory $payloadGateway | Out-Null
-    & (Join-Path $payloadHostServices `
-        "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
-        -OutputDirectory $payloadGateway | Out-Null
+    if ($WithDiscord) {
+        & (Join-Path $payloadHostServices `
+            "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
+            -OutputDirectory $payloadGateway | Out-Null
+    }
     & (Join-Path $payloadHostServices "gateway\Build-MoonWakerGatewayService.ps1") `
         -OutputDirectory $payloadGateway | Out-Null
 

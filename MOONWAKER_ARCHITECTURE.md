@@ -12,7 +12,7 @@ MoonWaker is a console-oriented Android TV client built on Moonlight. It coordin
 - Vibepollo for stream host integration;
 - Playnite as the game library and lifecycle source;
 - MoonWaker Gateway as the authenticated client-facing host API;
-- per-profile host Bridges for Playnite and Discord;
+- per-profile host Bridges for Playnite and (optional, `-WithDiscord` builds only) Discord;
 - host-side control, installation, repair, and lifecycle tooling.
 
 The architecture should preserve Moonlight's streaming core and isolate MoonWaker-specific orchestration around it.
@@ -251,7 +251,6 @@ Only dependencies required for the requested action should block launch.
 Examples:
 
 - Discord failure must not block normal game launch.
-- VirtualHere failure must not block launch unless the selected play intent explicitly requires it.
 
 ### 3.7 `Game` / stream Activity
 
@@ -311,7 +310,6 @@ GatewayTransport   (single HTTPS/TLS implementation)
         +-- PlayniteGatewayClient
         +-- DiscordGatewayClient
         +-- VibepolloGatewayClient
-        +-- VirtualHereGatewayClient
 ```
 
 `GatewayTransport` owns HTTP/TLS/security behavior. Domain clients own endpoint paths, request bodies, domain DTO parsing, and domain-specific validation.
@@ -401,7 +399,8 @@ Selecting or refreshing an app profile has no Windows-session side effect.
 
 Host Control's tray, started at every sign-in by one machine `Run` entry, owns the
 per-user process lifecycle of the signed-in account's profile: the Agent
-(`GameProviderBridge.py` under `pythonw`) and the optional Discord Bridge, both run
+(`GameProviderBridge.py` under `pythonw`) and the optional Discord Bridge (installed only
+from a `-WithDiscord` package, i.e. when `bridge-source\discord` exists), both run
 from the installation in a kill-on-close Job Object, restarted after an exit with a
 2–30 s backoff. Its status for Host Control comes from this host plus the
 children's `/health` and `/observation`; there is no state file and no process

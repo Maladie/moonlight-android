@@ -193,6 +193,19 @@ namespace MoonWaker.HostControl
                         "an elevated tray says why");
                 }
 
+                // Without -WithDiscord the installation has no Discord Bridge: a configured
+                // profile still runs only its Agent.
+                using (ProfileProcessHost host = NewHost(root, false))
+                {
+                    WaitUntil(delegate { host.Tick(); return host.ProcessId(false) != 0; },
+                        "the Agent runs without Discord installed");
+                    host.Tick();
+                    Expect(host.ProcessId(true) == 0, "Discord is not started when it is not installed");
+                }
+                string discordSource = Path.Combine(root, "bridge-source", "discord");
+                Directory.CreateDirectory(discordSource);
+                File.WriteAllText(Path.Combine(discordSource, "DiscordBridge.ps1"), "");
+
                 using (ProfileProcessHost host = NewHost(root, false))
                 {
                     RunBoth(host, "both children run for the account's profile");

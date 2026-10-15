@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authenticated HTTPS facade for Discord, Vibepollo, audio and VirtualHere controls."""
+"""Authenticated HTTPS facade for Discord, Vibepollo and audio controls."""
 
 from __future__ import annotations
 
@@ -118,7 +118,6 @@ PROFILE_PERMISSIONS = {"use_profile", "remote_sign_in", "manage_children"}
 MANAGE_CHILDREN_PERMISSION = "manage_children"
 PROFILE_SESSION_HEADER = "X-MoonWaker-Profile-Session"
 DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
-VIRTUALHERE_ADDRESS_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 AUDIO_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:{}-]{1,220}$")
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 WINDOWS_SID_PATTERN = re.compile(r"^S-\d-\d+(?:-\d+)+$", re.IGNORECASE)
@@ -2360,10 +2359,6 @@ class GatewayState:
             profile_id=self.execution_profile_id)
         microphone = self.microphone_status()
         discord_audio = self.discord_audio_status()
-        virtualhere_ok, virtualhere = (False, {"error": "Discord Bridge is offline."})
-        if discord_ok:
-            virtualhere_ok, virtualhere = self.proxy(
-                "discord", "/virtualhere-state", timeout=1.5)
         remote_windows_sign_in = self.remote_windows_sign_in_capability()
         return {
             "gateway": {
@@ -2378,10 +2373,6 @@ class GatewayState:
                 "game_provider": {"available": playnite_ok, "observation": playnite},
                 "playnite": {"available": playnite_ok, "observation": playnite},
                 "discord": {"available": discord_ok, "health": discord},
-                "virtualhere": {
-                    "available": virtualhere_ok and bool(virtualhere.get("installed", False)),
-                    "health": virtualhere,
-                },
                 "host_sleep": {"available": os.name == "nt"},
                 "session_suspend": {"available": os.name == "nt"},
                 "remote_windows_sign_in": remote_windows_sign_in,
@@ -3202,12 +3193,6 @@ class GatewayState:
                     if isinstance(playnite_observation, dict) else None
                 playnite_connector = playnite_online and isinstance(provider, dict) \
                     and provider.get("connector_evidence") == "VERIFIED"
-                virtualhere_online = False
-                if discord["bridge_online"]:
-                    virtualhere_ok, virtualhere = self.proxy(
-                        "discord", "/virtualhere-state", timeout=1.5)
-                    virtualhere_online = virtualhere_ok and bool(
-                        virtualhere.get("installed", False))
                 if not suggested_profile_id and discord["rpc_connected"]:
                     suggested_profile_id = str(profile_id)
                 if not available_profile_id and (
@@ -3245,7 +3230,6 @@ class GatewayState:
                     "game_provider_bridge_online": playnite_online,
                     "playnite_bridge_online": playnite_online,
                     "playnite_connector_connected": playnite_connector,
-                    "virtualhere_available": virtualhere_online,
                 })
         finally:
             original_config = self.config.get("profiles", {}).get(original_profile)
@@ -3328,21 +3312,15 @@ class GatewayState:
         vibepollo_online = False
         playnite_online = False
         playnite_connector = False
-        virtualhere_online = False
         if parent_available:
             vibepollo_online = self.vibepollo.api_online()
             playnite_online, playnite_observation = self.proxy(
                 "game_provider", "/observation", timeout=1.0,
                 profile_id=parent_id)
-            virtualhere_ok, virtualhere = self.proxy(
-                "discord", "/virtualhere-state", timeout=1.5,
-                profile_id=parent_id)
             provider = playnite_observation.get("provider") \
                 if isinstance(playnite_observation, dict) else None
             playnite_connector = playnite_online and isinstance(provider, dict) \
                 and provider.get("connector_evidence") == "VERIFIED"
-            virtualhere_online = virtualhere_ok and isinstance(
-                virtualhere, dict) and bool(virtualhere.get("installed", False))
         reason = str(policy.get("reason") or "none")
         if not actor.get("enabled") or profile_deletion_pending(actor):
             reason = "child_profile_unavailable"
@@ -3398,7 +3376,6 @@ class GatewayState:
             "vibepollo_bridge_online": bool(vibepollo_online),
             "playnite_bridge_online": bool(playnite_online),
             "playnite_connector_connected": bool(playnite_connector),
-            "virtualhere_available": virtualhere_online,
         }
 
     @staticmethod
@@ -3589,38 +3566,6 @@ class GatewayState:
             "action": action,
             "result": result,
             "error": "" if ok else self.upstream_error(result, "Discord action failed."),
-        }
-
-    def virtualhere_state(self, force: bool = False) -> tuple[int, Any]:
-        suffix = "?force=true" if force else ""
-        ok, result = self.proxy("discord", "/virtualhere-state" + suffix, timeout=8.0)
-        return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
-            "ok": ok,
-            "virtualhere": result if ok and isinstance(result, dict) else {},
-            "error": "" if ok else self.upstream_error(result, "Unable to load VirtualHere state."),
-        }
-
-    def virtualhere_action(self, action: str, body: dict[str, Any]) -> tuple[int, Any]:
-        if action == "restart":
-            path = "/repair-virtualhere"
-            timeout = 12.0
-        elif action in {"use", "stop", "auto"}:
-            address = str(body.get("address", "")).strip()
-            if not VIRTUALHERE_ADDRESS_PATTERN.fullmatch(address):
-                raise ValueError("Invalid VirtualHere device address.")
-            path = "/virtualhere-action?" + urllib.parse.urlencode({
-                "action": action,
-                "address": address,
-            })
-            timeout = 10.0
-        else:
-            return HTTPStatus.NOT_FOUND, {"error": "Unknown VirtualHere action."}
-        ok, result = self.proxy("discord", path, timeout=timeout)
-        return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
-            "ok": ok,
-            "action": action,
-            "result": result,
-            "error": "" if ok else self.upstream_error(result, "VirtualHere action failed."),
         }
 
     def vibepollo_status(self) -> tuple[int, Any]:
@@ -9021,11 +8966,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     query.get("transition_id", [""])[0])
                 self.send_json(status, result)
                 return
-            if path == f"{API_PREFIX}/virtualhere/state":
-                status, result = self.state.virtualhere_state(
-                    query.get("force", [""])[0].lower() == "true")
-                self.send_json(status, result)
-                return
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})
             return
         self.authorize_profile(authenticated_client)
@@ -9051,10 +8991,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_json(status, result)
         elif path == f"{API_PREFIX}/discord/audio/stream":
             self.discord_audio_stream(self.state.profile_id)
-        elif path == f"{API_PREFIX}/virtualhere/state":
-            status, result = self.state.virtualhere_state(
-                query.get("force", [""])[0].lower() == "true")
-            self.send_json(status, result)
         elif path == f"{API_PREFIX}/session/observation":
             status, result = self.state.playnite_observation(
                 query.get("request_ordinal", ["0"])[0],
@@ -9533,21 +9469,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         str(body.pop("ticket", "")), body)
                     self.send_json(status, result)
                     return
-                virtualhere_prefix = f"{API_PREFIX}/virtualhere/"
-                if path.startswith(virtualhere_prefix):
-                    actor_id = self._authorize_public_child(
-                        authenticated_client, "use_profile")
-                    request_id = self.headers.get("X-Request-Id", "").strip()
-                    if not REQUEST_ID_PATTERN.fullmatch(request_id):
-                        raise ValueError("A valid X-Request-Id header is required.")
-                    body = self.read_json()
-                    action = path[len(virtualhere_prefix):]
-                    status, result = self.state.idempotent(
-                        f"child-virtualhere:{self.state.broker_client_id(authenticated_client)}:"
-                        f"{actor_id}:{request_id}",
-                        lambda: self.state.virtualhere_action(action, body))
-                    self.send_json(status, result)
-                    return
                 if not self._require_child_capability():
                     return
                 self.send_json(HTTPStatus.FORBIDDEN, {
@@ -9622,19 +9543,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     if action.startswith("audio/") else \
                     (lambda: self.state.discord_action(action, body))
                 status, result = self.state.idempotent(f"{profile_id}:{request_id}", operation)
-                self.send_json(status, result)
-                return
-            virtualhere_prefix = f"{API_PREFIX}/virtualhere/"
-            if path.startswith(virtualhere_prefix):
-                action = path[len(virtualhere_prefix):]
-                request_id = self.headers.get("X-Request-Id", "").strip()
-                if not request_id or len(request_id) > 128:
-                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": "A valid X-Request-Id header is required."})
-                    return
-                body = self.read_json()
-                status, result = self.state.idempotent(
-                    f"{profile_id}:{request_id}",
-                    lambda: self.state.virtualhere_action(action, body))
                 self.send_json(status, result)
                 return
             playnite_prefix = f"{API_PREFIX}/playnite/"

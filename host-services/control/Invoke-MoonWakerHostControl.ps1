@@ -405,9 +405,12 @@ function Set-ProfileIntegrations([string]$Id) {
             $directory = Join-Path $profile.root "discord"
             $configPath = Join-Path $directory "discord_bridge_config.json"
             $secretPath = Join-Path $directory "client_secret.dpapi"
-            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-                throw "Discord Bridge nie jest zainstalowany dla tego profilu."
+            # Discord is optional: installed exactly when its Bridge is in bridge-source.
+            if (-not (Test-Path -LiteralPath (Join-Path (Get-InstallRoot) `
+                    "bridge-source\discord\DiscordBridge.ps1") -PathType Leaf)) {
+                throw "Discord nie jest zainstalowany na tym komputerze."
             }
+            New-Item -ItemType Directory -Path $directory -Force | Out-Null
             if ([string]::IsNullOrWhiteSpace($discordId) -xor
                 [string]::IsNullOrWhiteSpace($discordSecret)) {
                 throw "Podaj jednoczesnie Discord Client ID i Client Secret."

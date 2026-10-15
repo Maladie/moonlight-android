@@ -395,7 +395,7 @@ namespace MoonWaker.HostControl
 
     // Hosts the processes of the current Windows account's profile: the Agent
     // (GameProviderBridge.py under pythonw) and, while the Agent runs and Discord is
-    // configured, Discord Bridge. Code runs from the installation; the profile directory holds
+    // installed and configured, Discord Bridge. Code runs from the installation; the profile directory holds
     // only data and configuration. A tray with an elevated token hosts nothing: profile
     // processes run only with the account's standard token.
     internal sealed class ProfileProcessHost : IDisposable
@@ -419,6 +419,7 @@ namespace MoonWaker.HostControl
         }
 
         private readonly string installRoot;
+        private readonly bool discordInstalled;
         private readonly string sid;
         private readonly bool elevated;
         private readonly Func<string, ProcessStartInfo> agentStartInfo;
@@ -444,6 +445,7 @@ namespace MoonWaker.HostControl
             Func<string, ProcessStartInfo> agentStartInfo, Func<string, ProcessStartInfo> discordStartInfo)
         {
             this.installRoot = Path.GetFullPath(installRoot).TrimEnd('\\');
+            discordInstalled = DiscordInstalled(this.installRoot);
             this.sid = sid ?? "";
             this.elevated = elevated;
             this.agentStartInfo = agentStartInfo ?? AgentStartInfo;
@@ -451,6 +453,18 @@ namespace MoonWaker.HostControl
         }
 
         internal string ProfileId { get { lock (gate) return profileId; } }
+
+        // Discord is an optional package component: it is installed exactly when its
+        // Bridge is in bridge-source (Build-HostServices.ps1 -WithDiscord).
+        internal static bool DiscordInstalled(string installRoot)
+        {
+            return File.Exists(DiscordScript(installRoot));
+        }
+
+        private static string DiscordScript(string installRoot)
+        {
+            return Path.Combine(installRoot, "bridge-source", "discord", "DiscordBridge.ps1");
+        }
 
         // A tray started at sign-in stays only for an account that owns a profile.
         internal static bool AccountHasProfile(string installRoot)
@@ -549,7 +563,7 @@ namespace MoonWaker.HostControl
                 if (agentWanted) EnsureRunning(agent, stamp, root, agentStartInfo);
                 else Stop(agent);
                 // Discord serves the profile only beside a running Agent.
-                if (agentWanted && agent.Running && DiscordConfigured(entry, root))
+                if (agentWanted && agent.Running && discordInstalled && DiscordConfigured(entry, root))
                     EnsureRunning(discord, stamp, root, discordStartInfo);
                 else Stop(discord);
             }
@@ -607,7 +621,7 @@ namespace MoonWaker.HostControl
         private ProcessStartInfo DiscordStartInfo(string root)
         {
             string data = Path.Combine(root, "discord");
-            string script = Path.Combine(installRoot, "bridge-source", "discord", "DiscordBridge.ps1");
+            string script = DiscordScript(installRoot);
             string powershell = Path.Combine(Environment.SystemDirectory,
                 "WindowsPowerShell", "v1.0", "powershell.exe");
             return HiddenStartInfo(powershell, "-NoProfile -NonInteractive -WindowStyle Hidden " +
@@ -728,6 +742,7 @@ namespace MoonWaker.HostControl
         private HostControlActivationListener activationListener;
         private readonly bool startInTray;
         private readonly ProfileProcessHost processHost;
+        private readonly bool discordInstalled = ProfileProcessHost.DiscordInstalled(InstallRoot);
         private bool refreshing;
         private bool sessionClosePending;
         private bool legendaryInstalled;
@@ -847,7 +862,7 @@ namespace MoonWaker.HostControl
             profiles.BorderStyle = BorderStyle.None;
             profiles.Columns.Add("Profil", 230);
             profiles.Columns.Add("Użytkownik", 250);
-            profiles.Columns.Add("Discord", 130);
+            if (discordInstalled) profiles.Columns.Add("Discord", 130);
             profiles.Columns.Add("Agent", 130);
             profiles.Columns.Add("PIN aplikacji", 94);
             profiles.Columns.Add("Logowanie", 88);
@@ -873,8 +888,9 @@ namespace MoonWaker.HostControl
                 delegate { RepairProfile(); }, 140);
             integrationsButton = AddActionButton(profilePanel, "Integracje…", 434, 282,
                 delegate { ConfigureIntegrations(); }, 150);
+            integrationsButton.Visible = discordInstalled;
             AddActionButton(profilePanel, "Usuń dane Discorda", 594, 282,
-                delegate { ClearDiscord(); }, 170);
+                delegate { ClearDiscord(); }, 170).Visible = discordInstalled;
             AddActionButton(profilePanel, "Odśwież", 774, 282,
                 delegate { RefreshStatus(); }, 140);
 
@@ -1161,7 +1177,7 @@ namespace MoonWaker.HostControl
                     row.Name = id;
                     row.Tag = profile;
                     row.SubItems.Add(GetText(profile, "owner", "—"));
-                    row.SubItems.Add(ProcessStatus(id, profile, "discord"));
+                    if (discordInstalled) row.SubItems.Add(ProcessStatus(id, profile, "discord"));
                     row.SubItems.Add(ProcessStatus(id, profile, "game_provider"));
                     row.SubItems.Add(GetBool(profile, "pin_required") ? "WŁ." : "WYŁ.");
                     row.SubItems.Add(RemoteSignInStatus(profile));

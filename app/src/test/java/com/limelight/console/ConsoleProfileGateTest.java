@@ -16,7 +16,7 @@ import static org.junit.Assert.assertTrue;
 public class ConsoleProfileGateTest {
     @Test public void onlyAKnownParentProfileIsDiscordEligible() {
         HostGatewayClient.IntegrationProfile child = new HostGatewayClient.IntegrationProfile(
-                "kid", "Kid", false, false, false, false, false, false, false, true, false,
+                "kid", "Kid", false, false, false, false, false, false, true, false,
                 "active", "available", false, false, 0,
                 "child", "basia", "kid", "", true, 1L, 1L,
                 60L, 60L, "", "", "none", "");
@@ -71,7 +71,7 @@ public class ConsoleProfileGateTest {
     @Test public void protectedAutomaticProfileIsClearedWhenObserved() {
         HostGatewayClient.IntegrationProfile protectedProfile =
                 new HostGatewayClient.IntegrationProfile("protected", "protected",
-                        false, false, false, false, false, false, false,
+                        false, false, false, false, false, false,
                         true, false, "active", "unavailable", true);
         HostGatewayStore.ProfileSelection selection = HostGatewayStore.projectProfiles(
                 Arrays.asList(profile("open"), protectedProfile), "open", "");
@@ -101,7 +101,7 @@ public class ConsoleProfileGateTest {
 
     @Test public void childProfileIsNeverSelectedAutomatically() {
         HostGatewayClient.IntegrationProfile child = new HostGatewayClient.IntegrationProfile(
-                "child-1", "Child", false, false, false, false, false, false, false,
+                "child-1", "Child", false, false, false, false, false, false,
                 true, false, "active", "unavailable", false, false, 0,
                 "child", "parent", "execution-child-1", "purple", true,
                 4L, 0L, 1_200L, 600L, "", "", "none");
@@ -260,12 +260,12 @@ public class ConsoleProfileGateTest {
 
     @Test public void profileTileShowsAtMostTwoLinesOneBadgeAndGatesAutomaticLogin() {
         HostGatewayClient.IntegrationProfile child = new HostGatewayClient.IntegrationProfile(
-                "kid", "Kid", false, false, false, false, false, false, false, true, false,
+                "kid", "Kid", false, false, false, false, false, false, true, false,
                 "active", "available", false, false, 0,
                 "child", "basia", "kid", "", true, 1L, 1L,
                 4_800L, 60L, "", "", "none", "");
         HostGatewayClient.IntegrationProfile locked = new HostGatewayClient.IntegrationProfile(
-                "locked", "locked", false, false, false, false, false, false, false,
+                "locked", "locked", false, false, false, false, false, false,
                 true, false, "locked", "unavailable", true);
 
         ConsoleProfileTileLook childLook = ConsoleProfileTileLook.of(child, false);
@@ -293,7 +293,7 @@ public class ConsoleProfileGateTest {
     private static HostGatewayClient.IntegrationProfile profile(String id,
                                                                  boolean useProfile) {
         return new HostGatewayClient.IntegrationProfile(id, id,
-                false, false, false, false, false, false, false,
+                false, false, false, false, false, false,
                 useProfile, false, "active", "unavailable");
     }
 

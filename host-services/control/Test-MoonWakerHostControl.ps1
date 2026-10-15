@@ -387,19 +387,31 @@ try {
     $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Action ConfigureIntegrations ' +
         '-ProfileId default -IntegrationDataProtectedFromEnvironment -ResultPath "{1}"'
     $arguments = $arguments -f $scriptPath, $resultPath
-    $startInfo = [Diagnostics.ProcessStartInfo]::new("powershell.exe", $arguments)
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CONFIGURE"] = "1"
-    $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_ID"] = $discordId
-    $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_SECRET_PROTECTED"] = `
-        Protect-TestValue $discordSecret
-    $process = [Diagnostics.Process]::Start($startInfo)
-    if (-not $process.WaitForExit(10000)) {
-        try { $process.Kill() } catch {}
-        throw "Integration configuration timed out."
+    # Discord is installed exactly when its Bridge is in bridge-source.
+    foreach ($discordInstalled in @($false, $true)) {
+        if ($discordInstalled) {
+            $discordSource = Join-Path $root "bridge-source\discord"
+            New-Item -ItemType Directory -Path $discordSource -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $discordSource "DiscordBridge.ps1") -Value ""
+        }
+        $startInfo = [Diagnostics.ProcessStartInfo]::new("powershell.exe", $arguments)
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CONFIGURE"] = "1"
+        $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_ID"] = $discordId
+        $startInfo.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_SECRET_PROTECTED"] = `
+            Protect-TestValue $discordSecret
+        $process = [Diagnostics.Process]::Start($startInfo)
+        if (-not $process.WaitForExit(10000)) {
+            try { $process.Kill() } catch {}
+            throw "Integration configuration timed out."
+        }
+        $integration = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        if (-not $discordInstalled -and ($integration.ok -or
+                -not ([string]$integration.error).StartsWith("Discord nie jest zainstalowany"))) {
+            throw "Discord was configured although it is not installed."
+        }
     }
-    $integration = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
     if (-not $integration.ok -or -not $integration.discord_configured -or
         $integration.PSObject.Properties["vibepollo_configured"]) {
         throw "Integration configuration failed: $($integration.error)"

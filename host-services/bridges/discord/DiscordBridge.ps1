@@ -19,7 +19,6 @@ Endpoints (127.0.0.1 only):
   GET /repair-rpc
   GET /start-discord
   GET /repair-discord
-  GET /repair-virtualhere
   GET /repair-bridge
   GET /diagnostics
   GET /shutdown
@@ -67,9 +66,6 @@ $script:ChannelCache = @{}
 $script:VoiceSnapshotTtlMs = 2000
 $script:GuildCacheTtlSeconds = 300
 $script:ChannelCacheTtlSeconds = 30
-$script:VirtualHereCache = $null
-$script:VirtualHereCacheAt = [datetime]::MinValue
-$script:VirtualHereCacheTtlMs = 1500
 $script:WindowsAudioAvailable = $false
 $script:WindowsAudioError = ""
 
@@ -666,179 +662,11 @@ function Get-RepairStatus {
         bridge_elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         discord = ($null -ne $discordInSession)
         bridge_session = $bridgeSession
-        virtualhere = ($null -ne (Get-Process -Name "vhui64" -ErrorAction SilentlyContinue | Select-Object -First 1))
         rpc_connected = $rpcConnected
         rpc_authenticated = [bool]$script:RpcAuthenticated
         pipe = [string]$script:RpcPipeName
         last_error = [string]$script:LastRpcError
     }
-}
-
-function Find-VirtualHereClient {
-    $process = Get-Process -Name "vhui64" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $process) {
-        try {
-            if (-not [string]::IsNullOrWhiteSpace([string]$process.Path) -and
-                (Test-Path -LiteralPath ([string]$process.Path))) {
-                return [string]$process.Path
-            }
-        }
-        catch {}
-    }
-
-    $candidates = @(
-        "E:\Programy\Virtual Here\vhui64.exe",
-        (Join-Path $env:ProgramFiles "VirtualHere\vhui64.exe"),
-        (Join-Path ${env:ProgramFiles(x86)} "VirtualHere\vhui64.exe"),
-        (Join-Path $env:LOCALAPPDATA "VirtualHere\vhui64.exe")
-    )
-    foreach ($candidate in $candidates) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
-            return $candidate
-        }
-    }
-    return $null
-}
-
-function Invoke-VirtualHereApi {
-    param([Parameter(Mandatory)][string]$Command)
-
-    $clientPath = Find-VirtualHereClient
-    if ([string]::IsNullOrWhiteSpace($clientPath)) {
-        throw "VirtualHere is not installed."
-    }
-    if ($null -eq (Get-Process -Name "vhui64" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-        throw "VirtualHere is installed but not running."
-    }
-
-    $responsePath = Join-Path $env:TEMP ("virtualhere_api_{0}.txt" -f [guid]::NewGuid().ToString("N"))
-    try {
-        $apiProcess = Start-Process -FilePath $clientPath -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
-            "-t", ('"{0}"' -f $Command.Replace('"', '')), "-r", ('"{0}"' -f $responsePath)
-        )
-        $response = ""
-        if (Test-Path -LiteralPath $responsePath) {
-            $response = (Get-Content -LiteralPath $responsePath -Raw).Trim()
-        }
-        if ($apiProcess.ExitCode -ne 0 -or $response.StartsWith("FAILED") -or $response.StartsWith("ERROR")) {
-            throw "VirtualHere command failed. Code=$($apiProcess.ExitCode), response=$response"
-        }
-        return $response
-    }
-    finally {
-        Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Invalidate-VirtualHereCache {
-    $script:VirtualHereCacheAt = [datetime]::MinValue
-}
-
-function Get-VirtualHereSnapshot {
-    param([switch]$Force)
-
-    $ageMs = ((Get-Date) - $script:VirtualHereCacheAt).TotalMilliseconds
-    if (-not $Force -and $null -ne $script:VirtualHereCache -and
-        $ageMs -lt $script:VirtualHereCacheTtlMs) {
-        return $script:VirtualHereCache
-    }
-
-    $clientPath = Find-VirtualHereClient
-    $running = ($null -ne (Get-Process -Name "vhui64" -ErrorAction SilentlyContinue | Select-Object -First 1))
-    $servers = New-Object System.Collections.Generic.List[object]
-    $result = [ordered]@{
-        installed = (-not [string]::IsNullOrWhiteSpace($clientPath))
-        running = $running
-        client_path = [string]$clientPath
-        servers = @()
-        error = ""
-        generated_at = (Get-Date).ToString("o")
-    }
-
-    if ($result.installed -and $running) {
-        try {
-            [xml]$xml = Invoke-VirtualHereApi -Command "GET CLIENT STATE"
-            foreach ($serverNode in @($xml.SelectNodes("/state/server"))) {
-                if ($null -eq $serverNode) { continue }
-                $connection = $serverNode.SelectSingleNode("connection")
-                if ($null -eq $connection) { continue }
-                $devices = New-Object System.Collections.Generic.List[object]
-                $hostname = [string]$connection.hostname
-                foreach ($device in @($serverNode.SelectNodes("device"))) {
-                    if ($null -eq $device) { continue }
-                    $state = [int]$device.state
-                    $boundHost = [string]$device.boundClientHostname
-                    $nickname = [string]$device.nickname
-                    $name = if ([string]::IsNullOrWhiteSpace($nickname)) { [string]$device.product } else { $nickname }
-                    $autoUse = [string]$device.autoUse
-                    $devices.Add([pscustomobject]@{
-                        address = "$hostname.$([string]$device.address)"
-                        device_address = [string]$device.address
-                        name = $name
-                        product = [string]$device.product
-                        vendor = [string]$device.vendor
-                        state = $state
-                        available = ($state -eq 1)
-                        in_use = ($state -eq 3)
-                        in_use_by_me = ($state -eq 3 -and
-                            -not [string]::IsNullOrWhiteSpace($boundHost) -and
-                            $boundHost -ieq $env:COMPUTERNAME)
-                        bound_client = [string]$device.clientId
-                        bound_hostname = $boundHost
-                        auto_use = (-not [string]::IsNullOrWhiteSpace($autoUse) -and $autoUse -ne "not-set")
-                        auto_use_mode = $autoUse
-                    })
-                }
-                $servers.Add([pscustomobject]@{
-                    id = [string]$connection.connectionId
-                    name = [string]$connection.serverName
-                    hostname = $hostname
-                    host = [string]$connection.host
-                    port = [int]$connection.port
-                    secure = ([string]$connection.secure -eq "true")
-                    state = [int]$connection.state
-                    devices = [object[]]$devices.ToArray()
-                    device_count = $devices.Count
-                })
-            }
-            $result.servers = [object[]]$servers.ToArray()
-        }
-        catch {
-            $result.error = $_.Exception.Message
-            Write-BridgeException -Context "VirtualHere snapshot" -Exception $_.Exception
-        }
-    }
-
-    $script:VirtualHereCache = [pscustomobject]$result
-    $script:VirtualHereCacheAt = Get-Date
-    return $script:VirtualHereCache
-}
-
-function Invoke-VirtualHereDeviceAction {
-    param(
-        [Parameter(Mandatory)][ValidateSet("use","stop","auto")][string]$Action,
-        [Parameter(Mandatory)][string]$Address
-    )
-
-    if ($Address -notmatch '^[A-Za-z0-9._:-]+$') { throw "Invalid VirtualHere device address." }
-    $snapshot = Get-VirtualHereSnapshot -Force
-    $known = $false
-    foreach ($server in @($snapshot.servers)) {
-        foreach ($device in @($server.devices)) {
-            if ([string]$device.address -eq $Address) { $known = $true; break }
-        }
-        if ($known) { break }
-    }
-    if (-not $known) { throw "VirtualHere device is no longer available: $Address" }
-
-    $command = switch ($Action) {
-        "use" { "USE,$Address" }
-        "stop" { "STOP USING,$Address" }
-        "auto" { "AUTO USE DEVICE,$Address" }
-    }
-    $response = Invoke-VirtualHereApi -Command $command
-    Invalidate-VirtualHereCache
-    return $response
 }
 
 function Get-WindowsAudioDevices {
@@ -1007,42 +835,6 @@ function Restart-DiscordClient {
     }
 }
 
-function Restart-VirtualHereClient {
-    Write-BridgeLog "Repair: restart VirtualHere client."
-    $process = Get-Process -Name "vhui64" -ErrorAction SilentlyContinue | Select-Object -First 1
-    $clientPath = "E:\Programy\Virtual Here\vhui64.exe"
-    if ($null -ne $process) {
-        try {
-            if (-not [string]::IsNullOrWhiteSpace([string]$process.Path)) {
-                $clientPath = [string]$process.Path
-            }
-        }
-        catch {}
-    }
-
-    if (-not (Test-Path -LiteralPath $clientPath)) {
-        throw "VirtualHere executable was not found: $clientPath"
-    }
-
-    if ($null -ne $process) {
-        $responsePath = Join-Path $env:TEMP ("virtualhere_exit_{0}.txt" -f [guid]::NewGuid().ToString("N"))
-        $apiProcess = Start-Process -FilePath $clientPath -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
-            "-t", '"EXIT"', "-r", ('"{0}"' -f $responsePath)
-        )
-        $apiResponse = ""
-        if (Test-Path -LiteralPath $responsePath) {
-            $apiResponse = (Get-Content -LiteralPath $responsePath -Raw).Trim()
-            Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue
-        }
-        if ($apiProcess.ExitCode -ne 0 -or ($apiResponse -ne "" -and $apiResponse -ne "OK")) {
-            throw "VirtualHere EXIT failed. Code=$($apiProcess.ExitCode), response=$apiResponse"
-        }
-        Start-Sleep -Milliseconds 800
-    }
-
-    Start-Process -FilePath $clientPath
-}
-
 function Start-DelayedBridgeRestart {
     # Host Control's tray owns this process and starts it again after it exits.
     Write-BridgeLog "Repair: restart bridge requested."
@@ -1084,7 +876,7 @@ function Export-BridgeDiagnostics {
         Get-Content -LiteralPath $LogPath -Tail 1500 |
             Set-Content -LiteralPath (Join-Path $staging "bridge_recent.log") -Encoding UTF8
     }
-    Get-Process -Name "Discord","vhui64","RemoteServerWin","powershell" -ErrorAction SilentlyContinue |
+    Get-Process -Name "Discord","RemoteServerWin","powershell" -ErrorAction SilentlyContinue |
         Select-Object ProcessName,Id,StartTime,CPU,WorkingSet64 |
         ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath (Join-Path $staging "processes.json") -Encoding UTF8
@@ -2001,21 +1793,6 @@ function Get-EndpointResponse {
             return "ok`t$kind`t$(Sanitize-Tsv $deviceId)"
         }
 
-        "/virtualhere-state" {
-            $force = ([string]$query["force"] -eq "1" -or
-                [string]$query["force"] -eq "true")
-            return ConvertTo-CompactJson -Value (Get-VirtualHereSnapshot -Force:$force)
-        }
-
-        "/virtualhere-action" {
-            $action = [string]$query["action"]
-            $address = [string]$query["address"]
-            if ([string]::IsNullOrWhiteSpace($action)) { throw "Missing VirtualHere action." }
-            if ([string]::IsNullOrWhiteSpace($address)) { throw "Missing VirtualHere device address." }
-            $response = Invoke-VirtualHereDeviceAction -Action $action -Address $address
-            return "ok`t$(Sanitize-Tsv $response)"
-        }
-
         "/repair-status" {
             return ConvertTo-CompactJson -Value (Get-RepairStatus)
         }
@@ -2033,11 +1810,6 @@ function Get-EndpointResponse {
         "/repair-discord" {
             Restart-DiscordClient
             return "ok`tDiscord restart started"
-        }
-
-        "/repair-virtualhere" {
-            Restart-VirtualHereClient
-            return "ok`tVirtualHere restarted"
         }
 
         "/repair-bridge" {

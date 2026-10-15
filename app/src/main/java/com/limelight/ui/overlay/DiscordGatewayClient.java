@@ -80,22 +80,18 @@ public final class DiscordGatewayClient {
         public final boolean discordAuthenticated;
         public final boolean vibepolloBridgeOnline;
         public final boolean playniteBridgeOnline;
-        public final boolean virtualHereAvailable;
 
         public IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                                   boolean discordRpcConnected, boolean discordAuthenticated,
-                                  boolean vibepolloBridgeOnline,
-                                  boolean virtualHereAvailable) {
+                                  boolean vibepolloBridgeOnline) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
-                    discordAuthenticated, vibepolloBridgeOnline, false,
-                    virtualHereAvailable);
+                    discordAuthenticated, vibepolloBridgeOnline, false);
         }
 
         public IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                                   boolean discordRpcConnected, boolean discordAuthenticated,
                                   boolean vibepolloBridgeOnline,
-                                  boolean playniteBridgeOnline,
-                                  boolean virtualHereAvailable) {
+                                  boolean playniteBridgeOnline) {
             this.id = id;
             this.name = name;
             this.discordBridgeOnline = discordBridgeOnline;
@@ -103,7 +99,6 @@ public final class DiscordGatewayClient {
             this.discordAuthenticated = discordAuthenticated;
             this.vibepolloBridgeOnline = vibepolloBridgeOnline;
             this.playniteBridgeOnline = playniteBridgeOnline;
-            this.virtualHereAvailable = virtualHereAvailable;
         }
     }
 
@@ -188,8 +183,7 @@ public final class DiscordGatewayClient {
                         value.optBoolean("discord_authenticated", false),
                         value.optBoolean("vibepollo_bridge_online", false),
                         value.optBoolean("game_provider_bridge_online",
-                                value.optBoolean("playnite_bridge_online", false)),
-                        value.optBoolean("virtualhere_available", false)));
+                                value.optBoolean("playnite_bridge_online", false))));
             }
         }
         return new IntegrationProfiles(profiles,

@@ -47,31 +47,29 @@ public class HostGatewayClient {
     static final class Capabilities {
         final boolean vibepolloFix;
         final boolean discord;
-        final boolean virtualHere;
         final boolean playnite;
         final boolean childProfiles;
         final boolean controlOperations;
 
-        Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere) {
-            this(vibepolloFix, discord, virtualHere, false, false, false);
+        Capabilities(boolean vibepolloFix, boolean discord) {
+            this(vibepolloFix, discord, false, false, false);
         }
 
-        Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
+        Capabilities(boolean vibepolloFix, boolean discord,
                      boolean playnite) {
-            this(vibepolloFix, discord, virtualHere, playnite, false, false);
+            this(vibepolloFix, discord, playnite, false, false);
         }
 
-        Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
+        Capabilities(boolean vibepolloFix, boolean discord,
                      boolean playnite, boolean childProfiles) {
-            this(vibepolloFix, discord, virtualHere, playnite, childProfiles, false);
+            this(vibepolloFix, discord, playnite, childProfiles, false);
         }
 
-        Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
+        Capabilities(boolean vibepolloFix, boolean discord,
                      boolean playnite, boolean childProfiles,
                      boolean controlOperations) {
             this.vibepolloFix = vibepolloFix;
             this.discord = discord;
-            this.virtualHere = virtualHere;
             this.playnite = playnite;
             this.childProfiles = childProfiles;
             this.controlOperations = controlOperations;
@@ -107,7 +105,6 @@ public class HostGatewayClient {
         final boolean vibepolloBridgeOnline;
         final boolean playniteBridgeOnline;
         final boolean playniteConnectorConnected;
-        final boolean virtualHereAvailable;
         final boolean manageChildren;
         final int ownChildrenCount;
         /** Public profile metadata returned by the child-aware /profiles endpoint. */
@@ -127,19 +124,28 @@ public class HostGatewayClient {
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                            boolean discordRpcConnected, boolean discordAuthenticated,
-                           boolean vibepolloBridgeOnline, boolean virtualHereAvailable) {
+                           boolean vibepolloBridgeOnline) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
                     discordAuthenticated, vibepolloBridgeOnline, false, false,
-                    virtualHereAvailable, true, false, "unknown", "unavailable");
+                    true, false, "unknown", "unavailable");
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline) {
+            this(id, name, discordBridgeOnline, discordRpcConnected,
+                    discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
+                    false, true, false,
+                    "unknown", "unavailable");
         }
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
-                           boolean virtualHereAvailable) {
+                           boolean playniteConnectorConnected) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
                     discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
-                    false, virtualHereAvailable, true, false,
+                    playniteConnectorConnected, true, false,
                     "unknown", "unavailable");
         }
 
@@ -147,23 +153,12 @@ public class HostGatewayClient {
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
                            boolean playniteConnectorConnected,
-                           boolean virtualHereAvailable) {
-            this(id, name, discordBridgeOnline, discordRpcConnected,
-                    discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
-                    playniteConnectorConnected, virtualHereAvailable, true, false,
-                    "unknown", "unavailable");
-        }
-
-        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
-                           boolean discordRpcConnected, boolean discordAuthenticated,
-                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
-                           boolean playniteConnectorConnected,
-                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean useProfile,
                            boolean remoteSignIn, String sessionState,
                            String remoteSignInState) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
                     discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
-                    playniteConnectorConnected, virtualHereAvailable, useProfile,
+                    playniteConnectorConnected, useProfile,
                     remoteSignIn, sessionState, remoteSignInState, false, false);
         }
 
@@ -171,12 +166,12 @@ public class HostGatewayClient {
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
                            boolean playniteConnectorConnected,
-                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean useProfile,
                            boolean remoteSignIn, String sessionState,
                            String remoteSignInState, boolean pinRequired) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
                     discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
-                    playniteConnectorConnected, virtualHereAvailable, useProfile,
+                    playniteConnectorConnected, useProfile,
                     remoteSignIn, sessionState, remoteSignInState, pinRequired, false);
         }
 
@@ -184,13 +179,13 @@ public class HostGatewayClient {
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
                            boolean playniteConnectorConnected,
-                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean useProfile,
                            boolean remoteSignIn, String sessionState,
                            String remoteSignInState, boolean pinRequired,
                            boolean manageChildren) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
                     discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
-                    playniteConnectorConnected, virtualHereAvailable, useProfile,
+                    playniteConnectorConnected, useProfile,
                     remoteSignIn, sessionState, remoteSignInState, pinRequired,
                     manageChildren, 0);
         }
@@ -199,13 +194,13 @@ public class HostGatewayClient {
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
                            boolean playniteConnectorConnected,
-                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean useProfile,
                            boolean remoteSignIn, String sessionState,
                            String remoteSignInState, boolean pinRequired,
                            boolean manageChildren, int ownChildrenCount) {
             this(id, name, discordBridgeOnline, discordRpcConnected, discordAuthenticated,
                     vibepolloBridgeOnline, playniteBridgeOnline, playniteConnectorConnected,
-                    virtualHereAvailable, useProfile, remoteSignIn, sessionState,
+                    useProfile, remoteSignIn, sessionState,
                     remoteSignInState, pinRequired, manageChildren, ownChildrenCount,
                     "standard", "", id, "", true, 0L, 0L, 0L, 0L,
                     "", "", "");
@@ -215,7 +210,7 @@ public class HostGatewayClient {
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
                            boolean playniteConnectorConnected,
-                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean useProfile,
                            boolean remoteSignIn, String sessionState,
                            String remoteSignInState, boolean pinRequired,
                            boolean manageChildren, int ownChildrenCount,
@@ -226,7 +221,7 @@ public class HostGatewayClient {
                            String nextAllowedAt, String serverTime, String reason) {
             this(id, name, discordBridgeOnline, discordRpcConnected, discordAuthenticated,
                     vibepolloBridgeOnline, playniteBridgeOnline, playniteConnectorConnected,
-                    virtualHereAvailable, useProfile, remoteSignIn, sessionState,
+                    useProfile, remoteSignIn, sessionState,
                     remoteSignInState, pinRequired, manageChildren, ownChildrenCount,
                     kind, parentProfileId, executionProfileId, avatarId, enabled,
                     policyRevision, usageRevision, remainingDailySeconds, playableNowSeconds,
@@ -237,7 +232,7 @@ public class HostGatewayClient {
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
                            boolean playniteConnectorConnected,
-                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean useProfile,
                            boolean remoteSignIn, String sessionState,
                            String remoteSignInState, boolean pinRequired,
                            boolean manageChildren, int ownChildrenCount,
@@ -260,7 +255,6 @@ public class HostGatewayClient {
             this.vibepolloBridgeOnline = vibepolloBridgeOnline;
             this.playniteBridgeOnline = playniteBridgeOnline;
             this.playniteConnectorConnected = playniteConnectorConnected;
-            this.virtualHereAvailable = virtualHereAvailable;
             this.manageChildren = manageChildren;
             this.ownChildrenCount = Math.max(0, ownChildrenCount);
             this.kind = "child".equalsIgnoreCase(kind == null ? "" : kind.trim())
@@ -895,55 +889,6 @@ public class HostGatewayClient {
         }
     }
 
-    static final class VirtualHereDevice {
-        final String address;
-        final String name;
-        final boolean available;
-        final boolean inUse;
-        final boolean inUseByMe;
-        final boolean autoUse;
-        final String boundHostname;
-
-        VirtualHereDevice(String address, String name, boolean available,
-                          boolean inUse, boolean inUseByMe, boolean autoUse,
-                          String boundHostname) {
-            this.address = address;
-            this.name = name;
-            this.available = available;
-            this.inUse = inUse;
-            this.inUseByMe = inUseByMe;
-            this.autoUse = autoUse;
-            this.boundHostname = boundHostname;
-        }
-    }
-
-    static final class VirtualHereServer {
-        final String name;
-        final String hostname;
-        final List<VirtualHereDevice> devices;
-
-        VirtualHereServer(String name, String hostname, List<VirtualHereDevice> devices) {
-            this.name = name;
-            this.hostname = hostname;
-            this.devices = Collections.unmodifiableList(devices);
-        }
-    }
-
-    static final class VirtualHereState {
-        final boolean installed;
-        final boolean running;
-        final List<VirtualHereServer> servers;
-        final String error;
-
-        VirtualHereState(boolean installed, boolean running,
-                         List<VirtualHereServer> servers, String error) {
-            this.installed = installed;
-            this.running = running;
-            this.servers = Collections.unmodifiableList(servers);
-            this.error = error;
-        }
-    }
-
     static final class AudioDevice {
         final String id;
         final String name;
@@ -1147,7 +1092,6 @@ public class HostGatewayClient {
         JSONObject capabilities = response.optJSONObject("capabilities");
         return new Capabilities(available(capabilities, "vibepollo_fix"),
                 available(capabilities, "discord"),
-                available(capabilities, "virtualhere"),
                 available(capabilities, "playnite"),
                 available(capabilities, "child_profiles_v1"),
                 available(capabilities, "control_operations_v2"));
@@ -1694,7 +1638,6 @@ public class HostGatewayClient {
                         value.optBoolean("game_provider_bridge_online",
                                 value.optBoolean("playnite_bridge_online", false)),
                         value.optBoolean("playnite_connector_connected", false),
-                        value.optBoolean("virtualhere_available", false),
                         permissions == null || permissions.optBoolean("use_profile", true),
                         permissions != null && permissions.optBoolean(
                                 "remote_sign_in", false),
@@ -2577,67 +2520,6 @@ public class HostGatewayClient {
             throw new IOException(impossible);
         }
         return discordAction(connection, "user-mute", body, 12_000);
-    }
-
-    VirtualHereState getVirtualHereState(GatewayConnection connection, boolean force) throws IOException {
-        JSONObject response = request(connection,
-                "/api/v1/virtualhere/state" + (force ? "?force=true" : ""), "GET",
-                null, 12_000);
-        JSONObject state = response.optJSONObject("virtualhere");
-        if (state == null) state = new JSONObject();
-        List<VirtualHereServer> servers = new ArrayList<>();
-        JSONArray serverValues = state.optJSONArray("servers");
-        if (serverValues != null) {
-            for (int serverIndex = 0; serverIndex < serverValues.length(); serverIndex++) {
-                JSONObject server = serverValues.optJSONObject(serverIndex);
-                if (server == null) continue;
-                List<VirtualHereDevice> devices = new ArrayList<>();
-                JSONArray deviceValues = server.optJSONArray("devices");
-                if (deviceValues != null) {
-                    for (int deviceIndex = 0; deviceIndex < deviceValues.length(); deviceIndex++) {
-                        JSONObject device = deviceValues.optJSONObject(deviceIndex);
-                        if (device == null) continue;
-                        String address = device.optString("address", "");
-                        if (!address.matches("[A-Za-z0-9._:-]{1,160}")) continue;
-                        devices.add(new VirtualHereDevice(address,
-                                device.optString("name", "USB device"),
-                                device.optBoolean("available", false),
-                                device.optBoolean("in_use", false),
-                                device.optBoolean("in_use_by_me", false),
-                                device.optBoolean("auto_use", false),
-                                device.optString("bound_hostname", "")));
-                    }
-                }
-                servers.add(new VirtualHereServer(
-                        server.optString("name", "VirtualHere server"),
-                        server.optString("hostname", ""), devices));
-            }
-        }
-        return new VirtualHereState(state.optBoolean("installed", false),
-                state.optBoolean("running", false), servers,
-                state.optString("error", ""));
-    }
-
-    JSONObject runVirtualHereAction(GatewayConnection connection, String action,
-                                    String address) throws IOException {
-        if (!"use".equals(action) && !"stop".equals(action) &&
-                !"auto".equals(action) && !"restart".equals(action)) {
-            throw new IllegalArgumentException("Unknown VirtualHere action");
-        }
-        JSONObject body = new JSONObject();
-        try {
-            if (!"restart".equals(action)) {
-                if (address == null || !address.matches("[A-Za-z0-9._:-]{1,160}")) {
-                    throw new IllegalArgumentException("Invalid VirtualHere device address");
-                }
-                body.put("address", address);
-            }
-        } catch (JSONException impossible) {
-            throw new IOException(impossible);
-        }
-        return request(connection, "/api/v1/virtualhere/" + action, "POST",
-                body,
-                "restart".equals(action) ? 15_000 : 12_000);
     }
 
     DiscordAudioState getDiscordAudioState(GatewayConnection connection) throws IOException {

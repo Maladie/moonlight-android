@@ -103,8 +103,6 @@ the header retain the fixed five-minute lease for compatibility.
 - `POST /api/v1/discord/{connect|join|leave|mute|deafen}` - Discord action.
 - `POST /api/v1/discord/{user-volume|user-mute}` - participant control.
 - `POST /api/v1/discord/audio/{select|volume|mute}` - audio control.
-- `GET /api/v1/virtualhere/state` - VirtualHere state and shared devices.
-- `POST /api/v1/virtualhere/{use|stop|auto|restart}` - VirtualHere action.
 - `POST /api/v1/system/sleep` - schedule Windows sleep after the authenticated response is sent.
 - `GET /api/v1/session/observation` - the selected profile's versioned, correlated game/session observation.
 - `GET /api/v1/library?cursor=...&limit=...` - paged provider-neutral library and library descriptors.
@@ -119,7 +117,7 @@ reveal remains a separate explicit user action.
 
 All endpoints except `hello` and `pair` require `Authorization: Bearer ...`.
 Mutating actions also require a unique `X-Request-Id`. Discord snowflakes,
-participant volume, audio device IDs and VirtualHere addresses are validated;
+participant volume and audio device IDs are validated;
 Gateway never exposes a general-purpose Bridge proxy.
 
 `capabilities.remote_windows_sign_in` is available only when the Login Broker

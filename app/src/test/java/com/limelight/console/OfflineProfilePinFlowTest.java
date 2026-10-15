@@ -269,7 +269,7 @@ public class OfflineProfilePinFlowTest {
     private static HostGatewayClient.IntegrationProfiles profiles(boolean useProfile,
                                                                    boolean pinRequired) {
         HostGatewayClient.IntegrationProfile profile = new HostGatewayClient.IntegrationProfile(
-                PROFILE, "Profile", false, false, false, false, false, false, false,
+                PROFILE, "Profile", false, false, false, false, false, false,
                 useProfile, false, "ready", "ready", pinRequired);
         return new HostGatewayClient.IntegrationProfiles(
                 Collections.singletonList(profile), PROFILE);

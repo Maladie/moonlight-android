@@ -19,7 +19,6 @@ $files = @(
     "vibepollo_client.py",
     "MoonWakerGatewayService.exe",
     "MoonWakerMicrophoneWorker.exe",
-    "MoonWakerDiscordAudioWorker.exe",
     "Start-WakePlayGateway.ps1",
     "MoonWakerGatewaySupervisor.ps1",
     "Start-MoonWakerGateway.ps1",
@@ -77,6 +76,17 @@ foreach ($name in $files) {
         throw "The Gateway package is incomplete. Missing: $name"
     }
     Copy-Item -LiteralPath $source -Destination (Join-Path $InstallDirectory $name) -Force
+}
+# Optional: only a package built with -WithDiscord carries the Discord audio worker.
+$discordWorker = "MoonWakerDiscordAudioWorker.exe"
+if (Test-Path -LiteralPath (Join-Path $sourceDirectory $discordWorker) -PathType Leaf) {
+    Copy-Item -LiteralPath (Join-Path $sourceDirectory $discordWorker) `
+        -Destination (Join-Path $InstallDirectory $discordWorker) -Force
+} else {
+    $installedWorker = Join-Path $InstallDirectory $discordWorker
+    if (Test-Path -LiteralPath $installedWorker) {
+        Remove-Item -LiteralPath $installedWorker -Force -ErrorAction Stop
+    }
 }
 
 $configPath = Join-Path $InstallDirectory "gateway.json"

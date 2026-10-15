@@ -50,7 +50,9 @@ Apply it without elevation:
 
 The `manifest.psd1` is imported only through `Import-PowerShellDataFile`; it is
 never executed. Its allowlist is fixed to top-level `.py` files in `gateway` and
-`bridges/playnite`, and `.ps1`/`.psm1` files in `bridges/discord`. Every size and SHA-256 hash must match, undeclared ZIP entries are
+`bridges/playnite`, and `.ps1`/`.psm1` files in `bridges/discord`; the last apply only
+to an installation with the optional Discord component (`bridge-source\discord`),
+any other installation refuses them as a missing runtime target. Every size and SHA-256 hash must match, undeclared ZIP entries are
 rejected, and versions cannot be replayed or downgraded.
 
 Bridge code exists only in the installation (`bridge-source`); profile directories

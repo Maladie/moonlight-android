@@ -270,7 +270,6 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertEqual("parent", child["execution_profile_id"])
         self.assertFalse(child["permissions"]["manage_children"])
         self.assertNotIn("discord_bridge_online", child)
-        self.assertIn("virtualhere_available", child)
 
     def test_child_capabilities_negotiate_control_without_parent_health_or_effects(self):
         with mock.patch.object(self.state, "proxy") as proxy, \
@@ -914,7 +913,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
             suspend.assert_not_called()
             self.assertIs(session, self.state.child_time_session)
 
-    def test_child_install_uninstall_and_virtualhere_match_parent_capabilities(self):
+    def test_child_install_uninstall_match_parent_capabilities(self):
         for action in ("install", "uninstall"):
             status, result = self.post(
                 "/api/v1/game/" + action, {"game_id": "steam:123"},
@@ -925,19 +924,6 @@ class ChildSessionsHttpTest(unittest.TestCase):
             path for name, path, _body in self.bridge_calls
             if name == "game_provider" and path in {"/game/install", "/game/uninstall"}
         ])
-        with mock.patch.object(self.state, "virtualhere_action",
-                               return_value=(200, {"ok": True})) as action:
-            status, result = self.post(
-                "/api/v1/virtualhere/restart", {}, profile="kid",
-                capability=True, request_id="child-virtualhere")
-        self.assertEqual(200, status, result)
-        action.assert_called_once_with("restart", {})
-        with mock.patch.object(self.state, "virtualhere_state",
-                               return_value=(200, {"ok": True})) as state:
-            status, result = self.get(
-                "/api/v1/virtualhere/state", profile="kid", capability=True)
-        self.assertEqual(200, status, result)
-        state.assert_called_once_with(False)
 
     def test_child_discord_and_unrelated_destructive_routes_are_rejected(self):
         for path in ("/api/v1/discord/home", "/api/v1/vibepollo/action/restart"):
