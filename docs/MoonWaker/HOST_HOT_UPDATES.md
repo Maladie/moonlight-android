@@ -13,7 +13,7 @@ marker for this, so check it before building a package. Example: the change that
 removed the Vibepollo Bridge (the Gateway's in-process `gateway/vibepollo_client.py`)
 needs the installer to create the protected `gateway\vibepollo-api.json`, grant the
 Gateway service read access to Vibepollo's configuration files, and install the
-Configurator with `--mode vibepollo` and `--mode vibepollo-access`. A hot update of the
+Configurator (its token save through `--apply` and `--mode vibepollo-access`). A hot update of the
 Gateway files alone leaves the Gateway without a Vibepollo token.
 
 Host Control and its Configurator are compiled executables (`control\`), outside the

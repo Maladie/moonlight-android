@@ -89,7 +89,7 @@ try {
     foreach ($file in @("Build-MoonWakerHostControl.ps1",
         "MoonWakerHostControl.cs", "HostControlWindow.cs", "HostControlUi.cs",
         "HostControlBackend.cs", "MoonWakerHostControl.manifest",
-        "MoonWakerHostConfigurator.cs", "ChildProfileForms.cs",
+        "MoonWakerHostConfigurator.cs", "ConfiguratorChanges.cs", "HostChanges.cs",
         "MoonWakerHostConfigurator.manifest", "vibepollo-token-scopes.json")) {
         Copy-Item -LiteralPath (Join-Path $hostServices "control\$file") `
             -Destination $controlTarget -Force

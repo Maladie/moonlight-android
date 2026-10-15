@@ -352,6 +352,19 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(["default"], [profile["id"] for profile in result["profiles"]])
         self.assertIsNotNone(state.client_for_token(result["token"]))
 
+    def test_pair_strips_control_bidi_and_separator_characters_from_name(self):
+        state = paired_state(self.config_path)
+        state.pair("192.0.2.1", "123456", "Salon\n‮VT  ​\x7f TV" + "x" * 100)
+
+        name = json.loads(self.config_path.read_text(encoding="utf-8"))["clients"][0]["name"]
+        self.assertEqual(80, len(name))
+        self.assertTrue(name.startswith("SalonVT TV"))
+
+    def test_child_draft_rejects_bidi_and_separator_characters_in_name(self):
+        for name in ("Ania‮", "An ia", "An ia", "A​nia", "An\x85ia"):
+            with self.assertRaisesRegex(ValueError, "name or avatar"):
+                GatewayState._child_profile_draft({"name": name, "enabled": True, "schedule": {}})
+
     def test_default_profile_alias_selects_only_granted_profile(self):
         state = GatewayState(self.config_path)
         state.config["profiles"] = {

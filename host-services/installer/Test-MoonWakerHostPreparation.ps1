@@ -353,13 +353,18 @@ Assert-Contains "Host" @(
     'Remove-Item -LiteralPath $installedDiscord -Recurse -Force -ErrorAction Stop'
 )
 
-# Host Control is one WPF executable built by csc from its four sources; both package builds
-# carry them.
+# Host Control is one WPF executable built by csc from its sources; the elevated helper shares
+# its window style and change channel. Both package builds carry them.
 Assert-Contains "HostControlBuild" @(
     "/reference:PresentationFramework.dll", "/reference:WindowsBase.dll", "/reference:System.Xaml.dll",
-    "HostControlWindow.cs", "HostControlUi.cs", "HostControlBackend.cs", "MoonWakerHostControl.cs"
+    "HostControlWindow.cs", "HostControlUi.cs", "HostControlBackend.cs", "MoonWakerHostControl.cs",
+    "HostChanges.cs", "ConfiguratorChanges.cs"
 )
-Assert-Contains "BuildHostServices" @("HostControlWindow.cs", "HostControlUi.cs")
-Assert-Contains "InstallerBuild" @("host-services/control/HostControlWindow.cs", "host-services/control/HostControlUi.cs")
+Assert-Contains "BuildHostServices" @("HostControlWindow.cs", "HostControlUi.cs", "HostChanges.cs", "ConfiguratorChanges.cs")
+Assert-Contains "InstallerBuild" @("host-services/control/HostControlWindow.cs", "host-services/control/HostControlUi.cs",
+    "host-services/control/HostChanges.cs", "host-services/control/ConfiguratorChanges.cs")
+foreach ($name in @("HostControlBuild", "BuildHostServices", "InstallerBuild")) {
+    if ($sources[$name].Contains("ChildProfileForms.cs")) { throw "$name still carries the WinForms child forms." }
+}
 
 Write-Output "MoonWaker host preparation functional test passed."

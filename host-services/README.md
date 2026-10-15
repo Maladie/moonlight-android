@@ -77,12 +77,20 @@ problem with **Napraw**). It is dark by default and light when
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme` is 1
 (read only, followed live), with a dark title bar in the dark theme and per-monitor DPI
 awareness (manifest PerMonitorV2, `TargetFramework` 4.8). Every fact on a page comes from
-`HostBackend.ReadStatus`; the page is rebuilt only when a shown fact changes. Profile, PIN,
-remote sign-in, device, child-profile, removal and Vibepollo-token edits open the elevated
-Configurator with its `--mode` (buttons with the UAC shield); Steam key and Discord data are
-asked in WPF dialogs and Playnite's directory in the system folder picker. Paired TVs and
-their grants are shown read-only from `gateway.json` (name, `paired_at`, `last_seen_at` or
-the newer `client-activity.json`, `profile_grants`; never the token digest). **Aktywna
+`HostBackend.ReadStatus`; the page is rebuilt only when a shown fact changes. Profiles are
+edited in WPF dialogs without elevation: **Dodaj profil** (a supported local account,
+listed without elevation, and a name), **Edytuj profil** (name, enabled), **PIN aplikacji**
+(set, change, remove), **Zdalne logowanie** (set or change the Windows password, check it,
+disable), **Profile dzieci** (list; name, avatar, active, one play window and daily limit
+per weekday; games are shared from the parent's game panel on the TV) and **Usuń profil**.
+**Urządzenia** shows each paired TV's grants per profile and child (use, remote sign-in,
+child management) as switches; flipped switches stay pending under a bar
+(**Niezapisana zmiana… / Odrzuć / Zapisz zmiany**) and are saved together. Only the save
+buttons carry the UAC shield: they hand the edit to the elevated helper (below), as do
+**Cofnij parowanie** and **Pobierz / odnów token**. Steam key and Discord data are asked
+in WPF dialogs and Playnite's directory in the system folder picker. A TV's facts come
+from `gateway.json` (name, `paired_at`, `last_seen_at` or the newer
+`client-activity.json`, `profile_grants`; never the token digest). **Aktywna
 sesja** shows the Gateway's stream record from `gateway-status.json` (profile, TV, the
 game's library, the duration from the stream's start on the host clock; the Gateway knows
 no game names) with **Zamknij sesję**, which is offered in every state. Vibepollo reads
@@ -123,7 +131,35 @@ its profile authority (exit 78), is not restarted: Napraw names the cause instea
 Gateway is an automatic service; Host Control has no start or stop for it.
 
 Everything that needs administrator rights runs in `MoonWakerHostConfigurator.exe`
-after UAC: profiles, devices, remote sign-in, child profiles and the Vibepollo token. A
+after UAC, one change set per save ("UAC przy Zapisz"): profiles, PINs, devices, remote
+sign-in, child profiles and the Vibepollo token. Host Control (`HostChanges.cs`, compiled
+into both executables) starts `MoonWakerHostConfigurator.exe --apply --pipe <GUID>
+--client <SID>` through ShellExecuteEx (`runas`, process handle kept). The helper creates
+the named pipe `MoonWakerHostConfigurator.Apply.<GUID>`: the first and only instance,
+remote clients rejected, NETWORK denied, a DACL naming only that SID; it accepts only its
+parent process (the Host Control that asked for elevation) in its own session whose token
+user is that SID, and Host Control accepts only the server process it started
+(`GetNamedPipeServerProcessId`). One message each way: a 4-byte length and UTF-8 JSON,
+at most 256 KiB in and 64 KiB out, each within 10 s once due (the helper waits 30 s for
+its client, Host Control up to 30 min for the user's decision). The request is
+`{"protocol":"moonwaker-host-changes/1","registry_revision":<SHA-256 of the gateway.json
+Host Control showed when the editor or the devices' pending bar was built>,"changes":[…]}`;
+the answer `{"outcome":"applied|partial|rejected|failed|cancelled","message":…}`. A set the
+user confirms after Host Control stopped waiting is not applied ("cancelled"); an answer
+that does not arrive once the set was delivered is shown as unknown ("Nie otrzymano
+wyniku — sprawdź stan") with a refreshed status, never as a failure. Names in the helper's
+window are shown without control, format (bidi) and separator characters, and bounded. The helper (`ConfiguratorChanges.cs`) treats the set as
+untrusted: exact fields per change type, a set of several changes only for registry edits
+(profile edit, PIN, grants, revoked pairings), every change run on a copy of the registry
+at that revision under `gateway.json.lock`, then shown without secrets in its own WPF
+window (the same style, `HostControlUi.cs`) for confirmation, and applied in one locked
+transaction that checks the revision again (child changes also check the parent's
+`children_policy_revision`; adding and removing a profile, remote sign-in and the
+Vibepollo token are sets of their own and keep their steps' identity checks). The app
+PIN may travel in the change set (the owner's decision); the Windows password for remote
+sign-in and Vibepollo's administrator login are typed only in the helper's window and the
+password goes only to Login Broker's pipe. The only other modes are `--mode child-api`
+(Login Broker) and `--mode vibepollo-access` (installer). A
 new profile's data directory is created there as well (`ProfileProvisioning`): exactly
 `profiles\<id>` without reparse points, never an existing one, the Agent's and, with
 Discord installed, Discord Bridge's configuration seeded from `bridge-source`'s
@@ -161,9 +197,9 @@ Vibepollo token are kept. With Discord installed, use the Discord card on **Inte
 Control after adding a profile to enter the Discord application data.
 
 Vibepollo is one per computer and so is its token. **Pobierz / odnów token** on Host
-Control's Integracje page opens the elevated Configurator, which either requests a
-token with the Vibepollo administrator login (used once, never stored) or takes
-a pasted one, checks it against the API and writes `gateway\vibepollo-api.json`.
+Control's Integracje page starts the elevated helper, whose window either requests a
+token with the Vibepollo administrator login (typed there, used once, never stored) or
+takes a pasted one, checks it against the API and writes `gateway\vibepollo-api.json`.
 The installer creates that file readable only by Administrators, SYSTEM and the
 Gateway service. The installer and every token save then grant the service read
 access to Vibepollo's `sunshine.conf` and the state file and certificate it names

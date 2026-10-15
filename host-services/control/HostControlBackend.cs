@@ -68,9 +68,12 @@ namespace MoonWaker.HostControl
 
         internal HostStatus ReadStatus()
         {
-            Dictionary<string, object> registry = HostFiles.ReadJson(GatewayFile("gateway.json"));
+            byte[] raw = HostFiles.ReadBytes(GatewayFile("gateway.json"));
+            Dictionary<string, object> registry = HostFiles.ParseJson(raw);
             Dictionary<string, object> version = HostFiles.ReadJson(Path.Combine(InstallRoot, "version.json"));
             HostStatus status = new HostStatus();
+            // A change set names the revision its editor showed; the helper applies it only to that one.
+            status.RegistryRevision = registry == null ? "" : RegistryRevision.Of(raw);
             status.InstalledVersion = HostFiles.Text(version, "version", "unknown");
             status.InstalledBuild = HostFiles.Text(version, "build", "unknown");
             status.LegendaryInstalled = LegendaryExecutable != null;
@@ -198,13 +201,21 @@ namespace MoonWaker.HostControl
             profile.RemoteSignInEnabled = HostFiles.Flag(entry, "remote_sign_in_enabled", false);
             profile.DeletionPending = HostFiles.Value(entry, "deletion_tombstone") != null;
             profile.CurrentUser = OwnedBy(entry, sid);
-            profile.Children = new List<string>();
-            foreach (object value in ((Dictionary<string, object>)registry["profiles"]).Values)
+            profile.Sid = HostFiles.Text(entry, "windows_account_sid", HostFiles.Text(entry, "owner_sid", ""));
+            profile.Root = HostFiles.Text(entry, "profile_root", "");
+            profile.AccountResolved = profile.Sid.Length > 0 &&
+                HostFiles.Text(entry, "account_mapping_status", "") == "resolved";
+            profile.ChildrenRevision = (int)HostFiles.Number(entry, "children_policy_revision");
+            profile.Children = new List<ChildStatus>();
+            foreach (KeyValuePair<string, object> item in (Dictionary<string, object>)registry["profiles"])
             {
-                Dictionary<string, object> child = value as Dictionary<string, object>;
+                Dictionary<string, object> child = item.Value as Dictionary<string, object>;
                 if (child != null && IsChild(child) && HostFiles.Text(child, "parent_profile_id", "") == id)
-                    profile.Children.Add(HostFiles.Text(child, "display_name", HostFiles.Text(child, "name", "")));
+                    profile.Children.Add(ReadChild(item.Key, child));
             }
+            profile.Children.Sort(delegate(ChildStatus left, ChildStatus right) {
+                return StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name);
+            });
             // Each account's tray hosts its own children; their answers are their health.
             // /health answers without the Agent's state lock, so a busy Agent still reads online.
             profile.Agent = LoopbackHealth.Probe(HostFiles.Text(entry, "game_provider_bridge", ""), "/health");
@@ -222,6 +233,30 @@ namespace MoonWaker.HostControl
                     Path.Combine(root, "discord", "discord_bridge_config.json")), "client_id", "");
             }
             return profile;
+        }
+
+        private static readonly string[] Weekdays = { "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
+
+        // A child's record as its editor shows it; a missing day reads as the Configurator's default.
+        private static ChildStatus ReadChild(string id, Dictionary<string, object> entry)
+        {
+            ChildStatus child = new ChildStatus {
+                Id = id, Name = HostFiles.Text(entry, "display_name", HostFiles.Text(entry, "name", id)),
+                AvatarId = HostFiles.Text(entry, "avatar_id", ""), Enabled = HostFiles.Flag(entry, "enabled", false) };
+            IList games = HostFiles.Value(entry, "allowed_game_keys") as IList;
+            child.SharedGames = games == null ? 0 : games.Count;
+            Dictionary<string, object> weekdays = HostFiles.Value(
+                HostFiles.Value(entry, "schedule") as Dictionary<string, object>, "weekdays") as Dictionary<string, object>;
+            foreach (string name in Weekdays)
+            {
+                Dictionary<string, object> day = HostFiles.Value(weekdays, name) as Dictionary<string, object>;
+                child.Days.Add(new ChildDay {
+                    Enabled = HostFiles.Flag(day, "enabled", false),
+                    StartMinute = day != null && day.ContainsKey("start_minute") ? (int)HostFiles.Number(day, "start_minute") : 0,
+                    EndMinute = day != null && day.ContainsKey("end_minute") ? (int)HostFiles.Number(day, "end_minute") : 1440,
+                    DailyLimitSeconds = (int)HostFiles.Number(day, "daily_limit_seconds") });
+            }
+            return child;
         }
 
         private static bool ProcessExists(int processId)
@@ -391,6 +426,59 @@ namespace MoonWaker.HostControl
         {
             HostFiles.OverwriteInPlace(GatewayFile("pairing-code.json"), "{}",
                 "Brak kanału parowania Gatewaya. Zainstaluj ponownie MoonWaker Host.");
+        }
+
+        // Saves a change set through the elevated helper: "MoonWakerHostConfigurator.exe --apply
+        // --pipe <GUID> --client <this account's SID>" through UAC (ShellExecuteEx with runas;
+        // Process keeps the handle of SEE_MASK_NOCLOSEPROCESS, so the helper's id cannot be
+        // reused meanwhile), then one exchange over the pipe the helper creates. The helper
+        // validates the set, shows it and asks for any password in its own window. Blocks until
+        // it answers: call it off the UI thread. owner: the window the UAC prompt belongs to.
+        internal ChangeAnswer ApplyChanges(string registryRevision, List<Dictionary<string, object>> changes, IntPtr owner)
+        {
+            string control = Path.Combine(InstallRoot, "control");
+            string executable = Path.Combine(control, "MoonWakerHostConfigurator.exe");
+            if (!File.Exists(executable))
+                throw new InvalidOperationException("Brak pomocnika administratora. Zaktualizuj instalację MoonWaker Host.");
+            if (!Regex.IsMatch(sid, "^S-1-[0-9-]+$")) throw new InvalidOperationException("Nie można ustalić konta Windows.");
+            Guid channel = Guid.NewGuid();
+            byte[] request = new UTF8Encoding(false).GetBytes(HostFiles.Serialize(new Dictionary<string, object> {
+                { "protocol", ChangeChannel.Protocol }, { "registry_revision", registryRevision ?? "" },
+                { "changes", changes } }));
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo(executable,
+                    "--apply --pipe " + channel.ToString("D") + " --client " + sid);
+                info.UseShellExecute = true;
+                info.Verb = "runas";
+                info.WorkingDirectory = control;
+                info.ErrorDialogParentHandle = owner;
+                Process helper;
+                try { helper = Process.Start(info); }
+                catch (System.ComponentModel.Win32Exception error)
+                {
+                    if (error.NativeErrorCode == 1223) return new ChangeAnswer("cancelled", "Anulowano zgodę administratora.");
+                    throw;
+                }
+                using (helper)
+                {
+                    byte[] answer;
+                    try
+                    {
+                        answer = ChangeChannel.Exchange(ChangeChannel.PipeName(channel), helper.Id,
+                            delegate { return !helper.HasExited; }, request);
+                    }
+                    catch (AnswerLostException error) { return new ChangeAnswer("unknown", error.Message); }
+                    Dictionary<string, object> reply = HostFiles.ParseJson(answer);
+                    Array.Clear(answer, 0, answer.Length);
+                    string outcome = HostFiles.Text(reply, "outcome", "");
+                    if (HostFiles.Text(reply, "protocol", "") != ChangeChannel.Protocol ||
+                        Array.IndexOf(new[] { "applied", "partial", "rejected", "failed", "cancelled" }, outcome) < 0)
+                        throw new InvalidOperationException("Pomocnik administratora odpowiedział nieczytelnie.");
+                    return new ChangeAnswer(outcome, HostFiles.Text(reply, "message", ""));
+                }
+            }
+            finally { Array.Clear(request, 0, request.Length); }
         }
 
         // Ends this account's session through the Gateway, which owns the stream record and
@@ -807,6 +895,8 @@ namespace MoonWaker.HostControl
         internal DateTime? VibepolloTokenSavedAt;
         internal GatewayStatus Gateway;
         internal List<ProfileStatus> Profiles;
+        // The SHA-256 of the gateway.json this status was read from; "" without one.
+        internal string RegistryRevision = "";
     }
 
     internal sealed class GatewayStatus
@@ -860,16 +950,47 @@ namespace MoonWaker.HostControl
         internal bool PinRequired;
         internal bool RemoteSignInEnabled;
         internal bool DeletionPending;
+        // The Windows account (SID) a change to this profile names; "" before SID mapping.
+        internal string Sid = "";
+        internal string Root = "";
+        internal bool AccountResolved;
+        // children_policy_revision: a child change names the revision its editor showed.
+        internal int ChildrenRevision;
         // "disabled" (no endpoint), "online", "error" (answered, not ok) or "offline".
         internal string Agent;
         internal string Discord;
-        internal List<string> Children;
+        internal List<ChildStatus> Children;
         // Known only for this account's own profile.
         internal bool SteamConnected;
         internal bool EpicConnected;
         internal bool PlayniteConnected;
         internal bool DiscordConfigured;
         internal string DiscordClientId = "";
+    }
+
+    internal sealed class ChildStatus
+    {
+        internal string Id, Name, AvatarId;
+        internal bool Enabled;
+        // The games the parent shared on the TV (the child's allowed_game_keys).
+        internal int SharedGames;
+        // Monday first.
+        internal List<ChildDay> Days = new List<ChildDay>();
+    }
+
+    internal sealed class ChildDay
+    {
+        internal bool Enabled;
+        internal int StartMinute, EndMinute = 1440, DailyLimitSeconds;
+    }
+
+    // The elevated helper's answer to a change set: "applied", "partial", "rejected", "failed"
+    // or "cancelled" (in its window or at the UAC prompt), with the message for the user; or
+    // "unknown" when the set reached the helper and no answer came back.
+    internal sealed class ChangeAnswer
+    {
+        internal readonly string Outcome, Message;
+        internal ChangeAnswer(string outcome, string message) { Outcome = outcome; Message = message; }
     }
 
     internal sealed class CloseSessionResult
@@ -996,16 +1117,32 @@ namespace MoonWaker.HostControl
         // replacement of the file. Null when it is missing, unreadable or not a JSON object.
         internal static Dictionary<string, object> ReadJson(string path, int maxBytes = MaxJsonBytes)
         {
+            return ParseJson(ReadBytes(path, maxBytes));
+        }
+
+        // The file's bytes, or null when it is missing, unreadable or larger than maxBytes.
+        internal static byte[] ReadBytes(string path, int maxBytes = MaxJsonBytes)
+        {
             try
             {
                 using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete))
                 {
                     if (stream.Length > maxBytes) return null;
-                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
-                        return Serializer().Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
+                    byte[] content = new byte[stream.Length];
+                    int offset = 0, read;
+                    while (offset < content.Length && (read = stream.Read(content, offset, content.Length - offset)) > 0)
+                        offset += read;
+                    return offset == content.Length ? content : null;
                 }
             }
+            catch { return null; }
+        }
+
+        internal static Dictionary<string, object> ParseJson(byte[] content)
+        {
+            if (content == null) return null;
+            try { return Serializer().Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(content).TrimStart('﻿')); }
             catch { return null; }
         }
 

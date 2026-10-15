@@ -9,18 +9,27 @@ param(
 # tray's process host, the backend, the WPF window on a hidden render) that use fixtures in
 # %TEMP% only - no service, task, registry write or network beyond loopback, nothing on screen.
 $ErrorActionPreference = "Stop"
-$traySource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostControl.cs") -Raw
-$windowSource = (Get-Content -LiteralPath (Join-Path $PSScriptRoot "HostControlWindow.cs") -Raw) +
-    (Get-Content -LiteralPath (Join-Path $PSScriptRoot "HostControlUi.cs") -Raw)
+function Read-Source([string]$Name) {
+    Get-Content -LiteralPath (Join-Path $PSScriptRoot $Name) -Raw -Encoding UTF8
+}
+$traySource = Read-Source "MoonWakerHostControl.cs"
+$windowSource = (Read-Source "HostControlWindow.cs") + (Read-Source "HostControlUi.cs")
 $uiSource = $traySource + $windowSource
-$backendSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "HostControlBackend.cs") -Raw
-$configuratorSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs") -Raw
+$backendSource = (Read-Source "HostControlBackend.cs") + (Read-Source "HostChanges.cs")
+$configuratorSource = (Read-Source "MoonWakerHostConfigurator.cs") + (Read-Source "ConfiguratorChanges.cs")
 $controlSource = $uiSource + $backendSource
 
-# Vibepollo is a computer setting: its one token is written by the elevated Configurator.
-if (-not $windowSource.Contains('LaunchConfigurator("vibepollo", null)') -or
-    -not $configuratorSource.Contains('else if (mode == "vibepollo") form = new VibepolloTokenForm(store);')) {
-    throw "The Vibepollo token is not written through the elevated Configurator only."
+# Vibepollo is a computer setting: its one token is written by the elevated helper, whose own
+# window asks for the panel's administrator login; Windows passwords are typed only there too.
+if (-not $windowSource.Contains('One(Change("vibepollo_token"))') -or
+    -not $configuratorSource.Contains('VibepolloMachineApi.SaveToken') -or
+    -not $configuratorSource.Contains('"Login administratora Vibepollo"') -or
+    -not $configuratorSource.Contains('"Nowe hasło Windows"')) {
+    throw "The Vibepollo token or a Windows password is not entered in the elevated helper only."
+}
+foreach ($secretInput in @("Login administratora Vibepollo", "Hasło administratora", "Nowe hasło Windows",
+        "Powtórz hasło")) {
+    if ($controlSource.Contains($secretInput)) { throw "Host Control asks for a secret the helper owns: $secretInput" }
 }
 # The backend runs in the tray's process: no PowerShell control script, no Gateway start/stop,
 # no manual-stop marker, no Vibepollo page after adding a profile, no English labels.
@@ -111,13 +120,14 @@ function Test-HostControlHeadless([string]$TestSource, [string]$MainClass, [stri
             "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
             "/reference:System.Web.Extensions.dll", "/reference:System.Security.dll",
             "/reference:System.ServiceProcess.dll", "/reference:System.IO.Compression.dll",
-            "/reference:System.IO.Compression.FileSystem.dll",
+            "/reference:System.IO.Compression.FileSystem.dll", "/reference:System.Management.dll",
             "/lib:$(Join-Path (Split-Path -Parent $compiler) 'WPF')", "/reference:PresentationFramework.dll",
             "/reference:PresentationCore.dll", "/reference:WindowsBase.dll", "/reference:System.Xaml.dll",
             (Join-Path $PSScriptRoot "MoonWakerHostControl.cs"),
             (Join-Path $PSScriptRoot "HostControlWindow.cs"),
             (Join-Path $PSScriptRoot "HostControlUi.cs"),
             (Join-Path $PSScriptRoot "HostControlBackend.cs"),
+            (Join-Path $PSScriptRoot "HostChanges.cs"),
             (Join-Path $PSScriptRoot $TestSource))
         $compilerOutput = & $compiler @compilerArguments 2>&1
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $testExecutable)) {

@@ -175,8 +175,11 @@ namespace MoonWaker.HostControl
 
             Expect(status.Gateway.Installed && status.Gateway.Port == 8785 && status.Gateway.Clients.Count == 1 &&
                 status.Gateway.Clients[0].Id == "tv" && status.Gateway.Clients[0].Name == "Android TV" &&
-                own.Children.Count == 1 && own.Children[0] == "Child" && foreign.Children.Count == 0,
+                own.Children.Count == 1 && own.Children[0].Name == "Child" && foreign.Children.Count == 0,
                 "Gateway registry facts");
+            Expect(status.RegistryRevision == RegistryRevision.Of(File.ReadAllBytes(Path.Combine(gateway, "gateway.json"))) &&
+                own.Children[0].Days.Count == 7 && !own.Children[0].Days[0].Enabled && own.Children[0].Days[0].EndMinute == 1440,
+                "the registry revision and a child's default schedule");
             PairedClient tv = status.Gateway.Clients[0];
             Expect(tv.PairedAt == 100 && tv.LastSeenAt == 150 && tv.Grants.Count == 1 &&
                 String.Join(",", tv.Grants["default"].ToArray()) == "use_profile,remote_sign_in",

@@ -473,10 +473,20 @@ registration, ACLs, the private-LAN firewall rule, and version-preserving
 upgrades. It never asks for a Windows account or password and never enables
 remote sign-in for a device.
 
-Host Control owns profile and device management. Its separate elevated
-Configurator enumerates local accounts, creates/edits/removes MoonWaker
-profiles (including each new profile's data directory and its ACL, in process),
-manages grants, and collects a password directly in the elevated window. Host
+Host Control owns profile and device management. Its editors (profiles, app
+PIN, remote sign-in, child profiles, device grants) run in the unelevated
+window and only build a change set; "Zapisz" (UAC) hands it to the elevated
+Configurator (`--apply --pipe <GUID> --client <SID>`) over a one-exchange named
+pipe that the helper creates for that SID alone (first instance, no remote
+clients, NETWORK denied) and that each side binds to the other's process id.
+The helper treats the set as untrusted: it parses it strictly, validates every
+change against the `gateway.json` revision (SHA-256) Host Control showed,
+shows it without secrets in its own window, and applies it under
+`gateway.json.lock` in one transaction that checks the revision again. It
+creates/edits/removes MoonWaker profiles (including each new profile's data
+directory and its ACL, in process) and grants, and collects the Windows
+password and Vibepollo's administrator login only in its own elevated window;
+the app PIN may travel in the change set. Host
 Control's own backend runs in the unelevated tray without PowerShell: its status
 only reads what the Gateway publishes and the loopback answers of the hosted
 processes, and the account's actions (pairing code, close session, Steam key and

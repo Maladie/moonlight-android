@@ -44,7 +44,7 @@ namespace MoonWaker.HostControl
                 using (ProfileProcessHost processes = new ProfileProcessHost(root, Sid, false, null, null))
                     foreach (bool light in new[] { false, true })
                         RenderTheme(backend, processes, light, output);
-                Console.WriteLine("PASS Host Control UI: 9 page states x 2 themes built and rendered" +
+                Console.WriteLine("PASS Host Control UI: 12 page states and 7 editors x 2 themes built and rendered" +
                     (output == null ? "." : " to " + output + "."));
                 return 0;
             }
@@ -117,7 +117,65 @@ namespace MoonWaker.HostControl
                 "Klucz Web API zapisany dla tego konta", "Usuń profil");
 
             text = Render(window, HostControlWindow.Devices, "03-urzadzenia-" + theme, output);
-            Shows(text, "devices", "Salon TV", "sparowano 02.10.2026", "Sypialnia", "Uprawnienia: Gosia");
+            Shows(text, "devices", "Salon TV", "sparowano 02.10.2026", "Sypialnia", "Korzystanie z profilu",
+                "Zarządzanie dziećmi", "Ania", "Cofnij parowanie");
+            Expect(!text.Contains("Niezapisan"), "no pending bar before a switch is flipped");
+            Expect(Name(window, "revoke-salon") == "Cofnij parowanie (wymaga zgody administratora)",
+                "revoking a pairing carries the UAC shield");
+            // A flipped switch is pending until saved together or discarded; flipped back, it is gone.
+            window.Toggle("salon", "mariusz", HostControlWindow.RemoteColumn);
+            text = Render(window, HostControlWindow.Devices, "03-urzadzenia-zmiana-" + theme, output);
+            Shows(text, "devices with a pending change", "Niezapisana zmiana: ",
+                "Salon TV: zdalne logowanie profilu Mariusz — wyłącz.", "Odrzuć", "Zapisz zmiany");
+            Expect(Name(window, "grant-salon-mariusz-remote") == "Mariusz, zdalne logowanie: nie (niezapisana zmiana)" &&
+                Name(window, "grant-salon-mariusz-use") == "Mariusz, korzystanie: tak",
+                "the flipped switch shows its new state, marked as unsaved");
+            Expect(BottomOf(window, "grants-save") <= Height - 30, "the pending bar stays above the status bar");
+            window.Toggle("sypialnia", "ania", HostControlWindow.UseColumn);
+            text = Render(window, HostControlWindow.Devices, null, null);
+            Shows(text, "devices with two pending changes", "Niezapisane zmiany (2): ", "Sypialnia: korzystanie profilu Ania — włącz");
+            window.Toggle("sypialnia", "ania", HostControlWindow.UseColumn);
+            text = Render(window, HostControlWindow.Devices, null, null);
+            Expect(text.Contains("Niezapisana zmiana: ") && !text.Contains("Sypialnia: korzystanie"),
+                "a switch flipped back is no longer pending");
+
+            // Editors: built without elevation; their "Zapisz" carries the UAC shield.
+            HostStatus status = backend.ReadStatus();
+            ProfileStatus mariusz = status.Profiles.Find(item => item.Id == "mariusz");
+            ProfileStatus gosia = status.Profiles.Find(item => item.Id == "gosia");
+            HostControlWindow.Editor editor = window.EditProfileEditor(mariusz);
+            Dictionary<string, object> change = editor.Changes()[0];
+            Expect((string)change["type"] == "profile_edit" && (string)change["account_sid"] == Sid &&
+                (string)change["display_name"] == "Mariusz", "the profile editor names the profile's account");
+            Expect(editor.Revision == status.RegistryRevision && editor.Revision.Length == 64,
+                "an editor keeps the registry revision its data came from");
+            text = RenderDialog(editor.Dialog, "06-edytuj-profil-" + theme, output);
+            Shows(text, "profile editor", "Edytuj profil", "Nazwa profilu", "Profil włączony", "Zapisz");
+            text = RenderDialog(window.PinEditor(mariusz).Dialog, "06-pin-" + theme, output);
+            Shows(text, "PIN editor", "PIN aplikacji", "Powtórz PIN", "Zmień PIN", "Usuń PIN");
+            text = RenderDialog(window.RemoteEditor(mariusz).Dialog, "06-zdalne-logowanie-" + theme, output);
+            Shows(text, "remote sign-in editor", "UPRZYWILEJOWANE", "Zmień hasło Windows", "Sprawdź zapisane dane",
+                "Wyłącz i usuń dane z Login Brokera", "Dalej");
+            Expect(!text.Contains("Nowe hasło"), "Host Control never asks for the Windows password");
+            text = RenderDialog(window.ChildrenList(mariusz, delegate { }), "06-dzieci-" + theme, output);
+            Shows(text, "children", "Profile dzieci", "Ania", "Staś", "udostępnione gry: 2", "granie w 1 dzień tygodnia",
+                "Dodaj dziecko");
+            text = RenderDialog(window.ChildEditor(mariusz, mariusz.Children.Find(item => item.Id == "ania"),
+                status.RegistryRevision).Dialog,
+                "06-dziecko-" + theme, output);
+            Shows(text, "child editor", "Profil dziecka Ania", "Zielony", "Profil aktywny", "Sobota", "Limit (min)",
+                "Po upływie czasu gra zostanie zamknięta");
+            List<LocalAccount> accounts = new List<LocalAccount> {
+                new LocalAccount { Name = "basia", QualifiedName = "MARIUSZ-PC\\basia", Sid = "S-1-5-21-1-2-3-1003" },
+                new LocalAccount { Name = "gry", QualifiedName = "MARIUSZ-PC\\gry", Sid = "S-1-5-21-1-2-3-1004" } };
+            editor = window.AddProfileEditor(accounts);
+            change = editor.Changes()[0];
+            Expect((string)change["type"] == "profile_add" && (string)change["account_sid"] == accounts[0].Sid &&
+                (string)change["display_name"] == "basia", "a new profile names the chosen account");
+            text = RenderDialog(editor.Dialog, "06-dodaj-profil-" + theme, output);
+            Shows(text, "add profile", "Konto Windows", "MARIUSZ-PC\\gry", "Utwórz profil");
+            text = RenderDialog(window.RemoveProfileEditor(gosia).Dialog, "06-usun-profil-" + theme, output);
+            Shows(text, "remove profile", "Usunąć profil „Gosia”?", "MARIUSZ-PC\\gosia", "Usuń profil");
 
             text = Render(window, HostControlWindow.Integrations, "04-integracje-" + theme, output);
             Shows(text, "integrations", "Vibepollo", "Połączone", "zapisany, ważny", "Pobierz / odnów token",
@@ -149,6 +207,57 @@ namespace MoonWaker.HostControl
             return text.ToString();
         }
 
+        // A dialog's content on its background at its width, as PNG; returns its text.
+        private static string RenderDialog(Window dialog, string name, string output)
+        {
+            UIElement content = (UIElement)dialog.Content;
+            dialog.Content = null;
+            Border frame = new Border { Background = dialog.Background, Child = content, Width = dialog.Width };
+            TextOptions.SetTextFormattingMode(frame, TextFormattingMode.Display);
+            frame.Measure(new Size(dialog.Width, Double.PositiveInfinity));
+            frame.Arrange(new Rect(frame.DesiredSize));
+            frame.UpdateLayout();
+            if (output != null)
+            {
+                RenderTargetBitmap bitmap = new RenderTargetBitmap((int)Math.Ceiling(frame.ActualWidth),
+                    (int)Math.Ceiling(frame.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+                bitmap.Render(frame);
+                PngBitmapEncoder png = new PngBitmapEncoder();
+                png.Frames.Add(BitmapFrame.Create(bitmap));
+                using (FileStream file = File.Create(Path.Combine(output, name + ".png"))) png.Save(file);
+            }
+            StringBuilder text = new StringBuilder();
+            Collect(frame, text);
+            dialog.Close();
+            return text.ToString();
+        }
+
+        private static FrameworkElement Find(DependencyObject parent, string id)
+        {
+            foreach (object child in LogicalTreeHelper.GetChildren(parent))
+            {
+                FrameworkElement element = child as FrameworkElement;
+                if (element == null) continue;
+                if (System.Windows.Automation.AutomationProperties.GetAutomationId(element) == id) return element;
+                FrameworkElement found = Find(element, id);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static string Name(HostControlWindow window, string id)
+        {
+            FrameworkElement element = Find((DependencyObject)window.Content, id);
+            return element == null ? null : System.Windows.Automation.AutomationProperties.GetName(element);
+        }
+
+        // Where the element ends in the rendered window, from its top.
+        private static double BottomOf(HostControlWindow window, string id)
+        {
+            FrameworkElement element = Find((DependencyObject)window.Content, id);
+            return element.TransformToAncestor((Visual)window.Content).Transform(new Point(0, element.ActualHeight)).Y;
+        }
+
         private static void Collect(DependencyObject parent, StringBuilder text)
         {
             foreach (object child in LogicalTreeHelper.GetChildren(parent))
@@ -156,6 +265,8 @@ namespace MoonWaker.HostControl
                 TextBlock block = child as TextBlock;
                 if (block != null)
                     text.Append(new System.Windows.Documents.TextRange(block.ContentStart, block.ContentEnd).Text).Append('\n');
+                ContentControl control = child as ContentControl;
+                if (control != null && control.Content is string) text.Append((string)control.Content).Append('\n');
                 DependencyObject element = child as DependencyObject;
                 if (element != null) Collect(element, text);
             }
@@ -195,6 +306,7 @@ namespace MoonWaker.HostControl
                 { "profiles", new Dictionary<string, object> {
                     { "mariusz", new Dictionary<string, object> {
                         { "name", "Mariusz" }, { "owner", "MARIUSZ-PC\\mariusz" }, { "windows_account_sid", Sid },
+                        { "account_mapping_status", "resolved" }, { "children_policy_revision", 4 },
                         { "profile_root", profile }, { "enabled", true }, { "remote_sign_in_enabled", true },
                         { "pin_verifier", new Dictionary<string, object> { { "version", 1 } } },
                         { "game_provider_bridge", "http://127.0.0.1:" + agentPort },
@@ -203,7 +315,11 @@ namespace MoonWaker.HostControl
                         { "name", "Gosia" }, { "owner", "MARIUSZ-PC\\gosia" }, { "windows_account_sid", "S-1-5-21-1-2-3-1002" },
                         { "profile_root", Path.Combine(root, "profiles", "gosia") }, { "enabled", true } } },
                     { "ania", new Dictionary<string, object> {
-                        { "kind", "child" }, { "name", "Ania" }, { "parent_profile_id", "mariusz" } } },
+                        { "kind", "child" }, { "name", "Ania" }, { "parent_profile_id", "mariusz" }, { "enabled", true },
+                        { "avatar_id", "green" }, { "allowed_game_keys", new object[] { "mariusz/steam:1", "mariusz/epic:2" } },
+                        { "schedule", new Dictionary<string, object> { { "weekdays", new Dictionary<string, object> {
+                            { "sat", new Dictionary<string, object> { { "enabled", true }, { "start_minute", 600 },
+                                { "end_minute", 1080 }, { "daily_limit_seconds", 7200 } } } } } } } } },
                     { "stas", new Dictionary<string, object> {
                         { "kind", "child" }, { "name", "Staś" }, { "parent_profile_id", "mariusz" } } } } } }));
         }

@@ -27,6 +27,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 import uuid
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from http import HTTPStatus
@@ -763,6 +764,13 @@ def replace_registry_file(source: Path, destination: Path,
                     or attempt == attempts):
                 raise
         time.sleep(delay_seconds)
+
+
+# A TV-supplied name as Host Control shows it: no control, format (bidi) or line/paragraph
+# separator characters, at most 80 characters.
+def shown_name(value: str) -> str:
+    return "".join(character for character in str(value)
+                   if unicodedata.category(character) not in ("Cc", "Cf", "Zl", "Zp")).strip()[:80]
 
 
 class GatewayState:
@@ -1706,7 +1714,7 @@ class GatewayState:
                 current = self.current_registry()
                 record = {
                     "id": client_id,
-                    "name": client_name[:80] or "Android TV",
+                    "name": shown_name(client_name) or "Android TV",
                     "token_sha256": sha256_text(token),
                     "paired_at": paired_at,
                     "last_seen_at": paired_at,
@@ -3993,7 +4001,7 @@ class GatewayState:
         name = str(value.get("name") or "").strip()
         avatar_id = str(value.get("avatar_id") or "").strip()
         controls = set(chr(code) for code in range(0, 32)) | {chr(127)}
-        if (not name or len(name) > 80 or any(character in controls for character in name) or
+        if (not name or len(name) > 80 or shown_name(name) != name or
                 len(avatar_id) > 128 or any(character in controls for character in avatar_id)):
             raise ValueError("Child profile name or avatar is invalid.")
         enabled = value.get("enabled")

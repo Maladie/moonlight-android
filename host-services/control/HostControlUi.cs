@@ -201,7 +201,7 @@ namespace MoonWaker.HostControl
             button.Content = content;
             AutomationProperties.SetName(button, elevated ? text + " (wymaga zgody administratora)" : text);
             AutomationProperties.SetAutomationId(button, id ?? text);
-            if (elevated) button.ToolTip = "Otwiera chroniony Configurator (UAC).";
+            if (elevated) button.ToolTip = "Zapis wymaga zgody administratora (UAC).";
             button.Click += delegate { click(); };
             return button;
         }
@@ -368,8 +368,10 @@ namespace MoonWaker.HostControl
             bar.ColumnDefinitions[1].Width = new GridLength(1 - fraction, GridUnitType.Star);
         }
 
-        // A read-only switch: the state of a grant.
-        internal Border Switch(bool on, string name)
+        // A switch: the state of a grant, flipped by click, Space or Enter. A muted switch
+        // still answers a click, with why it cannot change.
+        // changed: an unsaved switch, shown in its new state inside an accent ring.
+        internal Button Switch(bool on, string name, bool muted, bool changed, Action click, string id)
         {
             Ellipse knob = new Ellipse {
                 Width = 12, Height = 12, Fill = on ? P.White : P.Muted, Margin = new Thickness(3, 0, 3, 0),
@@ -378,9 +380,17 @@ namespace MoonWaker.HostControl
             Border track = new Border {
                 Width = 38, Height = 20, CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1),
                 Background = on ? P.Accent : P.Card2, BorderBrush = on ? P.Accent : P.Line, Child = knob,
-                HorizontalAlignment = HorizontalAlignment.Center };
-            AutomationProperties.SetName(track, name + (on ? ": tak" : ": nie"));
-            return track;
+                Opacity = muted ? 0.45 : 1 };
+            Border ring = new Border {
+                CornerRadius = new CornerRadius(13), BorderThickness = new Thickness(2), Padding = new Thickness(1),
+                BorderBrush = changed ? P.Accent : Brushes.Transparent, Background = changed ? P.AccentSoft : null,
+                Child = track };
+            Button button = Tile(ring, Brushes.Transparent, Brushes.Transparent,
+                name + (on ? ": tak" : ": nie") + (changed ? " (niezapisana zmiana)" : ""), click);
+            button.HorizontalAlignment = HorizontalAlignment.Center;
+            button.Padding = new Thickness(2);
+            AutomationProperties.SetAutomationId(button, id);
+            return button;
         }
 
         // A 24-unit outline icon (the mock-up's stroke icons) drawn at the given size.
@@ -483,18 +493,20 @@ namespace MoonWaker.HostControl
     }
 
     // A small modal window in the main window's style: a description, optional fields, an
-    // inline validation message, and a confirm button beside "Anuluj" (Enter / Esc).
+    // inline validation message, and a confirm button beside "Anuluj" (Enter / Esc; Enter is
+    // "Anuluj" when the confirm button is a Danger one). shield: the confirm button saves
+    // through the elevated helper (UAC).
     internal sealed class HostDialog : Window
     {
         private readonly TextBlock problem;
 
         internal HostDialog(Window owner, Ui ui, string title, string description, UIElement body,
-            string confirm, ButtonKind kind, Func<string> validate)
+            string confirm, ButtonKind kind, Func<string> validate, double width = 500, bool shield = false)
         {
             if (owner != null && owner.IsVisible) Owner = owner;
             WindowStartupLocation = Owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen;
             Title = title;
-            Width = 500;
+            Width = width;
             SizeToContent = SizeToContent.Height;
             ResizeMode = ResizeMode.NoResize;
             ShowInTaskbar = Owner == null;
@@ -524,16 +536,18 @@ namespace MoonWaker.HostControl
             StackPanel buttons = new StackPanel {
                 Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
                 Margin = new Thickness(0, 18, 0, 0) };
-            Button accept = ui.Button(confirm, kind, false, false, delegate
+            Button accept = ui.Button(confirm, kind, false, shield, delegate
             {
                 string message = validate == null ? null : validate();
                 if (message == null) { DialogResult = true; return; }
                 problem.Text = message;
                 problem.Visibility = Visibility.Visible;
             });
-            accept.IsDefault = true;
             Button cancel = ui.Button("Anuluj", ButtonKind.Normal, false, false, delegate { DialogResult = false; });
             cancel.IsCancel = true;
+            bool danger = kind == ButtonKind.Danger;
+            accept.IsDefault = !danger;
+            cancel.IsDefault = danger;
             cancel.Margin = new Thickness(8, 0, 0, 0);
             buttons.Children.Add(accept);
             buttons.Children.Add(cancel);
@@ -543,7 +557,7 @@ namespace MoonWaker.HostControl
             {
                 FrameworkElement first = body as FrameworkElement;
                 Control input = first == null ? null : FindInput(first);
-                (input ?? (Control)accept).Focus();
+                (input ?? (Control)(danger ? cancel : accept)).Focus();
             };
         }
 
@@ -559,10 +573,11 @@ namespace MoonWaker.HostControl
             return null;
         }
 
-        internal static bool Confirm(Window owner, Ui ui, string title, string text, string confirm, bool danger)
+        internal static bool Confirm(Window owner, Ui ui, string title, string text, string confirm, bool danger,
+            bool shield = false)
         {
             return new HostDialog(owner, ui, title, text, null, confirm,
-                danger ? ButtonKind.Danger : ButtonKind.Primary, null).ShowDialog() == true;
+                danger ? ButtonKind.Danger : ButtonKind.Primary, null, 500, shield).ShowDialog() == true;
         }
 
         private const string SteamKeyPage = "https://steamcommunity.com/dev/apikey";

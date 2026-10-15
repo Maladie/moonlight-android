@@ -18,9 +18,9 @@ using Microsoft.Win32;
 namespace MoonWaker.HostControl
 {
     // Host Control's window: five pages over HostBackend, notices on top of a page and a status
-    // bar. It holds no business rule of its own: every fact comes from HostBackend.ReadStatus,
-    // every action is a HostBackend call or the elevated Configurator. Closing only hides it;
-    // TrayHost owns the process.
+    // bar. Every fact comes from HostBackend.ReadStatus, every action is a HostBackend call; the
+    // editors check their input for convenience, but the elevated helper that saves a change
+    // set decides. Closing only hides it; TrayHost owns the process.
     internal sealed class HostControlWindow : Window
     {
         internal const int Overview = 0, Profiles = 1, Devices = 2, Integrations = 3, Diagnostics = 4;
@@ -351,8 +351,18 @@ namespace MoonWaker.HostControl
             scroll = new ScrollViewer {
                 Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false };
             scroll.Resources.Add(typeof(System.Windows.Controls.Primitives.ScrollBar), ui.ScrollBarStyle());
-            Grid.SetColumn(scroll, 1);
-            middle.Children.Add(scroll);
+            // Unsaved switches stay in view above the status bar, however long the list.
+            DockPanel right = new DockPanel();
+            Grid.SetColumn(right, 1);
+            if (page == Devices && status != null && pendingGrants.Count > 0)
+            {
+                Border pending = PendingBar(GrantRows());
+                pending.Margin = new Thickness(26, 10, 26, 12);
+                DockPanel.SetDock(pending, Dock.Bottom);
+                right.Children.Add(pending);
+            }
+            right.Children.Add(scroll);
+            middle.Children.Add(right);
             scroll.ScrollToVerticalOffset(offset);
 
             Border bar = StatusBar();
@@ -575,21 +585,21 @@ namespace MoonWaker.HostControl
             if (!status.VibepolloTokenSaved)
                 vibepolloCard = Stat("Vibepollo", Tone.Warn, "Brak tokenu", "Streamy nie wystartują",
                     ui.Button("Pobierz token", ButtonKind.Normal, true, true,
-                        delegate { LaunchConfigurator("vibepollo", null); }, "vibepollo-token"));
+                        Vibepollo, "vibepollo-token"));
             else if (gateway.VibepolloOnline == true)
                 vibepolloCard = Stat("Vibepollo", Tone.Ok, "Połączone", "Token komputera ważny", null);
             else if (gateway.VibepolloOnline == false)
                 vibepolloCard = Stat("Vibepollo", Tone.Error, "Brak połączenia",
                     "Sprawdź, czy Vibepollo działa, albo odnów token",
                     ui.Button("Odnów token", ButtonKind.Normal, true, true,
-                        delegate { LaunchConfigurator("vibepollo", null); }, "vibepollo-token"));
+                        Vibepollo, "vibepollo-token"));
             else
                 vibepolloCard = Stat("Vibepollo", Tone.Off, "Stan nieznany", "Gateway nie podaje stanu", null);
 
             UIElement agentCard;
             if (own == null)
                 agentCard = Stat("Agent tego konta", Tone.Warn, "Brak profilu", "To konto nie ma profilu MoonWaker",
-                    ui.Button("Dodaj profil", ButtonKind.Normal, true, true, delegate { LaunchConfigurator("add", null); }));
+                    ui.Button("Dodaj profil", ButtonKind.Normal, true, false, AddProfile));
             else if (AgentProblem(own) == null)
                 agentCard = Stat("Agent tego konta", Tone.Ok, "Działa", "Profil: " + own.Name, null);
             else
@@ -625,10 +635,10 @@ namespace MoonWaker.HostControl
                 {
                     if (index == 0) action = ui.Button(status.VibepolloTokenSaved ? "Odnów token" : "Pobierz token",
                         ButtonKind.Primary, true, true,
-                        delegate { LaunchConfigurator("vibepollo", null); }, "setup-vibepollo");
+                        Vibepollo, "setup-vibepollo");
                     else if (index == 1) action = ui.Button("Sparuj TV", ButtonKind.Primary, true, false, Pair, "setup-pair");
-                    else if (index == 2) action = ui.Button("Dodaj profil", ButtonKind.Primary, true, true,
-                        delegate { LaunchConfigurator("add", null); }, "setup-profile");
+                    else if (index == 2) action = ui.Button("Dodaj profil", ButtonKind.Primary, true, false,
+                        AddProfile, "setup-profile");
                     else action = ui.Button("Połącz bibliotekę", ButtonKind.Primary, true, false,
                         delegate { ShowPage(Profiles); }, "setup-library");
                 }
@@ -835,7 +845,7 @@ namespace MoonWaker.HostControl
                 card.Margin = new Thickness(0, list.Children.Count == 0 ? 0 : 10, 0, 0);
                 list.Children.Add(card);
             }
-            Button add = ui.Button("Dodaj profil", ButtonKind.Normal, false, true, delegate { LaunchConfigurator("add", null); });
+            Button add = ui.Button("Dodaj profil", ButtonKind.Normal, false, false, AddProfile);
             add.Margin = new Thickness(0, list.Children.Count == 0 ? 0 : 10, 0, 0);
             list.Children.Add(add);
 
@@ -857,8 +867,8 @@ namespace MoonWaker.HostControl
             Border avatar = ui.Avatar(profile.Name, status.Profiles.IndexOf(profile), 44);
             avatar.Margin = new Thickness(0, 0, 14, 0);
             head.Children.Add(avatar);
-            Button edit = ui.Button("Edytuj profil", ButtonKind.Normal, true, true,
-                delegate { LaunchConfigurator("edit", profile.Id); });
+            Button edit = ui.Button("Edytuj profil", ButtonKind.Normal, true, false,
+                delegate { if (Mutable(profile)) Open(EditProfileEditor(profile)); }, "edit");
             DockPanel.SetDock(edit, Dock.Right);
             head.Children.Add(edit);
             StackPanel who = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
@@ -906,43 +916,147 @@ namespace MoonWaker.HostControl
             panel.Children.Add(ui.Item(true, null, ui.Bold("PIN aplikacji", 13),
                 profile.PinRequired ? "Wymagany przy wyborze profilu na TV" : "Profil otwiera się na TV bez PIN-u",
                 ui.Pill(profile.PinRequired ? "Włączony" : "Wyłączony", profile.PinRequired ? Tone.Ok : Tone.Off),
-                ui.Button("Zmień PIN", ButtonKind.Normal, true, true, delegate { LaunchConfigurator("edit", profile.Id); }, "pin")));
+                ui.Button(profile.PinRequired ? "Zmień PIN" : "Ustaw PIN", ButtonKind.Normal, true, false,
+                    delegate { if (Mutable(profile)) Open(PinEditor(profile)); }, "pin")));
             panel.Children.Add(ui.Item(false, null, ui.Bold("Zdalne logowanie", 13),
                 profile.RemoteSignInEnabled ? "TV może zalogować to konto Windows"
                     : "TV nie zaloguje tego konta Windows",
                 ui.Pill(profile.RemoteSignInEnabled ? "Włączone" : "Wyłączone", profile.RemoteSignInEnabled ? Tone.Ok : Tone.Off),
-                ui.Button("Zmień", ButtonKind.Normal, true, true,
-                    delegate { LaunchConfigurator("remote-sign-in", profile.Id); }, "remote-sign-in")));
+                ui.Button("Zmień", ButtonKind.Normal, true, false,
+                    delegate { if (Mutable(profile)) Open(RemoteEditor(profile)); }, "remote-sign-in")));
             panel.Children.Add(ui.Item(false, null, ui.Bold("Profile dzieci", 13),
-                (profile.Children.Count == 0 ? "Brak profili dzieci" : String.Join(", ", profile.Children.ToArray())) +
+                (profile.Children.Count == 0 ? "Brak profili dzieci"
+                    : String.Join(", ", profile.Children.ConvertAll(child => child.Name).ToArray())) +
                 "  •  limity czasu i biblioteka gier",
-                ui.Button("Zarządzaj", ButtonKind.Normal, true, true, delegate { LaunchConfigurator("children", profile.Id); })));
+                ui.Button("Zarządzaj", ButtonKind.Normal, true, false, delegate { ManageChildren(profile); }, "children")));
             panel.Children.Add(ui.Item(false, null, ui.Bold("Usuń profil", 13), "Usuwa profil MoonWaker, konto Windows zostaje",
-                ui.Button("Usuń profil", ButtonKind.Danger, true, true, delegate { LaunchConfigurator("remove", profile.Id); }, "remove")));
+                ui.Button("Usuń profil", ButtonKind.Danger, true, false, delegate { Open(RemoveProfileEditor(profile)); }, "remove")));
             return panel;
         }
 
         // ---- Urządzenia ----
+
+        // A grant of one TV to one profile: the switches of a row.
+        private sealed class Grant
+        {
+            internal bool Use, Remote, Manage;
+            internal bool Same(Grant other) { return Use == other.Use && Remote == other.Remote && Manage == other.Manage; }
+        }
+
+        // A row of a TV's table: a standard profile, or a child under its parent (the parent's
+        // account is the one a change names).
+        private sealed class GrantRow
+        {
+            internal string Id, Name, Sid, Account;
+            internal bool Child, PinRequired, RemoteEnabled;
+            internal int Avatar;
+        }
+
+        internal const int UseColumn = 1, RemoteColumn = 2, ManageColumn = 3;
+        // Unsaved switches, "<client>\n<profile>" -> wanted grant; saved together, with one UAC.
+        private readonly Dictionary<string, Grant> pendingGrants = new Dictionary<string, Grant>();
+
+        private List<GrantRow> GrantRows()
+        {
+            List<GrantRow> rows = new List<GrantRow>();
+            foreach (ProfileStatus profile in status.Profiles)
+            {
+                int index = status.Profiles.IndexOf(profile);
+                rows.Add(new GrantRow {
+                    Id = profile.Id, Name = profile.Name, Sid = profile.Sid, Account = profile.Owner,
+                    PinRequired = profile.PinRequired, RemoteEnabled = profile.RemoteSignInEnabled, Avatar = index });
+                foreach (ChildStatus child in profile.Children)
+                    rows.Add(new GrantRow {
+                        Id = child.Id, Name = child.Name, Sid = profile.Sid, Account = profile.Owner, Child = true,
+                        RemoteEnabled = profile.RemoteSignInEnabled, Avatar = AvatarIndex(child.AvatarId) });
+            }
+            return rows;
+        }
+
+        private static Grant Current(PairedClient client, string profileId)
+        {
+            List<string> grants;
+            if (!client.Grants.TryGetValue(profileId, out grants)) grants = new List<string>();
+            return new Grant {
+                Use = grants.Contains("use_profile"), Remote = grants.Contains("remote_sign_in"),
+                Manage = grants.Contains("manage_children") };
+        }
+
+        private Grant Wanted(PairedClient client, string profileId)
+        {
+            Grant pending;
+            return pendingGrants.TryGetValue(client.Id + "\n" + profileId, out pending) ? pending : Current(client, profileId);
+        }
+
+        // The device editor's rules: no use, no remote sign-in or child management; remote
+        // sign-in needs the profile's saved password and a confirmation; child management
+        // needs the parent's app PIN. The helper checks them again.
+        internal void Toggle(string clientId, string profileId, int column)
+        {
+            PairedClient client = status.Gateway.Clients.Find(item => item.Id == clientId);
+            GrantRow row = GrantRows().Find(item => item.Id == profileId);
+            if (client == null || row == null) return;
+            Grant now = Wanted(client, profileId);
+            Grant want = new Grant { Use = now.Use, Remote = now.Remote, Manage = now.Manage };
+            if (column == UseColumn)
+            {
+                want.Use = !now.Use;
+                if (!want.Use) want.Remote = want.Manage = false;
+            }
+            else if (column == RemoteColumn)
+            {
+                if (now.Remote) want.Remote = false;
+                else if (!row.RemoteEnabled)
+                {
+                    SetStatus("Zdalne logowanie wymaga zapisanego hasła Windows: włącz je w Profile → Zdalne logowanie.", Tone.Warn);
+                    return;
+                }
+                else if (!HostDialog.Confirm(this, ui, "Potwierdź zdalne logowanie",
+                    "Nadać urządzeniu „" + client.Name + "” uprzywilejowane prawo do zdalnego zalogowania lub " +
+                    "odblokowania konta " + row.Account + "?", "Nadaj", false)) return;
+                else want.Remote = want.Use = true;
+            }
+            else
+            {
+                if (now.Manage) want.Manage = false;
+                else if (!row.PinRequired)
+                {
+                    SetStatus("Zarządzanie dziećmi wymaga ustawionego PIN-u aplikacji rodzica.", Tone.Warn);
+                    return;
+                }
+                else want.Manage = want.Use = true;
+            }
+            string key = clientId + "\n" + profileId;
+            if (want.Same(Current(client, profileId))) pendingGrants.Remove(key);
+            else pendingGrants[key] = want;
+            Render();
+        }
 
         private void BuildDevices(StackPanel content)
         {
             Header(content, "Urządzenia", "Sparowane telewizory i ich uprawnienia do profili",
                 ui.Button("Sparuj nowy TV", ButtonKind.Primary, false, false, Pair));
             if (status == null) return;
-            ProfileStatus manager = Own() ?? (status.Profiles.Count > 0 ? status.Profiles[0] : null);
+            List<GrantRow> rows = GrantRows();
+            // A switch whose TV or profile is gone, or that the registry now holds, is no longer pending.
+            foreach (string key in new List<string>(pendingGrants.Keys))
+            {
+                string[] parts = key.Split('\n');
+                PairedClient client = status.Gateway.Clients.Find(item => item.Id == parts[0]);
+                if (client == null || !rows.Exists(item => item.Id == parts[1]) ||
+                    pendingGrants[key].Same(Current(client, parts[1]))) pendingGrants.Remove(key);
+            }
             if (status.Gateway.Clients.Count == 0)
                 Add(content, ui.Card(ui.Muted("Nie ma sparowanych telewizorów. Użyj „Sparuj nowy TV” i wpisz kod na telewizorze.")));
             foreach (PairedClient client in status.Gateway.Clients)
             {
+                PairedClient tv = client;
                 StackPanel card = new StackPanel();
                 DockPanel head = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
-                if (manager != null)
-                {
-                    Button revoke = ui.Button("Cofnij parowanie", ButtonKind.Danger, true, true,
-                        delegate { LaunchConfigurator("devices", manager.Id); }, "revoke-" + client.Id);
-                    DockPanel.SetDock(revoke, Dock.Right);
-                    head.Children.Add(revoke);
-                }
+                Button revoke = ui.Button("Cofnij parowanie", ButtonKind.Danger, true, true,
+                    delegate { Revoke(tv); }, "revoke-" + client.Id);
+                DockPanel.SetDock(revoke, Dock.Right);
+                head.Children.Add(revoke);
                 StackPanel title = new StackPanel();
                 title.Children.Add(ui.Bold(client.Name, 15));
                 List<string> meta = new List<string>();
@@ -953,42 +1067,96 @@ namespace MoonWaker.HostControl
                 card.Children.Add(head);
 
                 Grid table = new Grid();
-                table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(46, GridUnitType.Star) });
-                table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(27, GridUnitType.Star) });
-                table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(27, GridUnitType.Star) });
+                table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40, GridUnitType.Star) });
+                for (int column = 0; column < 3; column++)
+                    table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(20, GridUnitType.Star) });
                 AddCell(table, 0, 0, Small("Profil"), false);
-                AddCell(table, 0, 1, Small("Korzystanie z profilu"), false);
-                AddCell(table, 0, 2, Small("Zdalne logowanie"), false);
+                AddCell(table, 0, UseColumn, Small("Korzystanie z profilu"), false);
+                AddCell(table, 0, RemoteColumn, Small("Zdalne logowanie"), false);
+                AddCell(table, 0, ManageColumn, Small("Zarządzanie dziećmi"), false);
                 int line = 1;
-                foreach (ProfileStatus profile in status.Profiles)
+                foreach (GrantRow row in rows)
                 {
-                    List<string> grants;
-                    if (!client.Grants.TryGetValue(profile.Id, out grants)) grants = new List<string>();
-                    Border avatar = ui.Avatar(profile.Name, status.Profiles.IndexOf(profile), 30);
-                    avatar.Margin = new Thickness(0, 0, 10, 0);
-                    AddCell(table, line, 0, Row(avatar, ui.Bold(profile.Name, 13)), true);
-                    AddCell(table, line, 1, ui.Switch(grants.Contains("use_profile"), profile.Name + ", korzystanie"), true);
-                    AddCell(table, line, 2, ui.Switch(grants.Contains("remote_sign_in"), profile.Name + ", zdalne logowanie"), true);
+                    GrantRow item = row;
+                    Grant grant = Wanted(client, row.Id), saved = Current(client, row.Id);
+                    Border avatar = ui.Avatar(row.Name, row.Avatar, row.Child ? 24 : 30);
+                    avatar.Margin = new Thickness(row.Child ? 22 : 0, 0, 10, 0);
+                    AddCell(table, line, 0, Row(avatar, row.Child ? ui.Titled(row.Name, "  dziecko") : ui.Bold(row.Name, 13)), true);
+                    AddCell(table, line, UseColumn, ui.Switch(grant.Use, row.Name + ", korzystanie", false, grant.Use != saved.Use,
+                        delegate { Toggle(tv.Id, item.Id, UseColumn); }, "grant-" + tv.Id + "-" + row.Id + "-use"), true);
+                    AddCell(table, line, RemoteColumn, ui.Switch(grant.Remote, row.Name + ", zdalne logowanie",
+                        !row.RemoteEnabled, grant.Remote != saved.Remote, delegate { Toggle(tv.Id, item.Id, RemoteColumn); },
+                        "grant-" + tv.Id + "-" + row.Id + "-remote"), true);
+                    AddCell(table, line, ManageColumn, row.Child ? (UIElement)new Border()
+                        : ui.Switch(grant.Manage, row.Name + ", zarządzanie dziećmi", !row.PinRequired,
+                            grant.Manage != saved.Manage,
+                            delegate { Toggle(tv.Id, item.Id, ManageColumn); }, "grant-" + tv.Id + "-" + row.Id + "-manage"),
+                        true);
                     line++;
                 }
                 card.Children.Add(table);
                 Add(content, ui.Card(card));
             }
-            if (status.Profiles.Count == 0) return;
-            StackPanel change = new StackPanel();
-            change.Children.Add(ui.Heading("Zmiana uprawnień", null));
-            change.Children.Add(ui.Muted("Uprawnienia i usuwanie telewizorów zapisuje chroniony Configurator, osobno dla każdego profilu."));
-            WrapPanel buttons = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
-            foreach (ProfileStatus profile in status.Profiles)
+        }
+
+        // "Niezapisana zmiana: Salon TV: zdalne logowanie profilu Gosia — włącz." with Odrzuć and
+        // Zapisz zmiany; saved on the registry revision the bar shows.
+        private Border PendingBar(List<GrantRow> rows)
+        {
+            string revision = status.RegistryRevision;
+            List<string> parts = new List<string>();
+            List<Dictionary<string, object>> changes = new List<Dictionary<string, object>>();
+            foreach (KeyValuePair<string, Grant> item in pendingGrants)
             {
-                string id = profile.Id;
-                Button button = ui.Button("Uprawnienia: " + profile.Name, ButtonKind.Normal, true, true,
-                    delegate { LaunchConfigurator("devices", id); });
-                button.Margin = new Thickness(0, 0, 8, 6);
-                buttons.Children.Add(button);
+                string[] key = item.Key.Split('\n');
+                PairedClient client = status.Gateway.Clients.Find(value => value.Id == key[0]);
+                GrantRow row = rows.Find(value => value.Id == key[1]);
+                Grant now = Current(client, row.Id), want = item.Value;
+                List<string> on = new List<string>(), off = new List<string>();
+                if (now.Use != want.Use) (want.Use ? on : off).Add("korzystanie");
+                if (now.Remote != want.Remote) (want.Remote ? on : off).Add("zdalne logowanie");
+                if (now.Manage != want.Manage) (want.Manage ? on : off).Add("zarządzanie dziećmi");
+                parts.Add(on.Count == 0 || off.Count == 0
+                    ? client.Name + ": " + String.Join(" i ", (on.Count == 0 ? off : on).ToArray()) + " profilu " + row.Name +
+                        (on.Count == 0 ? " — wyłącz" : " — włącz")
+                    : client.Name + ", profil " + row.Name + ": " + String.Join(" i ", on.ToArray()) + " — włącz, " +
+                        String.Join(" i ", off.ToArray()) + " — wyłącz");
+                changes.Add(Change("device_grant", "client_id", client.Id, "profile_id", row.Id, "account_sid", row.Sid,
+                    "use_profile", want.Use, "remote_sign_in", want.Remote, "manage_children", want.Manage));
             }
-            change.Children.Add(buttons);
-            Add(content, ui.Card(change));
+            TextBlock text = ui.Text("");
+            text.Inlines.Add(new System.Windows.Documents.Run(parts.Count == 1 ? "Niezapisana zmiana: "
+                : "Niezapisane zmiany (" + parts.Count + "): ") { FontWeight = FontWeights.SemiBold });
+            text.Inlines.Add(new System.Windows.Documents.Run(String.Join("; ", parts.ToArray()) + "."));
+            Button discard = ui.Button("Odrzuć", ButtonKind.Normal, true, false,
+                delegate { pendingGrants.Clear(); Render(); }, "grants-discard");
+            Button save = ui.Button("Zapisz zmiany", ButtonKind.Primary, true, true,
+                delegate { Submit("Zapisuję uprawnienia…", changes, revision, delegate { pendingGrants.Clear(); }); },
+                "grants-save");
+            StackPanel buttons = Row(discard, save);
+            buttons.Margin = new Thickness(12, 0, 0, 0);
+            DockPanel line = new DockPanel();
+            DockPanel.SetDock(buttons, Dock.Right);
+            line.Children.Add(buttons);
+            line.Children.Add(text);
+            Border bar = new Border {
+                Background = ui.P.AccentSoft, BorderBrush = ui.P.Accent, BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 8, 14, 8), MinHeight = 46, Child = line };
+            AutomationProperties.SetLiveSetting(text, AutomationLiveSetting.Polite);
+            return bar;
+        }
+
+        private void Revoke(PairedClient client)
+        {
+            string id = client.Id, revision = status.RegistryRevision;
+            if (!HostDialog.Confirm(this, ui, "Cofnąć parowanie „" + client.Name + "”?",
+                "Urządzenie utraci dostęp do wszystkich profili i będzie wymagało ponownego sparowania.",
+                "Cofnij parowanie", true, true)) return;
+            Submit("Cofam parowanie…", One(Change("client_remove", "client_id", id)), revision, delegate
+            {
+                foreach (string key in new List<string>(pendingGrants.Keys))
+                    if (key.StartsWith(id + "\n", StringComparison.Ordinal)) pendingGrants.Remove(key);
+            });
         }
 
         private TextBlock Small(string text) { return ui.Text(text, 11.5, ui.P.Muted, FontWeights.Normal); }
@@ -1036,8 +1204,7 @@ namespace MoonWaker.HostControl
                 : online == true ? "zapisany, ważny" : "zapisany")));
             vibepollo.Children.Add(ui.KeyValue(false, "Ostatni zapis", ui.Text(status.VibepolloTokenSavedAt == null ? "—"
                 : status.VibepolloTokenSavedAt.Value.ToString("dd.MM.yyyy HH:mm"))));
-            Button token = ui.Button("Pobierz / odnów token", ButtonKind.Primary, false, true,
-                delegate { LaunchConfigurator("vibepollo", null); }, "vibepollo-token");
+            Button token = ui.Button("Pobierz / odnów token", ButtonKind.Primary, false, true, Vibepollo, "vibepollo-token");
             token.Margin = new Thickness(0, 10, 0, 0);
             vibepollo.Children.Add(token);
             Add(content, ui.Card(vibepollo));
@@ -1452,44 +1619,510 @@ namespace MoonWaker.HostControl
             }
         }
 
-        // Profiles, devices, remote sign-in, child profiles and the Vibepollo token are written
-        // by the elevated Configurator, behind UAC; this process passes no secret to it.
-        private async void LaunchConfigurator(string mode, string profileId)
+        // ---- Editors: edited here without elevation, saved by the elevated helper ----
+        // An editor builds a change set; "Zapisz" (with the UAC shield) hands it to the helper,
+        // which validates it again, shows it in its own window and applies it. Passwords are
+        // never typed here: the helper's window asks for them.
+
+        internal sealed class Editor
         {
-            int origin = page;
-            string executable = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MoonWakerHostConfigurator.exe");
-            if (!File.Exists(executable))
-            {
-                Fail(origin, "Brak konfiguratora hosta.", "Zaktualizuj instalację MoonWaker Host.");
-                return;
-            }
-            if (!String.IsNullOrWhiteSpace(profileId) &&
-                !System.Text.RegularExpressions.Regex.IsMatch(profileId, "^[A-Za-z0-9._-]{1,64}$"))
-            {
-                Fail(origin, "Identyfikator profilu jest nieprawidłowy.", profileId);
-                return;
-            }
-            try
-            {
-                SetStatus("Otwieram chroniony konfigurator…", Tone.Accent);
-                string arguments = "--mode " + Quote(mode) +
-                    (String.IsNullOrWhiteSpace(profileId) ? "" : " --profile " + Quote(profileId));
-                ProcessStartInfo info = new ProcessStartInfo(executable, arguments);
-                info.UseShellExecute = true;
-                info.Verb = "runas";
-                info.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
-                using (Process process = Process.Start(info))
-                    await Task.Run(delegate { process.WaitForExit(); });
-                SetStatus("Konfigurator zamknięty.", Tone.Ok);
-            }
-            catch (System.ComponentModel.Win32Exception error)
-            {
-                if (error.NativeErrorCode == 1223) SetStatus("Anulowano zgodę administratora.", Tone.Off);
-                else Fail(origin, "Nie udało się otworzyć konfiguratora.", error.Message);
-            }
-            Refresh();
+            // The registry revision the editor's data came from: the change set is decided on it.
+            internal string Revision;
+            internal HostDialog Dialog;
+            internal string Progress;
+            internal Func<List<Dictionary<string, object>>> Changes;
         }
 
-        private static string Quote(string value) { return "\"" + value.Replace("\"", "\\\"") + "\""; }
+        private void Open(Editor editor)
+        {
+            if (editor.Dialog.ShowDialog() == true) Submit(editor.Progress, editor.Changes(), editor.Revision, null);
+        }
+
+        private static Dictionary<string, object> Change(string type, params object[] fields)
+        {
+            Dictionary<string, object> change = new Dictionary<string, object> { { "type", type } };
+            for (int index = 0; index + 1 < fields.Length; index += 2) change[(string)fields[index]] = fields[index + 1];
+            return change;
+        }
+
+        private static List<Dictionary<string, object>> One(Dictionary<string, object> change)
+        {
+            return new List<Dictionary<string, object>> { change };
+        }
+
+        // A profile waiting for removal takes no other change (the helper refuses it too).
+        private bool Mutable(ProfileStatus profile)
+        {
+            if (!profile.DeletionPending) return true;
+            Fail(page, "Profil oczekuje na usunięcie.", "Dokończ usuwanie („Usuń profil”) albo utwórz profil ponownie.");
+            return false;
+        }
+
+        private static string NameProblem(string value)
+        {
+            string name = (value ?? "").Trim();
+            return name.Length == 0 || name.Length > 80 || DisplayText.HasHidden(name)
+                ? "Nazwa profilu musi mieć od 1 do 80 znaków drukowalnych." : null;
+        }
+
+        private void Field(Panel body, string label, Control input)
+        {
+            TextBlock caption = ui.Text(label, 13, ui.P.Text, FontWeights.Normal);
+            caption.Margin = new Thickness(0, body.Children.Count == 0 ? 0 : 12, 0, 5);
+            body.Children.Add(caption);
+            ui.Input(input);
+            AutomationProperties.SetName(input, label);
+            body.Children.Add(input);
+        }
+
+        private CheckBox Check(string text, bool on)
+        {
+            CheckBox box = new CheckBox { Content = text, IsChecked = on, Foreground = ui.P.Text, FontSize = 13,
+                Margin = new Thickness(0, 12, 0, 0) };
+            return box;
+        }
+
+        private RadioButton Choice(string group, string text, bool on)
+        {
+            return new RadioButton { GroupName = group, Content = text, IsChecked = on, Foreground = ui.P.Text,
+                FontSize = 13, Margin = new Thickness(0, 8, 0, 0) };
+        }
+
+        private TextBlock Note(string text)
+        {
+            TextBlock note = ui.Muted(text);
+            note.Margin = new Thickness(0, 12, 0, 0);
+            return note;
+        }
+
+        // ---- Dodaj profil ----
+
+        private async void AddProfile()
+        {
+            if (busy || status == null) return;
+            int origin = page;
+            busy = true;
+            SetStatus("Szukam kont Windows tego komputera…", Tone.Accent);
+            List<LocalAccount> accounts;
+            try { accounts = await Task.Run(delegate { return LocalAccountEnumerator.EnumerateSupported(); }); }
+            catch (Exception error)
+            {
+                Fail(origin, "Nie udało się odczytać kont Windows.", error.Message);
+                return;
+            }
+            finally { busy = false; }
+            SetStatus("Wybierz konto Windows nowego profilu.", Tone.Off);
+            accounts.RemoveAll(account => status.Profiles.Exists(
+                profile => String.Equals(profile.Sid, account.Sid, StringComparison.OrdinalIgnoreCase)));
+            if (accounts.Count == 0)
+            {
+                Fail(origin, "Brak wolnego konta Windows.",
+                    "Każde obsługiwane lokalne konto Windows tego komputera ma już profil MoonWaker.");
+                return;
+            }
+            Open(AddProfileEditor(accounts));
+        }
+
+        internal Editor AddProfileEditor(List<LocalAccount> accounts)
+        {
+            StackPanel body = new StackPanel();
+            TextBlock caption = ui.Text("Konto Windows", 13, ui.P.Text, FontWeights.Normal);
+            body.Children.Add(caption);
+            TextBox name = new TextBox { MaxLength = 80, Text = accounts[0].Name };
+            List<RadioButton> choices = new List<RadioButton>();
+            foreach (LocalAccount account in accounts)
+            {
+                LocalAccount item = account;
+                RadioButton choice = Choice("account", account.QualifiedName, choices.Count == 0);
+                // The name follows the account until it is edited.
+                choice.Checked += delegate
+                {
+                    if (name.Text.Trim().Length == 0 || accounts.Exists(other => other.Name == name.Text)) name.Text = item.Name;
+                };
+                choices.Add(choice);
+                body.Children.Add(choice);
+            }
+            Field(body, "Nazwa profilu MoonWaker", name);
+            body.Children.Add(Note("Profil łączy wybrane lokalne konto Windows z telewizorem; jego SID zostaje przypisany na stałe. " +
+                "Zdalne logowanie włączysz później, zapisując hasło Windows."));
+            HostDialog dialog = new HostDialog(this, ui, "Dodaj profil", null, body, "Utwórz profil", ButtonKind.Primary,
+                delegate { return NameProblem(name.Text); }, 500, true);
+            return new Editor {
+                Revision = status.RegistryRevision,
+                Dialog = dialog, Progress = "Tworzę profil…",
+                Changes = delegate
+                {
+                    LocalAccount account = accounts[choices.FindIndex(choice => choice.IsChecked == true)];
+                    return One(Change("profile_add", "account_sid", account.Sid, "display_name", name.Text.Trim()));
+                } };
+        }
+
+        // ---- Edytuj profil, PIN, zdalne logowanie, usunięcie ----
+
+        internal Editor EditProfileEditor(ProfileStatus profile)
+        {
+            StackPanel body = new StackPanel();
+            TextBox name = new TextBox { MaxLength = 80, Text = profile.Name };
+            Field(body, "Nazwa profilu", name);
+            CheckBox enabled = Check("Profil włączony", profile.Enabled);
+            body.Children.Add(enabled);
+            body.Children.Add(Note("Konto Windows: " + profile.Owner + ". Zmiana konta wymaga usunięcia i ponownego utworzenia profilu."));
+            return new Editor {
+                Revision = status.RegistryRevision,
+                Dialog = new HostDialog(this, ui, "Edytuj profil", null, body, "Zapisz", ButtonKind.Primary,
+                    delegate { return NameProblem(name.Text); }, 500, true),
+                Progress = "Zapisuję profil…",
+                Changes = delegate
+                {
+                    return One(Change("profile_edit", "profile_id", profile.Id, "account_sid", profile.Sid,
+                        "display_name", name.Text.Trim(), "enabled", enabled.IsChecked == true));
+                } };
+        }
+
+        // The PIN goes through the change channel (the owner's decision); this window drops it
+        // from its boxes as soon as the change set is built.
+        internal Editor PinEditor(ProfileStatus profile)
+        {
+            StackPanel body = new StackPanel();
+            PasswordBox pin = new PasswordBox { MaxLength = 4 };
+            Field(body, "Nowy PIN", pin);
+            PasswordBox repeat = new PasswordBox { MaxLength = 4 };
+            Field(body, "Powtórz PIN", repeat);
+            string chosen = null;
+            bool remove = false;
+            HostDialog dialog = null;
+            if (profile.PinRequired)
+            {
+                Button drop = ui.Button("Usuń PIN", ButtonKind.Danger, true, true, delegate
+                {
+                    remove = true;
+                    dialog.DialogResult = true;
+                }, "pin-remove");
+                drop.Margin = new Thickness(0, 14, 0, 0);
+                body.Children.Add(drop);
+            }
+            dialog = new HostDialog(this, ui, "PIN aplikacji",
+                "To czterocyfrowy PIN aplikacji MoonWaker, nie hasło Windows. " + (profile.PinRequired
+                    ? "Wpisz nowy PIN, aby zastąpić obecny." : "Ustaw PIN dla tego profilu."),
+                body, profile.PinRequired ? "Zmień PIN" : "Ustaw PIN", ButtonKind.Primary, delegate
+                {
+                    string problem = pin.Password != repeat.Password ? "Wpisane PIN-y aplikacji nie są identyczne."
+                        : !System.Text.RegularExpressions.Regex.IsMatch(pin.Password, "^[0-9]{4}$")
+                            ? "PIN aplikacji MoonWaker musi mieć dokładnie cztery cyfry." : null;
+                    if (problem == null) chosen = pin.Password;
+                    pin.Clear();
+                    repeat.Clear();
+                    return problem;
+                }, 500, true);
+            dialog.Closed += delegate { pin.Clear(); repeat.Clear(); };
+            return new Editor {
+                Revision = status.RegistryRevision,
+                Dialog = dialog, Progress = "Zapisuję PIN aplikacji…",
+                Changes = delegate
+                {
+                    List<Dictionary<string, object>> changes = One(remove
+                        ? Change("pin_remove", "profile_id", profile.Id, "account_sid", profile.Sid)
+                        : Change("pin_set", "profile_id", profile.Id, "account_sid", profile.Sid, "pin", chosen));
+                    chosen = null;
+                    return changes;
+                } };
+        }
+
+        internal Editor RemoteEditor(ProfileStatus profile)
+        {
+            StackPanel body = new StackPanel();
+            body.Children.Add(ui.Text("UPRZYWILEJOWANE: zapisane dane pozwalają zatwierdzonemu urządzeniu zalogować lub " +
+                "odblokować to konto.", 12.5, ui.P.Error, FontWeights.SemiBold));
+            RadioButton set = Choice("remote", profile.RemoteSignInEnabled ? "Zmień hasło Windows" : "Włącz: zapisz hasło Windows", true);
+            body.Children.Add(set);
+            RadioButton test = null;
+            if (profile.RemoteSignInEnabled)
+            {
+                test = Choice("remote", "Sprawdź zapisane dane", false);
+                body.Children.Add(test);
+                body.Children.Add(Choice("remote", "Wyłącz i usuń dane z Login Brokera", false));
+            }
+            body.Children.Add(Note("Hasło Windows wpiszesz w oknie administratora po zgodzie UAC. Host Control go nie widzi: " +
+                "trafia tylko do Login Brokera. Urządzenia, które mogą logować, wybierasz na stronie Urządzenia."));
+            return new Editor {
+                Revision = status.RegistryRevision,
+                Dialog = new HostDialog(this, ui, "Zdalne logowanie", "Profil " + profile.Name + "  •  konto " + profile.Owner + ". " +
+                    (profile.RemoteSignInEnabled ? "Włączone: hasło Windows jest zapisane w Login Brokerze."
+                        : "Wyłączone: TV nie zaloguje tego konta Windows."),
+                    body, "Dalej", ButtonKind.Primary, null, 500, true),
+                Progress = "Zdalne logowanie…",
+                Changes = delegate
+                {
+                    string action = set.IsChecked == true ? "set_password" : test != null && test.IsChecked == true ? "test" : "disable";
+                    return One(Change("remote_sign_in", "profile_id", profile.Id, "account_sid", profile.Sid, "action", action));
+                } };
+        }
+
+        internal Editor RemoveProfileEditor(ProfileStatus profile)
+        {
+            return new Editor {
+                Revision = status.RegistryRevision,
+                Dialog = new HostDialog(this, ui, "Usunąć profil „" + profile.Name + "”?",
+                    "Usunięte zostaną dane profilu MoonWaker, jego granty urządzeń i sekret Login Brokera. Konto Windows " + (profile.Owner.Length == 0 ? "" : profile.Owner + " ") +
+                    "i jego pliki pozostaną bez zmian. Szczegóły potwierdzisz w oknie administratora.",
+                    null, "Usuń profil", ButtonKind.Danger, null, 500, true),
+                Progress = "Usuwam profil…",
+                Changes = delegate { return One(Change("profile_remove", "profile_id", profile.Id, "account_sid", profile.Sid)); } };
+        }
+
+        // ---- Profile dzieci: name, avatar, active, one play window and daily limit per weekday ----
+
+        private static readonly string[] DayNames = { "Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela" };
+        private static readonly string[] Weekdays = { "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
+
+        private static int AvatarIndex(string avatarId)
+        {
+            return Math.Max(0, Array.IndexOf(ChildAvatars.Ids, avatarId ?? ""));
+        }
+
+        // A parent that can have children: enabled, with an app PIN and a resolved account.
+        private static bool ChildParentReady(ProfileStatus profile)
+        {
+            return profile.Enabled && profile.PinRequired && profile.AccountResolved && !profile.DeletionPending;
+        }
+
+        private void ManageChildren(ProfileStatus profile)
+        {
+            Action next = null;
+            if (ChildrenList(profile, delegate(Action chosen) { next = chosen; }).ShowDialog() == true && next != null) next();
+        }
+
+        // The list of a parent's children; a button closes it and names what opens next.
+        internal HostDialog ChildrenList(ProfileStatus profile, Action<Action> choose)
+        {
+            HostDialog dialog = null;
+            bool ready = ChildParentReady(profile);
+            string revision = status.RegistryRevision;
+            StackPanel body = new StackPanel();
+            if (!ready)
+            {
+                TextBlock why = ui.Text(!profile.PinRequired
+                    ? "Profile dzieci wymagają PIN-u aplikacji rodzica: najpierw ustaw PIN."
+                    : !profile.Enabled ? "Profil rodzica jest wyłączony: profile dzieci można tylko usunąć."
+                    : "Rodzic wymaga ponownego skonfigurowania: profil nie ma rozpoznanego konta Windows.",
+                    12.5, ui.P.Warn, FontWeights.SemiBold);
+                why.Margin = new Thickness(0, 0, 0, 8);
+                body.Children.Add(why);
+            }
+            if (profile.Children.Count == 0) body.Children.Add(ui.Muted("Brak profili dzieci."));
+            foreach (ChildStatus child in profile.Children)
+            {
+                ChildStatus item = child;
+                Button edit = ui.Button("Edytuj", ButtonKind.Normal, true, false, delegate
+                {
+                    choose(delegate { Open(ChildEditor(profile, item, revision)); });
+                    dialog.DialogResult = true;
+                }, "child-edit-" + child.Id);
+                edit.IsEnabled = ready;
+                Button remove = ui.Button("Usuń", ButtonKind.Danger, true, true, delegate
+                {
+                    choose(delegate
+                    {
+                        Submit("Usuwam profil dziecka…", One(Change("child_remove", "profile_id", profile.Id,
+                            "child_profile_id", item.Id, "expected_revision", profile.ChildrenRevision)), revision, null);
+                    });
+                    dialog.DialogResult = true;
+                }, "child-remove-" + child.Id);
+                Border avatar = ui.Avatar(child.Name, AvatarIndex(child.AvatarId), 30);
+                body.Children.Add(ui.Item(body.Children.Count == 0, avatar,
+                    ui.Titled(child.Name, child.Enabled ? "" : "  (wyłączony)"),
+                    Schedule(child) + "  •  udostępnione gry: " + child.SharedGames, edit, remove));
+            }
+            body.Children.Add(Note("Gry udostępnisz w panelu gry rodzica na TV. Telewizory dziecka wybierasz na stronie Urządzenia."));
+            dialog = new HostDialog(this, ui, "Profile dzieci", "Rodzic: " + profile.Name + ". Zapisy gier i osiągnięcia są " +
+                "wspólne z kontem Windows " + profile.Owner + ".", body, "Dodaj dziecko", ButtonKind.Primary, delegate
+                {
+                    if (!ready) return "Najpierw popraw profil rodzica.";
+                    choose(delegate { Open(ChildEditor(profile, null, revision)); });
+                    return null;
+                }, 600);
+            return dialog;
+        }
+
+        private static string Schedule(ChildStatus child)
+        {
+            int days = child.Days.FindAll(day => day.Enabled).Count;
+            return days == 0 ? "granie wyłączone" : "granie w " + days + (days == 1 ? " dzień" : " dni") + " tygodnia";
+        }
+
+        internal Editor ChildEditor(ProfileStatus parent, ChildStatus child, string revision)
+        {
+            StackPanel body = new StackPanel();
+            TextBox name = new TextBox { MaxLength = 80, Text = child == null ? "" : child.Name };
+            Field(body, "Nazwa", name);
+            TextBlock caption = ui.Text("Awatar", 13, ui.P.Text, FontWeights.Normal);
+            caption.Margin = new Thickness(0, 12, 0, 0);
+            body.Children.Add(caption);
+            string current = child == null ? "default" : child.AvatarId;
+            List<string> ids = new List<string>(ChildAvatars.Ids), names = new List<string>(ChildAvatars.Names);
+            if (current.Length > 0 && !ids.Contains(current)) { ids.Add(current); names.Add("Obecny"); }
+            if (!ids.Contains(current)) current = "default";
+            WrapPanel avatars = new WrapPanel();
+            List<RadioButton> avatarChoices = new List<RadioButton>();
+            for (int index = 0; index < ids.Count; index++)
+            {
+                RadioButton choice = Choice("avatar", names[index], ids[index] == current);
+                choice.Margin = new Thickness(0, 6, 16, 0);
+                avatarChoices.Add(choice);
+                avatars.Children.Add(choice);
+            }
+            body.Children.Add(avatars);
+            CheckBox active = Check("Profil aktywny", child == null || child.Enabled);
+            body.Children.Add(active);
+            body.Children.Add(Note("Wybierz jedno okno grania dziennie, np. 08:00–20:00. Limit podajesz w minutach (0 = bez limitu)."));
+
+            Grid table = new Grid { Margin = new Thickness(0, 8, 0, 0) };
+            foreach (double width in new double[] { 30, 16, 18, 18, 18 })
+                table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(width, GridUnitType.Star) });
+            string[] headers = { "Dzień", "Aktywny", "Od", "Do", "Limit (min)" };
+            for (int column = 0; column < headers.Length; column++) AddCell(table, 0, column, Small(headers[column]), false);
+            CheckBox[] enabled = new CheckBox[7];
+            TextBox[] starts = new TextBox[7], ends = new TextBox[7], limits = new TextBox[7];
+            for (int day = 0; day < 7; day++)
+            {
+                ChildDay value = child == null ? new ChildDay() : child.Days[day];
+                enabled[day] = new CheckBox { IsChecked = value.Enabled, VerticalAlignment = VerticalAlignment.Center };
+                AutomationProperties.SetName(enabled[day], DayNames[day] + ", aktywny");
+                starts[day] = TimeBox(Clock(value.StartMinute), DayNames[day] + ", od");
+                ends[day] = TimeBox(Clock(value.EndMinute), DayNames[day] + ", do");
+                limits[day] = TimeBox((value.DailyLimitSeconds / 60).ToString(), DayNames[day] + ", limit w minutach");
+                TextBox[] inputs = { starts[day], ends[day], limits[day] };
+                CheckBox box = enabled[day];
+                RoutedEventHandler follow = delegate { foreach (TextBox input in inputs) input.IsEnabled = box.IsChecked == true; };
+                box.Checked += follow;
+                box.Unchecked += follow;
+                follow(null, null);
+                AddCell(table, day + 1, 0, ui.Text(DayNames[day]), true);
+                AddCell(table, day + 1, 1, enabled[day], true);
+                AddCell(table, day + 1, 2, starts[day], true);
+                AddCell(table, day + 1, 3, ends[day], true);
+                AddCell(table, day + 1, 4, limits[day], true);
+            }
+            body.Children.Add(table);
+            body.Children.Add(Note("Gry udostępnisz osobno w panelu gry rodzica. Po upływie czasu gra zostanie zamknięta — zapisz wcześniej postęp."));
+
+            Dictionary<string, object> draft = null;
+            HostDialog dialog = new HostDialog(this, ui, child == null ? "Nowy profil dziecka" : "Profil dziecka " + child.Name,
+                "Windows rodzica: " + parent.Owner + ". Zapisy gier i osiągnięcia są wspólne z tym kontem Windows.",
+                body, "Zapisz", ButtonKind.Primary, delegate
+                {
+                    string problem = name.Text.Trim().Length == 0 ? "Nazwa profilu jest wymagana." : NameProblem(name.Text);
+                    if (problem != null) return problem;
+                    Dictionary<string, object> weekdays = new Dictionary<string, object>();
+                    for (int day = 0; day < 7; day++)
+                    {
+                        int start, end, limit;
+                        if (!TryParseTime(starts[day].Text, false, out start))
+                            return "Podaj godzinę rozpoczęcia dla dnia: " + DayNames[day] + ".";
+                        if (!TryParseTime(ends[day].Text, true, out end))
+                            return "Podaj godzinę zakończenia dla dnia: " + DayNames[day] + ".";
+                        if (start >= end) return "Ustaw godzinę rozpoczęcia wcześniejszą od zakończenia (" + DayNames[day] + ").";
+                        if (!Int32.TryParse(limits[day].Text.Trim(), out limit) || limit < 0 || limit > 1440)
+                            return "Dzienny limit musi być liczbą pełnych minut od 0 do 1440.";
+                        weekdays[Weekdays[day]] = new Dictionary<string, object> {
+                            { "enabled", enabled[day].IsChecked == true }, { "start_minute", start },
+                            { "end_minute", end }, { "daily_limit_seconds", limit * 60 } };
+                    }
+                    draft = new Dictionary<string, object> {
+                        { "name", name.Text.Trim() },
+                        { "avatar_id", ids[avatarChoices.FindIndex(choice => choice.IsChecked == true)] },
+                        { "enabled", active.IsChecked == true },
+                        { "schedule", new Dictionary<string, object> { { "weekdays", weekdays } } } };
+                    return null;
+                }, 640, true);
+            return new Editor {
+                Revision = revision, Dialog = dialog, Progress = "Zapisuję profil dziecka…",
+                Changes = delegate
+                {
+                    return One(Change("child_save", "profile_id", parent.Id, "child_profile_id", child == null ? "" : child.Id,
+                        "expected_revision", parent.ChildrenRevision, "draft", draft));
+                } };
+        }
+
+        private TextBox TimeBox(string text, string name)
+        {
+            TextBox box = new TextBox { Text = text, MaxLength = 5, Margin = new Thickness(0, 0, 8, 0),
+                HorizontalContentAlignment = HorizontalAlignment.Center };
+            ui.Input(box);
+            box.Padding = new Thickness(4, 3, 4, 3);
+            box.HorizontalAlignment = HorizontalAlignment.Stretch;
+            AutomationProperties.SetName(box, name);
+            return box;
+        }
+
+        private static string Clock(int minutes)
+        {
+            minutes = Math.Max(0, Math.Min(1440, minutes));
+            return (minutes / 60).ToString("00") + ":" + (minutes % 60).ToString("00");
+        }
+
+        // "HH:MM"; 24:00 only as the end of a day.
+        private static bool TryParseTime(string text, bool endOfDay, out int minutes)
+        {
+            minutes = 0;
+            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(
+                (text ?? "").Trim(), "^([0-9]{2}):([0-9]{2})$");
+            if (!match.Success) return false;
+            int hour = Int32.Parse(match.Groups[1].Value), minute = Int32.Parse(match.Groups[2].Value);
+            if (minute > 59 || hour > 24 || (hour == 24 && (!endOfDay || minute != 0))) return false;
+            minutes = hour * 60 + minute;
+            return true;
+        }
+
+        // ---- Vibepollo: the helper's window asks for the panel's login, not this one ----
+
+        private void Vibepollo()
+        {
+            Submit("Token Vibepollo…", One(Change("vibepollo_token")), "", null);
+        }
+
+        // Hands a change set, decided on the registry revision shown ("" for the Vibepollo token),
+        // to the elevated helper (UAC) and shows its answer: applied in the status bar, anything
+        // else as the page's notice. applied runs after a save. Without an answer the outcome is
+        // unknown: the refreshed status shows what was saved.
+        private async void Submit(string progress, List<Dictionary<string, object>> changes, string revision,
+            Action applied)
+        {
+            if (busy) { SetStatus("Poczekaj na koniec bieżącej operacji.", Tone.Warn); return; }
+            if (status == null) return;
+            int origin = page;
+            IntPtr owner = new WindowInteropHelper(this).Handle;
+            busy = true;
+            SetStatus(progress + " Potwierdź zmiany w oknie administratora.", Tone.Accent);
+            try
+            {
+                ChangeAnswer answer = await Task.Run(delegate { return backend.ApplyChanges(revision, changes, owner); });
+                busy = false;
+                if (answer.Outcome == "applied" || answer.Outcome == "partial")
+                {
+                    if (applied != null) applied();
+                    notices.Remove(origin);
+                }
+                if (answer.Outcome == "applied") SetStatus(answer.Message, Tone.Ok);
+                else if (answer.Outcome == "cancelled") SetStatus(answer.Message, Tone.Off);
+                else
+                {
+                    Tone tone = answer.Outcome == "partial" || answer.Outcome == "unknown" ? Tone.Warn : Tone.Error;
+                    notices[origin] = new Notice { Tone = tone, Text = answer.Message,
+                        Title = answer.Outcome == "partial" ? "Zapisano częściowo." :
+                            answer.Outcome == "unknown" ? "Nie otrzymano wyniku — sprawdź stan." :
+                            answer.Outcome == "rejected" ? "Zmian nie zapisano." : "Zapis nie powiódł się." };
+                    SetStatus(notices[origin].Title, tone);
+                }
+            }
+            catch (Exception error)
+            {
+                notices[origin] = new Notice { Tone = Tone.Error, Title = "Nie udało się zapisać zmian.", Text = error.Message };
+                SetStatus(notices[origin].Title, Tone.Error);
+            }
+            finally { busy = false; }
+            Render();
+            Refresh();
+        }
     }
 }
