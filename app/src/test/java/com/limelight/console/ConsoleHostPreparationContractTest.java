@@ -92,7 +92,7 @@ public class ConsoleHostPreparationContractTest {
         assertTrue(resume.contains("SessionModel.State.RECONNECT_REQUIRED"));
         assertTrue(resume.contains("retained.streamSessionId.equals(pending.streamSessionId)"));
         assertTrue(resume.contains(
-                "if (warmUpCarriesPendingGame(warmUpClientAttempt, warmUpClientHostId, pending, "
+                "if (warmUpCarriesPendingGame(tracksWarmUp(), warmUpClientHostId, pending, "
                         + "retained))\n            applyWarmUpIntent(resume,"));
 
         String game = source("src/main/java/com/limelight/Game.java");
@@ -119,11 +119,11 @@ public class ConsoleHostPreparationContractTest {
         assertTrue(failure.contains("!cancelled.getAsBoolean()"));
         String resume = section(console, "private String startResumeActivity(",
                 "private void failClosedActorHandoff(");
-        assertFalse(resume.contains("warmUpClientAttempt <= 0L"));
+        assertFalse(resume.contains("warmUpRequest <= 0L"));
         assertOrdered(resume, "return \"retained_mismatch\"", "applyWarmUpIntent(",
                 "startActivity(resume)");
         assertTrue(console.contains("return warmUpCarriesPendingGame(\n"
-                + "                    warmUpClientAttempt, warmUpClientHostId, s.records.pending, s); }"));
+                + "                    tracksWarmUp(), warmUpClientHostId, s.records.pending, s); }"));
     }
 
     private static String source(String relative) throws Exception {

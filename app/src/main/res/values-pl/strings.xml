@@ -405,6 +405,11 @@
     <string name="console_app_quick_suffix"> · Szybkie uruchamianie</string>
     <string name="console_play">URUCHOM  ›</string>
     <string name="console_resume">WZNÓW</string>
+    <string name="console_queued">W kolejce</string>
+    <string name="console_queued_waiting_close">Czekam na zamknięcie %1$s…</string>
+    <string name="console_queued_waiting_session">Czekam na zamknięcie sesji…</string>
+    <string name="console_queue_dropped_unconfirmed">Nie uruchomiono %1$s — komputer nie potwierdził zamknięcia poprzedniej gry.</string>
+    <string name="console_queue_dropped_close_failed">Nie uruchomiono %1$s — zamykanie poprzedniej gry nie powiodło się.</string>
     <string name="console_quick_resume">Wznów sesję</string>
     <string name="console_resume_session">Wznów</string>
     <string name="console_quick_resume_app">Wznów sesję (%1$s)</string>
@@ -693,7 +698,6 @@
     <string name="console_pin_failed">Nie udało się zweryfikować PIN-u.</string>
     <string name="console_pin_checking">Sprawdzanie PIN-u…</string>
     <string name="console_pin_offline_connect_once">Włącz komputer i potwierdź PIN na tym telewizorze, aby przygotować wybudzanie offline.</string>
-    <string name="console_pin_offline_unsupported">Wybudzanie PIN-em offline jest niedostępne w tej wersji Androida. Połącz się z komputerem, aby kontynuować.</string>
     <string name="console_pin_offline_waking">Wybudzanie komputera…</string>
     <string name="console_pin_offline_waiting">Oczekiwanie na uruchomienie komputera…</string>
     <string name="console_pin_offline_unavailable">Nie udało się połączyć z komputerem po wybudzeniu.</string>
@@ -1074,7 +1078,6 @@
     <string name="transition_checking_game_launch_service">Sprawdzanie usługi uruchamiania gier</string>
     <string name="transition_waiting_fullscreen">Playnite działa — oczekiwanie na jego okno</string>
     <string name="transition_starting_game">Uruchamianie gry…</string>
-    <string name="transition_verifying_readiness">Oczekiwanie na okno gry</string>
     <string name="transition_game_running_waiting_window">Gra uruchomiona — czekam na okno gry</string>
     <string name="transition_start_taking_longer">Uruchamianie trwa dłużej niż zwykle</string>
     <string name="transition_game_exited_during_start">Gra zamknęła się podczas uruchamiania</string>
@@ -1096,8 +1099,6 @@
     <string name="transition_game_failed">Gra nie osiągnęła stanu gotowości</string>
     <string name="transition_waiting_playnite_return">Oczekiwanie na powrót Playnite</string>
     <string name="transition_closing_session">Zamykanie sesji</string>
-    <string name="transition_game_ended">Gra zakończona</string>
-    <string name="transition_returning_library">Powrót do biblioteki…</string>
     <string name="console_previous_session_close_failed">Nie udało się zamknąć poprzedniej sesji hosta. Spróbuj ponownie, gdy zniknie wskaźnik aktywnej sesji.</string>
     <string name="control_stream_conflict">Na hoście trwa inna sesja streamu. Zakończ ją na hoście i spróbuj ponownie.</string>
     <string name="control_previous_game_unconfirmed">Host nie potwierdził zakończenia poprzedniej gry. Poczekaj chwilę i spróbuj ponownie.</string>
@@ -1119,7 +1120,9 @@
     <string name="console_terminate_session_failed">Host nie zamknął sesji. Spróbuj ponownie.</string>
     <string name="console_terminate_session_game_unverified">Nie udało się potwierdzić gry na hoście. Spróbuj ponownie.</string>
     <string name="console_terminate_session_game_left">Stream zamknięty. Nie udało się potwierdzić gry — mogła zostać uruchomiona na hoście.</string>
-    <string name="transition_host_session_left_open">Nie udało się zamknąć sesji na hoście — gra i stream mogły na nim zostać.</string>
+    <string name="console_status_termination_unconfirmed">TV rozłączony; komputer nie potwierdził zakończenia sesji</string>
+    <string name="console_check_again">Sprawdź ponownie</string>
+    <string name="console_checking_session">Sprawdzanie sesji…</string>
     <string name="session_closed_on_host">Sesja zakończyła się na hoście.</string>
     <string name="console_terminate_session_other_stream">Na hoście działa stream spoza MoonWakera. Zamknij go na hoście.</string>
     <string name="console_close_session">Zamknij sesję</string>
@@ -1166,10 +1169,13 @@
     <string name="transition_stream_display_not_configured">Wyświetlacz streamowany przez host nie jest skonfigurowany</string>
     <string name="transition_target_wrong_display">Okno gry jest poza streamowanym ekranem. Obraz pozostaje ukryty.</string>
     <string name="console_provider_stop_waiting_for_process">Gra nadal się uruchamia i nie ma jeszcze procesu, który można zamknąć. Poczekaj chwilę i spróbuj ponownie.</string>
-    <string name="transition_step_pending">○  %1$s — oczekuje</string>
-    <string name="transition_step_active">●  %1$s — aktywny</string>
-    <string name="transition_step_complete">✓  %1$s — ukończony</string>
-    <string name="transition_step_error">!  %1$s — błąd</string>
+    <string name="transition_kicker_starting">Uruchamianie</string>
+    <string name="transition_kicker_running">Gra działa</string>
+    <string name="transition_kicker_switching">Przełączanie</string>
+    <string name="transition_kicker_closing">Zamykanie</string>
+    <string name="transition_kicker_failed">Nie udało się</string>
+    <string name="transition_switch_from">z gry %1$s</string>
+    <string name="transition_back_key_hint">Wstecz</string>
     <string name="transition_waiting_gateway">Oczekiwanie na potwierdzenie gotowości hosta…</string>
     <string name="transition_window_stabilizing">Okno docelowe stabilizuje się…</string>
     <string name="transition_cancel_details">Start został anulowany. Bezpieczny powrót do dashboardu.</string>

@@ -52,7 +52,7 @@ public final class SessionModelDriver {
         this.sleep = sleep;
         this.model = new SessionModel(modelQueue::add, mainQueue::add, () -> false,
                 () -> now, (level, component, event, fields) -> diagnostics.record(level,
-                component, event, fields), resume, suspended, sleep);
+                component, event, fields), resume, suspended, sleep, 0L);
     }
 
     /** Lets the model read stores a test wrote directly (any store write re-reads them). */
@@ -152,20 +152,19 @@ public final class SessionModelDriver {
         return result;
     }
     public boolean isPreparing(Controller owner, String sessionId, String hostId, int appId,
-                               String transitionId, long attempt) {
+                               long operation) {
         drain();
-        return model.isPreparing(owner, sessionId, hostId, appId, transitionId, attempt);
+        return model.isPreparing(owner, sessionId, hostId, appId, operation);
     }
     public boolean isPreparingHomeFrameAccepted(String sessionId, String hostId, int appId,
-                                                String gameId, String transitionId, long attempt) {
+                                                String gameId, long operation) {
         drain();
-        return model.isPreparingHomeFrameAccepted(sessionId, hostId, appId, gameId,
-                transitionId, attempt);
+        return model.isPreparingHomeFrameAccepted(sessionId, hostId, appId, gameId, operation);
     }
     public boolean isPreparingSwitchOwned(String sessionId, String hostId, int appId,
-                                          String transitionId, long attempt) {
+                                          long operation) {
         drain();
-        return model.isPreparingSwitchOwned(sessionId, hostId, appId, transitionId, attempt);
+        return model.isPreparingSwitchOwned(sessionId, hostId, appId, operation);
     }
     public boolean ownsLiveOrParkedSession(Controller owner, String sessionId, String hostId,
                                            int appId) {
@@ -201,35 +200,35 @@ public final class SessionModelDriver {
                           int appId, String gameId) {
         call(new SessionEvent.EnterHome(owner, sessionId, hostId, profileId, appId, gameId));
     }
-    public boolean beginPreparing(Controller owner, String sessionId, String hostId, int appId,
-                                  String gameId, String transitionId, long attempt) {
+    /** Returns the preparing operation the model assigned; 0 when it refused. */
+    public long beginPreparing(Controller owner, String sessionId, String hostId, int appId,
+                               String gameId) {
         return beginPreparing(owner, sessionId, hostId, GatewayConnection.DEFAULT_PROFILE_ID,
-                appId, gameId, transitionId, attempt);
+                appId, gameId);
     }
-    public boolean beginPreparing(Controller owner, String sessionId, String hostId,
-                                  String profileId, int appId, String gameId,
-                                  String transitionId, long attempt) {
+    public long beginPreparing(Controller owner, String sessionId, String hostId,
+                               String profileId, int appId, String gameId) {
         return call(new SessionEvent.PreparingBegun(owner, sessionId, hostId, profileId, appId,
-                gameId, transitionId, attempt));
+                gameId));
     }
     public boolean completePreparing(Controller owner, String sessionId, String hostId,
-                                     int appId, String transitionId, long attempt) {
+                                     int appId, long operation) {
         return call(new SessionEvent.PreparingCompleted(owner, sessionId, hostId, appId,
-                transitionId, attempt));
+                operation));
     }
     public boolean cancelPreparing(Controller owner, String sessionId, String hostId,
-                                   int appId, String transitionId, long attempt) {
+                                   int appId, long operation) {
         return call(new SessionEvent.PreparingCancelled(owner, sessionId, hostId, appId,
-                transitionId, attempt));
+                operation));
     }
     public boolean cancelPreparing(Snapshot expected) {
         return call(new SessionEvent.CancelPreparingTransport(expected));
     }
     public boolean markPreparingReconnectRequired(Controller owner, String sessionId,
                                                   String hostId, int appId,
-                                                  String transitionId, long attempt) {
+                                                  long operation) {
         return call(new SessionEvent.PreparingTransportLost(owner, sessionId, hostId, appId,
-                transitionId, attempt));
+                operation));
     }
     public boolean preparingHomeFrameSubmitted(Snapshot expected) {
         return call(new SessionEvent.HomeFrameSubmitted(expected));
@@ -325,10 +324,9 @@ public final class SessionModelDriver {
                 orchestrationId, cancelled, completion));
     }
     public boolean updatePreparingSwitch(Controller owner, SwitchRequest request,
-                                         String expectedGameId, String newGameId,
-                                         String newTransitionId) {
+                                         String expectedGameId, String newGameId) {
         return call(new SessionEvent.PreparingSwitchUpdated(owner, request, expectedGameId,
-                newGameId, newTransitionId));
+                newGameId));
     }
     public boolean finishSwitch(SwitchRequest request, Controller owner) {
         return call(new SessionEvent.SwitchFinished(owner, request));
@@ -373,7 +371,7 @@ public final class SessionModelDriver {
         Snapshot current = snapshot();
         if (current.state == SessionModel.State.PREPARING) {
             cancelPreparing(current.controller, current.streamSessionId, current.hostId,
-                    current.appId, current.transitionId, current.attempt);
+                    current.appId, current.preparingOperation);
         } else if (!current.streamSessionId.isEmpty()) {
             clearIfMatches(current.streamSessionId);
         }

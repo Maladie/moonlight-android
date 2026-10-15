@@ -229,6 +229,16 @@ public final class SessionStateResolver {
         private long hostClockOffsetMs;
         /** This actor's game the last accepted observation verified running; "" otherwise. */
         private String observedRunningGameId = "";
+        /**
+         * This client stopped its stream and the host did not confirm the session ended. This
+         * owner alone holds the fact; the host's next accepted observation resolves it.
+         */
+        private boolean terminationUnconfirmed;
+        /**
+         * The latest close of this session (a local close, a game stop or the retained stream's
+         * termination) failed; the next close clears it. A Play queued behind it is dropped.
+         */
+        private boolean closeFailed;
 
         public ProjectionOwner(DiagnosticSink diagnosticSink, String hostId,
                                String actorProfileId, String executionProfileId) {
@@ -270,6 +280,8 @@ public final class SessionStateResolver {
             copy.displayStreamStartedHostMs = displayStreamStartedHostMs;
             copy.hostClockOffsetMs = hostClockOffsetMs;
             copy.observedRunningGameId = observedRunningGameId;
+            copy.terminationUnconfirmed = terminationUnconfirmed;
+            copy.closeFailed = closeFailed;
             return new FrozenProjection(copy);
         }
 
@@ -277,6 +289,11 @@ public final class SessionStateResolver {
         public String executionProfileId() { return executionProfileId; }
 
         public String observedRunningGameId() { return observedRunningGameId; }
+
+        /** The host did not confirm the end of a stream this client stopped. */
+        public void terminationUnconfirmed() {
+            terminationUnconfirmed = true;
+        }
 
         /**
          * A termination boundary of this host's session: the session model calls it in the
@@ -287,6 +304,7 @@ public final class SessionStateResolver {
          * reads as closing until the host confirms it free (or the bound passes).
          */
         public void terminationBoundary(boolean left) {
+            if (!left) closeFailed = false;
             retireObservation();
             closingConfirmationArmed = left;
             closingConfirmationUntilMs = 0L;
@@ -345,6 +363,8 @@ public final class SessionStateResolver {
             lastAcceptedOrdinal = candidate.requestOrdinal;
             observation = candidate;
             observationAcceptedAtMs = nowMs;
+            // The host answered: its observation, not the unconfirmed stop, tells what runs.
+            terminationUnconfirmed = false;
             holdDisplay(candidate, nowMs);
             String nextEpisode = candidate.producerBootId + "|" + candidate.stateEpisode
                     + "|" + candidate.operationId + "|" + candidate.providerState;
@@ -409,6 +429,7 @@ public final class SessionStateResolver {
             localCloseToken = ++nextLocalCloseToken;
             localCloseStartedAtMs = nowMs;
             localCloseEndsGame = endsGame;
+            closeFailed = false;
             return localCloseToken;
         }
 
@@ -419,12 +440,22 @@ public final class SessionStateResolver {
          */
         public void finishLocalClose(long token, boolean closed) {
             if (token == 0L) return;
-            if (token == localCloseToken) localCloseToken = 0L;
+            if (token == localCloseToken) {
+                localCloseToken = 0L;
+                closeFailed = !closed;
+            }
             if (!closed) return;
             retireObservation();
             closingConfirmationArmed = true;
             closingConfirmationUntilMs = 0L;
         }
+        /** The retained stream's termination failed: nothing closed, nothing to confirm. */
+        public void closeFailed() {
+            closeFailed = true;
+            closingConfirmationArmed = false;
+            closingConfirmationUntilMs = 0L;
+        }
+
         private void retireObservation() {
             lastAcceptedOrdinal = nextRequestOrdinal;
             observation = null;
@@ -671,7 +702,8 @@ public final class SessionStateResolver {
                     evidence == null ? "" : evidence.processToken,
                     evidence == null ? "UNAVAILABLE" : evidence.windowEvidence.name(),
                     reason, local.hostRunningAppId, endingGame,
-                    display(retained, matchingTransport, nowMs));
+                    display(retained, matchingTransport, nowMs), terminationUnconfirmed,
+                    closeFailed);
         }
     }
 }

@@ -5,8 +5,6 @@ import com.limelight.gateway.GatewayTransport;
 
 import org.junit.Test;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
 
 import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
@@ -118,16 +116,16 @@ public class HostSessionTerminationTest {
         assertTrue(nothing.streamClosed());
         assertFalse(HostSessionTermination.Outcome.OTHER_STREAM.closed());
         assertFalse(HostSessionTermination.Outcome.OTHER_STREAM.streamClosed());
-        // The abandoned launch's close reports every outcome through the one notice owner:
-        // no blanket hiding of a foreign stream.
-        String runtime = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/stream/AndroidStreamRuntime.java"));
+        // The abandoned launch's close reports every outcome: a game left as the one notice,
+        // any end not confirmed (a foreign stream included) as the session projection's fact.
+        String runtime = SourceText.main("stream/AndroidStreamRuntime.java");
         assertFalse(runtime.contains("reportsAbandonedLaunchClose"));
-        assertTrue(runtime.replace("\r\n", "\n").contains(
-                "new Thread(() -> Game.reportGameLeftOnHost(app,\n"
-                        + "                    HostSessionTermination.closeAbandonedStart("));
-        String console = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        assertOrdered(runtime.replace("\r\n", "\n"),
+                "HostSessionTermination.Outcome outcome = HostSessionTermination.closeAbandonedStart(",
+                "Game.reportGameLeftOnHost(app, outcome, true);",
+                "if (!outcome.streamClosed()) {",
+                "new SessionEvent.TerminationUnconfirmed(hostId,");
+        String console = SourceText.main("console/ConsoleActivity.java");
         String finish = console.substring(console.indexOf("private void finishTerminateSession("));
         assertOrdered(finish, "outcome == HostSessionTermination.Outcome.NOTHING_TO_CLOSE) return;",
                 "R.string.console_terminate_session_success");
@@ -243,7 +241,6 @@ public class HostSessionTerminationTest {
     }
 
     private static String source(String relative) throws Exception {
-        Path path = Paths.get(relative);
-        return SourceText.read(path);
+        return SourceText.module(relative);
     }
 }

@@ -50,6 +50,11 @@ public class SessionArchitectureGuardTest {
         ALLOWED_RUNNING_READS.put("reportHostPoll", 1);
         // Model input: the poll's value handed to the session projection.
         ALLOWED_RUNNING_READS.put("projectSession", 1);
+        // Display: "End game" entry needs the item's exact process proof.
+        ALLOWED_RUNNING_READS.put("isExactRunningManagedGame", 1);
+        // Display: library re-render signature.
+        ALLOWED_RUNNING_READS.put("sessionPresentationKey", 1);
+        // The warm-up's GENERIC vs GAME_CONNECTION is SessionOrchestrator.warmUpTransition's.
     }
 
     /** Non-final statics allowed in console/, stream/, session/ and Game; none is session state. */
@@ -73,27 +78,91 @@ public class SessionArchitectureGuardTest {
         ALLOWED_STATICS.put("console/ConsoleAudioEngine.java#ambientPositionMs",
                 "UI audio: ambient track position carried to the next console");
         ALLOWED_STATICS.put("console/ProfileAuthorization.java#grantedHost",
-                "process-scoped profile PIN grant, not session state");
+                "client poll gate; host enforces PIN/Bearer");
         ALLOWED_STATICS.put("console/ProfileAuthorization.java#listener",
-                "listener of that PIN grant");
-        // MoonWakerExit (decision 5) keeps only final atomics, so it needs no entry.
+                "listener of that poll gate");
     }
 
+    /** Final statics of mutable types in the same packages; none is session state. */
+    private static final Map<String, String> ALLOWED_MUTABLE_FINAL_STATICS = new TreeMap<>();
+    static {
+        String table = "constant table, never written";
+        for (String key : new String[] {"Game.java#RETRY_ACTIONS",
+                "console/ChildSessionCountdown.java#WARNING_MINUTES",
+                "console/ConsoleActivity.java#HOST_KEYED_PREFERENCES",
+                "console/ConsoleChildProfileEditor.java#AVATAR_LABELS",
+                "console/ConsoleChildProfileEditor.java#AVATAR_SYMBOLS",
+                "console/ConsoleChildProfileEditor.java#AVATAR_VALUES",
+                "console/ConsoleChildProfileEditor.java#DAY_LABELS",
+                "console/ConsoleEntryShell.java#SPOTS", "console/ConsoleIntroView.java#BOKEH",
+                "console/ConsoleMenuBackdrop.java#GLASS_MATRIX",
+                "console/ConsolePinEntryView.java#GLASS", "console/ConsolePinEntryView.java#KEYPAD",
+                "console/ConsoleProfileOptionsMenu.java#GLASS",
+                "console/ConsoleStreamSettings.java#TICK_RESOLUTIONS",
+                "console/EmbeddedTvKeyboardModel.java#CURATED_ACCENTS",
+                "stream/StreamingAutopilot.java#FRAME_RATES",
+                "stream/StreamingAutopilot.java#RESOLUTIONS"}) {
+            ALLOWED_MUTABLE_FINAL_STATICS.put(key, table);
+        }
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/ConsoleCardFocus.java#MASKS",
+                "UI bitmap cache: focus masks per size");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/ConsoleActivity.java#CHILD_POLICY_TIME_FORMATS",
+                "parse formats, used under their own lock; no session fact");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/ConsoleActivity.java#playniteBitmapDecodeLocks",
+                "lock: one artwork decode per file");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/PlayniteArtworkCache.java#FETCH_LOCKS",
+                "lock: one artwork fetch per file");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/ConsoleActivity.java#resolvedPlayniteArtwork",
+                "UI artwork cache across recreation");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/CardBackdropBlur.java#blurred",
+                "UI bitmap cache, weak keys");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/HostTileArt.java#CACHE", "UI bitmap cache");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/DiscordAvatarLoader.java#IN_FLIGHT",
+                "UI: avatar requests in flight, joined per URL");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/ConsoleUiFeedback.java#INSTANCES",
+                "UI: one toast surface per Activity, weak keys");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/PlayniteLibraryCache.java#MEMORY",
+                "library cache across recreation, not session state");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/MoonWakerExit.java#issued",
+                "decision 5: process exit request, not session state");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/MoonWakerExit.java#pending",
+                "decision 5: process exit request, not session state");
+        ALLOWED_MUTABLE_FINAL_STATICS.put("console/transition/LaunchTransitionSpec.java#SEQUENCE",
+                "uniqueness counter for transition ids");
+    }
+
+    /** Running-game reads; ConsoleActivity also counts reads of the projection's process proof. */
     private static final Pattern RUNNING_READ =
-            Pattern.compile("\\b(runningGameId|hostRunningAppId)\\b");
+            Pattern.compile("\\b(runningGameId|hostRunningAppId|verifiedRunningGameId)\\b");
+    private static final Pattern ACTIVITY_RUNNING_READ = Pattern.compile(
+            "\\b(runningGameId|hostRunningAppId|verifiedRunningGameId|processEvidence)\\b");
     private static final Pattern METHOD = Pattern.compile(
             "^    (?:@\\w+ +)*(?:(?:public|protected|private|static|final|synchronized) +)*"
                     + "(?=[\\w<])[\\w<>\\[\\], .?]+ +(\\w+)\\(", Pattern.MULTILINE);
-    private static final Pattern STATIC_FIELD = Pattern.compile(
-            "^\\s*(?:(?:private|public|protected|volatile|transient)\\s+)*static\\s+"
-                    + "(?:(?:volatile|transient)\\s+)*"
-                    + "(?!final\\b|class\\b|interface\\b|enum\\b|void\\b|synchronized\\b|abstract\\b"
-                    + "|native\\b|<)[\\w<>\\[\\], .?]+?\\s+(\\w+)\\s*(?:=(?!=)|;)");
+    /** A field declaration from its annotations to its name, across lines: modifiers, type, name. */
+    private static final Pattern FIELD = Pattern.compile(
+            "^[ \\t]*(?:@\\w+(?:\\([^)]*\\))?\\s+)*"
+                    + "((?:(?:public|protected|private|static|final|volatile|transient)\\s+)+)"
+                    + "([^;=(){}@]+?)\\s+(\\w+)\\s*(?:=|;)", Pattern.MULTILINE);
+    private static final Pattern MUTABLE_TYPE = Pattern.compile(
+            "(?<!\\w)(?:Atomic\\w*|\\w*(?:Map|List|Set|Collection|Queue|Deque))\\b|\\[\\]");
 
     @Test public void activityAndGameReadTheHostsRunningGameOnlyWhereAllowed() {
         assertFalse("Game reads no host-reported running game",
                 RUNNING_READ.matcher(main("Game.java")).find());
         assertEquals(ALLOWED_RUNNING_READS, runningReadsByMethod(main("console/ConsoleActivity.java")));
+    }
+
+    @Test public void fieldParserReadsSplitAndAnnotatedDeclarations() {
+        Map<String, String> found = new TreeMap<>();
+        collectStatics("x", "class X {\n    @Nullable\n    private static\n"
+                + "            Foo split;\n    @SuppressWarnings(\"unused\") static final\n"
+                + "        Map<String, List<Integer>> table = new HashMap<>();\n"
+                + "    private static final int[] codes = {1};\n"
+                + "    static final String TAG = \"x\";\n    private final List<String> own;\n"
+                + "    static void method(int a) { }\n}\n", found, found);
+        assertEquals(Map.of("x#split", "NOT ALLOWED", "x#table", "NOT ALLOWED",
+                "x#codes", "NOT ALLOWED"), found);
     }
 
     @Test public void sessionStorePreferencesAreOpenedOnlyInsideSession() throws IOException {
@@ -106,17 +175,17 @@ public class SessionArchitectureGuardTest {
         }
         assertTrue(names.containsAll(List.of("moonwaker_suspended_sessions",
                 "moonwaker_host_sleep_states", "SessionResume")));
+        // "SessionResume" is also a log tag: only a literal that is a Log call's tag is exempt.
+        Pattern literal = Pattern.compile("(?<!Log\\.[a-z]\\()\"(?:"
+                + names.stream().map(Pattern::quote).collect(Collectors.joining("|")) + ")\"");
         List<String> violations = new ArrayList<>();
         for (Path file : javaFiles(MAIN_JAVA.getParent().getParent())) {
             if (file.startsWith(MAIN_JAVA.resolve("session"))) continue;
-            String[] lines = SourceText.read(file).split("\n");
-            for (int i = 0; i < lines.length; i++) {
-                if (lines[i].contains("Log.")) continue; // "SessionResume" is also a log tag
-                for (String name : names) {
-                    if (lines[i].contains('"' + name + '"')) {
-                        violations.add(MAIN_JAVA.relativize(file) + ":" + (i + 1));
-                    }
-                }
+            String source = SourceText.read(file);
+            Matcher use = literal.matcher(source);
+            while (use.find()) {
+                long line = source.substring(0, use.start()).chars().filter(c -> c == '\n').count();
+                violations.add(MAIN_JAVA.relativize(file) + ":" + (line + 1));
             }
         }
         assertEquals(List.of(), violations);
@@ -128,18 +197,14 @@ public class SessionArchitectureGuardTest {
         files.addAll(javaFiles(MAIN_JAVA.resolve("stream")));
         files.addAll(javaFiles(MAIN_JAVA.resolve("session")));
         files.add(MAIN_JAVA.resolve("Game.java"));
-        Map<String, String> found = new TreeMap<>();
+        Map<String, String> mutable = new TreeMap<>();
+        Map<String, String> mutableFinal = new TreeMap<>();
         for (Path file : files) {
-            String relative = MAIN_JAVA.relativize(file).toString().replace('\\', '/');
-            for (String line : SourceText.read(file).split("\n")) {
-                Matcher field = STATIC_FIELD.matcher(line);
-                if (field.find() && !line.contains(" final ")) {
-                    String key = relative + "#" + field.group(1);
-                    found.put(key, ALLOWED_STATICS.getOrDefault(key, "NOT ALLOWED"));
-                }
-            }
+            collectStatics(MAIN_JAVA.relativize(file).toString().replace('\\', '/'),
+                    SourceText.read(file), mutable, mutableFinal);
         }
-        assertEquals(ALLOWED_STATICS, found);
+        assertEquals(ALLOWED_STATICS, mutable);
+        assertEquals(ALLOWED_MUTABLE_FINAL_STATICS, mutableFinal);
         // The registry's stop is weak and the stop owner releases its predecessor (K5.3b).
         String runtime = main("stream/StreamRuntime.java");
         String stop = main("stream/TransportStopCoordinator.java");
@@ -159,6 +224,24 @@ public class SessionArchitectureGuardTest {
         assertFalse(main("Game.java").contains("stopProviderGame("));
     }
 
+    /** Non-final statics go to {@code mutable}; final statics of mutable types to the other. */
+    private static void collectStatics(String relative, String source,
+                                       Map<String, String> mutable,
+                                       Map<String, String> mutableFinal) {
+        Matcher field = FIELD.matcher(source);
+        while (field.find()) {
+            List<String> modifiers = List.of(field.group(1).trim().split("\\s+"));
+            if (!modifiers.contains("static")) continue;
+            String key = relative + "#" + field.group(3);
+            if (!modifiers.contains("final")) {
+                mutable.put(key, ALLOWED_STATICS.getOrDefault(key, "NOT ALLOWED"));
+            } else if (MUTABLE_TYPE.matcher(field.group(2)).find()) {
+                mutableFinal.put(key,
+                        ALLOWED_MUTABLE_FINAL_STATICS.getOrDefault(key, "NOT ALLOWED"));
+            }
+        }
+    }
+
     private static Map<String, Integer> runningReadsByMethod(String source) {
         List<Integer> starts = new ArrayList<>();
         List<String> names = new ArrayList<>();
@@ -168,7 +251,7 @@ public class SessionArchitectureGuardTest {
             names.add(method.group(1));
         }
         Map<String, Integer> reads = new TreeMap<>();
-        Matcher read = RUNNING_READ.matcher(source);
+        Matcher read = ACTIVITY_RUNNING_READ.matcher(source);
         while (read.find()) {
             String owner = "<field>";
             for (int i = 0; i < starts.size() && starts.get(i) < read.start(); i++) {

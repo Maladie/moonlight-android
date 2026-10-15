@@ -36,8 +36,11 @@ public class SessionModelHostTest {
         }
         @Override public void disconnectRetainedStream(
                 SessionModel.TerminationCallback completion) { }
+        SessionModel.TerminationCallback termination;
         @Override public void terminateRetainedSession(
-                String gameId, SessionModel.TerminationCallback completion) { }
+                String gameId, SessionModel.TerminationCallback completion) {
+            termination = completion;
+        }
         @Override public void switchGame(SessionModel.SwitchRequest request,
                                          SessionModel.SwitchCallback completion) { }
     }
@@ -58,8 +61,9 @@ public class SessionModelHostTest {
         assertEquals(SessionSnapshot.State.RECONNECT_REQUIRED, render("host").state);
 
         Owner second = new Owner();
-        assertTrue(m.beginPreparing(second, "s1", "host", "parent", 7, "game", "t1", 1L));
-        assertTrue(m.completePreparing(second, "s1", "host", 7, "t1", 1L));
+        assertTrue(m.beginPreparing(second, "s1", "host", "parent", 7, "game") > 0L);
+        assertTrue(m.completePreparing(second, "s1", "host", 7,
+                m.snapshot().preparingOperation));
         assertEquals(SessionModel.State.HOME_LIVE, m.state());
         assertTrue(poll("host", true, 7).lostStreamSessionId.isEmpty());
         assertEquals(SessionModel.State.HOME_LIVE, m.state());
@@ -344,16 +348,39 @@ public class SessionModelHostTest {
         assertEquals(SessionSnapshot.State.NONE, render("host").state);
     }
 
+    @Test public void aFailedCloseIsTheProjectionsFactUntilTheNextClose() {
+        Owner owner = new Owner();
+        m.enterHome(owner, "s1", "host", "parent", 7, "game");
+        dispatch("host");
+        m.terminate("s1", null);
+        assertEquals(SessionSnapshot.State.TERMINATING, render("host").state);
+        assertFalse(render("host").closeFailed);
+
+        owner.termination.complete(false);
+        SessionSnapshot failed = render("host");
+        assertEquals(SessionSnapshot.State.ACTIVE, failed.state);
+        assertTrue("the retained stream's close failed", failed.closeFailed);
+
+        long token = m.call(new SessionEvent.LocalCloseBegun("host", "parent", "parent", true));
+        assertFalse("a new close starts without the old failure", render("host").closeFailed);
+        m.post(new SessionEvent.LocalCloseFinished("host", "parent", "parent", token, false));
+        assertTrue("the game stop failed", render("host").closeFailed);
+        token = m.call(new SessionEvent.LocalCloseBegun("host", "parent", "parent", true));
+        m.post(new SessionEvent.LocalCloseFinished("host", "parent", "parent", token, true));
+        assertFalse(render("host").closeFailed);
+    }
+
     @Test public void hostStreamRecordRetiresOnlyAnUnchangedRecordTheModelDoesNotOwn() {
         saveReconnectRecord("s1", "host", 7, false);
         // A record that changed since the read keeps everything.
         assertEquals(HostStreamRecord.Action.KEEP, streamRecord("s0", null));
         // A start of this host owns its records meanwhile.
         Owner owner = new Owner();
-        assertTrue(m.beginPreparing(owner, "s2", "host", "parent", 7, "", "t1", 1L));
+        assertTrue(m.beginPreparing(owner, "s2", "host", "parent", 7, "") > 0L);
         assertEquals(HostStreamRecord.Action.KEEP, streamRecord("s1", null));
         assertNotNull(m.model.records().pending);
-        assertTrue(m.cancelPreparing(owner, "s2", "host", 7, "t1", 1L));
+        assertTrue(m.cancelPreparing(owner, "s2", "host", 7,
+                m.snapshot().preparingOperation));
 
         assertEquals(HostStreamRecord.Action.RETIRE, streamRecord("s1", null));
         assertNull(m.model.records().pending);

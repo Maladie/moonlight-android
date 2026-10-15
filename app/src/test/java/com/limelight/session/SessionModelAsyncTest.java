@@ -64,8 +64,8 @@ public class SessionModelAsyncTest {
     @Test public void replyArrivesOnTheMainThreadAfterItsSnapshotWasPublished() {
         Owner owner = new Owner();
         SessionModel.State[] seen = new SessionModel.State[1];
-        model.dispatch(new SessionEvent.PreparingBegun(owner, "s", "host", "parent", 7, "",
-                "t", 1L), begun -> seen[0] = model.snapshot().state);
+        model.dispatch(new SessionEvent.PreparingBegun(owner, "s", "host", "parent", 7, ""),
+                begun -> seen[0] = model.snapshot().state);
 
         runModel();
         assertNull(seen[0]);                       // nothing runs on the model thread for the caller
@@ -173,7 +173,7 @@ public class SessionModelAsyncTest {
                 return true;
             }
         };
-        assertTrue(driver.beginPreparing(owner, "s", "host", "parent", 7, "", "t1", 1L));
+        assertTrue(driver.beginPreparing(owner, "s", "host", "parent", 7, "") > 0L);
         SessionModel.Snapshot preparing = driver.snapshot();
         Boolean[] accepted = new Boolean[1];
         model.dispatch(new SessionEvent.HomeFrameSubmitted(preparing),
@@ -184,7 +184,8 @@ public class SessionModelAsyncTest {
         driver.drain();
 
         assertEquals(Boolean.FALSE, accepted[0]);
-        assertFalse(model.isPreparingHomeFrameAccepted("s", "host", 7, "", "t1", 1L));
+        assertFalse(model.isPreparingHomeFrameAccepted("s", "host", 7, "",
+                preparing.preparingOperation));
     }
 
     @Test public void terminationCompletionReachesTheCallerOnlyAfterTheModelCleared() {
@@ -215,7 +216,7 @@ public class SessionModelAsyncTest {
     @Test public void awaitIsRefusedOnTheMainThread() {
         SessionModel onMain = new SessionModel(Runnable::run, Runnable::run, () -> true,
                 () -> 0L, (level, component, event, fields) -> true,
-                new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
+                new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences(), 0L);
         try {
             onMain.await(new SessionEvent.Cleared("s"));
             fail("the main thread must never wait for the model");
@@ -232,7 +233,7 @@ public class SessionModelAsyncTest {
         driver.resume.values.put("streamSessionId", "s");
         SessionModel restarted = new SessionModel(Runnable::run, Runnable::run, () -> false,
                 () -> 0L, (level, component, event, fields) -> true,
-                driver.resume, driver.suspended, driver.sleep);
+                driver.resume, driver.suspended, driver.sleep, 0L);
 
         assertEquals("s", restarted.records().pending.streamSessionId);
         assertEquals(SessionModel.State.NONE, restarted.state());
@@ -242,9 +243,10 @@ public class SessionModelAsyncTest {
 
     @Test public void reconnectRelinquishedClearsOnlyTheCancelledAttempt() {
         Owner owner = new Owner();
-        assertTrue(driver.beginPreparing(owner, "s", "host", "parent", 7, "", "t", 1L));
+        assertTrue(driver.beginPreparing(owner, "s", "host", "parent", 7, "") > 0L);
         SessionModel.Snapshot preparing = driver.snapshot();
-        assertTrue(driver.markPreparingReconnectRequired(owner, "s", "host", 7, "t", 1L));
+        assertTrue(driver.markPreparingReconnectRequired(owner, "s", "host", 7,
+                preparing.preparingOperation));
 
         driver.enterHome(owner, "s", "host", "parent", 8, "other");
         assertFalse(driver.call(new SessionEvent.ReconnectRelinquished(preparing)));
@@ -275,7 +277,7 @@ public class SessionModelAsyncTest {
         try {
             SessionModel threaded = new SessionModel(thread::execute, Runnable::run, () -> false,
                 () -> 0L, (level, component, event, fields) -> true,
-                    new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
+                    new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences(), 0L);
             java.util.concurrent.Future<Boolean> worker = java.util.concurrent.Executors
                     .newSingleThreadExecutor().submit(() -> threaded.await(new Throwing()));
             assertEquals(Boolean.FALSE, worker.get(5, java.util.concurrent.TimeUnit.SECONDS));
@@ -344,11 +346,11 @@ public class SessionModelAsyncTest {
                     com.limelight.session.SessionModelDriver.nextTransportGeneration();
             @Override public long transportGeneration() { return fakeGeneration; }
         };
-        assertTrue(driver.beginPreparing(stopped, "s", "host", "parent", 7, "", "t", 1L));
+        assertTrue(driver.beginPreparing(stopped, "s", "host", "parent", 7, "") > 0L);
         // The Game was destroyed before the reply: it cancels its own begun attempt.
         driver.post(new SessionEvent.PreparingCancelled(stopped, driver.snapshot()));
         assertEquals(SessionModel.State.NONE, driver.state());
-        assertTrue(driver.beginPreparing(new Owner(), "s2", "host", "parent", 7, "", "t2", 1L));
+        assertTrue(driver.beginPreparing(new Owner(), "s2", "host", "parent", 7, "") > 0L);
     }
 
     @Test public void anErrorInATransitionReleasesTheCallerAndIsRethrown() {
@@ -409,7 +411,7 @@ public class SessionModelAsyncTest {
 
     @Test public void transportLossIsDecidedByTheModelFromItsOwnState() {
         Owner owner = new Owner();
-        assertTrue(driver.beginPreparing(owner, "s", "host", "parent", 7, "", "t", 1L));
+        assertTrue(driver.beginPreparing(owner, "s", "host", "parent", 7, "") > 0L);
         driver.post(new SessionEvent.TransportLost(new Owner(), "s"));     // not its owner
         assertEquals(SessionModel.State.PREPARING, driver.state());
         driver.post(new SessionEvent.TransportLost(owner, "s"));

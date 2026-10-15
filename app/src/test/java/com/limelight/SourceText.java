@@ -36,13 +36,14 @@ public final class SourceText {
         }
     }
 
-    /** Each part is present, and after the previous one. */
+    /** Each non-empty part is present, and starts after the previous one ends. */
     public static void assertOrdered(String source, String... parts) {
-        int at = -1;
+        int from = 0;
         for (String part : parts) {
-            int next = source.indexOf(part, at + 1);
-            assertTrue("missing or out of order: " + part, next > at);
-            at = next;
+            assertTrue("empty part", !part.isEmpty());
+            int next = source.indexOf(part, from);
+            assertTrue("missing or out of order: " + part, next >= 0);
+            from = next + part.length();
         }
     }
 }

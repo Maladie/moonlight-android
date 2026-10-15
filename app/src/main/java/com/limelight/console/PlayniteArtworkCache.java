@@ -19,7 +19,11 @@ final class PlayniteArtworkCache {
     private final File directory;
 
     PlayniteArtworkCache(Context context) {
-        directory = new File(context.getCacheDir(), "playnite-artwork");
+        this(new File(context.getCacheDir(), "playnite-artwork"));
+    }
+
+    PlayniteArtworkCache(File directory) {
+        this.directory = directory;
     }
 
     File get(String hostUuid, String gameId, String kind, String version) {

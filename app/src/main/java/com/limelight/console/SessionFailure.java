@@ -71,9 +71,6 @@ public enum SessionFailure {
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
     UNCERTAIN_AFTER_REFRESH("uncertain.still_uncertain_after_refresh",
             R.string.console_session_uncertain_title, R.string.console_session_uncertain_details),
-    // The session began closing after the loading layer was raised for this request.
-    UNCERTAIN_TERMINATING("uncertain.terminating",
-            R.string.console_status_closing_session, R.string.console_session_uncertain_details),
 
     // SessionOrchestrator awaitHost: the woken host never answered within the wake bound.
     HOST_WAKE_TIMEOUT("host.wake_timeout",

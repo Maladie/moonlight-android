@@ -61,7 +61,7 @@ public class BackgroundStreamPreferencesTest {
 
     @Test public void homeAndHostPickerRetentionRemainUntimed() throws IOException {
         String game = source("src/main/java/com/limelight/Game.java");
-        String openHome = between(game, "private void openConsoleHome()",
+        String openHome = between(game, "private boolean openConsoleHome()",
                 "private void openPreparingConsoleHome()");
         String retained = source("src/main/java/com/limelight/session/SessionModel.java");
         String console = source("src/main/java/com/limelight/console/ConsoleActivity.java");

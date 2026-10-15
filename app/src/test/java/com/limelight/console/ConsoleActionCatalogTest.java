@@ -53,25 +53,25 @@ public class ConsoleActionCatalogTest {
     @Test
     public void activeAppHasResumeAndQuitButNotLaunch() {
         assertTrue(app(ConsoleActionCatalog.AppCapability.RESUME,
-                true, true, true, false, false, false, true, true));
+                true, true, true, false, false, false, true));
         assertTrue(app(ConsoleActionCatalog.AppCapability.QUIT,
-                true, true, true, false, false, false, true, true));
+                true, true, true, false, false, false, true));
         assertFalse(app(ConsoleActionCatalog.AppCapability.LAUNCH,
-                true, true, true, false, false, false, true, true));
+                true, true, true, false, false, false, true));
         assertFalse(app(ConsoleActionCatalog.AppCapability.HIDE,
-                true, true, true, false, false, false, true, true));
+                true, true, true, false, false, false, true));
     }
 
     @Test
     public void quickLaunchUsesMutuallyExclusiveAddAndRemove() {
         assertTrue(app(ConsoleActionCatalog.AppCapability.QUICK_ADD,
-                false, false, false, false, false, false, false, false));
+                false, false, false, false, false, false, false));
         assertFalse(app(ConsoleActionCatalog.AppCapability.QUICK_REMOVE,
-                false, false, false, false, false, false, false, false));
+                false, false, false, false, false, false, false));
         assertFalse(app(ConsoleActionCatalog.AppCapability.QUICK_ADD,
-                false, false, false, false, true, false, false, false));
+                false, false, false, false, true, false, false));
         assertTrue(app(ConsoleActionCatalog.AppCapability.QUICK_REMOVE,
-                false, false, false, false, true, false, false, false));
+                false, false, false, false, true, false, false));
     }
 
     private static boolean host(ConsoleActionCatalog.HostCapability capability,
@@ -84,8 +84,8 @@ public class ConsoleActionCatalogTest {
     private static boolean app(ConsoleActionCatalog.AppCapability capability,
                                boolean online, boolean paired, boolean current,
                                boolean another, boolean quick, boolean hidden,
-                               boolean artwork, boolean shortcuts) {
+                               boolean artwork) {
         return ConsoleActionCatalog.appActionVisible(capability, online, paired,
-                current, another, quick, hidden, artwork, shortcuts);
+                current, another, quick, hidden, artwork);
     }
 }

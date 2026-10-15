@@ -79,6 +79,35 @@ public class SessionStateProjectionTest {
                 m.snapshot(), 2L));
     }
 
+    /**
+     * The TV stopped its stream and the host did not confirm the end: one fact, held by the
+     * model's projection for exactly that actor and execution profile. "Check again" is a
+     * forced host read: silence keeps the fact, the host's answer resolves it. It restores no
+     * local stream ownership.
+     */
+    @Test public void unconfirmedEndIsTheProjectionsFactUntilTheHostAnswers() {
+        assertFalse(held("host", 0L).terminationUnconfirmed);
+        m.call(new SessionEvent.TerminationUnconfirmed("host", "child", "parent"));
+
+        SessionSnapshot unconfirmed = held("host", 0L);
+        assertTrue(unconfirmed.terminationUnconfirmed);
+        assertFalse(unconfirmed.isResumeAvailable());
+        assertEquals(SessionModel.State.NONE, m.snapshot().state);
+        // Another actor on the same host never sees it.
+        assertFalse(SessionStateResolver.render(m.snapshot(), "host", "parent", "parent",
+                SessionStateResolver.LocalFacts.NONE, 0L).terminationUnconfirmed);
+
+        // Check again, the host does not answer: still unconfirmed, nothing invented.
+        long unanswered = dispatch("host");
+        m.call(new SessionEvent.ObservationUnavailable("host", "child", "parent", unanswered,
+                "observation_unavailable"));
+        assertTrue(held("host", 1_000L).terminationUnconfirmed);
+
+        // Check again, the host answers: its observation tells what runs from here.
+        assertNotNull(observe("host", idle("boot-a", dispatch("host"))).accepted);
+        assertFalse(held("host", 2_000L).terminationUnconfirmed);
+    }
+
     @Test public void firstRenderWithoutObservationIsPendingAndUncertain() {
         SessionSnapshot snapshot = owner.current(
                 m.snapshot(), 0L);
@@ -553,14 +582,13 @@ public class SessionStateProjectionTest {
         // The next Play is a new transport, with its own generation.
         Controller nextController = new Controller();
         assertTrue(m.beginPreparing(nextController,
-                "session-next", "host", "child", 42, "game",
-                "transition-next", 1L));
+                "session-next", "host", "child", 42, "game") > 0L);
         assertTrue(m.bindControlGeneration(
                 nextController, "session-next", 5L));
         SessionModel.Snapshot nextTransport =
                 m.snapshot();
         assertTrue(nextTransport.transportGeneration > firstTransport.transportGeneration);
-        assertEquals("transition-next", nextTransport.transitionId);
+        assertTrue(nextTransport.preparingOperation > 0L);
         assertFalse(m.completeDirectTermination(
                 recoveryToken, true));
         assertEquals("session-next",
@@ -574,7 +602,7 @@ public class SessionStateProjectionTest {
         assertEquals(nextTransport.transportGeneration, nextPlay.transportGeneration);
         assertEquals(SessionSnapshot.ObservationState.READY, nextPlay.observationState);
         assertTrue(m.completePreparing(nextController,
-                "session-next", "host", 42, "transition-next", 1L));
+                "session-next", "host", 42, m.snapshot().preparingOperation));
     }
 
     @Test public void observationsBeforeTheLocalTerminationCannotPublishReadyAgain() {
@@ -628,7 +656,7 @@ public class SessionStateProjectionTest {
         assertTrue(m.markTerminating("session", "host", 42, "game"));
         clearRetainedTransport();
 
-        // Closing, not "uncertain": the console greys the games until the host is free.
+        // Closing, not "uncertain": the console says so until the host is free.
         assertEquals(SessionSnapshot.State.TERMINATING, held("host", 3L).state);
         assertNotNull(observe("host", idle("boot", 3L, dispatch("host"))).accepted);
         assertEquals(SessionSnapshot.State.NONE, held("host", 7L).state);

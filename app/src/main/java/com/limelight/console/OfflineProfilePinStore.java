@@ -2,7 +2,6 @@ package com.limelight.console;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 
@@ -190,10 +189,6 @@ final class OfflineProfilePinStore {
         }
     }
 
-    static boolean supportsOfflineValidation(int sdkInt) {
-        return sdkInt >= Build.VERSION_CODES.M;
-    }
-
     private Domain domain(String hostId, GatewayConnection connection) {
         if (hostId == null || hostId.isEmpty() || connection == null) return null;
         String profileId = normalizeProfile(connection.profileId());
@@ -215,7 +210,6 @@ final class OfflineProfilePinStore {
 
     private SecretKey key(boolean create) {
         if (injectedKey) return testKey;
-        if (!supportsOfflineValidation(Build.VERSION.SDK_INT)) return null;
         SecretKey available = cachedKey;
         if (available != null) return available;
         synchronized (KEY_LOCK) {

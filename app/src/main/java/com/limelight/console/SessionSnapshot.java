@@ -59,6 +59,17 @@ public final class SessionSnapshot {
     final boolean endingGame;
     /** Status-line facts; like {@link #hostRunningAppId} not part of the projection identity. */
     final Display display;
+    /**
+     * This client stopped its stream and the host did not confirm the session ended; the
+     * projection owner holds it until the host answers. Shown on the Home with "Check again";
+     * never an input to a Play or close decision, not part of the projection identity.
+     */
+    final boolean terminationUnconfirmed;
+    /**
+     * The latest close of this session failed (the projection owner's fact until the next
+     * close); only a Play queued behind that close reads it. Not part of the identity.
+     */
+    final boolean closeFailed;
 
     /**
      * What a status line may show beside the session, held by the projection owner between
@@ -107,7 +118,7 @@ public final class SessionSnapshot {
                 requestOrdinal, transportGeneration, controlGeneration, actorLeaseEpoch,
                 operationId, streamSessionId, processEvidence, processId,
                 processToken, windowEvidence, observationReason, hostRunningAppId,
-                endingGame, Display.NONE);
+                endingGame, Display.NONE, false, false);
     }
 
     SessionSnapshot(String hostId, String profileId, String executionProfileId,
@@ -122,8 +133,11 @@ public final class SessionSnapshot {
                     long actorLeaseEpoch, String operationId,
                     String streamSessionId, String processEvidence, int processId,
                     String processToken, String windowEvidence, String observationReason,
-                    int hostRunningAppId, boolean endingGame, Display display) {
+                    int hostRunningAppId, boolean endingGame, Display display,
+                    boolean terminationUnconfirmed, boolean closeFailed) {
         this.display = display;
+        this.terminationUnconfirmed = terminationUnconfirmed;
+        this.closeFailed = closeFailed;
         this.hostId = normalize(hostId);
         this.profileId = GatewayConnection.normalizeProfileId(profileId);
         this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);

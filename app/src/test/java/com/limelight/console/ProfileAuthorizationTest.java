@@ -8,7 +8,6 @@ import static org.junit.Assert.assertTrue;
 import org.junit.After;
 import org.junit.Test;
 
-import java.nio.file.Paths;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class ProfileAuthorizationTest {
@@ -45,8 +44,7 @@ public class ProfileAuthorizationTest {
 
     /** StreamHomeActivity is a second console over the main one; its destruction must not revoke. */
     @Test public void destroyingAConsoleDoesNotRevokeTheProcessWideGrant() throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         int from = source.indexOf("protected void onDestroy()");
         int to = source.indexOf("public void onBackPressed()", from);
         assertTrue(from >= 0 && to > from);
@@ -59,8 +57,7 @@ public class ProfileAuthorizationTest {
      * to the gate or host selection does.
      */
     @Test public void onlyUserInitiatedReturnsRevokeTheGrant() throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         for (String automatic : new String[] {
                 "private void resolveInitialHostSelection()", "private void showHostSelection(",
                 "private void resolveProfileGate(", "private void showProfileGate(",

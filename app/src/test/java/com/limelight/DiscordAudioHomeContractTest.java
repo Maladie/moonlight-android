@@ -12,10 +12,11 @@ public class DiscordAudioHomeContractTest {
     @Test public void retainedMoonlightMixIsMutedOnHome() throws Exception {
         Path path = Paths.get("src/main/java/com/limelight/Game.java");
         String source = SourceText.read(path);
-        int start = source.indexOf("private void openConsoleHome()");
+        int start = source.indexOf("private boolean openConsoleHome()");
         int end = source.indexOf("private void openPreparingConsoleHome()", start);
         String method = source.substring(start, end);
-        assertTrue(method.contains("runtime.setAudioVolume(attachment, 0f)"));
+        assertTrue(method.indexOf("streamHomeVisible = true;")
+                < method.indexOf("applyStreamAudio(currentTransitionSnapshot());"));
         assertFalse(method.contains(".12f"));
     }
 }

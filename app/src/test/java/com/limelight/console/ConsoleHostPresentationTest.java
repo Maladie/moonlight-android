@@ -215,7 +215,7 @@ public class ConsoleHostPresentationTest {
                 SessionSnapshot.State.UNCERTAIN, 0, "", false, false, false, false, false, "",
                 false, SessionSnapshot.ObservationState.PENDING, false,
                 "", 0L, 0L, 0L, 0L, 0L, "", "",
-                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false, display);
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0, false, display, false, false);
     }
 
     private static SessionSnapshot session(SessionSnapshot.State state) {

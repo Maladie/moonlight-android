@@ -49,16 +49,12 @@ public class PlayniteArtworkSpecTest {
         assertFalse(PlayniteArtworkSpec.forScreenSaver(game("cover", "")).available());
     }
 
-    @Test public void loadingCurtainPrefersDedicatedHeroAndFallsBackToBackground() {
-        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forLoadingCurtain(
+    @Test public void screenSaverPrefersTheHeroStrip() {
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forScreenSaver(
                 game("cover", "background", "hero"));
 
         assertEquals("hero", spec.kind);
-        assertEquals("hero", spec.version);
         assertEquals("background", spec.fallbackKind);
-        assertEquals("background", spec.fallbackVersion);
-        assertFalse(PlayniteArtworkSpec.forLoadingCurtain(game("cover", "", ""))
-                .available());
     }
 
     private static PlayniteLibraryGame game(String cover, String background) {

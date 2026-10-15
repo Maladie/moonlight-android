@@ -69,8 +69,7 @@ final class ConsoleActionCatalog {
 
     static boolean appActionVisible(AppCapability action, boolean online, boolean paired,
                                     boolean thisAppRunning, boolean anotherAppRunning,
-                                    boolean quickLaunch, boolean hidden, boolean hasArtwork,
-                                    boolean shortcutsSupported) {
+                                    boolean quickLaunch, boolean hidden, boolean hasArtwork) {
         switch (action) {
             case LAUNCH:
                 return online && paired && !thisAppRunning && !anotherAppRunning;
@@ -91,7 +90,7 @@ final class ConsoleActionCatalog {
             case SHOW:
                 return hidden;
             case SHORTCUT:
-                return shortcutsSupported && hasArtwork;
+                return hasArtwork;
             default:
                 return false;
         }

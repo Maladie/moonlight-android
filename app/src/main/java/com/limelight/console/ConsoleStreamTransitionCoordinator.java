@@ -20,6 +20,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private static final long STREAM_SETUP_TIMEOUT_MS = 60_000L;
     /** Soft notice only: the host owns game start failure (phase 1) and has no phase-2 bound. */
     static final long START_TAKING_LONGER_MS = 180_000L;
+    /** Bound for the Bridge's lock report to reach the broker's WTS flags. */
+    static final long HOST_LOCK_SETTLE_WINDOW_MS = 5_000L;
+    static final long HOST_LOCK_SETTLE_RETRY_MS = 750L;
     private static final ExecutorService PROVIDER_ACTIONS =
             Executors.newSingleThreadExecutor(action -> {
                 Thread thread = new Thread(action, "MoonWaker-ProviderLaunch");
@@ -37,10 +40,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         boolean verifyInstallation(String gameId) throws IOException;
         default void startGame(String gameId) throws IOException { }
         default void stopGame(String gameId, String processToken) throws IOException { }
-        /** One Gateway session ensure; true only when the host reports the session ready. */
-        default boolean unlockHostSession(BooleanSupplier cancelled)
+        /** One Gateway session ensure and its attempt, if the host started one. */
+        default PlayniteTransitionGateway.HostUnlock unlockHostSession(BooleanSupplier cancelled)
                 throws IOException, InterruptedException {
-            return false;
+            return PlayniteTransitionGateway.HostUnlock.NOT_READY;
         }
     }
 
@@ -1029,6 +1032,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         LaunchTransitionType kind = "game".equalsIgnoreCase(snapshot.targetKind)
                 ? LaunchTransitionType.GAME : LaunchTransitionType.PLAYNITE;
         String gameId = SessionSnapshot.normalize(snapshot.gameId);
+        // A launcher prompt may precede any game identity: the reason alone is the evidence.
+        boolean launcherPrompt = kind == LaunchTransitionType.GAME
+                && "launcher_interaction_required".equals(snapshot.reason)
+                && (gameId.isEmpty()
+                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId));
+        if (!launcherPrompt) transitionController.launcherInteractionCleared(transitionSpec.id);
         if ("host_session_locked".equals(snapshot.reason)) {
             transitionController.hostSessionLocked(transitionSpec.id, transitionSpec.hostId,
                     kind, gameId, callbacks.hostSessionLockedMessage());
@@ -1056,14 +1065,17 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                             : callbacks.previousGameRunningMessage());
             return;
         }
-        // A launcher prompt may precede any game identity: the reason alone is the evidence.
-        if (kind == LaunchTransitionType.GAME
-                && "launcher_interaction_required".equals(snapshot.reason)
-                && (gameId.isEmpty()
-                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId))) {
-            transitionController.launcherInteractionRequired(
+        if (launcherPrompt) {
+            long generation = transitionController.launcherInteractionObserved(
                     transitionSpec.id, transitionSpec.hostId, transitionSpec.playniteGameId,
                     callbacks.launcherInteractionRequiredMessage());
+            if (generation != 0L) {
+                scheduler.postDelayed(() -> {
+                    if (isCurrent(runEpoch)) {
+                        transitionController.launcherAttentionDue(transitionSpec.id, generation);
+                    }
+                }, LaunchTransitionController.LAUNCHER_ATTENTION_DEBOUNCE_MS);
+            }
             return;
         }
         boolean exactVerifiedGame = kind != LaunchTransitionType.GAME
@@ -1506,7 +1518,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 gateway.stopGame(gameId, processToken);
             }
 
-            @Override public boolean unlockHostSession(BooleanSupplier cancelled)
+            @Override public PlayniteTransitionGateway.HostUnlock unlockHostSession(
+                    BooleanSupplier cancelled)
                     throws IOException, InterruptedException {
                 return gateway.unlockHostSession(cancelled);
             }
@@ -1537,6 +1550,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
      * Gateway's session ensure (which unlocks through the login broker). Only when that is
      * refused, fails or times out does the caller fall back to the manual privacy gate. A result
      * that arrives after this transition was stopped or replaced is ignored.
+     *
+     * <p>The Bridge can report the lock (input desktop = Winlogon) before Windows commits it, so
+     * the broker still reads the session as unlocked and the Gateway answers ready without an
+     * attempt. While the Bridge keeps reporting the lock, the ensure is repeated within a short
+     * bounded window until the Gateway starts an attempt or refuses.
      */
     private boolean tryHostUnlock(long runEpoch) {
         synchronized (this) {
@@ -1544,16 +1562,28 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             hostUnlockAttempted = true;
         }
         logTimeline("host-unlock-requested");
-        boolean ready = false;
+        long settleDeadline = clock.now() + HOST_LOCK_SETTLE_WINDOW_MS;
+        PlayniteTransitionGateway.HostUnlock result = PlayniteTransitionGateway.HostUnlock.NOT_READY;
         try {
             // A stopped or replaced transition ends the poll and cancels the attempt, so the
             // broker does not unlock Windows for a launch the user already left.
-            ready = gateway.unlockHostSession(() -> !isCurrent(runEpoch));
+            result = gateway.unlockHostSession(() -> !isCurrent(runEpoch));
+            while (result == PlayniteTransitionGateway.HostUnlock.READY_WITHOUT_ATTEMPT
+                    && clock.now() < settleDeadline && isCurrent(runEpoch)) {
+                logTimeline("host-unlock-ready-without-attempt");
+                sleeper.sleep(HOST_LOCK_SETTLE_RETRY_MS);
+                if (!isCurrent(runEpoch)) return false;
+                PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
+                // The lock is gone after all: the caller re-reads the host.
+                if (!"host_session_locked".equals(snapshot.reason)) return isCurrent(runEpoch);
+                result = gateway.unlockHostSession(() -> !isCurrent(runEpoch));
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         } catch (IOException | RuntimeException error) {
             logTimeline("host-unlock-error reason=" + timelineReason(error));
         }
+        boolean ready = result == PlayniteTransitionGateway.HostUnlock.UNLOCKED;
         logTimeline(ready ? "host-unlock-ready" : "host-unlock-not-ready");
         return ready && isCurrent(runEpoch);
     }

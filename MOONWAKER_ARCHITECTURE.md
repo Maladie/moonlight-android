@@ -507,8 +507,8 @@ reveal the stream automatically before:
 
 When readiness fails or stays uncertain while transport delivers frames, the
 user can always reveal manually ("Reveal now"); the cover never rejects them.
-After a manual reveal the cover does not return within that transition or
-stream; a later failure there is only a notice. It may return only with a new
+After any reveal, automatic or manual, the cover does not return within that
+transition or stream; a lost game window or later failure there is only a notice. It may return only with a new
 transition the user starts (for example a game started from the revealed
 Playnite).
 

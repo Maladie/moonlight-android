@@ -3,6 +3,8 @@ package com.limelight.console.transition;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 
 import java.util.Objects;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 
 /**
  * Thread-safe transition state machine. Every asynchronous signal is correlated
@@ -14,7 +16,23 @@ public final class LaunchTransitionController {
         void onTransitionChanged(LaunchTransitionSnapshot snapshot);
     }
 
+    /**
+     * A cover a user-started operation holds over this transition's own presentation: the
+     * Home return ({@code HOME_RETURN}) or a game switch ({@code SWITCH}). It covers and blocks
+     * input whatever the transition shows and withholds any reveal; with a new transition and a
+     * closing it is the only way a revealed stream is covered again. Released, a revealed stream
+     * returns on its transport's next fresh frame (or at that frame's deadline).
+     */
+    public enum UserCover { NONE, HOME_RETURN, SWITCH }
+
+    /** A readiness edge without a fresh frame by then offers only "Reveal now", never auto-reveal. */
+    public static final long FRESH_FRAME_DEADLINE_MS = 3000L;
+    /** An observed launcher prompt must persist this long before it shows as attention. */
+    public static final long LAUNCHER_ATTENTION_DEBOUNCE_MS = 2500L;
+
     private final Listener listener;
+    /** Same time base as MediaCodec rendered-frame timestamps (System.nanoTime). */
+    private final LongSupplier nanoClock;
     private LaunchTransitionSpec spec;
     private LaunchTransitionType currentTarget = LaunchTransitionType.GENERIC;
     private String currentGameId = "";
@@ -29,7 +47,16 @@ public final class LaunchTransitionController {
     private boolean revealCompleted;
     private boolean surfaceReady;
     private boolean streamConnected;
-    private boolean videoFrameReady;
+    /** Any frame rendered on this transition's transport: gates the manual reveal. */
+    private boolean transportHasFrames;
+    /** A frame rendered after the latest readiness edge: gates the automatic reveal. */
+    private boolean freshFrameAfterEdge;
+    /** The current edge's fresh-frame deadline passed without one: "Reveal now" is offered. */
+    private boolean freshFrameOverdue;
+    /** Readiness-edge generation; a frame proves freshness only for its own edge. */
+    private long frameEdge;
+    private long edgeNanos;
+    private int rejectedPreEdgeFrames;
     private boolean inputReady;
     private boolean gatewayReady;
     private boolean targetProcessRunning;
@@ -40,19 +67,54 @@ public final class LaunchTransitionController {
     /** The host reported this attempt's game window ready at least once: its start finished. */
     private boolean gameReadyConfirmed;
     private boolean revealPreferred;
-    /** A readiness failure after the user's manual reveal: reported, never covering again. */
+    private UserCover userCover = UserCover.NONE;
+    /** The user cover was released over a revealed stream and waits for its fresh frame. */
+    private boolean uncoverAwaitsFrame;
+    /** A readiness failure or window loss after a reveal: reported, never covering again. */
     private String notice = "";
+    /** Since when (nanos) the observed launcher signal is pending; null: not pending. */
+    private Long launcherPendingSince;
+    /** Generation of the pending launcher signal; a deadline applies only to its own. */
+    private long launcherGeneration;
+    private String launcherPendingReason = "";
+    /** The state an observed launcher attention returns to when its signal clears. */
+    private LaunchTransitionState launcherReturnState;
     private LaunchTransitionState terminalFailureState;
     private String detail = "";
+    /** Orders published snapshots: one posted from a worker may arrive after a newer one. */
+    private long publishSequence;
     private String diagnosticSignature = "";
     private String diagnosticTransitionId = "";
     private LaunchTransitionState diagnosticState = LaunchTransitionState.IDLE;
 
     public LaunchTransitionController(Listener listener) {
+        this(listener, System::nanoTime);
+    }
+
+    public LaunchTransitionController(Listener listener, LongSupplier nanoClock) {
         this.listener = listener;
+        this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
     }
 
     public synchronized LaunchTransitionSnapshot begin(LaunchTransitionSpec next) {
+        reset(next, 0L);
+        return publish();
+    }
+
+    /**
+     * {@code next} replaces the presented transition over the same live transport: the frames
+     * that transport already rendered still count for "Reveal now", and its start is a readiness
+     * edge (an IDR and a fresh-frame deadline), so no kind of transition keeps the cover with
+     * only Cancel when the transport sends no new frame.
+     */
+    public synchronized LaunchTransitionSnapshot beginOnKeptTransport(LaunchTransitionSpec next) {
+        boolean frames = transportHasFrames;
+        reset(next, 1L);
+        transportHasFrames = frames;
+        return publish();
+    }
+
+    private void reset(LaunchTransitionSpec next, long firstEdge) {
         Objects.requireNonNull(next, "next");
         spec = next;
         currentTarget = next.type;
@@ -70,7 +132,9 @@ public final class LaunchTransitionController {
         revealCompleted = false;
         surfaceReady = false;
         streamConnected = false;
-        videoFrameReady = false;
+        transportHasFrames = false;
+        rejectedPreEdgeFrames = 0;
+        startFrameEdge(firstEdge);
         inputReady = false;
         boolean targetAlreadyRunning = next.type == LaunchTransitionType.GENERIC;
         gatewayReady = targetAlreadyRunning;
@@ -81,10 +145,12 @@ public final class LaunchTransitionController {
         startTakingLonger = false;
         gameReadyConfirmed = false;
         revealPreferred = false;
+        endUserCover();
         notice = "";
+        launcherPendingSince = null;
+        launcherReturnState = null;
         terminalFailureState = null;
         detail = "";
-        return publish();
     }
 
     /**
@@ -138,11 +204,65 @@ public final class LaunchTransitionController {
                 || state == LaunchTransitionState.GAME_WINDOW_STABILIZING;
     }
 
-    public synchronized void overlayRendered(String transitionId) {
-        if (!accept(transitionId, null) || operationAuthorized) return;
-        operationAuthorized = true;
-        state = LaunchTransitionState.CONNECTING_STREAM;
-        publish();
+    /**
+     * A cover wait settled: its effect runs unless the wait was cancelled. The cover is
+     * cosmetic, so a frame that never came (UNAVAILABLE) runs the effect like a submitted one.
+     */
+    public static boolean coverAllowsEffect(PresentationBarrier.Outcome outcome) {
+        return outcome != PresentationBarrier.Outcome.CANCELLED;
+    }
+
+    /**
+     * The one input routing decision of the stream screen: whether controller, keyboard, mouse
+     * and remote input may reach the host. Never while the cover holds the input, nor for a
+     * hidden warm-up behind the Home; {@code snapshot} null is a stream without a transition.
+     */
+    public static boolean inputReachesHost(LaunchTransitionSnapshot snapshot,
+                                           boolean hiddenWarmUp) {
+        return !hiddenWarmUp && (snapshot == null || !snapshot.inputBlocked);
+    }
+
+    /** How loud the stream is heard: not at all, attenuated under a cover, or in full. */
+    public enum StreamAudio { MUTED, COVERED, FULL }
+
+    /**
+     * The stream's audio level: in full once the cover is off the stream (revealed),
+     * attenuated under any cover (launch, switch, Home return, closing), muted for a hidden
+     * warm-up behind the carousel. {@code snapshot} null is a stream without a transition.
+     */
+    public static StreamAudio streamAudio(LaunchTransitionSnapshot snapshot,
+                                          boolean hiddenWarmUp) {
+        if (hiddenWarmUp) return StreamAudio.MUTED;
+        return snapshot != null && snapshot.overlayVisible
+                ? StreamAudio.COVERED : StreamAudio.FULL;
+    }
+
+    /** A wait's receiver for an effect with no transition of its own (console loading). */
+    public static Consumer<PresentationBarrier.Outcome> runUnlessCancelled(Runnable effect) {
+        return outcome -> {
+            if (coverAllowsEffect(outcome)) effect.run();
+        };
+    }
+
+    /**
+     * The cover of {@code transitionId} settled with {@code outcome}. Returns whether the
+     * effect waiting on it may run; false (cancelled, this transition cancelled, or no longer
+     * the current one) ends the operation through its cancel path. A transition still before
+     * its connection is authorized to connect, whether or not its surface came first.
+     * SUBMITTED is no proof of visibility and never reveals anything.
+     */
+    public synchronized boolean coverSettled(String transitionId,
+                                             PresentationBarrier.Outcome outcome) {
+        if (!coverAllowsEffect(outcome) || !accept(transitionId, null)) return false;
+        if (!operationAuthorized && (state == LaunchTransitionState.PREPARING_SESSION
+                || state == LaunchTransitionState.WAITING_FOR_VIDEO_SURFACE)) {
+            operationAuthorized = true;
+            if (state == LaunchTransitionState.PREPARING_SESSION) {
+                state = LaunchTransitionState.CONNECTING_STREAM;
+            }
+            publish();
+        }
+        return true;
     }
 
     public synchronized void surfaceReady(String transitionId) {
@@ -170,10 +290,109 @@ public final class LaunchTransitionController {
         evaluateReady();
     }
 
-    public synchronized void videoFrameRendered(String transitionId) {
+    /**
+     * The decoder rendered a frame armed for {@code edge}, at {@code renderNanos}
+     * (System.nanoTime base). Any frame proves the transport renders; only a frame of the
+     * current edge rendered after it proves the target is on screen.
+     */
+    public synchronized void videoFrameRendered(String transitionId, long edge, long renderNanos) {
         if (!accept(transitionId, null) || rejectsLateTargetSignal()) return;
-        videoFrameReady = true;
+        transportHasFrames = true;
+        if (edge == frameEdge && renderNanos >= edgeNanos) {
+            freshFrameAfterEdge = true;
+            MoonWakerDiagnostics.record("INFO", "android.launch-transition",
+                    "video_frame.fresh", "transition_id", transitionId, "frame_edge", edge,
+                    "after_edge_ms", (renderNanos - edgeNanos) / 1_000_000L);
+        } else if (!freshFrameAfterEdge) {
+            rejectedPreEdgeFrames++;
+            MoonWakerDiagnostics.record("INFO", "android.launch-transition",
+                    "video_frame.rejected_pre_edge",
+                    "transition_id", transitionId,
+                    "frame_edge", edge,
+                    "current_edge", frameEdge,
+                    "rendered_before_edge_ms", (edgeNanos - renderNanos) / 1_000_000L,
+                    "count", rejectedPreEdgeFrames);
+        }
+        if (freshFrameAfterEdge && uncoverAwaitsFrame) endUserCover();
         evaluateReady();
+    }
+
+    /**
+     * The fresh-frame deadline of {@code edge} passed: without a fresh frame the stream keeps
+     * only the manual "Reveal now"; a fresh frame arriving later still reveals automatically.
+     */
+    public synchronized void freshFrameDeadline(String transitionId, long edge) {
+        if (!accept(transitionId, null) || edge != frameEdge || freshFrameAfterEdge
+                || freshFrameOverdue) return;
+        freshFrameOverdue = true;
+        MoonWakerDiagnostics.record("WARN", "android.launch-transition",
+                "video_frame.fresh_deadline",
+                "transition_id", transitionId,
+                "frame_edge", edge,
+                "transport_has_frames", transportHasFrames);
+        // Cosmetic: a released user cover never stays up for want of a frame.
+        if (uncoverAwaitsFrame) endUserCover();
+        evaluateReady();
+    }
+
+    /**
+     * The user started an operation that covers this transition first: the Home return or a
+     * game switch. Returns false (nothing covered) when the transition is not current or
+     * already holds that cover; a switch takes over a Home return's cover, never the reverse.
+     */
+    public synchronized boolean coverForUser(String transitionId, UserCover cover) {
+        if (cover == null || cover == UserCover.NONE || !accept(transitionId, null)) return false;
+        boolean held = !uncoverAwaitsFrame && userCover != UserCover.NONE;
+        if (held && (userCover == cover || userCover == UserCover.SWITCH)) return false;
+        userCover = cover;
+        uncoverAwaitsFrame = false;
+        publish();
+        return true;
+    }
+
+    /**
+     * The user operation behind {@code cover} ended without replacing this transition (the
+     * user is back from the Home, a switch was cancelled or failed): the transition's own
+     * presentation returns. A revealed stream shows again on its transport's next fresh frame.
+     */
+    public synchronized void releaseUserCover(String transitionId, UserCover cover) {
+        if (!accept(transitionId, null) || cover == UserCover.NONE || userCover != cover
+                || uncoverAwaitsFrame) return;
+        if (revealCompleted) {
+            uncoverAwaitsFrame = true;
+            startFrameEdge(frameEdge + 1L);
+            publish();
+            return;
+        }
+        endUserCover();
+        evaluateReady();
+    }
+
+    /**
+     * A hidden warm-up became the user's stream (TAKE_OVER_WARM_UP). Its frames were never
+     * armed while hidden, so its showing is a readiness edge (an IDR and a fresh-frame
+     * deadline): the first frame then proves the transport, and without one in time the user
+     * still gets "Reveal now" once any frame rendered.
+     */
+    public synchronized void takenOver(String transitionId) {
+        if (!accept(transitionId, null) || revealCompleted || rejectsLateTargetSignal()) return;
+        startFrameEdge(frameEdge + 1L);
+        evaluateReady();
+    }
+
+    private void endUserCover() {
+        userCover = UserCover.NONE;
+        uncoverAwaitsFrame = false;
+    }
+
+    /** Edge 0 is the transition's start; each later edge is a target readiness edge. */
+    private void startFrameEdge(long edge) {
+        frameEdge = edge;
+        edgeNanos = nanoClock.getAsLong();
+        freshFrameAfterEdge = false;
+        freshFrameOverdue = false;
+        MoonWakerDiagnostics.record("INFO", "android.launch-transition", "video_frame.edge",
+                "transition_id", spec.id, "frame_edge", frameEdge);
     }
 
     public synchronized void inputPipelineReady(String transitionId) {
@@ -224,7 +443,7 @@ public final class LaunchTransitionController {
             revealCompleted = false;
             targetProcessRunning = false;
             targetWindowReady = false;
-            videoFrameReady = false;
+            freshFrameAfterEdge = false;
             uncertain = false;
             detail = "";
             state = LaunchTransitionState.GAME_STARTING;
@@ -264,7 +483,7 @@ public final class LaunchTransitionController {
         // A frame rendered before the target window became ready can still contain
         // the desktop or a launcher. Require one frame produced after this exact
         // readiness edge before the privacy overlay may be removed.
-        if (newlyReady) videoFrameReady = false;
+        if (newlyReady) startFrameEdge(frameEdge + 1L);
         state = kind == LaunchTransitionType.GAME
                 ? LaunchTransitionState.GAME_READY
                 : LaunchTransitionState.PLAYNITE_FULLSCREEN_READY;
@@ -284,14 +503,7 @@ public final class LaunchTransitionController {
         state = kind == LaunchTransitionType.GAME
                 ? LaunchTransitionState.GAME_WINDOW_STABILIZING
                 : LaunchTransitionState.PLAYNITE_FULLSCREEN_STARTING;
-        if (manualRevealOverride && revealCompleted) {
-            overlayVisible = false;
-            inputBlocked = false;
-            revealAuthorized = false;
-            manualRevealAvailable = false;
-            publish();
-            return;
-        }
+        if (reportAfterReveal(detail)) return;
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
@@ -300,10 +512,77 @@ public final class LaunchTransitionController {
         evaluateReady();
     }
 
+    /** The host refused the game start until its launcher is answered: shown at once. */
     public synchronized void launcherInteractionRequired(
             String transitionId, String hostId, String gameId, String reason) {
         if (!acceptTarget(transitionId, hostId, LaunchTransitionType.GAME, gameId)
                 || revealAuthorized || revealCompleted) return;
+        launcherPendingSince = null;
+        launcherReturnState = null;
+        enterLauncherAttention(reason);
+    }
+
+    /**
+     * A host observation reports a launcher prompt. A start often shows one only briefly, so
+     * it becomes the attention state only once it persisted {@link
+     * #LAUNCHER_ATTENTION_DEBOUNCE_MS}: repeated past that time, or at {@link
+     * #launcherAttentionDue}. Returns the generation the caller passes to that deadline after
+     * the debounce, or 0 when no new signal started pending.
+     */
+    public synchronized long launcherInteractionObserved(
+            String transitionId, String hostId, String gameId, String reason) {
+        if (!acceptTarget(transitionId, hostId, LaunchTransitionType.GAME, gameId)
+                || !launcherAttentionAllowed()
+                || state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) return 0L;
+        launcherPendingReason = reason;
+        long now = nanoClock.getAsLong();
+        if (launcherPendingSince == null) {
+            launcherPendingSince = now;
+            return ++launcherGeneration;
+        }
+        if (now - launcherPendingSince >= LAUNCHER_ATTENTION_DEBOUNCE_MS * 1_000_000L) {
+            enterObservedLauncherAttention();
+        }
+        return 0L;
+    }
+
+    /** The debounce of launcher signal {@code generation} elapsed with the signal pending. */
+    public synchronized void launcherAttentionDue(String transitionId, long generation) {
+        if (!accept(transitionId, null) || launcherPendingSince == null
+                || generation != launcherGeneration || !launcherAttentionAllowed()) return;
+        enterObservedLauncherAttention();
+    }
+
+    /**
+     * A host observation without a launcher prompt: a pending signal is dropped, and an
+     * observed launcher attention returns to the state it covered at once.
+     */
+    public synchronized void launcherInteractionCleared(String transitionId) {
+        if (!accept(transitionId, null)) return;
+        launcherPendingSince = null;
+        if (state != LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED
+                || launcherReturnState == null) return;
+        // Its window readiness was dropped on entry: the next readiness edge restores it.
+        state = launcherReturnState == LaunchTransitionState.GAME_READY
+                ? LaunchTransitionState.GAME_WINDOW_STABILIZING : launcherReturnState;
+        launcherReturnState = null;
+        detail = "";
+        evaluateReady();
+    }
+
+    private boolean launcherAttentionAllowed() {
+        return !revealAuthorized && !revealCompleted && terminalFailureState == null
+                && !rejectsLateTargetSignal();
+    }
+
+    private void enterObservedLauncherAttention() {
+        LaunchTransitionState covered = state;
+        launcherPendingSince = null;
+        enterLauncherAttention(launcherPendingReason);
+        launcherReturnState = covered;
+    }
+
+    private void enterLauncherAttention(String reason) {
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
@@ -340,14 +619,7 @@ public final class LaunchTransitionController {
         targetWindowReady = false;
         detail = reason == null ? "" : reason;
         state = LaunchTransitionState.HOST_SESSION_LOCKED;
-        if (manualRevealOverride && revealCompleted) {
-            overlayVisible = false;
-            inputBlocked = false;
-            revealAuthorized = false;
-            manualRevealAvailable = false;
-            publish();
-            return;
-        }
+        if (reportAfterReveal(detail)) return;
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
@@ -363,13 +635,15 @@ public final class LaunchTransitionController {
         if (state != LaunchTransitionState.GAME_STOPPING) {
             streamWasRevealedBeforeClosing = revealCompleted;
         }
+        // The closing the user (or the game) started takes over a user cover.
+        endUserCover();
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
         manualRevealAvailable = false;
         revealCompleted = false;
         targetWindowReady = false;
-        videoFrameReady = false;
+        freshFrameAfterEdge = false;
         state = LaunchTransitionState.GAME_STOPPING;
         publish();
         return true;
@@ -386,7 +660,7 @@ public final class LaunchTransitionController {
         revealCompleted = false;
         targetProcessRunning = false;
         targetWindowReady = false;
-        videoFrameReady = false;
+        freshFrameAfterEdge = false;
         state = LaunchTransitionState.PLAYNITE_RETURNING;
         publish();
     }
@@ -407,6 +681,7 @@ public final class LaunchTransitionController {
         if (state != LaunchTransitionState.CLOSING_STREAM) {
             streamWasRevealedBeforeClosing = revealCompleted;
         }
+        endUserCover();
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
@@ -460,7 +735,7 @@ public final class LaunchTransitionController {
 
     public synchronized void timedOut(String transitionId, String reason,
                                       boolean revealPreferred) {
-        if (!accept(transitionId, null) || reportAfterManualReveal(reason)) return;
+        if (!accept(transitionId, null) || reportAfterReveal(reason)) return;
         state = LaunchTransitionState.TIMED_OUT;
         overlayVisible = true;
         inputBlocked = true;
@@ -479,7 +754,7 @@ public final class LaunchTransitionController {
 
     /** A failure never rejects the user: a live stream keeps "Reveal now" available. */
     public synchronized void error(String transitionId, String reason, boolean revealPreferred) {
-        if (!accept(transitionId, null) || reportAfterManualReveal(reason)) return;
+        if (!accept(transitionId, null) || reportAfterReveal(reason)) return;
         state = LaunchTransitionState.ERROR;
         overlayVisible = true;
         inputBlocked = true;
@@ -495,6 +770,7 @@ public final class LaunchTransitionController {
     public synchronized LaunchTransitionSnapshot cancel(String transitionId) {
         LaunchTransitionSnapshot before = snapshotValue();
         if (!accept(transitionId, null)) return before;
+        endUserCover();
         state = LaunchTransitionState.CANCELLED;
         overlayVisible = true;
         inputBlocked = true;
@@ -504,7 +780,8 @@ public final class LaunchTransitionController {
     }
 
     public synchronized void showStreamAnyway(String transitionId) {
-        if (!accept(transitionId, null) || !manualRevealAvailable) return;
+        if (!accept(transitionId, null) || !manualRevealAvailable
+                || userCover != UserCover.NONE) return;
         terminalFailureState = null;
         manualRevealOverride = true;
         revealAuthorized = true;
@@ -513,7 +790,8 @@ public final class LaunchTransitionController {
     }
 
     public synchronized void revealCompleted(String transitionId) {
-        if (!accept(transitionId, null) || !revealAuthorized || revealCompleted) return;
+        if (!accept(transitionId, null) || !revealAuthorized || revealCompleted
+                || userCover != UserCover.NONE) return;
         revealCompleted = true;
         overlayVisible = false;
         inputBlocked = false;
@@ -582,7 +860,7 @@ public final class LaunchTransitionController {
             publish();
             return;
         }
-        if (transportReady && targetReady && !revealAuthorized) {
+        if (transportReady && targetReady && freshFrameAfterEdge && !revealAuthorized) {
             manualRevealAvailable = false;
             revealAuthorized = true;
             if (currentTarget == LaunchTransitionType.GAME
@@ -592,25 +870,34 @@ public final class LaunchTransitionController {
             else if (currentTarget == LaunchTransitionType.PLAYNITE) {
                 state = LaunchTransitionState.PLAYNITE_FULLSCREEN_READY;
             }
-        } else if (transportReady && !targetReady && !revealAuthorized
-                && currentTarget != LaunchTransitionType.GENERIC) {
-            // The user can explicitly reveal a confirmed video stream while the
-            // host-side readiness signal is still catching up.
+        } else if (transportReady && (!targetReady || freshFrameOverdue) && !revealAuthorized) {
+            // The user can explicitly reveal a rendering stream while the host-side readiness
+            // is still catching up or its fresh frame did not arrive in time, whatever its kind.
             manualRevealAvailable = true;
         }
         publish();
     }
 
-    /** The user chose to see this stream: a later failure is only a notice over it. */
-    private boolean reportAfterManualReveal(String reason) {
-        if (!manualRevealOverride || !revealCompleted) return false;
+    /**
+     * This transition's stream is revealed (automatically or manually), or the user chose
+     * "Reveal now" and its reveal is under way: the cover never returns until a new transition
+     * begins. A later readiness failure or window loss is only a notice; a chosen reveal still
+     * completes. A pending automatic reveal is not one yet: losing its evidence revokes it.
+     */
+    private boolean streamRevealed() {
+        return revealCompleted || manualRevealOverride && revealAuthorized;
+    }
+
+    private boolean reportAfterReveal(String reason) {
+        if (!streamRevealed()) return false;
+        manualRevealAvailable = false;
         notice = reason == null ? "" : reason;
         publish();
         return true;
     }
 
     private boolean transportReady() {
-        return surfaceReady && streamConnected && videoFrameReady && inputReady;
+        return surfaceReady && streamConnected && transportHasFrames && inputReady;
     }
 
     private LaunchTransitionSnapshot publish() {
@@ -619,13 +906,15 @@ public final class LaunchTransitionController {
                 && state != LaunchTransitionState.CANCELLED) {
             activeStep = stepForState(state);
         }
+        publishSequence++;
         LaunchTransitionSnapshot value = snapshotValue();
         LaunchTransitionType publishedTarget = currentTarget;
         String publishedGameId = currentGameId;
         String nextSignature = value.spec.id + '|' + value.state + '|' + value.step + '|'
                 + value.overlayVisible + '|' + value.inputBlocked + '|'
                 + value.operationAuthorized + '|' + value.revealAuthorized + '|'
-                + value.manualRevealAvailable + '|' + value.uncertain + '|' + value.detail;
+                + value.manualRevealAvailable + '|' + value.uncertain + '|' + value.detail
+                + '|' + value.userCover;
         if (!nextSignature.equals(diagnosticSignature)) {
             LaunchTransitionState previous = value.spec.id.equals(diagnosticTransitionId)
                     ? diagnosticState : LaunchTransitionState.IDLE;
@@ -650,6 +939,7 @@ public final class LaunchTransitionController {
                     "reveal_authorized", value.revealAuthorized,
                     "manual_reveal_available", value.manualRevealAvailable,
                     "uncertain", value.uncertain,
+                    "user_cover", value.userCover.name(),
                     "reason", value.detail);
         }
         if (listener != null) listener.onTransitionChanged(value);
@@ -657,13 +947,16 @@ public final class LaunchTransitionController {
     }
 
     private LaunchTransitionSnapshot snapshotValue() {
+        boolean held = userCover != UserCover.NONE;
+        boolean covered = overlayVisible || held;
         return new LaunchTransitionSnapshot(spec, state, activeStep,
-                overlayVisible, inputBlocked, operationAuthorized, revealAuthorized,
-                manualRevealAvailable, uncertain, detail,
+                covered, inputBlocked || held, operationAuthorized,
+                revealAuthorized && !held, manualRevealAvailable && !held, uncertain, detail,
                 startTakingLonger && isGameStartPending(state), revealPreferred, notice,
                 manualRevealOverride,
-                overlayVisible && !videoFrameReady && !rejectsLateTargetSignal()
-                        && state != LaunchTransitionState.CANCELLED);
+                covered && !freshFrameAfterEdge && !rejectsLateTargetSignal()
+                        && state != LaunchTransitionState.CANCELLED, frameEdge, userCover,
+                uncoverAwaitsFrame, publishSequence);
     }
 
     static int stepForState(LaunchTransitionState state) {

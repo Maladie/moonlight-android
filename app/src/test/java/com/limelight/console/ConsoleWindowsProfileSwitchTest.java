@@ -3,7 +3,6 @@ package com.limelight.console;
 import com.limelight.SourceText;
 import org.junit.Test;
 
-import java.nio.file.Paths;
 import java.util.Arrays;
 
 import static com.limelight.SourceText.assertOrdered;
@@ -116,8 +115,7 @@ public class ConsoleWindowsProfileSwitchTest {
                 "@Override public SessionOrchestrator.CloseResult switchRetained(",
                 "@Override public void launch(PlayIntent intent");
         assertFalse(menu.contains("boolean childProfile"));
-        assertTrue(SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleHostPanel.java")).contains(
+        assertTrue(SourceText.main("console/ConsoleHostPanel.java").contains(
                 "Action.DESKTOP, R.string.console_launch_desktop, facts.online && facts.paired"));
         assertFalse(menu.contains("warmUp.setEnabled(!childProfile)"));
         assertFalse(menu.contains("online && paired && !childProfile);\n"
@@ -164,8 +162,7 @@ public class ConsoleWindowsProfileSwitchTest {
     }
 
     private static String source() throws Exception {
-        return SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        return SourceText.main("console/ConsoleActivity.java");
     }
 
     private static String between(String source, String start, String end) {

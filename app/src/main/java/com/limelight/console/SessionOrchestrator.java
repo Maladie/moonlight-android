@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.http.NvApp;
@@ -19,8 +20,14 @@ import java.util.function.Consumer;
  * it what Back, Cancel and Retry mean; it only executes the answer.
  */
 public final class SessionOrchestrator implements AutoCloseable {
-    enum Rejection { INITIALIZING, UNPAIRED, TERMINATING }
+    enum Rejection { INITIALIZING, UNPAIRED }
     enum CloseResult { CLOSED, REUSED, CANCELLED, NEEDS_CONFIRMATION, PRESENTATION_REQUIRED }
+
+    /** What a Play queued behind a close does once the session changed ({@link #queuedStep}). */
+    enum QueueStep { WAIT, START, DROP_CLOSE_FAILED }
+
+    /** Why a queued Play was dropped; the effects show it. */
+    enum QueueDrop { CLOSE_UNCONFIRMED, CLOSE_FAILED }
 
     /** How the table answers a warm-up before anything contacts the host. */
     enum WarmUpStart {
@@ -183,6 +190,19 @@ public final class SessionOrchestrator implements AutoCloseable {
     interface Dispatcher { void post(Runnable action); }
     interface Effects {
         boolean isAvailable(); SessionSnapshot resolve(HostProfileKey key);
+        /** Render-only projection of the delivered model snapshot: reads, refreshes nothing. */
+        SessionSnapshot rendered(HostProfileKey key);
+        /** Runs {@code action} on the main thread after {@code delayMs}. */
+        void postDelayed(Runnable action, long delayMs);
+        /**
+         * This screen acts on the process's queued Play: it is the resumed console, and a
+         * stream Home still has its stream (one being replaced by the console does not).
+         */
+        boolean drivesQueue();
+        /** The queued Play ({@link #queued()}) changed: the game tiles render it again. */
+        void queueChanged();
+        /** The queued {@code intent} was dropped for {@code reason}: shown, tiles rendered. */
+        void queueDropped(PlayIntent intent, QueueDrop reason);
         /**
          * The host's last poll reported it paired, or no poll has reported its pairing yet and
          * its pairing certificate is saved. A host that answers always reports its pairing.
@@ -273,17 +293,40 @@ public final class SessionOrchestrator implements AutoCloseable {
     private long inFlight;
     private volatile Preparation preparation;
     private volatile boolean closed;
+    /**
+     * The one Play waiting for a close on its host to be confirmed (process-wide, outliving
+     * this screen). A newer Play replaces it once the table queues or starts that Play; only
+     * {@link #advanceQueue} starts it.
+     */
+    private final PlayQueue queue;
+    /** The queue generation whose timeout this orchestrator armed. */
+    private long armedGeneration;
+    /** The request that restarted a queued Play: its re-queue keeps the first queued time. */
+    private long restartedRequest;
+    private long restartedSince;
 
-    SessionOrchestrator(Effects effects, Executor executor, Dispatcher dispatcher) {
+    SessionOrchestrator(Effects effects, Executor executor, Dispatcher dispatcher,
+                        PlayQueue queue) {
         this.effects = effects;
         this.executor = executor;
         this.dispatcher = dispatcher;
+        this.queue = queue;
     }
 
     void play(PlayIntent intent) {
+        PlayIntent waiting = queue.intent();
+        // The same game again keeps its place in the queue.
+        if (waiting != null && sameTarget(waiting, intent)) return;
+        play(intent, 0L);
+    }
+
+    /** {@code queuedSince}: when the queued Play this restarts was first queued (0: none). */
+    private void play(PlayIntent intent, long queuedSince) {
         if (handoffPreparingGame(intent)) return;
         lastIntent = intent;
         long request = orchestrationId.incrementAndGet();
+        restartedRequest = queuedSince > 0L ? request : 0L;
+        restartedSince = queuedSince;
         if (closed) {
             diagnostic("INFO", "orchestration.ignored", request, intent,
                     "reason", "CLOSED");
@@ -372,11 +415,130 @@ public final class SessionOrchestrator implements AutoCloseable {
         }
         inFlight = 0L;
     }
+
+    /**
+     * This screen stops showing (paused): a Play it started from the queue and has not decided
+     * yet goes back to the queue, with its first queued time, for the screen shown next (the
+     * console replacing a stream Home whose stream closed). Its own cancel follows.
+     */
+    void screenLeft() {
+        long current = orchestrationId.get();
+        if (closed || inFlight != current || restartedRequest != current
+                || lastIntent == null || queue.intent() != null) return;
+        queue.put(lastIntent, restartedSince);
+        diagnostic("INFO", "orchestration.requeued", current, lastIntent);
+        effects.queueChanged();
+    }
+
     void retry() {
         PlayIntent intent = lastIntent;
         if (intent != null && !closed) play(intent);
     }
-    @Override public void close() { closed = true; lastIntent = null; cancel(); }
+    /** This screen is gone: it no longer acts on the queue, which stays the process's. */
+    @Override public void close() {
+        closed = true;
+        lastIntent = null;
+        cancel();
+    }
+
+    /** The Play queued behind a close, or null; the tiles render it. */
+    PlayIntent queued() { return queue.intent(); }
+
+    /** The user cancelled the queued Play (or left its host or profile); false when none. */
+    boolean cancelQueued() {
+        PlayIntent waiting = queue.clear();
+        if (waiting == null) return false;
+        diagnostic("INFO", "orchestration.queue_cancelled", orchestrationId.get(), waiting);
+        effects.queueChanged();
+        return true;
+    }
+
+    /**
+     * The session model published a new snapshot, or this screen was resumed: the queued Play
+     * takes its next step ({@link #advanceQueue}).
+     */
+    void sessionChanged() {
+        advanceQueue();
+    }
+
+    /**
+     * A Play queued behind a close starts as a normal Play once the close is confirmed, and is
+     * dropped when it failed. Its bound (counted from its first queueing) passing while the
+     * latest snapshot still reads closing drops it; one that ended by then still starts.
+     */
+    private void advanceQueue() {
+        PlayIntent waiting = queue.intent();
+        if (waiting == null || closed || !effects.drivesQueue()) return;
+        switch (queuedStep(effects.rendered(waiting.profileKey))) {
+            case WAIT:
+                if (queueExpired(queue.since())) dropQueued(QueueDrop.CLOSE_UNCONFIRMED);
+                else armQueueTimeout();
+                return;
+            case DROP_CLOSE_FAILED:
+                dropQueued(QueueDrop.CLOSE_FAILED);
+                return;
+            default:
+                long since = queue.since();
+                queue.clear();
+                diagnostic("INFO", "orchestration.queue_started", orchestrationId.get(), waiting);
+                effects.queueChanged();
+                play(waiting, since);
+        }
+    }
+
+    private void queue(long request, PlayIntent intent) {
+        // A restarted Play the live snapshot still sees closing keeps its first queued time.
+        long since = request == restartedRequest ? restartedSince : queue.now();
+        if (queueExpired(since)) {
+            diagnostic("WARN", "orchestration.queue_dropped", request, intent,
+                    "reason", QueueDrop.CLOSE_UNCONFIRMED.name());
+            effects.queueDropped(intent, QueueDrop.CLOSE_UNCONFIRMED);
+            return;
+        }
+        diagnostic("INFO", "orchestration.queued", request, intent);
+        queue.put(intent, since);
+        armQueueTimeout();
+        effects.queueChanged();
+    }
+
+    /** The close is bounded like its own confirmation window: never a queue without end. */
+    private boolean queueExpired(long since) {
+        return queue.now() - since >= SessionStateResolver.CLOSING_CONFIRMATION_MS;
+    }
+
+    private void armQueueTimeout() {
+        long generation = queue.generation();
+        if (armedGeneration == generation) return;
+        armedGeneration = generation;
+        effects.postDelayed(() -> {
+            if (queue.generation() != generation) return;
+            armedGeneration = 0L;
+            advanceQueue();
+        }, Math.max(0L, queue.since() + SessionStateResolver.CLOSING_CONFIRMATION_MS
+                - queue.now()));
+    }
+
+    /** A Play of another target that goes ahead replaces the queued one. */
+    private void supersedeQueued(long request, PlayIntent intent) {
+        PlayIntent waiting = queue.intent();
+        if (waiting == null || sameTarget(waiting, intent)) return;
+        queue.clear();
+        diagnostic("INFO", "orchestration.queue_replaced", request, waiting);
+        effects.queueChanged();
+    }
+
+    private void dropQueued(QueueDrop reason) {
+        PlayIntent dropped = queue.clear();
+        if (dropped == null) return;
+        diagnostic("WARN", "orchestration.queue_dropped", orchestrationId.get(), dropped,
+                "reason", reason.name());
+        effects.queueDropped(dropped, reason);
+    }
+
+    private static boolean sameTarget(PlayIntent a, PlayIntent b) {
+        return a.kind == b.kind && a.matches(b.hostId, b.profileId, b.sunshineAppId,
+                b.playniteGameId);
+    }
 
     private boolean handoffPreparingGame(PlayIntent intent) {
         Preparation pending = preparation;
@@ -448,10 +610,15 @@ public final class SessionOrchestrator implements AutoCloseable {
 
     /** What the user asked for. */
     public static final class UserIntent {
-        public enum Kind { PLAY, BACK, CANCEL, RETRY, RETURN_FROM_HOME }
+        public enum Kind { PLAY, BACK, HOME, CANCEL, RETRY, RETURN_FROM_HOME }
 
         /** The physical Back / B button on the stream screen. */
         public static final UserIntent BACK = new UserIntent(Kind.BACK, null);
+        /**
+         * The pad's Home shortcut or the overlay's Home (one outcome for both): Back's rows,
+         * except that Home never cancels a covered launch, it leaves it running.
+         */
+        public static final UserIntent HOME = new UserIntent(Kind.HOME, null);
         /** The Cancel control of the transition cover. */
         public static final UserIntent CANCEL = new UserIntent(Kind.CANCEL, null);
         /** The Retry control of the transition cover after a failure. */
@@ -521,6 +688,15 @@ public final class SessionOrchestrator implements AutoCloseable {
         public boolean parked;
         /** The cover holds the input (the controller's inputBlocked). */
         public boolean covered;
+        /** The cover is the Home return's, on its way to the Home (the controller's). */
+        public boolean homeReturnCovered;
+        /**
+         * A user cover (Home return, switch) was released over the already revealed stream and
+         * only waits for its fresh frame: nothing under it is a launch to cancel.
+         */
+        public boolean userCoverReleased;
+        /** The presented game is stopping (the controller's GAME_STOPPING). */
+        public boolean gameStopping;
         /** The stream was revealed in this transition. */
         public boolean revealed;
         public boolean timedOut;
@@ -579,8 +755,11 @@ public final class SessionOrchestrator implements AutoCloseable {
         // ---- Play ----
         /** The host is not paired: toast, or the same message under the loading layer. */
         REFUSE_UNPAIRED,
-        /** A session is closing: toast, or {@link Action#failure} under the loading layer. */
-        REFUSE_CLOSING,
+        /**
+         * A Play while a session is closing waits for its confirmation (one slot), on its own
+         * launch cover from the press on (the loading layer already up included).
+         */
+        QUEUE_BEHIND_CLOSE,
         FAIL,
         SHOW_LOADING,
         /** Refresh an unresolved observation once; the pass it produces decides. */
@@ -632,7 +811,9 @@ public final class SessionOrchestrator implements AutoCloseable {
         RESTART_STREAM,
         // ---- Return from the Home ----
         /** The hidden warm-up becomes the user's stream, as a Play on it would make it. */
-        TAKE_OVER_WARM_UP
+        TAKE_OVER_WARM_UP,
+        /** The kept neutral stream the user returned to begins a transition that shows it. */
+        SHOW_NEUTRAL_STREAM
     }
 
     /** One decided step; the Play parameters are set only for the kinds that use them. */
@@ -691,6 +872,7 @@ public final class SessionOrchestrator implements AutoCloseable {
         switch (intent.kind) {
             case PLAY: return play(state, intent.target);
             case BACK: return back(state);
+            case HOME: return home(state);
             case RETRY: return retry(state);
             case RETURN_FROM_HOME: return returnFromHome(state);
             default: return cancel(state);
@@ -703,9 +885,16 @@ public final class SessionOrchestrator implements AutoCloseable {
      * not have the old target revealed (or given the input) before it applies.
      */
     private static Action returnFromHome(State s) {
-        return Action.of(s.hiddenWarmUp && s.resumed && !s.homeVisible && !s.warmUpPreparing
-                && !s.switchRequested && !s.retainedSwitch
-                ? ActionKind.TAKE_OVER_WARM_UP : ActionKind.IGNORE);
+        if (!s.resumed || s.homeVisible || s.switchRequested || s.retainedSwitch) {
+            return Action.of(ActionKind.IGNORE);
+        }
+        if (s.hiddenWarmUp) {
+            return Action.of(s.warmUpPreparing ? ActionKind.IGNORE : ActionKind.TAKE_OVER_WARM_UP);
+        }
+        // A kept neutral stream settled for the Home has nothing left to close: the user's
+        // return to it is a new transition that shows it, never its action-less closing cover.
+        return Action.of(s.connected && s.returningToDashboard && !s.hasGame
+                ? ActionKind.SHOW_NEUTRAL_STREAM : ActionKind.IGNORE);
     }
 
     private static Action play(State s, PlayIntent intent) {
@@ -773,9 +962,8 @@ public final class SessionOrchestrator implements AutoCloseable {
         // A game stop beside a live stream keeps only the way back to that stream open.
         if (snapshot.state == SessionSnapshot.State.TERMINATING
                 || (snapshot.endingGame && !intent.matches(snapshot))) {
-            // Under the loading layer a toast would leave the loader up with no error.
-            return Action.failing(ActionKind.REFUSE_CLOSING,
-                    s.opaqueReady ? SessionFailure.UNCERTAIN_TERMINATING : null);
+            // Every Play (game, app, Desktop) waits for the host to confirm the close.
+            return Action.of(ActionKind.QUEUE_BEHIND_CLOSE);
         }
         // A game whose exact process the host proves is stopped by that proof alone: an episode
         // that expired only on its window (a windowed game, TV 2026-10-14) never blocks a switch.
@@ -927,25 +1115,50 @@ public final class SessionOrchestrator implements AutoCloseable {
     }
 
     private static Action back(State s) {
+        // Back on the way to the Home, or under a user cover released over the revealed stream,
+        // is a Home return, never a Cancel of that cover: the kept stream is never stopped.
+        if (s.homeReturnCovered || s.userCoverReleased) {
+            return Action.of(ActionKind.COVER_AND_SHOW_HOME);
+        }
+        // A stopping game's closing cover offers nothing to cancel: Back is the Home.
+        if (s.gameStopping && s.connected && !s.homeVisible) {
+            return Action.of(ActionKind.COVER_AND_SHOW_HOME);
+        }
         // A revealed stream whose readiness timed out is live, not a launch to cancel.
         if (s.connected && !s.homeVisible && s.revealed && s.timedOut) {
             return Action.of(ActionKind.COVER_AND_SHOW_HOME);
         }
         if (s.covered) return Action.of(ActionKind.CANCEL_ON_COVER);
-        if (retainedObservation(s)) return Action.of(ActionKind.COVER_AND_SHOW_HOME);
+        if (retainedLiveStream(s)) return Action.of(ActionKind.COVER_AND_SHOW_HOME);
         return Action.of(s.connected && !s.homeVisible
                 ? ActionKind.SHOW_HOME : ActionKind.LEAVE_SCREEN);
     }
 
+    /**
+     * The pad's Home and the overlay's Home: always the console Home with the launch or stream
+     * kept running, never a Cancel. Where Back is the cover's Cancel, Home covers and leaves; a
+     * switch's own cover keeps the screen (Back cancels that switch), and without a transport
+     * there is no Home to show.
+     */
+    private static Action home(State s) {
+        Action back = back(s);
+        if (back.kind != ActionKind.CANCEL_ON_COVER) return back;
+        if (!s.connected || s.homeVisible || s.retainedSwitch) return Action.of(ActionKind.IGNORE);
+        return Action.of(ActionKind.COVER_AND_SHOW_HOME);
+    }
+
     private static Action cancel(State s) {
         if (!s.transitionActive) return Action.of(ActionKind.IGNORE);
+        // No Cancel under a Home return's or a released user cover: the stream stays.
+        if (s.homeReturnCovered || s.userCoverReleased) return Action.of(ActionKind.IGNORE);
         if (s.authorizationRetryOffered) {
             return Action.of(ActionKind.DECLINE_AUTHORIZATION_RETRY);
         }
         // The observation kept after a failed start is that start: abandoning it closes.
         if (s.failedStartObservation) return Action.of(ActionKind.CLOSE_HOST_SESSION);
-        if (retainedObservation(s)) return Action.of(ActionKind.COVER_AND_SHOW_HOME);
+        // Cancel on a switch's cover cancels that switch, whatever stream it started from.
         if (s.retainedSwitch) return Action.of(ActionKind.CANCEL_RETAINED_SWITCH);
+        if (retainedLiveStream(s)) return Action.of(ActionKind.COVER_AND_SHOW_HOME);
         boolean startsGame = s.type == LaunchTransitionType.GAME && s.hasGame;
         // A start the host never confirmed ready closes its session, even manually revealed.
         if (startsGame && (!s.revealed || !s.gameReadyConfirmed) && s.controlGranted) {
@@ -988,10 +1201,15 @@ public final class SessionOrchestrator implements AutoCloseable {
                 ? ActionKind.RETRY_GAME_START : ActionKind.RETRY_OBSERVATION);
     }
 
-    /** A live retained stream observing its game in the foreground: nothing to cancel. */
-    private static boolean retainedObservation(State s) {
-        return s.connected && !s.homeVisible && !s.parked
-                && s.type == LaunchTransitionType.GAME_CONNECTION && s.hasGame
+    /**
+     * A live retained stream in the foreground whose transition starts nothing: observing its
+     * game, or the kept neutral stream shown again (SHOW_NEUTRAL_STREAM). Nothing to cancel:
+     * Back and Cancel return to the Home and keep it; only Close session ends it.
+     */
+    private static boolean retainedLiveStream(State s) {
+        boolean startsNothing = s.type == LaunchTransitionType.GAME_CONNECTION && s.hasGame
+                || s.type == LaunchTransitionType.GENERIC && !s.hasGame;
+        return s.connected && !s.homeVisible && !s.parked && startsNothing
                 && s.retainedHomeLive;
     }
 
@@ -1087,6 +1305,16 @@ public final class SessionOrchestrator implements AutoCloseable {
                 || reason == SessionFailure.SWITCH_REFUSED);
     }
 
+    /**
+     * A Play queued behind a close waits while the session still reads as closing (until the
+     * host confirms it free, or the bound passes), is dropped when that close failed, and
+     * otherwise starts as a normal Play: the table decides it from the fresh state.
+     */
+    static QueueStep queuedStep(SessionSnapshot s) {
+        if (s.state == SessionSnapshot.State.TERMINATING || s.endingGame) return QueueStep.WAIT;
+        return s.closeFailed ? QueueStep.DROP_CLOSE_FAILED : QueueStep.START;
+    }
+
     /** A warm-up starts only while no other host, profile or close holds this client's stream. */
     static WarmUpStart warmUpStart(PlayIntent intent, Retained r) {
         SessionModel.Snapshot s = r.stream;
@@ -1130,6 +1358,19 @@ public final class SessionOrchestrator implements AutoCloseable {
                 && s.streamSessionId.equals(pending.streamSessionId);
         boolean recordOnly = pending.autoResume && s.state == SessionModel.State.NONE;
         return modelReconnect || recordOnly ? WarmUpLaunch.RECONNECT : WarmUpLaunch.LAUNCH;
+    }
+
+    /**
+     * The transition a prepared warm-up opens with, from the projection read at launch: a game
+     * the host verifiably runs is connected to; anything else is a generic stream.
+     */
+    static LaunchTransitionSpec warmUpTransition(PreparedWarmUp prepared,
+                                                 SessionSnapshot projection, long nowMillis) {
+        String runningGame = projection.verifiedRunningGameId();
+        return LaunchTransitionSpec.create(prepared.host.uuid, prepared.profileKey.profileId,
+                runningGame.isEmpty() ? LaunchTransitionType.GENERIC
+                        : LaunchTransitionType.GAME_CONNECTION,
+                prepared.target.getAppId(), runningGame, nowMillis);
     }
 
     /** The host runs an app other than {@code appId}. */
@@ -1281,18 +1522,23 @@ public final class SessionOrchestrator implements AutoCloseable {
         state.closeOutcome = p.closed;
         Action action = transition(state, UserIntent.play(intent));
         switch (action.kind) {
+            // A refusal or a failure keeps the queued Play; a queued one replaces it in queue().
+            case REFUSE_UNPAIRED: case QUEUE_BEHIND_CLOSE: case FAIL:
+            case IGNORE:
+                break;
+            default:
+                supersedeQueued(request, intent);
+        }
+        switch (action.kind) {
             case REFUSE_UNPAIRED:
                 diagnostic("WARN", "orchestration.rejected", request, intent,
                         "reason", Rejection.UNPAIRED.name());
                 inFlight = 0L;
                 effects.reject(Rejection.UNPAIRED);
                 break;
-            case REFUSE_CLOSING:
-                diagnostic("WARN", "orchestration.rejected", request, intent,
-                        "reason", Rejection.TERMINATING.name());
+            case QUEUE_BEHIND_CLOSE:
                 inFlight = 0L;
-                if (action.failure != null) fail(request, intent, action.failure, "");
-                else effects.reject(Rejection.TERMINATING);
+                queue(request, intent);
                 break;
             case FAIL:
                 fail(request, intent, action.failure, "");

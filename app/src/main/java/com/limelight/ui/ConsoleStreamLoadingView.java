@@ -1,17 +1,25 @@
 package com.limelight.ui;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.RadialGradient;
+import android.graphics.RectF;
 import android.graphics.Shader;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
+import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.util.AttributeSet;
@@ -20,35 +28,69 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewParent;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.animation.AccelerateDecelerateInterpolator;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import com.limelight.R;
+import com.limelight.console.transition.LaunchTransitionController;
+import com.limelight.console.transition.LaunchTransitionSnapshot;
+import com.limelight.console.transition.PresentationBarrier;
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-/** A fully opaque, modal privacy surface rendered in the Activity window above video. */
+/**
+ * A fully opaque, modal privacy surface rendered in the Activity window above video: the game's
+ * full background artwork (or the app's standard background), a light vignette and a scrim from
+ * the left and the bottom, the host chip top-left and one information card bottom-left
+ * ({@link LoadingCoverModel}). The card never moves or rescales between states; only its
+ * content changes.
+ */
 public final class ConsoleStreamLoadingView extends FrameLayout {
-    private static final long MESSAGE_INTERVAL_MS = 2300L;
+    /** Sizes follow the approved mockup on a 960 dp wide TV: 1% of its width is 9.6 dp. */
+    private static final int EDGE_DP = 40;
+    private static final int CARD_WIDTH_DP = 442;
+    private static final float TITLE_SP = 35f;
+    private static final float CLOSING_TITLE_SP = 27f;
+    private static final long MESSAGE_INTERVAL_MS = 3000L;
+    private static final long MESSAGE_FADE_MS = 400L;
+    private static final long STAGE_FADE_MS = 200L;
+    private static final long SEGMENT_FILL_MS = 280L;
+    private static final int INK = 0xFFF3F6FB;
+    private static final int INK_SOFT = 0xB8F3F6FB;
+    private static final int INK_FAINT = 0x75F3F6FB;
+    private static final int LINE = 0x2EF3F6FB;
+    private static final int ON_INK = 0xFF0B0F17;
+    /** The carousel's "Online" green. */
+    private static final int ONLINE = 0xFF62E68B;
+    private static final int WARN = 0xFFFFB547;
     // ponytail: the last decoded splash stays for the window that takes the cover over (a few
     // MB until another game's artwork replaces it); key it by file version if artwork can
     // change under one path.
-    private static String decodedSplashPath = "";
-    private static Bitmap decodedSplash;
+    private static final FencedArtwork.Cache<Bitmap> SPLASH_CACHE = new FencedArtwork.Cache<>();
+    private static final ExecutorService DECODER = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "MoonWaker-CoverArtwork");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public ConsoleStreamLoadingView(Context context) {
-        this(context, null, null, false);
+        this(context, null, null, null, false, SystemClock.uptimeMillis());
     }
 
     public ConsoleStreamLoadingView(Context context, AttributeSet attrs) {
-        this(context, null, null, false);
+        this(context, null, null, null, false, SystemClock.uptimeMillis());
     }
 
     public interface Actions {
@@ -60,72 +102,85 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Random random = new Random();
     private final String[] messages;
+    private final LoadingCoverModel model;
+    private final FencedArtwork<Bitmap> artwork;
     private final Backdrop defaultBackdrop;
-    private final View defaultShade;
-    private final LinearLayout defaultContent;
+    private final ImageView artworkView;
+    private final Scrim scrim;
+    private final LinearLayout hostChip;
+    private final LinearLayout card;
+    private final TextView kickerView;
+    private final TextView fromView;
     private final TextView titleView;
-    private ImageView splashArtworkView;
-    private View splashReadabilityView;
-    private String splashArtworkPath = "";
-    private final TextView messageView;
-    private final LinearLayout stepsView;
-    private final LinearLayout statusLine;
+    private final Segments segments;
+    private final TextView stageView;
+    private final TextView elapsedView;
+    /** The one line under the stage: the notice, else the rotating message. */
+    private final TextView lineView;
     private final LinearLayout actionsRow;
-    private final TextView statusView;
-    private final TextView[] stepViews = new TextView[5];
-    private final ProgressBar activityView;
-    private final TextView cancelView;
     private final TextView retryView;
     private final TextView showAnywayView;
+    /** The Back-key slot: "Cancel" or "Back", with its key hint. */
+    private final LinearLayout cancelView;
+    private final TextView cancelLabel;
     private final boolean reducedMotion;
+    private final boolean hasHost;
     /**
      * This cover continues one another window shows now: until it is attached it takes that
      * one's message and shows its artwork at once, so its first frame is the frame on screen.
      */
     private boolean handedOver;
-    private int currentStep = 1;
-    private boolean error;
-    private boolean closingPresentation;
+    private Bitmap shownArtwork;
+    /** A hidden warm-up's see-through cover: no background and no information layer. */
+    private boolean neutral;
     private boolean stopped;
     private boolean revealRequested;
     private int revealGeneration;
     private int activeMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
     private int lastMessageIndex = -1;
-    private boolean splashLayout;
+    /** The rotating message the line shows whenever there is no notice; a handoff continues it. */
+    private String currentMessage;
+    private boolean rotating;
+    private CharSequence lineTarget = "";
+    private boolean lineIsNotice;
+    /** The stage text the label shows or fades to. */
+    private String stageTarget = "";
+    /** This cover's frames: effects ordered after it wait here, each settles exactly once. */
+    private final ViewFrameSource frames = new ViewFrameSource(this);
     private Actions actions;
 
     private final Runnable rotateMessage = new Runnable() {
         @Override public void run() {
-            if (stopped || error || closingPresentation
+            if (stopped || model.line() != LoadingCoverModel.Line.MESSAGE
                     || getVisibility() != VISIBLE || messages.length == 0) {
                 return;
             }
-            int next;
-            do {
-                next = random.nextInt(messages.length);
-            } while (messages.length > 1 && next == lastMessageIndex);
-            lastMessageIndex = next;
-            String nextMessage = messages[next];
-            if (reducedMotion) {
-                messageView.setText(nextMessage);
-                return;
-            }
-            messageView.animate().cancel();
-            messageView.animate().alpha(0f).setDuration(160L).withEndAction(() -> {
-                if (stopped || error || closingPresentation) return;
-                messageView.setText(nextMessage);
-                messageView.animate().alpha(1f).setDuration(240L).start();
-            }).start();
+            currentMessage = messages[nextMessageIndex()];
+            showLine(currentMessage, false);
             handler.postDelayed(this, MESSAGE_INTERVAL_MS);
         }
     };
 
-    public ConsoleStreamLoadingView(Context context, String title, String initialMessage,
-                                    boolean reducedMotion) {
+    private final Runnable tickElapsed = new Runnable() {
+        @Override public void run() {
+            if (stopped) return;
+            elapsedView.setText(model.elapsed(SystemClock.uptimeMillis()));
+            handler.postDelayed(this, 1000L);
+        }
+    };
+
+    /** {@code epochMillis}: the transition's start on {@link SystemClock#uptimeMillis}. */
+    public ConsoleStreamLoadingView(Context context, String hostName, String title,
+                                    String initialMessage, boolean reducedMotion,
+                                    long epochMillis) {
         super(context);
         this.reducedMotion = reducedMotion;
         handedOver = initialMessage != null && !initialMessage.trim().isEmpty();
         messages = getResources().getStringArray(R.array.console_loading_messages);
+        model = new LoadingCoverModel(title == null || title.trim().isEmpty()
+                ? context.getString(R.string.app_label) : title, epochMillis);
+        artwork = new FencedArtwork<>(SPLASH_CACHE, ConsoleStreamLoadingView::decodeSplash,
+                DECODER, handler::post, this::showArtwork);
         setClickable(true);
         setFocusable(true);
         setFocusableInTouchMode(true);
@@ -136,91 +191,141 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
         defaultBackdrop = new Backdrop(context);
         addView(defaultBackdrop, match());
-        defaultShade = new View(context);
-        defaultShade.setBackgroundColor(0x57000000);
-        addView(defaultShade, match());
+        artworkView = new ImageView(context);
+        artworkView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        artworkView.setVisibility(GONE);
+        // Full-bleed: the game's backdrop is the whole background, as on the Home.
+        addView(artworkView, match());
+        scrim = new Scrim(context);
+        addView(scrim, match());
 
-        defaultContent = new LinearLayout(context);
-        defaultContent.setOrientation(LinearLayout.VERTICAL);
-        defaultContent.setGravity(Gravity.CENTER_HORIZONTAL);
-        defaultContent.setPadding(dp(36), dp(28), dp(36), dp(28));
-        LayoutParams contentParams = new LayoutParams(dp(900),
-                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
-        addView(defaultContent, contentParams);
+        hostChip = new LinearLayout(context);
+        hostChip.setOrientation(LinearLayout.HORIZONTAL);
+        hostChip.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView glyph = new ImageView(context);
+        glyph.setImageResource(R.drawable.ic_console_bar_monitor);
+        glyph.setImageTintList(ColorStateList.valueOf(INK));
+        LinearLayout.LayoutParams glyphParams = new LinearLayout.LayoutParams(dp(28), dp(28));
+        glyphParams.rightMargin = dp(4);
+        hostChip.addView(glyph, glyphParams);
+        LinearLayout hostTexts = new LinearLayout(context);
+        hostTexts.setOrientation(LinearLayout.VERTICAL);
+        TextView hostNameView = text(hostName == null ? "" : hostName.trim(), 15, INK);
+        hostNameView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        hostTexts.addView(hostNameView, wrap());
+        TextView hostLine = text(context.getString(R.string.console_status_online), 13, INK_SOFT);
+        hostLine.setCompoundDrawablesRelativeWithIntrinsicBounds(dot(ONLINE), null, null, null);
+        hostLine.setCompoundDrawablePadding(dp(6));
+        hostTexts.addView(hostLine, wrap());
+        hostChip.addView(hostTexts, wrap());
+        hasHost = hostName != null && !hostName.trim().isEmpty();
+        LayoutParams hostParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+        hostParams.leftMargin = dp(EDGE_DP);
+        hostParams.topMargin = dp(32);
+        addView(hostChip, hostParams);
 
-        titleView = text(title == null || title.trim().isEmpty()
-                ? context.getString(R.string.app_label) : title, 38, Color.WHITE, true);
-        titleView.setGravity(Gravity.CENTER);
-        titleView.setMaxLines(2);
-        defaultContent.addView(titleView, row());
+        card = new LinearLayout(context);
+        card.setOrientation(LinearLayout.VERTICAL);
+        LayoutParams cardParams = new LayoutParams(dp(CARD_WIDTH_DP),
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.START);
+        cardParams.leftMargin = dp(EDGE_DP);
+        cardParams.bottomMargin = dp(EDGE_DP);
+        addView(card, cardParams);
 
-        messageView = text(handedOver ? initialMessage
-                : context.getString(R.string.transition_preparing_session),
-                23, 0xFFE5E8F5, false);
-        messageView.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams messageParams = row();
-        messageParams.topMargin = dp(12);
-        defaultContent.addView(messageView, messageParams);
+        kickerView = text("", 9, INK_SOFT);
+        kickerView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        kickerView.setLetterSpacing(.14f);
+        kickerView.setAllCaps(true);
+        card.addView(kickerView, row(0));
+        fromView = text("", 11, INK_FAINT);
+        card.addView(fromView, row(11));
+        titleView = text("", TITLE_SP, INK);
+        titleView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        titleView.setLetterSpacing(-.01f);
+        titleView.setSingleLine(true);
+        titleView.setEllipsize(TextUtils.TruncateAt.END);
+        titleView.setShadowLayer(dp(4), 0, dp(1), 0x99000000);
+        card.addView(titleView, row(4));
 
-        stepsView = new LinearLayout(context);
-        stepsView.setOrientation(LinearLayout.VERTICAL);
-        stepsView.setVisibility(GONE);
-        for (int index = 0; index < stepViews.length; index++) {
-            stepViews[index] = text("", 17, 0xFF8E99AA, false);
-            stepViews[index].setMinHeight(dp(42));
-            stepViews[index].setGravity(Gravity.CENTER_VERTICAL);
-            stepViews[index].setPadding(dp(16), 0, dp(16), 0);
-            stepsView.addView(stepViews[index], row());
-        }
+        segments = new Segments(context);
+        LinearLayout.LayoutParams segmentParams = row(11);
+        segmentParams.height = dp(3);
+        card.addView(segments, segmentParams);
 
-        statusLine = new LinearLayout(context);
-        statusLine.setOrientation(LinearLayout.HORIZONTAL);
-        statusLine.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams statusLineParams = row();
-        statusLineParams.topMargin = dp(12);
-        defaultContent.addView(statusLine, statusLineParams);
+        LinearLayout stageRow = new LinearLayout(context);
+        stageRow.setOrientation(LinearLayout.HORIZONTAL);
+        stageRow.setGravity(Gravity.BOTTOM);
+        card.addView(stageRow, row(8));
+        stageView = text("", 14, INK);
+        stageView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        stageView.setSingleLine(true);
+        stageView.setEllipsize(TextUtils.TruncateAt.END);
+        stageView.setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_POLITE);
+        stageRow.addView(stageView, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        elapsedView = text("", 10, INK_FAINT);
+        elapsedView.setTypeface(Typeface.MONOSPACE);
+        elapsedView.setPadding(dp(10), 0, 0, 0);
+        // A fixed monospace width ("10:00" never pushes the stage); hours may widen it once.
+        elapsedView.setGravity(Gravity.END);
+        elapsedView.setMinWidth(dp(10)
+                + (int) Math.ceil(elapsedView.getPaint().measureText("00:00")));
+        stageRow.addView(elapsedView, wrap());
 
-        activityView = new ProgressBar(context);
-        activityView.setIndeterminate(true);
-        statusLine.addView(activityView, new LinearLayout.LayoutParams(dp(28), dp(28)));
-        statusView = text(context.getString(R.string.transition_preparing_session),
-                14, 0xFFB8C7D8, false);
-        statusView.setPadding(dp(12), 0, 0, 0);
-        statusLine.addView(statusView, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        currentMessage = handedOver ? initialMessage
+                : messages.length == 0 ? "" : messages[nextMessageIndex()];
+        lineView = text("", 10.5f, INK_SOFT);
+        // One fixed line for message and notice alike: a change never moves the card; a long
+        // reason ellipsizes (the full reason is in the diagnostics).
+        lineView.setSingleLine(true);
+        lineView.setEllipsize(TextUtils.TruncateAt.END);
+        lineView.setGravity(Gravity.CENTER_VERTICAL);
+        lineView.setHeight(Math.max(dp(15), lineView.getLineHeight()));
+        card.addView(lineView, row(11));
 
         actionsRow = new LinearLayout(context);
         actionsRow.setOrientation(LinearLayout.HORIZONTAL);
-        actionsRow.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams actionsParams = row();
-        actionsParams.topMargin = dp(22);
-        defaultContent.addView(actionsRow, actionsParams);
-
-        cancelView = action(context.getString(R.string.transition_cancel));
-        cancelView.setId(View.generateViewId());
-        cancelView.setOnClickListener(view -> { if (actions != null) actions.onCancel(); });
-        actionsRow.addView(cancelView, actionParams());
-        retryView = action(context.getString(R.string.transition_retry));
-        retryView.setVisibility(GONE);
+        card.addView(actionsRow, row(14));
+        retryView = pillText(context.getString(R.string.transition_retry));
         retryView.setOnClickListener(view -> requestRetryOnce());
         actionsRow.addView(retryView, actionParams());
-        showAnywayView = action(context.getString(R.string.transition_reveal_now));
-        showAnywayView.setId(View.generateViewId());
-        showAnywayView.setVisibility(GONE);
+        showAnywayView = pillText(context.getString(R.string.transition_reveal_now));
         showAnywayView.setOnClickListener(view -> {
             if (actions != null) actions.onShowStreamAnyway();
         });
         actionsRow.addView(showAnywayView, actionParams());
+        cancelView = new LinearLayout(context);
+        cancelView.setOrientation(LinearLayout.HORIZONTAL);
+        cancelView.setGravity(Gravity.CENTER_VERTICAL);
+        pill(cancelView);
+        cancelLabel = text(context.getString(R.string.transition_cancel), 10.5f, INK);
+        cancelLabel.setTextColor(pillInk());
+        cancelLabel.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        cancelLabel.setDuplicateParentStateEnabled(true);
+        cancelView.addView(cancelLabel, wrap());
+        TextView keyHint = text(context.getString(R.string.transition_back_key_hint), 8, INK);
+        keyHint.setTextColor(pillInk());
+        keyHint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        keyHint.setAlpha(.7f);
+        keyHint.setPadding(dp(4), dp(1), dp(4), dp(1));
+        GradientDrawable hintBorder = new GradientDrawable();
+        hintBorder.setCornerRadius(dp(4));
+        hintBorder.setStroke(Math.max(1, dp(.75f)), pillInk());
+        keyHint.setBackground(hintBorder);
+        keyHint.setDuplicateParentStateEnabled(true);
+        LinearLayout.LayoutParams hintParams = wrap();
+        hintParams.leftMargin = dp(6);
+        cancelView.addView(keyHint, hintParams);
+        cancelView.setOnClickListener(view -> { if (actions != null) actions.onCancel(); });
+        actionsRow.addView(cancelView, actionParams());
 
-        configureForPlaynite(false);
-        setStep(1, context.getString(R.string.transition_preparing_session));
-        if (handedOver) {
-            lastMessageIndex = Arrays.asList(messages).indexOf(initialMessage);
-            if (!reducedMotion) handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
-            requestDefaultActionFocus();
-        } else {
-            scheduleLoadingMessage(false);
-        }
+        if (handedOver) lastMessageIndex = Arrays.asList(messages).indexOf(initialMessage);
+        model.step(1, context.getString(R.string.transition_preparing_session), "");
+        render();
+        applyBackground();
+        if (handedOver) requestDefaultActionFocus();
+        tickElapsed.run();
         post(this::requestDefaultActionFocus);
     }
 
@@ -244,102 +349,73 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     private void requestRetryOnce() {
-        if (actions == null || retryView.getVisibility() != VISIBLE
-                || !retryView.isEnabled()) return;
-        retryView.setEnabled(false);
-        retryView.setVisibility(GONE);
-        activityView.setVisibility(VISIBLE);
+        if (actions == null || !model.takeRetry()) return;
+        render();
         actions.onRetry();
     }
 
     public void showNeutralWarmUpAppearance() {
         if (stopped) return;
-        hideSplashArtwork();
-        defaultBackdrop.setVisibility(GONE);
-        defaultShade.setVisibility(GONE);
-        defaultContent.setVisibility(GONE);
+        neutral = true;
+        applyBackground();
     }
 
     public void showFullTransitionAppearance() {
         if (stopped) return;
-        closingPresentation = false;
-        if (hasSplashArtwork()) showSplashArtworkPresentation(false);
-        else showDefaultTransitionPresentation();
-        stepsView.setVisibility(VISIBLE);
+        neutral = false;
+        model.leaveClosing();
+        render();
+        applyBackground();
     }
 
+    /** UI thread: the layer follows the controller's snapshot ({@link LoadingCoverModel#follow}). */
+    public void followTransition(LaunchTransitionSnapshot snapshot) {
+        if (stopped || !model.follow(snapshot)) return;
+        render();
+    }
+
+    /**
+     * The cached artwork shows at once; any other decodes off the UI thread and shows only
+     * while its path is still this cover's latest request. Empty clears it (the standard
+     * background shows).
+     */
     public void setSplashArtwork(String artworkPath) {
-        if (stopped) return;
-        String path = artworkPath == null ? "" : artworkPath.trim();
-        if (path.isEmpty()) {
-            splashArtworkPath = "";
-            hideSplashArtwork();
-            return;
-        }
-        boolean sameArtwork = path.equals(splashArtworkPath);
-        if (sameArtwork && hasSplashArtwork()) {
-            showSplashArtworkPresentation(false);
-            return;
-        }
-        Bitmap bitmap = decodeSplashArtwork(path);
-        if (bitmap == null) {
-            splashArtworkPath = path;
-            hideSplashArtwork();
-            return;
-        }
-        if (!sameArtwork) hideSplashArtwork();
-        splashArtworkPath = path;
-        applySplashArtwork(bitmap);
+        artwork.request(artworkPath);
     }
 
     public void setTitle(String title) {
-        if (title == null || title.trim().isEmpty() || stopped) return;
-        titleView.setText(title.trim());
-        if (splashLayout) {
-            handler.removeCallbacks(rotateMessage);
-            messageView.setText(title.trim());
-        }
+        if (stopped || !model.setTitle(title)) return;
+        render();
     }
 
-    private Bitmap decodeSplashArtwork(String path) {
-        if (decodedSplash != null && path.equals(decodedSplashPath)) return decodedSplash;
+    /** The game a switch leaves ("from game A" above the title); blank clears it. */
+    public void setFrom(String previousTitle) {
+        if (stopped || !model.setFrom(previousTitle)) return;
+        render();
+    }
+
+    private static Bitmap decodeSplash(String path) {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeFile(path, bounds);
-        if (!LoadingArtworkPolicy.canUseAsSplash(
-                bounds.outWidth, bounds.outHeight)) return null;
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = LoadingArtworkPolicy.sampleSize(
-                bounds.outWidth, bounds.outHeight, 1920);
-        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        decodedSplash = BitmapFactory.decodeFile(path, options);
-        decodedSplashPath = path;
-        return decodedSplash;
-    }
-
-    public void configureForPlaynite(boolean playnite) {
-        int[] labels = playnite
-                ? new int[]{R.string.transition_preparing_session,
-                R.string.transition_connecting_stream,
-                R.string.transition_starting_playnite,
-                R.string.transition_waiting_fullscreen,
-                R.string.transition_ready}
-                : new int[]{R.string.transition_preparing_session,
-                R.string.transition_connecting_stream,
-                R.string.transition_starting_game,
-                R.string.transition_verifying_readiness,
-                R.string.transition_ready};
-        for (int index = 0; index < labels.length; index++) {
-            stepViews[index].setTag(labels[index]);
+        Bitmap decoded = null;
+        if (LoadingArtworkPolicy.canUseAsSplash(bounds.outWidth, bounds.outHeight)) {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = LoadingArtworkPolicy.sampleSize(
+                    bounds.outWidth, bounds.outHeight, 1920);
+            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            decoded = BitmapFactory.decodeFile(path, options);
         }
-        renderSteps();
+        if (decoded == null) {
+            MoonWakerDiagnostics.record("WARN", "android.cover", "cover.artwork",
+                    "outcome", "decode_failed", "width", bounds.outWidth,
+                    "height", bounds.outHeight);
+        }
+        return decoded;
     }
 
-    public void doAfterNextFrame(Runnable action) {
-        if (action == null || stopped) return;
-        postOnAnimation(() -> postOnAnimation(() -> {
-            if (!stopped && isAttachedToWindow() && getVisibility() == VISIBLE) action.run();
-        }));
+    public ViewFrameSource frames() {
+        return frames;
     }
 
     public void setStage(String stage) {
@@ -347,40 +423,34 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> setStage(stage));
             return;
         }
-        if (stopped || closingPresentation) return;
-        String friendly = friendlyStage(stage);
-        statusView.setText(friendly);
-        int step = progressForStage(stage);
-        if (step > currentStep) setStep(step, friendly);
+        if (stopped || !model.connectionStage(friendlyStage(stage), progressForStage(stage))) {
+            return;
+        }
+        render();
     }
 
     public void setStep(int step, String status) {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post(() -> setStep(step, status));
-            return;
-        }
-        if (stopped || closingPresentation) return;
-        boolean resumingAfterError = error;
-        currentStep = Math.max(1, Math.min(5, step));
-        error = false;
-        messageView.setTextColor(0xFFE5E8F5);
-        statusView.setTextColor(0xFFB8C7D8);
-        statusView.setText(status == null || status.trim().isEmpty()
-                ? getContext().getString(R.string.transition_preparing_session) : status);
-        activityView.setVisibility(currentStep == 5 ? INVISIBLE : VISIBLE);
-        actionsRow.setVisibility(VISIBLE);
-        cancelView.setEnabled(true);
-        cancelView.setText(R.string.transition_cancel);
-        retryView.setEnabled(true);
-        retryView.setVisibility(GONE);
-        renderSteps();
-        announceStep();
-        if (resumingAfterError) scheduleLoadingMessage(true);
+        setStep(step, status, "");
     }
 
+    /** {@code notice}: one attention line under the stage (e.g. "taking longer"), or empty. */
+    public void setStep(int step, String status, String notice) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> setStep(step, status, notice));
+            return;
+        }
+        if (stopped) return;
+        if (!model.step(step, status == null || status.trim().isEmpty()
+                ? getContext().getString(R.string.transition_preparing_session) : status,
+                notice)) {
+            return;
+        }
+        render();
+    }
+
+    /** The decorative message a handoff continues; never the stage. */
     public String getCurrentMessage() {
-        CharSequence value = messageView.getText();
-        return value == null ? "" : value.toString();
+        return currentMessage;
     }
 
     public void showError(String title, String details) {
@@ -398,50 +468,29 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
      */
     public void showError(String title, String details, boolean allowShowAnyway,
                           boolean preferReveal, boolean allowRetry) {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post(() -> showError(title, details, allowShowAnyway, preferReveal,
-                    allowRetry));
-            return;
-        }
-        if (stopped || closingPresentation) return;
-        boolean revealNewlyShown = allowShowAnyway && showAnywayView.getVisibility() != VISIBLE;
-        error = true;
-        handler.removeCallbacks(rotateMessage);
-        messageView.animate().cancel();
-        messageView.setAlpha(1f);
-        messageView.setText(title);
-        statusView.setText(details);
-        statusView.setTextColor(0xFFFFAAA2);
-        activityView.setVisibility(INVISIBLE);
-        actionsRow.setVisibility(VISIBLE);
-        cancelView.setEnabled(true);
-        cancelView.setText(R.string.transition_cancel);
-        retryView.setEnabled(true);
-        retryView.setVisibility(allowRetry ? VISIBLE : GONE);
-        showAnywayView.setVisibility(allowShowAnyway ? VISIBLE : GONE);
-        renderSteps();
-        if (preferReveal && revealNewlyShown) showAnywayView.requestFocus();
-        else if (!isVisibleAction(findFocus())) {
-            (allowRetry ? retryView : allowShowAnyway ? showAnywayView : cancelView)
-                    .requestFocus();
-        }
-        sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+        showFailure(title, details, "", allowShowAnyway, preferReveal, allowRetry);
     }
 
     /** Error whose details end with a small, dim reason code for failure reports. */
     public void showError(String title, String details, String reasonCode) {
+        showFailure(title, details, reasonCode, false, false, true);
+    }
+
+    private void showFailure(String title, String details, String reasonCode,
+                             boolean allowShowAnyway, boolean preferReveal, boolean allowRetry) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post(() -> showError(title, details, reasonCode));
+            handler.post(() -> showFailure(title, details, reasonCode, allowShowAnyway,
+                    preferReveal, allowRetry));
             return;
         }
-        if (stopped || closingPresentation) return;
-        showError(title, details, false);
-        SpannableStringBuilder text = new SpannableStringBuilder(details).append('\n');
-        int start = text.length();
-        text.append(reasonCode);
-        text.setSpan(new RelativeSizeSpan(0.75f), start, text.length(), 0);
-        text.setSpan(new ForegroundColorSpan(0xFF8E99AA), start, text.length(), 0);
-        statusView.setText(text);
+        if (stopped) return;
+        boolean revealNewlyShown = allowShowAnyway && !model.actions()
+                .contains(LoadingCoverModel.Action.REVEAL);
+        if (!model.error(title, details, reasonCode, allowShowAnyway, allowRetry)) return;
+        render();
+        if (preferReveal && revealNewlyShown) showAnywayView.requestFocus();
+        else if (!isVisibleAction(findFocus())) requestDefaultActionFocus();
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 
     public void showLauncherInteraction(String title, String details, boolean allowReveal) {
@@ -449,24 +498,11 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> showLauncherInteraction(title, details, allowReveal));
             return;
         }
-        if (stopped || closingPresentation) return;
-        boolean revealNewlyShown = allowReveal && showAnywayView.getVisibility() != VISIBLE;
-        error = true;
-        handler.removeCallbacks(rotateMessage);
-        messageView.animate().cancel();
-        messageView.setAlpha(1f);
-        messageView.setText(title);
-        statusView.setText(details);
-        statusView.setTextColor(0xFFFFAAA2);
-        activityView.setVisibility(INVISIBLE);
-        actionsRow.setVisibility(VISIBLE);
-        cancelView.setEnabled(true);
-        cancelView.setText(R.string.transition_back);
-        retryView.setVisibility(GONE);
-        showAnywayView.setVisibility(allowReveal ? VISIBLE : GONE);
-        cancelView.setNextFocusRightId(showAnywayView.getId());
-        showAnywayView.setNextFocusLeftId(cancelView.getId());
-        renderSteps();
+        if (stopped) return;
+        boolean revealNewlyShown = allowReveal && !model.actions()
+                .contains(LoadingCoverModel.Action.REVEAL);
+        if (!model.launcher(title, details, allowReveal)) return;
+        render();
         if (revealNewlyShown) showAnywayView.requestFocus();
         else requestDefaultActionFocus();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
@@ -477,24 +513,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> showWarning(title, details, allowReveal));
             return;
         }
-        if (stopped || closingPresentation) return;
-        error = true;
-        handler.removeCallbacks(rotateMessage);
-        messageView.animate().cancel();
-        messageView.setAlpha(1f);
-        messageView.setText(title);
-        messageView.setTextColor(0xFFFFD166);
-        statusView.setText(details);
-        statusView.setTextColor(0xFFFFE3A3);
-        activityView.setVisibility(GONE);
-        actionsRow.setVisibility(VISIBLE);
-        cancelView.setEnabled(true);
-        cancelView.setText(R.string.transition_back);
-        retryView.setVisibility(GONE);
-        showAnywayView.setVisibility(allowReveal ? VISIBLE : GONE);
-        cancelView.setNextFocusRightId(showAnywayView.getId());
-        showAnywayView.setNextFocusLeftId(cancelView.getId());
-        renderSteps();
+        if (stopped || !model.warning(title, details, allowReveal)) return;
+        render();
         if (!isVisibleAction(findFocus())) cancelView.requestFocus();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
@@ -505,40 +525,31 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             return;
         }
         if (stopped) return;
-        error = false;
-        statusView.setText(R.string.transition_cancelling);
-        statusView.setTextColor(0xFFB8C7D8);
-        activityView.setVisibility(VISIBLE);
-        cancelView.setEnabled(false);
-        retryView.setVisibility(GONE);
-        showAnywayView.setVisibility(GONE);
-        actionsRow.setVisibility(GONE);
-        renderSteps();
+        model.cancelling(getContext().getString(R.string.transition_cancelling));
+        render();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 
-    /** Shows a passive privacy screen while an ended game returns to the library. */
-    public void showClosing(String title, String status) {
+    /** The quiet closing card of an ended game: the same card, without steps or actions. */
+    public void showClosing(String status) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post(() -> showClosing(title, status));
+            handler.post(() -> showClosing(status));
             return;
         }
         if (stopped) return;
-        error = false;
-        closingPresentation = true;
-        handler.removeCallbacks(rotateMessage);
-        messageView.animate().cancel();
-        messageView.setAlpha(1f);
-        messageView.setText(title);
-        statusView.setText(status);
-        statusView.setTextColor(0xFFB8C7D8);
-        if (hasSplashArtwork()) showSplashArtworkPresentation(true);
-        else showDefaultTransitionPresentation();
-        activityView.setVisibility(VISIBLE);
-        stepsView.setVisibility(GONE);
-        retryView.setVisibility(GONE);
-        showAnywayView.setVisibility(GONE);
-        actionsRow.setVisibility(GONE);
+        if (!model.closing()) {
+            // Once per closing card: whether it keeps the ended game's artwork.
+            MoonWakerDiagnostics.record("INFO", "android.cover", "cover.artwork",
+                    "outcome", shownArtwork != null ? "shown" : "none", "kind", "closing");
+        }
+        model.closing(status);
+        neutral = false;
+        if (artworkView.getVisibility() == VISIBLE) {
+            artworkView.animate().cancel();
+            artworkView.setAlpha(1f);
+        }
+        render();
+        applyBackground();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 
@@ -551,18 +562,13 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> setManualRevealAvailable(available));
             return;
         }
-        if (stopped || error || revealRequested) return;
-        if (actionsRow.getVisibility() != VISIBLE) return;
-        boolean changed = showAnywayView.getVisibility() != (available ? VISIBLE : GONE);
-        if (!changed) return;
-        showAnywayView.setVisibility(available ? VISIBLE : GONE);
+        if (stopped || revealRequested) return;
+        boolean focused = findFocus() == showAnywayView;
+        if (!model.manualReveal(available)) return;
+        render();
         if (available) {
-            // Keep the existing Cancel focus, but make Odsłoń teraz the explicit
-            // next DPAD-right option for remotes and controllers.
-            cancelView.setNextFocusRightId(showAnywayView.getId());
-            showAnywayView.setNextFocusLeftId(cancelView.getId());
             sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
-        } else if (findFocus() == showAnywayView) {
+        } else if (focused) {
             cancelView.requestFocus();
         }
     }
@@ -581,10 +587,10 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             return cancelView.performClick();
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
-            return focusPreviousAction();
+            return moveActionFocus(-1);
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-            return focusNextAction();
+            return moveActionFocus(1);
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
             requestDefaultActionFocus();
@@ -626,21 +632,29 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         setStep(4, getContext().getString(R.string.console_stream_waiting_video));
     }
 
-    public void revealStream() {
-        revealStream(null);
-    }
-
-    public void revealStream(Runnable afterReveal) {
+    /**
+     * Fades the cover out after its "ready" frame, or at the barrier deadline when no frame
+     * comes (UNAVAILABLE): {@code afterReveal} always follows unless the reveal was superseded
+     * (cover shown again, view stopped) or {@code fence} cancelled.
+     */
+    public void revealStream(String fence, Runnable afterReveal) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post(() -> revealStream(afterReveal));
+            handler.post(() -> revealStream(fence, afterReveal));
             return;
         }
-        if (stopped || revealRequested || closingPresentation) return;
+        // The controller decided this reveal: no phase of this layer refuses it.
+        if (stopped || revealRequested) return;
+        model.leaveClosing();
         revealRequested = true;
         int generation = ++revealGeneration;
-        setStep(5, getContext().getString(R.string.transition_ready));
-        doAfterNextFrame(() -> {
+        setStep(LoadingCoverModel.STEPS, getContext().getString(R.string.transition_ready));
+        frames.await(fence, PresentationBarrier.COVER_DEADLINE_MS, outcome -> {
             if (stopped || generation != revealGeneration || !revealRequested) return;
+            if (!LaunchTransitionController.coverAllowsEffect(outcome)) {
+                // A cancelled reveal leaves the cover up and a later one (Reveal now) possible.
+                revealRequested = false;
+                return;
+            }
             handler.removeCallbacks(rotateMessage);
             if (reducedMotion) {
                 setVisibility(GONE);
@@ -665,14 +679,18 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             bringToFront();
             return;
         }
+        // A new presentation: its time counts from here.
+        model.restartClock(SystemClock.uptimeMillis());
+        elapsedView.setText(model.elapsed(SystemClock.uptimeMillis()));
         revealGeneration++;
+        frames.newPresentation();
         animate().cancel();
         revealRequested = false;
         setAlpha(1f);
         setVisibility(VISIBLE);
         bringToFront();
-        if (!closingPresentation) requestDefaultActionFocus();
-        if (!error) scheduleLoadingMessage(false);
+        if (!model.actions().isEmpty()) requestDefaultActionFocus();
+        scheduleLoadingMessage();
     }
 
     public void stopAndHide() {
@@ -693,35 +711,156 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         animate().cancel();
     }
 
-    private void renderSteps() {
-        for (int index = 0; index < stepViews.length; index++) {
-            TextView view = stepViews[index];
-            Object tag = view.getTag();
-            String label = tag instanceof Integer ? getContext().getString((Integer) tag) : "";
-            if (index + 1 < currentStep) {
-                view.setText(getContext().getString(R.string.transition_step_complete, label));
-                view.setTextColor(0xFFB8D7E8);
-                view.setTypeface(android.graphics.Typeface.DEFAULT,
-                        android.graphics.Typeface.NORMAL);
-            } else if (index + 1 == currentStep) {
-                view.setText(getContext().getString(error
-                        ? R.string.transition_step_error : R.string.transition_step_active, label));
-                view.setTextColor(error ? 0xFFFFAAA2 : 0xFF7DD8FF);
-                view.setTypeface(android.graphics.Typeface.DEFAULT,
-                        android.graphics.Typeface.BOLD);
-            } else {
-                view.setText(getContext().getString(R.string.transition_step_pending, label));
-                view.setTextColor(0xFF7F8999);
-                view.setTypeface(android.graphics.Typeface.DEFAULT,
-                        android.graphics.Typeface.NORMAL);
-            }
+    /** Draws the card from the model; the same in every background, only content changes. */
+    private void render() {
+        kickerView.setText(kickerLabel(model.kicker()));
+        String from = model.from();
+        fromView.setText(from.isEmpty() ? "" : getContext().getString(
+                R.string.transition_switch_from, from));
+        fromView.setVisibility(from.isEmpty() || model.closing() ? GONE : VISIBLE);
+        titleView.setText(model.title());
+        titleView.setTextSize(model.closing() ? CLOSING_TITLE_SP : TITLE_SP);
+        showStage(model.stage().isEmpty()
+                ? getContext().getString(R.string.transition_preparing_session) : model.stage());
+        CharSequence notice = model.notice();
+        if (!model.reasonCode().isEmpty()) {
+            SpannableStringBuilder text = new SpannableStringBuilder(notice).append("  ");
+            int start = text.length();
+            text.append(model.reasonCode());
+            text.setSpan(new RelativeSizeSpan(0.8f), start, text.length(), 0);
+            text.setSpan(new ForegroundColorSpan(INK_FAINT), start, text.length(), 0);
+            notice = text;
+        }
+        boolean noticeShown = model.line() == LoadingCoverModel.Line.NOTICE;
+        lineView.setVisibility(model.line() == LoadingCoverModel.Line.NONE ? GONE : VISIBLE);
+        if (model.line() != LoadingCoverModel.Line.NONE) {
+            showLine(noticeShown ? notice : currentMessage, noticeShown);
+        }
+        boolean message = model.line() == LoadingCoverModel.Line.MESSAGE;
+        if (message != rotating) {
+            rotating = message;
+            if (message) scheduleLoadingMessage();
+            else handler.removeCallbacks(rotateMessage);
+        }
+        segments.show(model);
+        segments.setVisibility(model.stepsVisible() ? VISIBLE : GONE);
+        List<LoadingCoverModel.Action> offered = model.actions();
+        boolean back = offered.contains(LoadingCoverModel.Action.BACK);
+        cancelLabel.setText(back ? R.string.transition_back : R.string.transition_cancel);
+        cancelView.setVisibility(back || offered.contains(LoadingCoverModel.Action.CANCEL)
+                ? VISIBLE : GONE);
+        retryView.setVisibility(offered.contains(LoadingCoverModel.Action.RETRY)
+                ? VISIBLE : GONE);
+        showAnywayView.setVisibility(offered.contains(LoadingCoverModel.Action.REVEAL)
+                ? VISIBLE : GONE);
+        actionsRow.setVisibility(visibility(model.actionsSlot()));
+    }
+
+    /** A reserved slot keeps its place on the card: invisible, never gone. */
+    private static int visibility(LoadingCoverModel.Slot slot) {
+        return slot == LoadingCoverModel.Slot.SHOWN ? VISIBLE
+                : slot == LoadingCoverModel.Slot.RESERVED ? INVISIBLE : GONE;
+    }
+
+    /** Whether a change animates: on screen, motion allowed (also by the animator scale). */
+    private boolean animatesChanges() {
+        return !reducedMotion && !handedOver && !stopped && isAttachedToWindow()
+                && getVisibility() == VISIBLE && ValueAnimator.areAnimatorsEnabled();
+    }
+
+    /** A changed line (notice or message) cross-fades like the stage. */
+    private void showLine(CharSequence text, boolean notice) {
+        if (notice == lineIsNotice && text.toString().contentEquals(lineTarget)
+                && lineView.getText().length() > 0) {
+            return;
+        }
+        lineTarget = text;
+        lineIsNotice = notice;
+        lineView.animate().cancel();
+        if (!animatesChanges() || lineView.getText().length() == 0) {
+            applyLine();
+            lineView.setAlpha(1f);
+            return;
+        }
+        lineView.animate().alpha(0f).setDuration(MESSAGE_FADE_MS).withEndAction(() -> {
+            applyLine();
+            lineView.animate().alpha(1f).setDuration(MESSAGE_FADE_MS).start();
+        }).start();
+    }
+
+    private void applyLine() {
+        lineView.setText(lineTarget);
+        lineView.setTextColor(lineIsNotice ? INK_SOFT : INK_FAINT);
+        lineView.setTypeface(lineIsNotice ? Typeface.DEFAULT
+                : Typeface.create("sans-serif-light", Typeface.ITALIC));
+        lineView.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                lineIsNotice ? dot(WARN) : null, null, null, null);
+        lineView.setCompoundDrawablePadding(dp(7));
+    }
+
+    /** A changed stage cross-fades (out, then in) instead of swapping. */
+    private void showStage(String stage) {
+        if (stage.equals(stageTarget)) return;
+        stageTarget = stage;
+        stageView.animate().cancel();
+        if (!animatesChanges()) {
+            stageView.setText(stage);
+            stageView.setAlpha(1f);
+            return;
+        }
+        stageView.animate().alpha(0f).setDuration(STAGE_FADE_MS / 2).withEndAction(() -> {
+            stageView.setText(stageTarget);
+            stageView.animate().alpha(1f).setDuration(STAGE_FADE_MS / 2).start();
+        }).start();
+    }
+
+    private String kickerLabel(LoadingCoverModel.Kicker kicker) {
+        switch (kicker) {
+            case RUNNING: return getContext().getString(R.string.transition_kicker_running);
+            case SWITCHING: return getContext().getString(R.string.transition_kicker_switching);
+            case CLOSING: return getContext().getString(R.string.transition_kicker_closing);
+            case FAILED: return getContext().getString(R.string.transition_kicker_failed);
+            default: return getContext().getString(R.string.transition_kicker_starting);
         }
     }
 
-    private void announceStep() {
-        TextView current = stepViews[currentStep - 1];
-        current.setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_POLITE);
-        current.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
+    /**
+     * Artwork, when shown, replaces the standard backdrop; the card above never moves. While
+     * the requested artwork decodes, the cover is its plain dark ground: the standard backdrop
+     * never shows for a frame before the game's artwork.
+     */
+    private void applyBackground() {
+        boolean art = shownArtwork != null;
+        defaultBackdrop.setVisibility(neutral || art || artwork.pending() ? GONE : VISIBLE);
+        artworkView.setVisibility(!neutral && art ? VISIBLE : GONE);
+        scrim.setVisibility(neutral ? GONE : VISIBLE);
+        hostChip.setVisibility(neutral || !hasHost ? GONE : VISIBLE);
+        card.setVisibility(neutral ? GONE : VISIBLE);
+    }
+
+    private void showArtwork(Bitmap bitmap) {
+        if (stopped) return;
+        if (bitmap == shownArtwork) {
+            // No artwork either way: whether one is still decoding decides the ground.
+            applyBackground();
+            return;
+        }
+        artworkView.animate().cancel();
+        shownArtwork = bitmap;
+        artworkView.setImageBitmap(bitmap);
+        applyBackground();
+        if (bitmap == null) return;
+        MoonWakerDiagnostics.record("INFO", "android.cover", "cover.artwork",
+                "outcome", "shown", "kind", model.kicker().name().toLowerCase(Locale.ROOT));
+        // Not on screen yet (a handoff's first frame, a window still hidden): shown as is,
+        // never faded in over black.
+        if (handedOver || !isAttachedToWindow() || reducedMotion || getVisibility() != VISIBLE
+                || getWindowVisibility() != VISIBLE) {
+            artworkView.setAlpha(1f);
+        } else {
+            artworkView.setAlpha(0f);
+            artworkView.animate().alpha(1f).setDuration(260L).start();
+        }
     }
 
     private static int progressForStage(String stage) {
@@ -747,224 +886,99 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private void stopAnimations() {
         if (stopped) return;
         stopped = true;
+        artwork.stop();
+        frames.stop();
+        segments.stopAll();
         handler.removeCallbacksAndMessages(null);
-        messageView.animate().cancel();
+        lineView.animate().cancel();
+        stageView.animate().cancel();
         animate().cancel();
     }
 
-    private boolean hasSplashArtwork() {
-        return splashArtworkView != null && splashArtworkView.getDrawable() != null;
-    }
-
-    private void hideSplashArtwork() {
-        if (splashArtworkView != null) {
-            splashArtworkView.animate().cancel();
-            splashArtworkView.setImageDrawable(null);
-            splashArtworkView.setVisibility(GONE);
-        }
-        if (splashReadabilityView != null) {
-            splashReadabilityView.setVisibility(GONE);
-        }
-    }
-
-    private void showDefaultTransitionPresentation() {
-        hideSplashArtwork();
-        defaultBackdrop.setVisibility(VISIBLE);
-        defaultShade.setVisibility(VISIBLE);
-        defaultContent.setVisibility(VISIBLE);
-    }
-
-    private void showSplashArtworkPresentation(boolean forceVisible) {
-        if (!hasSplashArtwork()) return;
-        defaultBackdrop.setVisibility(GONE);
-        defaultShade.setVisibility(GONE);
-        defaultContent.setVisibility(GONE);
-        if (splashReadabilityView != null) {
-            splashReadabilityView.setVisibility(VISIBLE);
-        }
-        splashArtworkView.setVisibility(VISIBLE);
-        if (forceVisible) {
-            splashArtworkView.animate().cancel();
-            splashArtworkView.setAlpha(1f);
-        }
-    }
-
-    private void applySplashArtwork(Bitmap bitmap) {
-        if (stopped) return;
-        if (splashArtworkView != null) {
-            splashArtworkView.animate().cancel();
-            splashArtworkView.setVisibility(VISIBLE);
-            splashArtworkView.setImageBitmap(bitmap);
-            splashArtworkView.setAlpha(1f);
-            showSplashArtworkPresentation(false);
-            return;
-        }
-        splashLayout = true;
-
-        ImageView artwork = new ImageView(getContext());
-        splashArtworkView = artwork;
-        artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        artwork.setImageBitmap(bitmap);
-        artwork.setAlpha(handedOver ? 1f : 0f);
-        int screenWidth = getResources().getDisplayMetrics().widthPixels;
-        int screenHeight = getResources().getDisplayMetrics().heightPixels;
-        LayoutParams panorama = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                Math.min(screenHeight, Math.max(1, Math.round(screenWidth / 3.1f))),
-                Gravity.CENTER);
-        addView(artwork, 1, panorama);
-
-        View readability = new View(getContext());
-        GradientDrawable scrim = new GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{0xB8000000, 0x18000000, 0x18000000, 0xD9000000});
-        readability.setBackground(scrim);
-        splashReadabilityView = readability;
-        addView(readability, 2, match());
-
-        showSplashArtworkPresentation(false);
-
-        detach(messageView);
-        detach(statusLine);
-        detach(actionsRow);
-        titleView.setVisibility(GONE);
-
-        messageView.setTextSize(18);
-        messageView.setGravity(Gravity.CENTER);
-        messageView.setShadowLayer(dp(4), 0, dp(1), 0xE6000000);
-        LayoutParams messageParams = new LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        messageParams.setMargins(dp(64), dp(32), dp(64), 0);
-        addView(messageView, messageParams);
-
-        LinearLayout centerControls = new LinearLayout(getContext());
-        centerControls.setOrientation(LinearLayout.VERTICAL);
-        centerControls.setGravity(Gravity.CENTER_HORIZONTAL);
-
-        statusView.setTextSize(12);
-        activityView.getLayoutParams().width = dp(22);
-        activityView.getLayoutParams().height = dp(22);
-        LinearLayout.LayoutParams compactStatus = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        centerControls.addView(statusLine, compactStatus);
-
-        LinearLayout.LayoutParams compactActions = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        compactActions.topMargin = dp(10);
-        centerControls.addView(actionsRow, compactActions);
-
-        LayoutParams centerControlsParams = new LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        centerControlsParams.bottomMargin = dp(24);
-        addView(centerControls, centerControlsParams);
-
-        if (!handedOver) {
-            artwork.animate().alpha(1f).setDuration(reducedMotion ? 0L : 260L).start();
-        }
-        bringChildToFront(messageView);
-        bringChildToFront(centerControls);
-        requestDefaultActionFocus();
-        if (!handedOver) showSplashMessageImmediately();
-    }
-
-    private void showSplashMessageImmediately() {
-        handler.removeCallbacks(rotateMessage);
-        messageView.animate().cancel();
-        if (stopped || error || closingPresentation || messages.length == 0) return;
+    private int nextMessageIndex() {
         int next;
         do {
             next = random.nextInt(messages.length);
         } while (messages.length > 1 && next == lastMessageIndex);
         lastMessageIndex = next;
-        messageView.setAlpha(1f);
-        messageView.setText(messages[next]);
-        if (!reducedMotion) handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
+        return next;
     }
 
-    private static void detach(View view) {
-        ViewParent parent = view.getParent();
-        if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(view);
-    }
-
-    private void scheduleLoadingMessage(boolean immediate) {
+    private void scheduleLoadingMessage() {
         handler.removeCallbacks(rotateMessage);
-        messageView.animate().cancel();
-        messageView.setAlpha(1f);
-        if (stopped || error || messages.length == 0) return;
-        if (immediate || reducedMotion) {
-            rotateMessage.run();
-        } else {
-            handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
+        if (stopped || reducedMotion || model.line() != LoadingCoverModel.Line.MESSAGE
+                || messages.length == 0) {
+            return;
         }
+        handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
     }
 
-    private TextView action(String value) {
-        TextView view = text(value, 13, 0xFFE7F5FF, true);
-        view.setGravity(Gravity.CENTER);
+    /** A light pill: translucent with a thin border, solid ink with dark text when focused. */
+    private void pill(View view) {
         view.setFocusable(true);
         view.setClickable(true);
-        view.setMinWidth(dp(88));
-        view.setMinHeight(dp(44));
-        view.setPadding(dp(14), dp(6), dp(14), dp(6));
-        view.setBackground(actionBackground(false));
-        view.setOnFocusChangeListener((focusedView, focused) -> {
-            focusedView.setBackground(actionBackground(focused));
-            focusedView.setElevation(dp(focused ? 5 : 1));
-            focusedView.animate().cancel();
-            float scale = focused ? 1.04f : 1f;
-            if (reducedMotion || !focusedView.isLaidOut()) {
-                focusedView.setScaleX(scale);
-                focusedView.setScaleY(scale);
-            } else {
-                focusedView.animate().scaleX(scale).scaleY(scale)
-                        .setDuration(120L).start();
-            }
-        });
+        view.setMinimumHeight(dp(30));
+        view.setPadding(dp(15), 0, dp(15), 0);
+        StateListDrawable background = new StateListDrawable();
+        GradientDrawable focused = new GradientDrawable();
+        focused.setCornerRadius(dp(999));
+        focused.setColor(INK);
+        GradientDrawable rest = new GradientDrawable();
+        rest.setCornerRadius(dp(999));
+        rest.setColor(0x14FFFFFF);
+        rest.setStroke(Math.max(1, dp(.75f)), LINE);
+        background.addState(new int[]{android.R.attr.state_focused}, focused);
+        background.addState(new int[0], rest);
+        view.setBackground(background);
+    }
+
+    private TextView pillText(String value) {
+        TextView view = text(value, 10.5f, INK);
+        view.setTextColor(pillInk());
+        view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        view.setGravity(Gravity.CENTER);
+        pill(view);
         return view;
     }
 
-    private GradientDrawable actionBackground(boolean focused) {
-        GradientDrawable background = new GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{focused ? 0xFF324A5A : 0xFF1D2A34,
-                        focused ? 0xFF192A35 : 0xFF111A21});
-        background.setCornerRadius(dp(12));
-        background.setStroke(dp(focused ? 2 : 1),
-                focused ? 0xFFDDF5FF : 0x66788A96);
-        return background;
+    private static ColorStateList pillInk() {
+        return new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}},
+                new int[]{ON_INK, INK});
     }
 
+    private GradientDrawable dot(int color) {
+        GradientDrawable dot = new GradientDrawable();
+        dot.setShape(GradientDrawable.OVAL);
+        dot.setColor(color);
+        dot.setSize(dp(6), dp(6));
+        return dot;
+    }
+
+    /** The visible actions in display order. */
+    private List<View> visibleActions() {
+        List<View> visible = new ArrayList<>(3);
+        for (int index = 0; index < actionsRow.getChildCount(); index++) {
+            View child = actionsRow.getChildAt(index);
+            if (child.getVisibility() == VISIBLE) visible.add(child);
+        }
+        return visible;
+    }
+
+    /** The primary (first) action takes the focus unless an action already has it. */
     private void requestDefaultActionFocus() {
-        View focused = findFocus();
-        if (isVisibleAction(focused)) return;
-        if (cancelView.getVisibility() == VISIBLE) cancelView.requestFocus();
-        else if (retryView.getVisibility() == VISIBLE) retryView.requestFocus();
-        else if (showAnywayView.getVisibility() == VISIBLE) showAnywayView.requestFocus();
+        if (isVisibleAction(findFocus())) return;
+        List<View> visible = visibleActions();
+        if (!visible.isEmpty()) visible.get(0).requestFocus();
     }
 
-    private boolean focusPreviousAction() {
-        View focused = findFocus();
-        if (focused == showAnywayView && retryView.getVisibility() == VISIBLE) {
-            return retryView.requestFocus();
+    private boolean moveActionFocus(int delta) {
+        List<View> visible = visibleActions();
+        int index = visible.indexOf(findFocus());
+        if (index < 0) {
+            requestDefaultActionFocus();
+            return true;
         }
-        if (focused == showAnywayView || focused == retryView) {
-            return cancelView.requestFocus();
-        }
-        requestDefaultActionFocus();
-        return true;
-    }
-
-    private boolean focusNextAction() {
-        View focused = findFocus();
-        if (focused == cancelView && retryView.getVisibility() == VISIBLE) {
-            return retryView.requestFocus();
-        }
-        if ((focused == cancelView || focused == retryView)
-                && showAnywayView.getVisibility() == VISIBLE) {
-            return showAnywayView.requestFocus();
-        }
-        requestDefaultActionFocus();
+        visible.get(Math.max(0, Math.min(visible.size() - 1, index + delta))).requestFocus();
         return true;
     }
 
@@ -987,14 +1001,12 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
                 || keyCode == KeyEvent.KEYCODE_BUTTON_A;
     }
 
-    private TextView text(String value, float size, int color, boolean bold) {
+    private TextView text(String value, float size, int color) {
         TextView view = new TextView(getContext());
         view.setText(value);
         view.setTextSize(size);
         view.setTextColor(color);
         view.setIncludeFontPadding(false);
-        if (bold) view.setTypeface(android.graphics.Typeface.DEFAULT,
-                android.graphics.Typeface.BOLD);
         return view;
     }
 
@@ -1003,16 +1015,22 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
                 ViewGroup.LayoutParams.MATCH_PARENT);
     }
 
-    private LinearLayout.LayoutParams row() {
-        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+    private LinearLayout.LayoutParams row(int topMarginDp) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = dp(topMarginDp);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams wrap() {
+        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
     }
 
     private LinearLayout.LayoutParams actionParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
-        params.leftMargin = dp(6);
-        params.rightMargin = dp(6);
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(30));
+        params.rightMargin = dp(8);
         return params;
     }
 
@@ -1020,6 +1038,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    /** The app's standard background, under a cover without game artwork. */
     private static final class Backdrop extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private Shader backgroundShader;
@@ -1045,6 +1064,182 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             canvas.drawCircle(width * .76f, height * .25f, height * .44f, paint);
             paint.setColor(0x2937B5FF);
             canvas.drawCircle(width * .24f, height * .84f, height * .52f, paint);
+        }
+    }
+
+    /**
+     * A light corner vignette (clear to 60%, 42% black at the corners) under a scrim from the
+     * left (82% to clear at 70% width) and from the bottom (85% to clear at 55% height).
+     */
+    private static final class Scrim extends View {
+        private static final int SHADE = 0x05070B;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private Shader vignette;
+        private Shader left;
+        private Shader bottom;
+
+        Scrim(Context context) {
+            super(context);
+        }
+
+        @Override protected void onSizeChanged(int width, int height,
+                                               int oldWidth, int oldHeight) {
+            vignette = new RadialGradient(width / 2f, width / 2f, Math.max(1f, width * .85f),
+                    new int[]{SHADE, SHADE, 0x6B000000 | SHADE}, new float[]{0f, .6f, 1f},
+                    Shader.TileMode.CLAMP);
+            left = new LinearGradient(0, 0, width, 0,
+                    new int[]{0xD1000000 | SHADE, 0x73000000 | SHADE, SHADE},
+                    new float[]{0f, .38f, .7f}, Shader.TileMode.CLAMP);
+            bottom = new LinearGradient(0, height, 0, 0,
+                    new int[]{0xD9000000 | SHADE, SHADE}, new float[]{0f, .55f},
+                    Shader.TileMode.CLAMP);
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            int width = getWidth();
+            int height = getHeight();
+            if (width == 0 || height == 0) return;
+            // The ellipse: a circle around (w/2, w/2) squeezed to the screen's height.
+            canvas.save();
+            canvas.scale(1f, height / (float) width);
+            paint.setShader(vignette);
+            canvas.drawRect(0, 0, width, width, paint);
+            canvas.restore();
+            paint.setShader(left);
+            canvas.drawRect(0, 0, width, height, paint);
+            paint.setShader(bottom);
+            canvas.drawRect(0, 0, width, height, paint);
+        }
+    }
+
+    /**
+     * Five thin segments: done is solid, the current one sweeps (static at half strength with
+     * reduced motion or animations off), attention is amber, the rest faint.
+     */
+    private final class Segments extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+        private final LoadingCoverModel.StepState[] states =
+                new LoadingCoverModel.StepState[LoadingCoverModel.STEPS];
+        /** How much of each done segment is filled: a completed one grows from 0 to 1. */
+        private final float[] fill = new float[LoadingCoverModel.STEPS];
+        private final ValueAnimator[] grow = new ValueAnimator[LoadingCoverModel.STEPS];
+        private int currentIndex = -1;
+        private ValueAnimator sweep;
+
+        Segments(Context context) {
+            super(context);
+            Arrays.fill(states, LoadingCoverModel.StepState.PENDING);
+        }
+
+        void show(LoadingCoverModel model) {
+            boolean motion = animatesChanges();
+            int current = -1;
+            for (int index = 0; index < states.length; index++) {
+                LoadingCoverModel.StepState next = model.stepState(index);
+                boolean done = next == LoadingCoverModel.StepState.DONE;
+                if (done && states[index] != LoadingCoverModel.StepState.DONE) {
+                    fillIn(index, motion);
+                } else if (!done) {
+                    if (grow[index] != null) grow[index].cancel();
+                    fill[index] = 0f;
+                }
+                states[index] = next;
+                if (next == LoadingCoverModel.StepState.CURRENT) current = index;
+            }
+            // The next segment's sweep starts from its left edge, never mid-way.
+            if (current != currentIndex) stopSweep();
+            currentIndex = current;
+            boolean animate = current >= 0 && model.stepsVisible() && !reducedMotion && !stopped
+                    && ValueAnimator.areAnimatorsEnabled();
+            if (animate && sweep == null) {
+                sweep = ValueAnimator.ofFloat(0f, 1f);
+                sweep.setDuration(1400L);
+                sweep.setRepeatCount(ValueAnimator.INFINITE);
+                sweep.setInterpolator(new AccelerateDecelerateInterpolator());
+                sweep.addUpdateListener(animation -> invalidate());
+                sweep.start();
+            } else if (!animate) {
+                stopSweep();
+            }
+            invalidate();
+        }
+
+        private void fillIn(int index, boolean motion) {
+            if (grow[index] != null) grow[index].cancel();
+            grow[index] = null;
+            if (!motion) {
+                fill[index] = 1f;
+                return;
+            }
+            fill[index] = 0f;
+            ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+            animator.setDuration(SEGMENT_FILL_MS);
+            animator.setInterpolator(new DecelerateInterpolator());
+            animator.addUpdateListener(animation -> {
+                fill[index] = (float) animation.getAnimatedValue();
+                invalidate();
+            });
+            grow[index] = animator;
+            animator.start();
+        }
+
+        void stopSweep() {
+            if (sweep == null) return;
+            sweep.cancel();
+            sweep = null;
+        }
+
+        /** Stops every animation; done segments show full. */
+        void stopAll() {
+            stopSweep();
+            for (int index = 0; index < grow.length; index++) {
+                if (grow[index] == null) continue;
+                grow[index].cancel();
+                grow[index] = null;
+                if (states[index] == LoadingCoverModel.StepState.DONE) fill[index] = 1f;
+            }
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            super.onDetachedFromWindow();
+            stopAll();
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            float gap = dp(4);
+            float width = (getWidth() - gap * (states.length - 1)) / states.length;
+            float height = getHeight();
+            float radius = height / 2f;
+            for (int index = 0; index < states.length; index++) {
+                float left = index * (width + gap);
+                rect.set(left, 0, left + width, height);
+                LoadingCoverModel.StepState state = states[index];
+                paint.setColor(state == LoadingCoverModel.StepState.ATTENTION ? WARN : LINE);
+                canvas.drawRoundRect(rect, radius, radius, paint);
+                if (state == LoadingCoverModel.StepState.DONE) {
+                    // A completed segment fills from its left edge.
+                    paint.setColor(INK);
+                    rect.right = left + width * fill[index];
+                    canvas.drawRoundRect(rect, radius, radius, paint);
+                    continue;
+                }
+                if (state != LoadingCoverModel.StepState.CURRENT) continue;
+                paint.setColor(INK);
+                if (sweep == null) {
+                    paint.setAlpha(128);
+                    canvas.drawRoundRect(rect, radius, radius, paint);
+                    continue;
+                }
+                // A 40% bar crossing the segment, clipped to it.
+                float bar = width * .4f;
+                float x = left - bar + (width + bar) * (float) sweep.getAnimatedValue();
+                canvas.save();
+                canvas.clipRect(rect);
+                rect.set(x, 0, x + bar, height);
+                canvas.drawRoundRect(rect, radius, radius, paint);
+                canvas.restore();
+            }
         }
     }
 }

@@ -281,6 +281,8 @@ public class StreamRuntimeTest {
         platform.input.runAll();
         second.input.sendMouseButtonDown((byte) 2);
         List<String> packets = transport.packets();
+        assertTrue(packets.toString(), packets.containsAll(
+                java.util.List.of("mouse-up:1", "mouse-down:2")));
         assertTrue(packets.indexOf("mouse-up:1") < packets.indexOf("mouse-down:2"));
     }
 
@@ -437,7 +439,7 @@ public class StreamRuntimeTest {
     @Test public void abandonedPreparingStopsWithoutSavingReconnectMaterial() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
-        assertTrue(m.beginPreparing(runtime, "s1", "host", "p", 7, "", "t1", 1L));
+        assertTrue(m.beginPreparing(runtime, "s1", "host", "p", 7, "") > 0L);
         StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
         SessionModel.Snapshot preparing = m.snapshot();
         // The presentation's cancel is still queued for the model when it goes away.
@@ -532,7 +534,7 @@ public class StreamRuntimeTest {
         platform.abandonedCloses.clear();
         FakeTransport before = new FakeTransport();
         StreamRuntime next = StreamRuntime.create("s2", "p", before, platform);
-        assertTrue(m.beginPreparing(next, "s2", "host", "p", 7, "", "t2", 1L));
+        assertTrue(m.beginPreparing(next, "s2", "host", "p", 7, "") > 0L);
         next.start();
         next.stop(r -> { });
         next.abandonLaunch();
@@ -591,7 +593,7 @@ public class StreamRuntimeTest {
 
         FakeTransport retained = new FakeTransport();
         StreamRuntime next = StreamRuntime.create("s2", "p", retained, platform);
-        assertTrue(m.beginPreparing(next, "s2", "host", "p", 7, "", "t2", 1L));
+        assertTrue(m.beginPreparing(next, "s2", "host", "p", 7, "") > 0L);
         next.start();
         next.stop(r -> { });
         retained.controlGeneration = 4L;
@@ -620,7 +622,7 @@ public class StreamRuntimeTest {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
         assertTrue(m.beginPreparing(runtime, "s1", "host", "p",
-                7, "", "t1", 1L));
+                7, "") > 0L);
         StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
 
         runtime.presentationLost(attachment, false);
@@ -728,7 +730,7 @@ public class StreamRuntimeTest {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
         assertTrue(m.beginPreparing(runtime, "s1", "host", "p",
-                7, "", "t1", 1L));
+                7, "") > 0L);
         FakePresentation first = new FakePresentation();
         first.acceptHomeFrame = true;
         StreamRuntime.Attachment firstAttachment = runtime.attach(first);
@@ -753,7 +755,7 @@ public class StreamRuntimeTest {
         assertEquals(SessionModel.State.PREPARING,
                 m.state());
         assertTrue(m.isPreparingHomeFrameAccepted(
-                "s1", "host", 7, "", "t1", 1L));
+                "s1", "host", 7, "", m.snapshot().preparingOperation));
     }
 
     @Test public void lateObserversOfAFailedStopNeverSeeStopped() {

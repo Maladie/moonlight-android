@@ -22,7 +22,7 @@ The host operator ends a session from Host Control (tray, hotkey) only through t
 
 ## Privacy and authority
 
-The privacy cover is cosmetic UX, not a security or privacy boundary. Automatic reveal needs the matching execution's readiness and fresh-frame evidence; input follows the same transition. Whenever readiness fails or stays uncertain while the transport delivers frames, the user is offered the manual reveal ("Reveal now") next to Cancel/Retry rather than being rejected. After a manual reveal the cover does not return within that transition or stream (a later failure is only a notice); only a new user-started transition may cover again. UI teardown must not strand a terminal stop waiting for an invisible view.
+The privacy cover is cosmetic UX, not a security or privacy boundary. Automatic reveal needs the matching execution's readiness and fresh-frame evidence; input follows the same transition. Whenever readiness fails or stays uncertain while the transport delivers frames, the user is offered the manual reveal ("Reveal now") next to Cancel/Retry rather than being rejected. After any reveal, automatic or manual, the cover does not return within that transition or stream (a lost game window or later failure is only a notice); only a new user-started transition may cover again. UI teardown must not strand a terminal stop waiting for an invisible view.
 
 Windows sign-in requires the selected profile's configured consent, credential availability, and successful readiness. Do not treat absent data or timeout as success. Device permission to request sign-in is not permission to inspect or log credentials.
 

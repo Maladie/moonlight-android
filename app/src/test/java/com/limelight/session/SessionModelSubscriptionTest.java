@@ -99,19 +99,17 @@ public class SessionModelSubscriptionTest {
     @Test public void multiStepMutationDeliversOnlyItsFinalSnapshot() {
         Recorder recorder = new Recorder();
         model.subscribe(recorder);
-        apply(new SessionEvent.PreparingBegun(owner, "session-a", "host", "default", 7, "",
-                "transition-1", 1L));
+        apply(new SessionEvent.PreparingBegun(owner, "session-a", "host", "default", 7, ""));
         runMainThread();
+        long operation = recorder.received.get(0).preparingOperation;
 
-        apply(new SessionEvent.PreparingCompleted(owner, "session-a", "host", 7,
-                "transition-1", 1L));
+        apply(new SessionEvent.PreparingCompleted(owner, "session-a", "host", 7, operation));
         runMainThread();
 
         assertEquals(2, recorder.received.size());
         SessionModel.Snapshot completed = recorder.received.get(1);
         assertEquals(SessionModel.State.HOME_LIVE, completed.state);
-        assertEquals("", completed.transitionId);
-        assertEquals(0L, completed.attempt);
+        assertEquals(operation, completed.preparingOperation);
     }
 
     @Test public void nothingIsDeliveredAfterUnsubscribe() {

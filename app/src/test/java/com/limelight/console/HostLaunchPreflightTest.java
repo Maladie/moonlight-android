@@ -482,6 +482,8 @@ public class HostLaunchPreflightTest {
         assertEquals(HostLaunchPreflight.Status.READY,
                 fake.run(game(42), new AtomicBoolean()).status);
 
+        assertTrue(fake.events.toString(), fake.events.containsAll(
+                java.util.List.of("network", "profile", "session", "streamer")));
         assertTrue(fake.events.indexOf("network") < fake.events.indexOf("profile"));
         assertTrue(fake.events.indexOf("profile") < fake.events.indexOf("session"));
         assertTrue(fake.events.indexOf("session") < fake.events.indexOf("streamer"));

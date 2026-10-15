@@ -32,7 +32,7 @@ public class PlayniteTransitionGatewayTest {
             () -> false, () -> 0L, (level, component, event, fields) -> {
                 if ("projection.published".equals(event)) published.incrementAndGet();
                 return true;
-            }, new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
+            }, new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences(), 0L);
 
     @org.junit.After public void stopModelThread() {
         modelThread.shutdownNow();
@@ -154,7 +154,7 @@ public class PlayniteTransitionGatewayTest {
         SessionModel failing = new SessionModel(modelThread::execute, Runnable::run,
                 () -> false, () -> 0L, (level, component, event, fields) -> {
                     throw new IllegalStateException("transition failed");
-                }, new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences());
+                }, new MemoryPreferences(), new MemoryPreferences(), new MemoryPreferences(), 0L);
         // The read fails without a cancellation: the model is told it is unavailable.
         HostGatewayClient down = new HostGatewayClient() {
             @Override SessionObservation getSessionObservation(GatewayConnection connection,
@@ -437,8 +437,19 @@ public class PlayniteTransitionGatewayTest {
         UnlockClient client = new UnlockClient();
         client.statuses.add("ready");
 
-        assertTrue(unlockGateway(client, () -> 0L).unlockHostSession(() -> false));
+        assertEquals(PlayniteTransitionGateway.HostUnlock.UNLOCKED,
+                unlockGateway(client, () -> 0L).unlockHostSession(() -> false));
         assertEquals(1, client.polls);
+        assertEquals(0, client.cancels.size());
+    }
+
+    @Test public void readyWithoutAnAttemptIsNotAnUnlock() throws Exception {
+        UnlockClient client = new UnlockClient();
+        client.readyWithoutAttempt = true;
+
+        assertEquals(PlayniteTransitionGateway.HostUnlock.READY_WITHOUT_ATTEMPT,
+                unlockGateway(client, () -> 0L).unlockHostSession(() -> false));
+        assertEquals(0, client.polls);
         assertEquals(0, client.cancels.size());
     }
 
@@ -447,7 +458,8 @@ public class PlayniteTransitionGatewayTest {
         client.statuses.add("ready");
         client.foreignStatus = true;
 
-        assertFalse(unlockGateway(client, () -> 0L).unlockHostSession(() -> false));
+        assertEquals(PlayniteTransitionGateway.HostUnlock.NOT_READY,
+                unlockGateway(client, () -> 0L).unlockHostSession(() -> false));
         assertEquals(Arrays.asList(client.requestId + "/" + ATTEMPT), client.cancels);
     }
 
@@ -457,7 +469,8 @@ public class PlayniteTransitionGatewayTest {
         client.onStatus = () -> now[0] += PlayniteTransitionGateway.HOST_UNLOCK_TIMEOUT_MILLIS;
         client.statuses.add("pending");
 
-        assertFalse(unlockGateway(client, () -> now[0]).unlockHostSession(() -> false));
+        assertEquals(PlayniteTransitionGateway.HostUnlock.NOT_READY,
+                unlockGateway(client, () -> now[0]).unlockHostSession(() -> false));
         assertEquals(1, client.polls);
         assertEquals(Arrays.asList(client.requestId + "/" + ATTEMPT), client.cancels);
     }
@@ -466,7 +479,8 @@ public class PlayniteTransitionGatewayTest {
         UnlockClient client = new UnlockClient();
         client.statuses.add("ready");
 
-        assertFalse(unlockGateway(client, () -> 0L).unlockHostSession(() -> true));
+        assertEquals(PlayniteTransitionGateway.HostUnlock.NOT_READY,
+                unlockGateway(client, () -> 0L).unlockHostSession(() -> true));
         assertEquals(0, client.polls);
         assertEquals(Arrays.asList(client.requestId + "/" + ATTEMPT), client.cancels);
     }
@@ -483,12 +497,16 @@ public class PlayniteTransitionGatewayTest {
         final List<String> cancels = new ArrayList<>();
         String requestId = "";
         boolean foreignStatus;
+        boolean readyWithoutAttempt;
         Runnable onStatus;
         int polls;
 
         @Override WindowsSession ensureWindowsSession(GatewayConnection connection,
                                                       String requestId) {
             this.requestId = requestId;
+            if (readyWithoutAttempt) {
+                return new WindowsSession("ready", "none", "", 250, requestId, "kid", "parent");
+            }
             return new WindowsSession("pending", "none", ATTEMPT, 250, requestId,
                     "kid", "parent");
         }

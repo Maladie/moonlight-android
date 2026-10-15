@@ -15,7 +15,7 @@ public class GameChildSessionContractTest {
         String text = source();
         for (String[] boundaries : new String[][] {
                 {"public void onBackPressed()", "public boolean handleKeyDown("},
-                {"private void openConsoleHome()", "private void launchConsoleHome("},
+                {"private boolean openConsoleHome()", "private void launchConsoleHome("},
                 {"private boolean canParkBackgroundStream()", "public boolean parkPreparingTransport("},
                 {"private void restoreParkedStream(", "private void scheduleRetainedRestoreWatchdog()"},
                 {"private boolean hasOwnRetainedSession()", "private boolean hasAutoWarmUpTransportIdentity()"}}) {
@@ -23,7 +23,7 @@ public class GameChildSessionContractTest {
             assertFalse(boundaries[0], method.contains("isChildSession()"));
             assertFalse(boundaries[0], method.contains("finishChildSession"));
         }
-        String home = text.substring(text.indexOf("private void openConsoleHome()"),
+        String home = text.substring(text.indexOf("private boolean openConsoleHome()"),
                 text.indexOf("private void openPreparingConsoleHome()"));
         assertTrue(home.contains("new SessionEvent.EnterHome"));
         assertTrue(home.contains("currentProfileId()"));

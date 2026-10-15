@@ -3,7 +3,6 @@ package com.limelight.console;
 import com.limelight.SourceText;
 import org.junit.Test;
 
-import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -117,8 +116,7 @@ public class ConsoleProfileGateTest {
 
     @Test public void childRemovalRefreshReturnsToExplicitGateWithoutAdultSelection()
             throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String save = between(source, "private void saveHostProfiles(",
                 "private void showPinEntry(");
         String refresh = between(source, "private void refreshHostProfiles(",
@@ -133,8 +131,7 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void endingChildGameKeepsProfileAndLibrary() throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String consume = between(source, "private void consumeChildBindingState(",
                 "private void clearChildLibraryForPolicyChange(");
         assertTrue(consume.contains("binding.sessionId.equals(state.sessionId)"));
@@ -146,8 +143,7 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void hostActivationCannotLoadLibraryBeforeGateResolution() throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String activation = between(source,
                 "private void activateHostFromSelection(String uuid)",
                 "private void resolveProfileGate(ComputerDetails host");
@@ -165,8 +161,7 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void appCardsRenderOnHostEntryNotUnderTheProfileGate() throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String appRender = between(source,
                 "private void renderAppsAsync(ComputerDetails host, boolean focusApps)",
                 "private void runLibraryUpdateWhenNavigationIdle(");
@@ -187,8 +182,7 @@ public class ConsoleProfileGateTest {
 
     @Test public void toolbarLeaveReturnsToProfileGateWhenMultipleProfilesExist()
             throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String leave = between(source, "private void leaveHost()",
                 "private void refreshDiscordIndicator(");
 
@@ -198,8 +192,7 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void sameHostProfileChangeInvalidatesOldLibraryBeforeEntry() throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String gate = between(source,
                 "private void resolveProfileGate(ComputerDetails host, boolean focusApps,",
                 "private void enterHostAfterProfileGate(");
@@ -218,8 +211,7 @@ public class ConsoleProfileGateTest {
 
     @Test public void everyProtectedSelectionPathWaitsForVerificationBeforePersisting()
             throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String selection = between(source,
                 "private void selectProfile(ComputerDetails host, String profileId)",
                 "private void applySelectedProfile(");
@@ -241,8 +233,7 @@ public class ConsoleProfileGateTest {
     }
 
     @Test public void pauseClearsOnlySecretAndKeepsPinScreenContext() throws Exception {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String pause = between(source, "protected void onPause()",
                 "public void onTrimMemory(int level)");
 

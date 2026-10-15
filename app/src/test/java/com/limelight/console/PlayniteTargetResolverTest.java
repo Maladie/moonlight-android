@@ -19,6 +19,15 @@ public class PlayniteTargetResolverTest {
         assertNull(PlayniteTargetResolver.appDisplayName(null, "Pulpit"));
     }
 
+    @Test public void gameCoverTitleIsTheLibraryNameNeverTheStreamTarget() {
+        assertEquals("FEZ", PlayniteTargetResolver.gameCoverTitle(" FEZ ", "MoonWaker Stream"));
+        assertEquals("", PlayniteTargetResolver.gameCoverTitle(
+                "MoonWaker Stream", "MoonWaker Stream"));
+        assertEquals("", PlayniteTargetResolver.gameCoverTitle("moonwaker  stream", ""));
+        assertEquals("", PlayniteTargetResolver.gameCoverTitle("Desktop", "Desktop"));
+        assertEquals("", PlayniteTargetResolver.gameCoverTitle(null, "MoonWaker Stream"));
+    }
+
     @Test public void everyInstalledGameMapsToTheNeutralStream() {
         NvApp neutral = app("MoonWaker Stream", 11,
                 PlayniteTargetResolver.MOONWAKER_STREAM_UUID, "default");

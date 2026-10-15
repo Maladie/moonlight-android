@@ -106,9 +106,9 @@ public class SessionTransitionTableTest {
         state.connected = true;
         state.retainedHomeLive = true;
         assertEquals(ActionKind.COVER_AND_SHOW_HOME, cancel(state));
-        // Also while a retained switch is recorded: the live stream wins.
+        // A running switch's Cancel cancels that switch (cancelOnASwitchFromARetainedGame…).
         state.retainedSwitch = true;
-        assertEquals(ActionKind.COVER_AND_SHOW_HOME, cancel(state));
+        assertEquals(ActionKind.CANCEL_RETAINED_SWITCH, cancel(state));
 
         state.parked = true;
         assertEquals(ActionKind.CANCEL_RETAINED_SWITCH, cancel(state));
@@ -198,6 +198,42 @@ public class SessionTransitionTableTest {
         state.connected = true;
         state.retainedHomeLive = true;
         assertEquals(ActionKind.COVER_AND_SHOW_HOME, back(state));
+    }
+
+    /**
+     * S09 C3: the Home return's cover is the controller's, so it holds the input. Back under it
+     * (again, or when its effect decides at frame time) is that same Home return, never a
+     * Cancel of a live stream.
+     */
+    @Test public void backUnderTheHomeReturnCoverIsThatHomeReturnNeverACancel() {
+        State state = reconnectToGame();
+        state.connected = true;
+        state.retainedHomeLive = true;
+        state.covered = true;
+        assertEquals(ActionKind.CANCEL_ON_COVER, back(state));
+        state.homeReturnCovered = true;
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME, back(state));
+
+        State revealedTimedOut = covered(LaunchTransitionType.GAME, true);
+        revealedTimedOut.connected = true;
+        revealedTimedOut.revealed = true;
+        revealedTimedOut.homeReturnCovered = true;
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME, back(revealedTimedOut));
+    }
+
+    /**
+     * Review S09 C3: Back/B on a switch's cover started from a retained live game is that
+     * switch's Cancel, never a Home return that leaves the switch running.
+     */
+    @Test public void cancelOnASwitchFromARetainedGameCancelsTheSwitch() {
+        State state = reconnectToGame();
+        state.connected = true;
+        state.retainedHomeLive = true;
+        state.retainedSwitch = true;
+        assertEquals(ActionKind.CANCEL_ON_COVER, back(state));
+        assertEquals(ActionKind.CANCEL_RETAINED_SWITCH, cancel(state));
+        state.retainedSwitch = false;
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME, cancel(state));
     }
 
     @Test public void backWithNothingLiveOrUnderTheHomeLeavesTheScreen() {
@@ -359,14 +395,31 @@ public class SessionTransitionTableTest {
 
     // ---------------------------------------------------------------- Play
 
-    @Test public void playWhileASessionClosesIsRefused() {
-        Action toast = play(snapshot(SessionSnapshot.State.TERMINATING, 42, "game"), game(),
+    @Test public void everyPlayWhileASessionClosesIsQueuedTheCoveredOneToo() {
+        Action queued = play(snapshot(SessionSnapshot.State.TERMINATING, 42, "game"), game(),
                 false, false, false);
-        assertEquals(ActionKind.REFUSE_CLOSING, toast.kind);
-        assertNull(toast.failure);
+        assertEquals(ActionKind.QUEUE_BEHIND_CLOSE, queued.kind);
+        Action desktop = play(snapshot(SessionSnapshot.State.TERMINATING, 42, "game"),
+                desktop(), false, false, false);
+        assertEquals(ActionKind.QUEUE_BEHIND_CLOSE, desktop.kind);
         Action covered = play(snapshot(SessionSnapshot.State.TERMINATING, 42, "game"), game(),
                 true, false, false);
-        assertEquals(SessionFailure.UNCERTAIN_TERMINATING, covered.failure);
+        assertEquals(ActionKind.QUEUE_BEHIND_CLOSE, covered.kind);
+    }
+
+    @Test public void queuedPlayWaitsForTheCloseStartsWhenConfirmedDropsWhenItFailed() {
+        assertEquals(SessionOrchestrator.QueueStep.WAIT, SessionOrchestrator.queuedStep(
+                snapshot(SessionSnapshot.State.TERMINATING, 42, "game")));
+        assertEquals(SessionOrchestrator.QueueStep.START, SessionOrchestrator.queuedStep(
+                snapshot(SessionSnapshot.State.NONE, 0, "")));
+        assertEquals(SessionOrchestrator.QueueStep.DROP_CLOSE_FAILED,
+                SessionOrchestrator.queuedStep(new SessionSnapshot("host", "default",
+                        "default", SessionSnapshot.State.ACTIVE, 42, "game", true, false,
+                        false, false, false, "", true,
+                        SessionSnapshot.ObservationState.PENDING, false,
+                        "", 0L, 0L, 0L, 0L, 0L, "", "", "UNAVAILABLE", 0, "",
+                        "UNAVAILABLE", "test", 42, false, SessionSnapshot.Display.NONE,
+                        false, true)));
     }
 
     @Test public void playWithNoSessionCoversPreflightsThenLaunchesWhenStillIdle() {
@@ -544,6 +597,28 @@ public class SessionTransitionTableTest {
                 .verifiedRunningGameId());
     }
 
+    /** The warm-up's transition kind is the table's, from the projection read at launch. */
+    @Test public void warmUpConnectsOnlyToAGameTheHostProvablyRuns() {
+        com.limelight.nvstream.http.ComputerDetails host =
+                new com.limelight.nvstream.http.ComputerDetails();
+        host.uuid = "HOST";
+        SessionOrchestrator.PreparedWarmUp warmUp = new SessionOrchestrator.PreparedWarmUp(
+                neutralStream(), host, new HostProfileKey("HOST", "kid"), hostRuns(0, "", false));
+        com.limelight.console.transition.LaunchTransitionSpec connect =
+                SessionOrchestrator.warmUpTransition(warmUp, verifiedRunning("steam:952060"), 5L);
+        assertEquals(LaunchTransitionType.GAME_CONNECTION, connect.type);
+        assertEquals("steam:952060", connect.playniteGameId);
+        assertEquals("HOST", connect.hostId);
+        assertEquals("kid", connect.profileId);
+        assertEquals(neutralStream().getAppId(), connect.sunshineAppId);
+        // A named game without the correlated process proof is no connection.
+        com.limelight.console.transition.LaunchTransitionSpec generic =
+                SessionOrchestrator.warmUpTransition(warmUp,
+                        snapshot(SessionSnapshot.State.ACTIVE, 42, "steam:952060", true, true), 5L);
+        assertEquals(LaunchTransitionType.GENERIC, generic.type);
+        assertEquals("", generic.playniteGameId);
+    }
+
     @Test public void playOnAnUncertainSessionRefreshesAGameAndLaunchesAnApp() {
         SessionSnapshot uncertain = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
         assertEquals(ActionKind.SHOW_LOADING,
@@ -660,14 +735,42 @@ public class SessionTransitionTableTest {
                 SessionSnapshot.ObservationState.PENDING, false, true);
         State state = playState(marker, true, true, true);
         state.warmUpCarriesGame = ConsoleActivity.warmUpCarriesPendingGame(
-                8L, "host", saved, m.snapshot());
+                true, "host", saved, m.snapshot());
         assertFalse(state.warmUpCarriesGame);
         assertEquals(ActionKind.CONFIRM_REPLACEMENT,
                 SessionOrchestrator.transition(state, UserIntent.play(game())).kind);
         m.clear();
         m.enterHome(owner, "s", "host", "default", 77, "");
         m.markReconnectRequired("s");
-        assertTrue(ConsoleActivity.warmUpCarriesPendingGame(8L, "host", saved, m.snapshot()));
+        assertTrue(ConsoleActivity.warmUpCarriesPendingGame(true, "host", saved, m.snapshot()));
+    }
+
+    /** Review S09 C5: a Home cancels only the exact preparing operation it opened over. */
+    @Test public void homeOwnsOnlyTheExactPreparingOperationOfItsHostAndProfile() {
+        SessionModelDriver m = new SessionModelDriver();
+        SessionModel.Controller owner = new SessionModel.Controller() {
+            @Override public boolean isRetainedTransportLive() { return true; }
+            private final long fakeGeneration =
+                    com.limelight.session.SessionModelDriver.nextTransportGeneration();
+            @Override public long transportGeneration() { return fakeGeneration; }
+            @Override public SessionModel.ParkOutcome parkRetainedTransport() {
+                return SessionModel.ParkOutcome.PARKED;
+            }
+            @Override public void disconnectRetainedStream(
+                    SessionModel.TerminationCallback completion) { }
+            @Override public void terminateRetainedSession(
+                    String gameId, SessionModel.TerminationCallback completion) { }
+            @Override public void switchGame(SessionModel.SwitchRequest request,
+                                             SessionModel.SwitchCallback completion) { }
+        };
+        long operation = m.beginPreparing(owner, "s", "host", "kid", 77, "");
+        SessionModel.Snapshot preparing = m.snapshot();
+        assertTrue(ConsoleActivity.ownsPreparing(operation, "HOST", "kid", preparing));
+        // A Home with no operation, an older one, or another profile on the host owns nothing.
+        assertFalse(ConsoleActivity.ownsPreparing(0L, "host", "kid", preparing));
+        assertFalse(ConsoleActivity.ownsPreparing(operation - 1L, "host", "kid", preparing));
+        assertFalse(ConsoleActivity.ownsPreparing(operation, "host", "default", preparing));
+        assertFalse(ConsoleActivity.ownsPreparing(operation, "other", "kid", preparing));
     }
 
     @Test public void playThatNeedsAFreshSessionFirstWakesAHostThatDoesNotAnswer() {
@@ -787,6 +890,70 @@ public class SessionTransitionTableTest {
         State visible = hiddenWarmUpOnScreen();
         visible.hiddenWarmUp = false;
         assertEquals(ActionKind.IGNORE, returnFromHome(visible));
+    }
+
+    /**
+     * Review S09 C3: the kept neutral stream after End game or a natural stop sits on its
+     * action-less closing cover; returning to it from the Home shows it.
+     */
+    @Test public void returnToTheKeptNeutralStreamShowsIt() {
+        State neutral = covered(LaunchTransitionType.GAME_CONNECTION, false);
+        neutral.connected = true;
+        neutral.resumed = true;
+        neutral.returningToDashboard = true;
+        assertEquals(ActionKind.SHOW_NEUTRAL_STREAM, returnFromHome(neutral));
+
+        State gameKept = covered(LaunchTransitionType.GAME_CONNECTION, true);
+        gameKept.connected = true;
+        gameKept.resumed = true;
+        gameKept.returningToDashboard = true;
+        assertEquals(ActionKind.IGNORE, returnFromHome(gameKept));
+        for (int i = 0; i < 4; i++) {
+            State other = covered(LaunchTransitionType.GAME_CONNECTION, false);
+            other.connected = i != 0;
+            other.resumed = true;
+            other.returningToDashboard = true;
+            other.homeVisible = i == 1;
+            other.retainedSwitch = i == 2;
+            other.switchRequested = i == 3;
+            assertEquals(ActionKind.IGNORE, returnFromHome(other));
+        }
+    }
+
+    /**
+     * Review S09 C3 follow-up: Back or Cancel on the kept neutral stream shown again goes back
+     * to the Home and keeps it; only Close session ends the user's kept stream.
+     */
+    @Test public void backOrCancelOnTheShownKeptNeutralStreamReturnsHomeAndKeepsIt() {
+        State shown = covered(LaunchTransitionType.GENERIC, false);
+        shown.connected = true;
+        shown.resumed = true;
+        shown.retainedHomeLive = true;
+        assertEquals(ActionKind.CANCEL_ON_COVER, back(shown));
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME, cancel(shown));
+        shown.covered = false;
+        shown.revealed = true;
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME, back(shown));
+        // A plain stream nobody kept for the Home is a start: its Cancel still closes it.
+        State fresh = covered(LaunchTransitionType.GENERIC, false);
+        fresh.connected = true;
+        assertEquals(ActionKind.STOP_TRANSPORT_CLOSE_HOST_STREAM, cancel(fresh));
+    }
+
+    /**
+     * Review S09 C5: Cancel on a hidden GENERIC warm-up the user took over returns to the Home
+     * and keeps its HOME_LIVE stream; it is the user's kept stream now, not a start to stop.
+     */
+    @Test public void cancelOnATakenOverWarmUpReturnsHomeAndKeepsTheStream() {
+        State warmUp = covered(LaunchTransitionType.GENERIC, false);
+        warmUp.connected = true;
+        warmUp.resumed = true;
+        warmUp.hiddenWarmUp = true;
+        assertEquals(ActionKind.TAKE_OVER_WARM_UP, returnFromHome(warmUp));
+        // Taken over: no longer a hidden warm-up, the stream stays HOME_LIVE in the model.
+        warmUp.hiddenWarmUp = false;
+        warmUp.retainedHomeLive = true;
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME, cancel(warmUp));
     }
 
     // ---------------------------------------------------------------- Results of Play effects (K5.2)
@@ -1225,8 +1392,7 @@ public class SessionTransitionTableTest {
 
     private static SessionModel.Snapshot preparing(String gameId) {
         SessionModelDriver driver = new SessionModelDriver();
-        assertTrue(driver.beginPreparing(new NoopController(), "s", "host", 42, gameId,
-                "t", 1L));
+        assertTrue(driver.beginPreparing(new NoopController(), "s", "host", 42, gameId) > 0L);
         return driver.snapshot();
     }
 
@@ -1249,6 +1415,105 @@ public class SessionTransitionTableTest {
         NvApp app = new NvApp(PlayniteTargetResolver.MOONWAKER_STREAM_NAME, 42, false);
         app.setAppUuid(PlayniteTargetResolver.MOONWAKER_STREAM_UUID);
         return app;
+    }
+
+    /**
+     * Shortcut equivalence: the pad's Home and the overlay's Home (both HOME) have one outcome
+     * per state, Back's own except where Back is the cover's Cancel: Home never cancels, it
+     * leaves the covered launch running behind the Home (or does nothing without a Home to
+     * show), over every combination of the facts those rows read.
+     */
+    @Test public void everyWayToTheHomeHasOneOutcomePerState() {
+        java.util.Set<ActionKind> seen = java.util.EnumSet.noneOf(ActionKind.class);
+        java.util.Set<ActionKind> neverHome = java.util.EnumSet.of(ActionKind.CANCEL_ON_COVER,
+                ActionKind.CLOSE_STARTED_SESSION, ActionKind.CLOSE_HOST_SESSION,
+                ActionKind.STOP_TRANSPORT, ActionKind.STOP_TRANSPORT_KEEP_SESSION,
+                ActionKind.STOP_TRANSPORT_CLOSE_HOST_STREAM, ActionKind.CANCEL_RETAINED_SWITCH);
+        LaunchTransitionType[] types = {null, LaunchTransitionType.GAME,
+                LaunchTransitionType.GAME_CONNECTION, LaunchTransitionType.GENERIC,
+                LaunchTransitionType.PLAYNITE};
+        for (LaunchTransitionType type : types) {
+            for (int bits = 0; bits < 1 << 13; bits++) {
+                State state = new State();
+                state.type = type;
+                state.transitionActive = (bits & 1) != 0;
+                state.covered = (bits & 2) != 0;
+                state.homeReturnCovered = (bits & 4) != 0;
+                state.connected = (bits & 8) != 0;
+                state.homeVisible = (bits & 16) != 0;
+                state.revealed = (bits & 32) != 0;
+                state.timedOut = (bits & 64) != 0;
+                state.parked = (bits & 128) != 0;
+                state.hasGame = (bits & 256) != 0;
+                state.retainedHomeLive = (bits & 512) != 0;
+                state.userCoverReleased = (bits & 1024) != 0;
+                state.gameStopping = (bits & 2048) != 0;
+                state.retainedSwitch = (bits & 4096) != 0;
+                ActionKind home = SessionOrchestrator.transition(state, UserIntent.HOME).kind;
+                ActionKind back = back(state);
+                String row = type + "/" + bits;
+                assertFalse(row, neverHome.contains(home));
+                if (back != ActionKind.CANCEL_ON_COVER) {
+                    assertEquals(row, back, home);
+                } else {
+                    assertEquals(row, state.connected && !state.homeVisible
+                            && !state.retainedSwitch
+                            ? ActionKind.COVER_AND_SHOW_HOME : ActionKind.IGNORE, home);
+                }
+                seen.add(home);
+            }
+        }
+        // The rows reach every outcome a way to the Home has.
+        assertEquals(java.util.EnumSet.of(ActionKind.IGNORE,
+                ActionKind.COVER_AND_SHOW_HOME, ActionKind.SHOW_HOME, ActionKind.LEAVE_SCREEN),
+                seen);
+        // A Home over a covered start leaves it running behind the Home; Back cancels it.
+        State start = covered(LaunchTransitionType.GAME, true);
+        start.connected = true;
+        start.controlGranted = true;
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME,
+                SessionOrchestrator.transition(start, UserIntent.HOME).kind);
+        assertEquals(ActionKind.CANCEL_ON_COVER, back(start));
+        assertEquals(ActionKind.CLOSE_STARTED_SESSION, cancel(start));
+        // Once on its way to the Home, the start's cover is that Home return's, not its Cancel.
+        start.homeReturnCovered = true;
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME,
+                SessionOrchestrator.transition(start, UserIntent.HOME).kind);
+        assertEquals(ActionKind.IGNORE, cancel(start));
+    }
+
+    /**
+     * A user cover released over the revealed kept stream (back from the Home, a cancelled or
+     * failed switch) waits only for its fresh frame: Back is the Home and Cancel does nothing;
+     * neither ever stops the stream.
+     */
+    @Test public void backOrCancelUnderAReleasedUserCoverNeverStopsTheKeptStream() {
+        for (LaunchTransitionType type : new LaunchTransitionType[]{LaunchTransitionType.GAME,
+                LaunchTransitionType.GAME_CONNECTION, LaunchTransitionType.GENERIC}) {
+            State released = covered(type, type != LaunchTransitionType.GENERIC);
+            released.connected = true;
+            released.revealed = true;
+            released.controlGranted = true;
+            released.userCoverReleased = true;
+            assertEquals(type.name(), ActionKind.COVER_AND_SHOW_HOME, back(released));
+            assertEquals(type.name(), ActionKind.IGNORE, cancel(released));
+        }
+    }
+
+    /**
+     * Back from the carousel to a stream whose game is stopping ("Kończenie gry…"): the
+     * closing cover offers nothing to cancel, so Back and Home return to the console Home.
+     */
+    @Test public void backOrHomeOverAStoppingGameReturnsToTheConsoleHome() {
+        State stopping = covered(LaunchTransitionType.GAME, true);
+        stopping.connected = true;
+        stopping.revealed = true;
+        stopping.gameStopping = true;
+        stopping.resumed = true;
+        assertEquals(ActionKind.IGNORE, returnFromHome(stopping));
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME, back(stopping));
+        assertEquals(ActionKind.COVER_AND_SHOW_HOME,
+                SessionOrchestrator.transition(stopping, UserIntent.HOME).kind);
     }
 
     // ---------------------------------------------------------------- helpers
