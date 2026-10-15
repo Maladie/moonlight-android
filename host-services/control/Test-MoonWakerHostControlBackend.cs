@@ -129,7 +129,10 @@ namespace MoonWaker.HostControl
             Write(Path.Combine(gateway, "gateway.json"), Json.Serialize(new Dictionary<string, object> {
                 { "listen_port", 8785 },
                 { "microphone_worker", "MoonWakerMicrophoneWorker.exe" },
-                { "clients", new object[] { new Dictionary<string, object> { { "id", "tv" } } } },
+                { "clients", new object[] { new Dictionary<string, object> {
+                    { "id", "tv" }, { "token_sha256", "f00d" }, { "paired_at", 100 }, { "last_seen_at", 150 },
+                    { "profile_grants", new Dictionary<string, object> {
+                        { "default", new object[] { "use_profile", "remote_sign_in" } } } } } } },
                 { "profiles", new Dictionary<string, object> {
                     { "default", new Dictionary<string, object> {
                         { "name", "Diagnostic test" }, { "owner", "PC\\test" },
@@ -169,8 +172,17 @@ namespace MoonWaker.HostControl
             Expect(Find(backend.ReadStatus(), "default").Agent == "online", "a plain ok answer is online");
             agentReply = "online";
 
-            Expect(status.Gateway.Installed && status.Gateway.Port == 8785 && status.Gateway.PairedClients == 1,
+            Expect(status.Gateway.Installed && status.Gateway.Port == 8785 && status.Gateway.Clients.Count == 1 &&
+                status.Gateway.Clients[0].Id == "tv" && status.Gateway.Clients[0].Name == "Android TV" &&
+                own.Children.Count == 1 && own.Children[0] == "Child" && foreign.Children.Count == 0,
                 "Gateway registry facts");
+            PairedClient tv = status.Gateway.Clients[0];
+            Expect(tv.PairedAt == 100 && tv.LastSeenAt == 150 && tv.Grants.Count == 1 &&
+                String.Join(",", tv.Grants["default"].ToArray()) == "use_profile,remote_sign_in",
+                "paired TV dates and grants");
+            Write(Path.Combine(gateway, "client-activity.json"), "{\"schema_version\":1,\"clients\":{\"tv\":200}}");
+            Expect(backend.ReadStatus().Gateway.Clients[0].LastSeenAt == 200, "the Gateway's newer activity");
+            File.Delete(Path.Combine(gateway, "client-activity.json"));
             Expect(status.Gateway.State == "stopped" && !status.VibepolloTokenSaved, "nothing published yet");
             int self = Process.GetCurrentProcess().Id;
             Write(Path.Combine(gateway, "gateway-service-state.json"),
@@ -180,7 +192,8 @@ namespace MoonWaker.HostControl
             Write(Path.Combine(gateway, "vibepollo-api.json"), "{\"base_url\":\"https://127.0.0.1:47990\",\"token\":\"t\"}");
             status = backend.ReadStatus();
             Expect(status.Gateway.State == "running" && !status.Gateway.VersionMismatch &&
-                status.VibepolloTokenSaved, "a running Gateway of the installed version");
+                status.VibepolloTokenSaved && status.VibepolloTokenSavedAt != null,
+                "a running Gateway of the installed version");
             Write(Path.Combine(gateway, "gateway-runtime.json"),
                 "{\"version\":\"test\",\"build\":\"old\",\"pid\":" + self + ",\"started_at\":1}");
             Expect(backend.ReadStatus().Gateway.VersionMismatch, "a different running build is reported");
@@ -206,7 +219,7 @@ namespace MoonWaker.HostControl
             long lifetime = Convert.ToInt64(stored["expires_at"]) - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             Expect(stored.Count == 2 && (string)stored["code_sha256"] == digest && lifetime > 590 && lifetime <= 600,
                 "only the code's SHA-256 with a 10-minute expiry is stored");
-            int seconds = backend.ReadStatus().Gateway.PairingSeconds;
+            long seconds = backend.ReadStatus().Gateway.PairingExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             Expect(seconds > 590 && seconds <= 600, "pairing countdown");
             File.Delete(Path.Combine(gateway, "pairing-code.json"));
             Throws(delegate { backend.CreatePairingCode(); }, "Brak kanału parowania", "the channel is never created");
@@ -252,7 +265,8 @@ namespace MoonWaker.HostControl
                 "Discord configuration keeps the profile's endpoint port");
             Expect(Dpapi.Unprotect(File.ReadAllText(Path.Combine(directory, "client_secret.dpapi")).Trim()) == secret,
                 "the client secret is stored with CurrentUser DPAPI");
-            Expect(Find(backend.ReadStatus(), "default").DiscordConfigured, "Discord configured");
+            Expect(Find(backend.ReadStatus(), "default").DiscordConfigured &&
+                Find(backend.ReadStatus(), "default").DiscordClientId == id, "Discord configured");
             Write(Path.Combine(directory, "oauth_token.dpapi"), "00");
             backend.ConfigureDiscord("default", "", "");
             Expect(File.Exists(Path.Combine(directory, "oauth_token.dpapi")), "empty fields keep the configuration");

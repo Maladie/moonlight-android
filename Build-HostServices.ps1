@@ -87,7 +87,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $hostServices "installer\Install-LegendaryPayload.ps1") `
         -Destination $controlTarget -Force
     foreach ($file in @("Build-MoonWakerHostControl.ps1",
-        "MoonWakerHostControl.cs", "HostControlBackend.cs", "MoonWakerHostControl.manifest",
+        "MoonWakerHostControl.cs", "HostControlWindow.cs", "HostControlUi.cs",
+        "HostControlBackend.cs", "MoonWakerHostControl.manifest",
         "MoonWakerHostConfigurator.cs", "ChildProfileForms.cs",
         "MoonWakerHostConfigurator.manifest", "vibepollo-token-scopes.json")) {
         Copy-Item -LiteralPath (Join-Path $hostServices "control\$file") `

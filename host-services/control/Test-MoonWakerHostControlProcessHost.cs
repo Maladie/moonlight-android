@@ -218,7 +218,7 @@ namespace MoonWaker.HostControl
                     host.Tick();
                     Expect(host.ProcessId(false) == 0 && host.ProcessId(true) == 0,
                         "nothing restarts during the backoff");
-                    Expect(host.Describe("p", false).StartsWith("RESTART ZA "),
+                    Expect(host.Describe("p", false).StartsWith("Ponowny start za "),
                         "an unreadable registry is a backoff, not a block");
 
                     // Repair: old processes are killed and new ones start only after they died.

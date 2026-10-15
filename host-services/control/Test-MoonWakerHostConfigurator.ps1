@@ -83,8 +83,8 @@ try {
         }
     }
 
-    $hostControlSource = Get-Content -LiteralPath (
-        Join-Path $PSScriptRoot "MoonWakerHostControl.cs") -Raw
+    $hostControlSource = @("MoonWakerHostControl.cs", "HostControlWindow.cs", "HostControlUi.cs") |
+        ForEach-Object { Get-Content -LiteralPath (Join-Path $PSScriptRoot $_) -Raw } | Out-String
     $launcher = [regex]::Match($hostControlSource,
         '(?s)private async void LaunchConfigurator\(.+?\n        \}').Value
     if ([string]::IsNullOrWhiteSpace($launcher) -or

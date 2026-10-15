@@ -22,6 +22,7 @@ $paths = [ordered]@{
     Manifest = Join-Path $PSScriptRoot "MoonWakerHostInstaller.manifest"
     BuildHostServices = Join-Path (Split-Path -Parent $root) "Build-HostServices.ps1"
     InstallerBuild = Join-Path $PSScriptRoot "Build-MoonWakerHostInstaller.ps1"
+    HostControlBuild = Join-Path $root "control\Build-MoonWakerHostControl.ps1"
 }
 
 $sources = @{}
@@ -351,5 +352,14 @@ Assert-Contains "Host" @(
     'if (Test-Path -LiteralPath (Join-Path $bridgeSource "discord\DiscordBridge.ps1") -PathType Leaf) {',
     'Remove-Item -LiteralPath $installedDiscord -Recurse -Force -ErrorAction Stop'
 )
+
+# Host Control is one WPF executable built by csc from its four sources; both package builds
+# carry them.
+Assert-Contains "HostControlBuild" @(
+    "/reference:PresentationFramework.dll", "/reference:WindowsBase.dll", "/reference:System.Xaml.dll",
+    "HostControlWindow.cs", "HostControlUi.cs", "HostControlBackend.cs", "MoonWakerHostControl.cs"
+)
+Assert-Contains "BuildHostServices" @("HostControlWindow.cs", "HostControlUi.cs")
+Assert-Contains "InstallerBuild" @("host-services/control/HostControlWindow.cs", "host-services/control/HostControlUi.cs")
 
 Write-Output "MoonWaker host preparation functional test passed."

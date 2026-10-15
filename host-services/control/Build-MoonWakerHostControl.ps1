@@ -47,7 +47,11 @@ $compilerArguments = @(
     "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll",
     "/reference:System.Security.dll", "/reference:System.ServiceProcess.dll",
     "/reference:System.IO.Compression.dll", "/reference:System.IO.Compression.FileSystem.dll",
+    "/lib:$(Join-Path (Split-Path -Parent $compiler) 'WPF')", "/reference:PresentationFramework.dll",
+    "/reference:PresentationCore.dll", "/reference:WindowsBase.dll", "/reference:System.Xaml.dll",
     (Join-Path $PSScriptRoot "MoonWakerHostControl.cs"),
+    (Join-Path $PSScriptRoot "HostControlWindow.cs"),
+    (Join-Path $PSScriptRoot "HostControlUi.cs"),
     (Join-Path $PSScriptRoot "HostControlBackend.cs"))
 & $compiler @compilerArguments
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw "MoonWaker Host Control compilation failed." }

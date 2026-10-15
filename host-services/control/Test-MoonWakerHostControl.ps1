@@ -1,18 +1,24 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
-param()
+param(
+    # Where the UI smoke test writes its page renders (PNG); none when empty.
+    [string]$UiRenderDirectory = ""
+)
 
-# Host Control checks: source contracts plus three headless C# test programs (singleton, the
-# tray's process host, the backend) that use fixtures in %TEMP% only - no service, task,
-# registry or network beyond loopback.
+# Host Control checks: source contracts plus four headless C# test programs (singleton, the
+# tray's process host, the backend, the WPF window on a hidden render) that use fixtures in
+# %TEMP% only - no service, task, registry write or network beyond loopback, nothing on screen.
 $ErrorActionPreference = "Stop"
-$uiSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostControl.cs") -Raw
+$traySource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostControl.cs") -Raw
+$windowSource = (Get-Content -LiteralPath (Join-Path $PSScriptRoot "HostControlWindow.cs") -Raw) +
+    (Get-Content -LiteralPath (Join-Path $PSScriptRoot "HostControlUi.cs") -Raw)
+$uiSource = $traySource + $windowSource
 $backendSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "HostControlBackend.cs") -Raw
 $configuratorSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs") -Raw
 $controlSource = $uiSource + $backendSource
 
 # Vibepollo is a computer setting: its one token is written by the elevated Configurator.
-if (-not $uiSource.Contains('LaunchConfigurator("vibepollo", null)') -or
+if (-not $windowSource.Contains('LaunchConfigurator("vibepollo", null)') -or
     -not $configuratorSource.Contains('else if (mode == "vibepollo") form = new VibepolloTokenForm(store);')) {
     throw "The Vibepollo token is not written through the elevated Configurator only."
 }
@@ -32,19 +38,30 @@ foreach ($removed in @("Invoke-MoonWakerHostControl", "RunControlAsync",
 if ($configuratorSource.Contains("return 10;") -or $configuratorSource.Contains("panel Vibepollo")) {
     throw "Adding a profile still redirects to the Vibepollo panel."
 }
+# The window is WPF: no WinForms form or MessageBox chain in Host Control; the tray keeps
+# NotifyIcon and the system folder picker only.
+foreach ($winForms in @(": Form", "ControlForm", "SteamApiKeyDialog", "IntegrationsDialog",
+        "MessageBox", "GamepadBadge")) {
+    if ($uiSource.Contains($winForms)) { throw "Host Control still contains WinForms UI: $winForms" }
+}
 # The tray hosts the profile's processes: it cannot be exited, and no script starts,
 # stops or adopts them.
-if ($uiSource.Contains('menu.Items.Add("Zako') -or
-    -not $uiSource.Contains('KillOnJobClose | SilentBreakawayOk') -or
-    -not $uiSource.Contains('@"SYSTEM\CurrentControlSet\Services\MoonWakerGateway"') -or
-    -not $uiSource.Contains('"bridge-source", "playnite", "GameProviderBridge.py"')) {
+if ($traySource.Contains('menu.Items.Add("Zako') -or
+    -not $traySource.Contains('KillOnJobClose | SilentBreakawayOk') -or
+    -not $traySource.Contains('@"SYSTEM\CurrentControlSet\Services\MoonWakerGateway"') -or
+    -not $traySource.Contains('"bridge-source", "playnite", "GameProviderBridge.py"')) {
     throw "Host Control does not host the profile processes from the installation."
 }
+# A dispatcher exception must not end the tray (and with its job, the Agent).
+if (-not $traySource.Contains('application.DispatcherUnhandledException +=') -or
+    -not $traySource.Contains('e.Handled = true;')) {
+    throw "Host Control lets a dispatcher exception end the tray."
+}
 if (-not $uiSource.Contains('Ctrl+Alt+Shift+End') -or
-    -not $uiSource.Contains('RegisterHotKey(Handle, StreamHotkeyId') -or
-    -not $uiSource.Contains('backend.CloseSession(25)') -or
-    -not $uiSource.Contains('new StreamHotkeyPipe(this, CloseSession)') -or
-    -not $uiSource.Contains('MoonWakerHostControl.StreamHotkey.')) {
+    -not $traySource.Contains('RegisterHotKey(handle, StreamHotkeyId') -or
+    -not $windowSource.Contains('backend.CloseSession(25)') -or
+    -not $traySource.Contains('new StreamHotkeyPipe(window.Dispatcher, window.CloseSession)') -or
+    -not $traySource.Contains('MoonWakerHostControl.StreamHotkey.')) {
     throw "Host Control close-session hotkey or its secure-desktop pipe is missing."
 }
 if ($controlSource.Contains('/action/close-app') -or $uiSource.Contains('"CloseStream"') -or
@@ -52,13 +69,23 @@ if ($controlSource.Contains('/action/close-app') -or $uiSource.Contains('"CloseS
     -not $backendSource.Contains('GatewayFile("host-close-result.json")')) {
     throw "Host Control must close a session through the Gateway request file only."
 }
-# Exactly one "Napraw"; it restarts the Gateway service through the installer's service DACL.
-if ([regex]::Matches($uiSource, 'AddActionButton\(\w+, "Napraw"').Count -ne 1 -or
+# Exactly one "Napraw" action; it restarts the Gateway service through the installer's
+# service DACL.
+if ([regex]::Matches($uiSource, 'Button\("Napraw"').Count -ne 1 -or
+    [regex]::Matches($uiSource, 'backend\.Repair\(').Count -ne 1 -or
     -not $backendSource.Contains('new ServiceController(GatewayServiceName)')) {
     throw "Host Control must have one Napraw that repairs the Gateway service and the Agent."
 }
+# The theme follows Windows by reading HKCU only; DPI awareness is per monitor.
+if ($uiSource -match 'Registry\.(LocalMachine|CurrentUser)\.(CreateSubKey|SetValue|DeleteValue)' -or
+    $uiSource -match 'OpenSubKey\([^)]*true\)' -or
+    -not $windowSource.Contains('"AppsUseLightTheme"') -or
+    -not (Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostControl.manifest") -Raw).Contains(
+        'PerMonitorV2')) {
+    throw "Host Control must only read the Windows theme and be per-monitor DPI aware."
+}
 
-function Test-HostControlHeadless([string]$TestSource, [string]$MainClass) {
+function Test-HostControlHeadless([string]$TestSource, [string]$MainClass, [string[]]$Arguments = @()) {
     $compiler = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
     if (-not (Test-Path -LiteralPath $compiler)) {
         $compiler = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
@@ -85,7 +112,11 @@ function Test-HostControlHeadless([string]$TestSource, [string]$MainClass) {
             "/reference:System.Web.Extensions.dll", "/reference:System.Security.dll",
             "/reference:System.ServiceProcess.dll", "/reference:System.IO.Compression.dll",
             "/reference:System.IO.Compression.FileSystem.dll",
+            "/lib:$(Join-Path (Split-Path -Parent $compiler) 'WPF')", "/reference:PresentationFramework.dll",
+            "/reference:PresentationCore.dll", "/reference:WindowsBase.dll", "/reference:System.Xaml.dll",
             (Join-Path $PSScriptRoot "MoonWakerHostControl.cs"),
+            (Join-Path $PSScriptRoot "HostControlWindow.cs"),
+            (Join-Path $PSScriptRoot "HostControlUi.cs"),
             (Join-Path $PSScriptRoot "HostControlBackend.cs"),
             (Join-Path $PSScriptRoot $TestSource))
         $compilerOutput = & $compiler @compilerArguments 2>&1
@@ -93,7 +124,7 @@ function Test-HostControlHeadless([string]$TestSource, [string]$MainClass) {
             throw ("Headless Host Control test compilation failed: " +
                 ($compilerOutput -join [Environment]::NewLine))
         }
-        & $testExecutable
+        & $testExecutable @Arguments
         if ($LASTEXITCODE -ne 0) {
             throw "Headless Host Control test $MainClass failed with exit code $LASTEXITCODE."
         }
@@ -114,4 +145,6 @@ function Test-HostControlHeadless([string]$TestSource, [string]$MainClass) {
 Test-HostControlHeadless "Test-MoonWakerHostControlSingleton.cs" "MoonWaker.HostControl.SingletonTests"
 Test-HostControlHeadless "Test-MoonWakerHostControlProcessHost.cs" "MoonWaker.HostControl.ProcessHostTests"
 Test-HostControlHeadless "Test-MoonWakerHostControlBackend.cs" "MoonWaker.HostControl.BackendTests"
+$uiArguments = if ([string]::IsNullOrWhiteSpace($UiRenderDirectory)) { @() } else { @($UiRenderDirectory) }
+Test-HostControlHeadless "Test-MoonWakerHostControlUi.cs" "MoonWaker.HostControl.UiTests" $uiArguments
 Write-Output "Host Control source contracts and headless tests passed."

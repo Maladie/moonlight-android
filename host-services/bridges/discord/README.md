@@ -11,7 +11,7 @@ and the Gateway reports Discord as unavailable.
 
 Host Control's tray runs it from the installation with `-ProfileDirectory
 <install>\profiles\<id>\discord` once that profile is configured (Host Control's
-**Integracje Discorda…**, where **Odłącz** removes the profile's client secret and OAuth
+Discord card on **Integracje**, where **Odłącz** removes the profile's client secret and OAuth
 token again); the directory holds only its configuration, DPAPI-protected client
 secret and OAuth token, state and logs. `/repair-bridge` and `/shutdown` end the
 process and the tray starts it again. `Test-DiscordBridge.ps1 -ProfileDirectory ...`

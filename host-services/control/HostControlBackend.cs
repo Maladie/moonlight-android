@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 
 namespace MoonWaker.HostControl
 {
-    // Host Control's backend for the signed-in Windows account, free of UI types (the WinForms
-    // window today, the WPF one later). It reads what the Gateway, the installation and the
+    // Host Control's backend for the signed-in Windows account, free of UI types (the WPF
+    // window and the tray call it). It reads what the Gateway, the installation and the
     // hosted processes publish and performs the account's own actions. Reading the status starts
     // no process and changes nothing; every action names the profile it acts on and checks that
     // this account owns it.
@@ -76,11 +76,47 @@ namespace MoonWaker.HostControl
             status.LegendaryInstalled = LegendaryExecutable != null;
             status.DiscordInstalled = DiscordInstalled;
             status.Gateway = ReadGateway(registry, status);
-            status.VibepolloTokenSaved = VibepolloTokenSaved();
+            status.VibepolloTokenSavedAt = VibepolloTokenSavedAt();
+            status.VibepolloTokenSaved = status.VibepolloTokenSavedAt != null;
             status.Profiles = new List<ProfileStatus>();
             foreach (KeyValuePair<string, Dictionary<string, object>> item in StandardProfiles(registry))
-                status.Profiles.Add(ReadProfile(item.Key, item.Value));
+                status.Profiles.Add(ReadProfile(item.Key, item.Value, registry));
             return status;
+        }
+
+        // Paired TVs as gateway.json records them: display fields and grants only, never the
+        // token digest. The Gateway's client-activity.json may hold a newer "last seen".
+        private List<PairedClient> ReadClients(Dictionary<string, object> registry)
+        {
+            List<PairedClient> result = new List<PairedClient>();
+            IList clients = registry == null ? null : HostFiles.Value(registry, "clients") as IList;
+            if (clients == null) return result;
+            Dictionary<string, object> activity = HostFiles.Value(
+                HostFiles.ReadJson(GatewayFile("client-activity.json")), "clients") as Dictionary<string, object>;
+            foreach (object item in clients)
+            {
+                Dictionary<string, object> record = item as Dictionary<string, object>;
+                if (record == null) continue;
+                PairedClient client = new PairedClient();
+                client.Id = HostFiles.Text(record, "id", "");
+                client.Name = HostFiles.Text(record, "name", "Android TV");
+                client.PairedAt = HostFiles.Number(record, "paired_at");
+                client.LastSeenAt = Math.Max(HostFiles.Number(record, "last_seen_at"),
+                    HostFiles.Number(activity, client.Id));
+                Dictionary<string, object> grants = HostFiles.Value(record, "profile_grants") as Dictionary<string, object>;
+                if (grants != null)
+                    foreach (KeyValuePair<string, object> grant in grants)
+                    {
+                        IList permissions = grant.Value as IList;
+                        if (permissions == null) continue;
+                        List<string> names = new List<string>();
+                        foreach (object permission in permissions)
+                            if (permission is string) names.Add((string)permission);
+                        client.Grants[grant.Key] = names;
+                    }
+                result.Add(client);
+            }
+            return result;
         }
 
         private GatewayStatus ReadGateway(Dictionary<string, object> registry, HostStatus host)
@@ -88,11 +124,9 @@ namespace MoonWaker.HostControl
             GatewayStatus gateway = new GatewayStatus();
             gateway.Installed = registry != null;
             gateway.Port = (int)HostFiles.Number(registry, "listen_port");
-            IList clients = registry == null ? null : HostFiles.Value(registry, "clients") as IList;
-            gateway.PairedClients = clients == null ? 0 : clients.Count;
-            Dictionary<string, object> pairing = HostFiles.ReadJson(GatewayFile("pairing-code.json"));
-            gateway.PairingSeconds = (int)Math.Max(0, HostFiles.Number(pairing, "expires_at") -
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            gateway.Clients = ReadClients(registry);
+            long expires = HostFiles.Number(HostFiles.ReadJson(GatewayFile("pairing-code.json")), "expires_at");
+            gateway.PairingExpiresAt = expires > DateTimeOffset.UtcNow.ToUnixTimeSeconds() ? expires : 0;
 
             // The service publishes its Python child; the child publishes its own identity.
             Dictionary<string, object> service = HostFiles.ReadJson(GatewayFile("gateway-service-state.json"));
@@ -116,19 +150,20 @@ namespace MoonWaker.HostControl
             return gateway;
         }
 
-        // The token file is readable only by Administrators and the service; its size is not.
-        // The installer creates it as "{}", the Configurator writes the token into it.
-        private bool VibepolloTokenSaved()
+        // The token file is readable only by Administrators and the service; its size and time
+        // are not. The installer creates it as "{}", the Configurator writes the token into it.
+        private DateTime? VibepolloTokenSavedAt()
         {
             try
             {
                 FileInfo file = new FileInfo(GatewayFile("vibepollo-api.json"));
-                return file.Exists && file.Length > 2;
+                return file.Exists && file.Length > 2 ? file.LastWriteTime : (DateTime?)null;
             }
-            catch { return false; }
+            catch { return null; }
         }
 
-        private ProfileStatus ReadProfile(string id, Dictionary<string, object> entry)
+        private ProfileStatus ReadProfile(string id, Dictionary<string, object> entry,
+            Dictionary<string, object> registry)
         {
             ProfileStatus profile = new ProfileStatus();
             profile.Id = id;
@@ -139,6 +174,13 @@ namespace MoonWaker.HostControl
             profile.RemoteSignInEnabled = HostFiles.Flag(entry, "remote_sign_in_enabled", false);
             profile.DeletionPending = HostFiles.Value(entry, "deletion_tombstone") != null;
             profile.CurrentUser = OwnedBy(entry, sid);
+            profile.Children = new List<string>();
+            foreach (object value in ((Dictionary<string, object>)registry["profiles"]).Values)
+            {
+                Dictionary<string, object> child = value as Dictionary<string, object>;
+                if (child != null && IsChild(child) && HostFiles.Text(child, "parent_profile_id", "") == id)
+                    profile.Children.Add(HostFiles.Text(child, "display_name", HostFiles.Text(child, "name", "")));
+            }
             // Each account's tray hosts its own children; their answers are their health.
             // /health answers without the Agent's state lock, so a busy Agent still reads online.
             profile.Agent = LoopbackHealth.Probe(HostFiles.Text(entry, "game_provider_bridge", ""), "/health");
@@ -151,6 +193,9 @@ namespace MoonWaker.HostControl
                 profile.EpicConnected = EpicConnected(root);
                 profile.PlayniteConnected = PlayniteConnected(root);
                 profile.DiscordConfigured = DiscordConfigured(root);
+                // The Client ID is the Discord application's public identifier, not a secret.
+                profile.DiscordClientId = HostFiles.Text(HostFiles.ReadJson(
+                    Path.Combine(root, "discord", "discord_bridge_config.json")), "client_id", "");
             }
             return profile;
         }
@@ -519,7 +564,7 @@ namespace MoonWaker.HostControl
             if (!Regex.IsMatch(clientId, "^[0-9]{17,20}$"))
                 throw new InvalidOperationException("Discord Client ID musi zawierać od 17 do 20 cyfr.");
             int port = LoopbackHealth.Port(HostFiles.Text(profile.Entry, "discord_bridge", ""));
-            if (port == 0) throw new InvalidOperationException("Profil nie ma portu Discord Bridge.");
+            if (port == 0) throw new InvalidOperationException("Discord nie jest skonfigurowany dla profilu.");
             Directory.CreateDirectory(directory);
             string previousId = HostFiles.Text(HostFiles.ReadJson(configPath), "client_id", "");
             HostFiles.WriteJson(configPath, new Dictionary<string, object> {
@@ -727,6 +772,7 @@ namespace MoonWaker.HostControl
         internal bool LegendaryInstalled;
         internal bool DiscordInstalled;
         internal bool VibepolloTokenSaved;
+        internal DateTime? VibepolloTokenSavedAt;
         internal GatewayStatus Gateway;
         internal List<ProfileStatus> Profiles;
     }
@@ -737,11 +783,23 @@ namespace MoonWaker.HostControl
         // "running", "starting", "recovering" or "stopped".
         internal string State;
         internal int Port;
-        internal int PairedClients;
-        internal int PairingSeconds;
+        internal List<PairedClient> Clients = new List<PairedClient>();
+        // Unix seconds when the pairing code expires; 0 when none is valid.
+        internal long PairingExpiresAt;
         internal string RuntimeVersion = "";
         internal string RuntimeBuild = "";
         internal bool VersionMismatch;
+    }
+
+    internal sealed class PairedClient
+    {
+        internal string Id;
+        internal string Name;
+        // Unix seconds; 0 when unknown.
+        internal long PairedAt;
+        internal long LastSeenAt;
+        // Profile id -> "use_profile", "remote_sign_in", "manage_children".
+        internal Dictionary<string, List<string>> Grants = new Dictionary<string, List<string>>();
     }
 
     internal sealed class ProfileStatus
@@ -757,11 +815,13 @@ namespace MoonWaker.HostControl
         // "disabled" (no endpoint), "online", "error" (answered, not ok) or "offline".
         internal string Agent;
         internal string Discord;
+        internal List<string> Children;
         // Known only for this account's own profile.
         internal bool SteamConnected;
         internal bool EpicConnected;
         internal bool PlayniteConnected;
         internal bool DiscordConfigured;
+        internal string DiscordClientId = "";
     }
 
     internal sealed class CloseSessionResult

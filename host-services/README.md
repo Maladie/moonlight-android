@@ -14,7 +14,7 @@ child profiles have no processes. The installer writes one machine `Run` entry
 every account at sign-in, also for profiles the elevated Configurator creates; a
 tray of an account without a profile exits at once. The tray menu has no exit, and
 closing the window only hides it. A tray running with an elevated token hosts nothing
-and shows `TRAY JAKO ADMIN`; the installer reopens the tray it closed through the
+and shows "Tray działa jako administrator"; the installer reopens the tray it closed through the
 signed-in user's Explorer, so it runs unelevated. A full installation closes the trays
 of every signed-in account (their hosted processes end with them); the installer
 reopens only its own account's tray, and the trays of other signed-in accounts come
@@ -32,8 +32,8 @@ Discord is an optional component. It is installed exactly when
 `bridge-source\discord\DiscordBridge.ps1` exists, which is when the package was built
 with `Build-HostServices.ps1 -WithDiscord`; only such a package also carries
 `gateway\MoonWakerDiscordAudioWorker.exe`. An installation from a package without
-Discord removes both. Without Discord, Host Control shows no Discord column or
-**Integracje Discorda…**, the tray starts no Discord Bridge, and the
+Discord removes both. Without Discord, Host Control shows no Discord card on
+**Integracje**, the tray starts no Discord Bridge, and the
 Gateway reports `discord` and `discord_audio` as unavailable, as for an offline
 Bridge. A hot update with `bridges/discord` files is refused by an installation
 without Discord (`Required runtime target is missing`).
@@ -60,16 +60,44 @@ installation.
 
 ## Host Control
 
+`control\MoonWakerHostControl.exe` is one WPF application on .NET Framework 4.8 (built into Windows 10 1903+), compiled by
+`Build-MoonWakerHostControl.ps1` with the framework's `csc.exe` (references
+`PresentationFramework`, `PresentationCore`, `WindowsBase`, `System.Xaml`; no MSBuild or
+NuGet). The UI is built in C# (`control\HostControlWindow.cs` for the window and its pages,
+`control\HostControlUi.cs` for the palette, building blocks and dialogs); only the scroll
+bar's template is a XAML string. The tray (`TrayHost` in `MoonWakerHostControl.cs`) keeps the
+WinForms `NotifyIcon`, the Ctrl+Alt+Shift+End hotkey and its secure-desktop pipe; closing or
+minimising the window hides it to the tray.
+
+The window follows the accepted mock-up (`.claude/handoffs/mockups/host-control`): navigation
+**Przegląd**, **Profile**, **Urządzenia**, **Integracje**, **Diagnostyka** (Ctrl+1…5; F5
+refreshes and re-probes the microphone; Esc hides), a status bar with progress and messages,
+and at most one notice per page with one action (a failed action, or Diagnostyka's first
+problem with **Napraw**). It is dark by default and light when
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme` is 1
+(read only, followed live), with a dark title bar in the dark theme and per-monitor DPI
+awareness (manifest PerMonitorV2, `TargetFramework` 4.8). Every fact on a page comes from
+`HostBackend.ReadStatus`; the page is rebuilt only when a shown fact changes. Profile, PIN,
+remote sign-in, device, child-profile, removal and Vibepollo-token edits open the elevated
+Configurator with its `--mode` (buttons with the UAC shield); Steam key and Discord data are
+asked in WPF dialogs and Playnite's directory in the system folder picker. Paired TVs and
+their grants are shown read-only from `gateway.json` (name, `paired_at`, `last_seen_at` or
+the newer `client-activity.json`, `profile_grants`; never the token digest). The Gateway
+publishes no record of the running session, so **Zamknij sesję** is offered without its
+game, TV or duration. The **Pierwsza konfiguracja** card lists four steps (Vibepollo token,
+a paired TV, this account's profile, a connected library) and is shown exactly while one
+of them is not met.
+
 Host Control's backend (`control\HostControlBackend.cs`) runs inside the tray; no
 PowerShell is involved. Its status refresh (every 2 s) starts no process and changes
 nothing: it reads what the Gateway publishes (`gateway.json`, `gateway-service-state.json`,
-`gateway-runtime.json`, `pairing-code.json`; always with delete sharing, so the atomic
-replacement of a file is never blocked), the size of `vibepollo-api.json` (whether the
-computer's token is saved), the loopback `/observation` of each profile's Agent and
+`gateway-runtime.json`, `pairing-code.json`, `client-activity.json`; always with delete sharing, so the atomic
+replacement of a file is never blocked), the size and time of `vibepollo-api.json` (whether the
+computer's token is saved), the loopback `/health` of each profile's Agent and
 `/health` of its Discord Bridge, the tray's own process host, and, for the signed-in
 account's profile only, its Steam key (DPAPI), Legendary's `user.json`, the Playnite
-settings and the Discord files. The microphone worker's probe runs only when the window
-opens and on **Odśwież**.
+settings and the Discord files (with the public Client ID). The microphone worker's probe
+runs only when the window opens and on F5.
 
 The account's actions use the existing channels: a pairing code is written in place into
 `pairing-code.json` (only its SHA-256, valid 10 minutes); **Zamknij sesję** writes
@@ -77,7 +105,7 @@ The account's actions use the existing channels: a pairing code is written in pl
 (`gateway\TRANSITION_CONTRACT.md`); the Steam Web API key and the Discord client secret
 are encrypted with the account's DPAPI in the tray's process; Epic signs in and out
 through Legendary with `LEGENDARY_CONFIG_PATH` = `profiles\<id>\state\legendary`;
-**Połącz Playnite** checks and applies `PatchPlayniteConnector.py` with the
+**Połącz** (Playnite) checks and applies `PatchPlayniteConnector.py` with the
 installation's Python and points the Agent's `config.json` at Playnite. Every profile
 action requires the profile's `windows_account_sid` to be the signed-in account.
 
@@ -124,11 +152,11 @@ so the directory's parent must be one that standard users cannot rename or creat
 
 Upgrades replace program files only. Existing `config.json` files, paired
 Gateway clients, TLS key/certificate files, DPAPI-protected Bridge tokens and the
-Vibepollo token are kept. With Discord installed, use **Integracje Discorda…** in Host
+Vibepollo token are kept. With Discord installed, use the Discord card on **Integracje** in Host
 Control after adding a profile to enter the Discord application data.
 
-Vibepollo is one per computer and so is its token. **Vibepollo…** in Host
-Control's Gateway panel opens the elevated Configurator, which either requests a
+Vibepollo is one per computer and so is its token. **Pobierz / odnów token** on Host
+Control's Integracje page opens the elevated Configurator, which either requests a
 token with the Vibepollo administrator login (used once, never stored) or takes
 a pasted one, checks it against the API and writes `gateway\vibepollo-api.json`.
 The installer creates that file readable only by Administrators, SYSTEM and the
