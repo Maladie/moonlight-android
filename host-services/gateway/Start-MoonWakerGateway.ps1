@@ -5,7 +5,6 @@ param([string]$GatewayDirectory = $PSScriptRoot)
 $GatewayDirectory = [IO.Path]::GetFullPath($GatewayDirectory)
 $statePath = Join-Path $GatewayDirectory "gateway-supervisor-state.json"
 $stopPath = Join-Path $GatewayDirectory "gateway-supervisor-stop"
-Remove-Item -LiteralPath (Join-Path $GatewayDirectory "gateway-manually-stopped") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
 $service = Get-Service -Name "MoonWakerGateway" -ErrorAction SilentlyContinue
 if ($null -ne $service) {

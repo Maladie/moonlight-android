@@ -6,7 +6,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $GatewayDirectory = [IO.Path]::GetFullPath($GatewayDirectory)
 $stopPath = Join-Path $GatewayDirectory "gateway-supervisor-stop"
-$manualStopPath = Join-Path $GatewayDirectory "gateway-manually-stopped"
 $statePath = Join-Path $GatewayDirectory "gateway-supervisor-state.json"
 $diagnosticPath = Join-Path $GatewayDirectory "gateway-supervisor.jsonl"
 $diagnosticClock = [Diagnostics.Stopwatch]::StartNew()
@@ -52,10 +51,6 @@ Initialize-SupervisorDiagnostics
 try {
     try { $ownsMutex = $mutex.WaitOne(0, $false) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
     if (-not $ownsMutex) { exit 0 }
-    if (Test-Path -LiteralPath $manualStopPath) {
-        Write-SupervisorDiagnosticEvent "manual_stop_observed" @{ status = "manually_stopped" }
-        return
-    }
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
     $startScript = Join-Path $GatewayDirectory "Start-WakePlayGateway.ps1"
     if (-not (Test-Path -LiteralPath $startScript)) { throw "Gateway start script was not found." }
@@ -75,9 +70,8 @@ try {
         Start-Sleep -Seconds ([Math]::Min(30, [Math]::Max(2, $attempt * 2)))
     }
 } finally {
-    $finalStatus = if (Test-Path -LiteralPath $manualStopPath) { "manually_stopped" } else { "stopped" }
-    Write-State $finalStatus 0
-    Write-SupervisorDiagnosticEvent "supervisor.stopped" @{ status = $finalStatus; restart_count = 0 }
+    Write-State "stopped" 0
+    Write-SupervisorDiagnosticEvent "supervisor.stopped" @{ status = "stopped"; restart_count = 0 }
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
     if ($ownsMutex) { try { $mutex.ReleaseMutex() } catch {} }
     $mutex.Dispose()

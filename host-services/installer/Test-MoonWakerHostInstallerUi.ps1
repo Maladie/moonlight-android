@@ -67,8 +67,18 @@ try {
         $payloadStream, [IO.Compression.ZipArchiveMode]::Read, $false)
     try {
         $payloadNames = @($payload.Entries | ForEach-Object { $_.FullName })
-        if ($payloadNames -notcontains "host-services/install/Install-WakePlayProfile.ps1") {
-            throw "Host Control profile provisioning script is missing from the installer payload."
+        # Host Control's backend and profile provisioning are compiled C#, not scripts.
+        foreach ($removedScript in @("host-services/install/Install-WakePlayProfile.ps1",
+                "host-services/control/Invoke-MoonWakerHostControl.ps1")) {
+            if ($payloadNames -contains $removedScript) {
+                throw "The installer payload still carries $removedScript."
+            }
+        }
+        foreach ($controlBinary in @("host-services/control/MoonWakerHostControl.exe",
+                "host-services/control/MoonWakerHostConfigurator.exe")) {
+            if ($payloadNames -notcontains $controlBinary) {
+                throw "Host Control binary is missing from the installer payload: $controlBinary"
+            }
         }
         foreach ($requiredMachineEntry in @(
             "host-services/install/Install-WakePlayHost.ps1",

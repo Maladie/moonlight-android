@@ -46,7 +46,7 @@ namespace MoonWaker.HostControl
             using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
             {
                 if (identity == null || identity.User == null)
-                    throw new InvalidOperationException("The current Windows user SID is unavailable.");
+                    throw new InvalidOperationException("Nie można ustalić identyfikatora SID bieżącego konta Windows.");
                 return new HostControlInstance(
                     @"Local\MoonWakerHostControl." + identity.User.Value);
             }
@@ -63,7 +63,7 @@ namespace MoonWaker.HostControl
             using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
             {
                 if (identity == null || identity.User == null)
-                    throw new InvalidOperationException("The current Windows user SID is unavailable.");
+                    throw new InvalidOperationException("Nie można ustalić identyfikatora SID bieżącego konta Windows.");
 
                 EventWaitHandle openedActivationEvent = null;
                 Mutex openedMutex = null;
@@ -401,6 +401,7 @@ namespace MoonWaker.HostControl
     internal sealed class ProfileProcessHost : IDisposable
     {
         internal const string ElevatedStatus = "TRAY JAKO ADMIN";
+        internal const string AuthorityLostStatus = "BRAK UPRAWNIEŃ";
 
         private sealed class Child
         {
@@ -469,8 +470,8 @@ namespace MoonWaker.HostControl
         // A tray started at sign-in stays only for an account that owns a profile.
         internal static bool AccountHasProfile(string installRoot)
         {
-            Dictionary<string, object> registry = ReadRegistry(Path.Combine(installRoot,
-                "gateway", "gateway.json"), new JavaScriptSerializer());
+            Dictionary<string, object> registry = HostFiles.ReadJson(Path.Combine(installRoot,
+                "gateway", "gateway.json"));
             return registry == null || AgentProfileSelector.Select(registry, CurrentSid()) != null;
         }
 
@@ -490,7 +491,7 @@ namespace MoonWaker.HostControl
             }
         }
 
-        private static string CurrentSid()
+        internal static string CurrentSid()
         {
             using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
                 return identity.User == null ? "" : identity.User.Value;
@@ -511,7 +512,7 @@ namespace MoonWaker.HostControl
                 if (disposed || id == null || id != profileId) return null;
                 if (elevated) return ElevatedStatus;
                 Child child = discordChild ? discord : agent;
-                if (agent.Policy.Blocked) return "BRAK UPRAWNIEŃ";
+                if (agent.Policy.Blocked) return AuthorityLostStatus;
                 if (child.Process != null) return child.Stopping ? "ZATRZYMYWANIE" : null;
                 if (child.StartFailed) return "BŁĄD STARTU";
                 int seconds = (int)Math.Ceiling((child.NotBeforeUtc - DateTime.UtcNow).TotalSeconds);
@@ -534,8 +535,8 @@ namespace MoonWaker.HostControl
             try
             {
                 if (disposed) return;
-                Dictionary<string, object> registry = ReadRegistry(Path.Combine(installRoot,
-                    "gateway", "gateway.json"), json);
+                Dictionary<string, object> registry = HostFiles.ReadJson(Path.Combine(installRoot,
+                    "gateway", "gateway.json"));
                 if (registry == null)
                 {
                     Reap(agent, "unreadable");
@@ -614,7 +615,7 @@ namespace MoonWaker.HostControl
         {
             string data = Path.Combine(root, "game-provider");
             string script = Path.Combine(installRoot, "bridge-source", "playnite", "GameProviderBridge.py");
-            return HiddenStartInfo(GatewayPythonw(), Quote(script) + " --config " +
+            return HiddenStartInfo(GatewayPython("pythonw.exe"), Quote(script) + " --config " +
                 Quote(Path.Combine(data, "config.json")), data);
         }
 
@@ -644,8 +645,9 @@ namespace MoonWaker.HostControl
                 File.Exists(Path.Combine(root, "discord", "client_secret.dpapi"));
         }
 
-        // The one Python the installation already trusts: the Gateway service's --python.
-        private static string GatewayPythonw()
+        // The one Python the installation already trusts: the Gateway service's --python
+        // directory; "pythonw.exe" for the Agent, "python.exe" for hidden helpers.
+        internal static string GatewayPython(string executable)
         {
             using (Microsoft.Win32.RegistryKey service = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
                 @"SYSTEM\CurrentControlSet\Services\MoonWakerGateway", false))
@@ -653,9 +655,9 @@ namespace MoonWaker.HostControl
                 string image = service == null ? "" : Convert.ToString(service.GetValue("ImagePath", ""));
                 string python = PythonFromServiceImage(image);
                 if (python == null) throw new FileNotFoundException("Usługa Gateway nie ma ścieżki Pythona.");
-                string pythonw = Path.Combine(Path.GetDirectoryName(python), "pythonw.exe");
-                if (!File.Exists(pythonw)) throw new FileNotFoundException("Brak pythonw.exe.", pythonw);
-                return pythonw;
+                string path = Path.Combine(Path.GetDirectoryName(python), executable);
+                if (!File.Exists(path)) throw new FileNotFoundException("Brak " + executable + ".", path);
+                return path;
             }
         }
 
@@ -667,19 +669,6 @@ namespace MoonWaker.HostControl
             string value = match.Groups["quoted"].Success ? match.Groups["quoted"].Value
                 : match.Groups["plain"].Value;
             return Path.IsPathRooted(value) ? Path.GetFullPath(value) : null;
-        }
-
-        // Delete sharing: this periodic reader must not block the registry's atomic replacement.
-        private static Dictionary<string, object> ReadRegistry(string path, JavaScriptSerializer json)
-        {
-            try
-            {
-                using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete))
-                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
-                    return json.Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
-            }
-            catch { return null; }
         }
 
         private static string Quote(string value) { return "\"" + value.Replace("\"", "\\\"") + "\""; }
@@ -715,14 +704,14 @@ namespace MoonWaker.HostControl
 
     internal sealed class ControlForm : Form
     {
-        private const int ProfileCreatedExitCode = 10;
         private readonly Color background = Color.FromArgb(17, 20, 28);
         private readonly Color panel = Color.FromArgb(28, 33, 45);
         private readonly Color accent = Color.FromArgb(116, 100, 255);
         private readonly Color muted = Color.FromArgb(164, 171, 193);
+        private readonly Color good = Color.FromArgb(129, 226, 169);
+        private readonly Color bad = Color.FromArgb(255, 170, 170);
         private readonly Label gatewayState = new Label();
         private readonly Label gatewayDetails = new Label();
-        private readonly Label activeProfile = new Label();
         private readonly Label steamConnectionState = new Label();
         private readonly Label epicConnectionState = new Label();
         private readonly Label playniteConnectionState = new Label();
@@ -733,8 +722,6 @@ namespace MoonWaker.HostControl
         private readonly ListView profiles = new ListView();
         private readonly Label footer = new Label();
         private readonly Timer timer = new Timer();
-        private readonly JavaScriptSerializer json = new JavaScriptSerializer();
-        private readonly string script;
         private static readonly Icon moonWakerIcon = MoonWakerIcon.Create();
         private readonly NotifyIcon trayIcon = new NotifyIcon();
         private readonly StreamHotkeyPipe streamHotkeyPipe;
@@ -742,10 +729,12 @@ namespace MoonWaker.HostControl
         private HostControlActivationListener activationListener;
         private readonly bool startInTray;
         private readonly ProfileProcessHost processHost;
-        private readonly bool discordInstalled = ProfileProcessHost.DiscordInstalled(InstallRoot);
+        private readonly HostBackend backend = new HostBackend(InstallRoot);
+        private readonly bool discordInstalled;
         private bool refreshing;
         private bool sessionClosePending;
         private bool legendaryInstalled;
+        private string microphone = "sprawdzam…";
         private readonly string hostVersion;
         private const int StreamHotkeyId = 0x4D57;
         private const int WmHotkey = 0x0312;
@@ -762,7 +751,7 @@ namespace MoonWaker.HostControl
             this.startInTray = startInTray;
             this.activationEvent = activationEvent;
             processHost = new ProfileProcessHost(InstallRoot);
-            script = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Invoke-MoonWakerHostControl.ps1");
+            discordInstalled = backend.DiscordInstalled;
             hostVersion = ReadHostVersion();
             Text = "MoonWaker Host Control " + hostVersion;
             Icon = moonWakerIcon;
@@ -791,12 +780,10 @@ namespace MoonWaker.HostControl
             gatewayState.SetBounds(26, 54, 280, 26);
             gatewayState.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
             gatewayPanel.Controls.Add(gatewayState);
-            gatewayDetails.SetBounds(26, 82, 390, 60);
+            gatewayDetails.SetBounds(26, 82, 520, 80);
             gatewayDetails.ForeColor = muted;
             gatewayPanel.Controls.Add(gatewayDetails);
-            AddActionButton(gatewayPanel, "Uruchom", 430, 27, delegate { RunAction("StartGateway", null); }, 116);
-            AddActionButton(gatewayPanel, "Zatrzymaj", 554, 27, delegate { RunAction("StopGateway", null); }, 116);
-            AddActionButton(gatewayPanel, "Restart", 678, 27, delegate { RunAction("RestartGateway", null); }, 116);
+            AddActionButton(gatewayPanel, "Napraw", 678, 27, delegate { Repair(); }, 116);
             Button pair = AddActionButton(gatewayPanel, "Sparuj TV", 802, 27, delegate { PairGateway(); }, 142);
             pair.BackColor = accent;
             pair.FlatAppearance.BorderSize = 0;
@@ -804,9 +791,6 @@ namespace MoonWaker.HostControl
                 delegate { LaunchConfigurator("vibepollo", null); }, 150);
             AddActionButton(gatewayPanel, "Eksportuj diagnostykę", 756, 74,
                 delegate { ExportDiagnostics(); }, 188);
-            activeProfile.SetBounds(430, 122, 510, 25);
-            activeProfile.ForeColor = muted;
-            gatewayPanel.Controls.Add(activeProfile);
 
             Panel connectionsPanel = NewPanel(34, 284, 972, 128);
             Controls.Add(connectionsPanel);
@@ -823,7 +807,7 @@ namespace MoonWaker.HostControl
             steamConnectionState.SetBounds(330, 43, 180, 24);
             steamConnectionState.ForeColor = muted;
             connectionsPanel.Controls.Add(steamConnectionState);
-            steamConnectionButton = AddActionButton(connectionsPanel, "Connect Steam", 330, 74,
+            steamConnectionButton = AddActionButton(connectionsPanel, "Połącz Steam", 330, 74,
                 delegate { SteamConnectionClicked(); }, 180);
 
             Label epicTitle = MakeLabel("Epic przez Legendary", 10F, FontStyle.Bold, Color.White);
@@ -832,7 +816,7 @@ namespace MoonWaker.HostControl
             epicConnectionState.SetBounds(530, 43, 180, 24);
             epicConnectionState.ForeColor = muted;
             connectionsPanel.Controls.Add(epicConnectionState);
-            epicConnectionButton = AddActionButton(connectionsPanel, "Connect Epic", 530, 74,
+            epicConnectionButton = AddActionButton(connectionsPanel, "Połącz Epic", 530, 74,
                 delegate { EpicConnectionClicked(); }, 180);
 
             Label playniteTitle = MakeLabel("Playnite (opcjonalnie)", 10F, FontStyle.Bold, Color.White);
@@ -841,12 +825,12 @@ namespace MoonWaker.HostControl
             playniteConnectionState.SetBounds(730, 43, 190, 24);
             playniteConnectionState.ForeColor = muted;
             connectionsPanel.Controls.Add(playniteConnectionState);
-            playniteConnectionButton = AddActionButton(connectionsPanel, "Connect Playnite", 730, 74,
+            playniteConnectionButton = AddActionButton(connectionsPanel, "Połącz Playnite", 730, 74,
                 delegate { PlayniteConnectionClicked(); }, 190);
 
             Panel profilePanel = NewPanel(34, 428, 972, 346);
             Controls.Add(profilePanel);
-            Label profileTitle = MakeLabel("Profile i Bridge'e", 16F, FontStyle.Bold, Color.White);
+            Label profileTitle = MakeLabel("Profile", 16F, FontStyle.Bold, Color.White);
             profileTitle.SetBounds(24, 16, 400, 32);
             profilePanel.Controls.Add(profileTitle);
             Label profileHint = MakeLabel("Agent profilu działa w trayu konta Windows, które jest jego właścicielem", 9F, FontStyle.Regular, muted);
@@ -884,15 +868,11 @@ namespace MoonWaker.HostControl
             remove.ForeColor = Color.FromArgb(255, 180, 180);
             AddActionButton(profilePanel, "Profile dzieci", 749, 232,
                 delegate { LaunchSelectedConfigurator("children"); }, 160);
-            AddActionButton(profilePanel, "Napraw", 24, 282,
-                delegate { RepairProfile(); }, 140);
-            integrationsButton = AddActionButton(profilePanel, "Integracje…", 434, 282,
-                delegate { ConfigureIntegrations(); }, 150);
+            integrationsButton = AddActionButton(profilePanel, "Integracje Discorda…", 24, 282,
+                delegate { ConfigureIntegrations(); }, 190);
             integrationsButton.Visible = discordInstalled;
-            AddActionButton(profilePanel, "Usuń dane Discorda", 594, 282,
-                delegate { ClearDiscord(); }, 170).Visible = discordInstalled;
             AddActionButton(profilePanel, "Odśwież", 774, 282,
-                delegate { RefreshStatus(); }, 140);
+                delegate { RefreshStatus(); ProbeMicrophone(); }, 140);
 
             footer.SetBounds(36, 790, 968, 36);
             footer.ForeColor = muted;
@@ -900,11 +880,14 @@ namespace MoonWaker.HostControl
 
             ConfigureTrayIcon();
             streamHotkeyPipe = new StreamHotkeyPipe(this, CloseSession);
-            timer.Interval = 5000;
+            // A status read starts no process: files the Gateway publishes and the loopback
+            // answers of the hosted processes.
+            timer.Interval = 2000;
             timer.Tick += delegate { RefreshStatus(); };
             Shown += delegate
             {
                 RefreshStatus();
+                ProbeMicrophone();
                 timer.Start();
                 if (this.startInTray)
                 {
@@ -1016,16 +999,13 @@ namespace MoonWaker.HostControl
             footer.Text = "Zamykam sesję…";
             try
             {
-                Dictionary<string, object> result = await RunControlAsync("CloseSession", null);
-                string reason = GetText(result, "reason", "");
-                if (reason.Length == 0) throw new InvalidOperationException(
-                    GetText(result, "error", "Nie udało się zamknąć sesji."));
-                string text = CloseSessionMessage(reason);
-                if (!IsOk(result)) throw new InvalidOperationException(text);
+                CloseSessionResult result = await Task.Run(delegate { return backend.CloseSession(25); });
+                string text = CloseSessionMessage(result.Reason);
+                if (!result.Ok) throw new InvalidOperationException(text);
                 footer.Text = text;
                 // The stream is closed, but the game may still run: a warning, not a success.
                 trayIcon.ShowBalloonTip(3000, "MoonWaker", text,
-                    reason == "stream_closed_game_unconfirmed"
+                    result.Reason == "stream_closed_game_unconfirmed"
                         ? ToolTipIcon.Warning : ToolTipIcon.Info);
             }
             catch (Exception ex)
@@ -1037,7 +1017,7 @@ namespace MoonWaker.HostControl
             finally { sessionClosePending = false; }
         }
 
-        private static string CloseSessionMessage(string reason)
+        internal static string CloseSessionMessage(string reason)
         {
             switch (reason)
             {
@@ -1072,6 +1052,8 @@ namespace MoonWaker.HostControl
                     return "Gateway przyjął żądanie, ale nie potwierdził zamknięcia sesji.";
                 case "profile_ambiguous":
                     return "Nie można jednoznacznie ustalić profilu tego konta Windows.";
+                case "registry_unreadable":
+                    return "Nie można odczytać rejestru Gatewaya (gateway.json), więc sesja nie została zamknięta. Spróbuj ponownie; jeśli błąd się powtarza, zainstaluj ponownie MoonWaker Host.";
                 case "channel_missing":
                     return "Ten Gateway nie obsługuje zamykania sesji z hosta. Zainstaluj ponownie MoonWaker Host.";
                 default: return "Gateway odmówił zamknięcia sesji (" + reason + ").";
@@ -1111,109 +1093,87 @@ namespace MoonWaker.HostControl
             return button;
         }
 
-        private Button AddActionButton(Control parent, string text, int left, int top, EventHandler handler)
-        {
-            return AddActionButton(parent, text, left, top, handler, 112);
-        }
-
         private async void RefreshStatus()
         {
             if (refreshing) return;
             refreshing = true;
-            footer.Text = "Sprawdzam usługi…";
             try
             {
-                Dictionary<string, object> result = await RunControlAsync("Status", null);
-                if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error", "Nie udało się odczytać statusu."));
-                RenderStatus(result);
-                footer.Text = "Status odświeżony: " + DateTime.Now.ToString("HH:mm:ss") + ". Operacje dotyczące innych kont mogą wymagać zalogowania na ten profil.";
+                HostStatus status = await Task.Run(delegate { return backend.ReadStatus(); });
+                RenderStatus(status);
             }
             catch (Exception ex)
             {
                 gatewayState.Text = "Status niedostępny";
-                gatewayState.ForeColor = Color.FromArgb(255, 170, 170);
+                gatewayState.ForeColor = bad;
                 footer.Text = ex.Message;
             }
             finally { refreshing = false; }
         }
 
-        private void RenderStatus(Dictionary<string, object> result)
+        // The microphone worker's probe starts a process: once at start and on "Odśwież".
+        private async void ProbeMicrophone()
         {
-            Dictionary<string, object> gateway = AsDictionary(result["gateway"]);
-            bool running = GetBool(gateway, "running");
-            gatewayState.Text = running ? "● ONLINE" : "● ZATRZYMANY";
-            gatewayState.ForeColor = running ? Color.FromArgb(129, 226, 169) : Color.FromArgb(255, 170, 170);
-            string installedVersion = GetText(gateway, "installed_version", hostVersion);
-            string runtimeVersion = GetText(gateway, "runtime_version", "");
-            string versionLine = String.IsNullOrWhiteSpace(runtimeVersion)
-                ? "Wersja: " + installedVersion + " (proces nie zgłosił wersji)"
-                : "Wersja: " + installedVersion + " / działa: " + runtimeVersion;
-            if (GetBool(gateway, "version_mismatch")) versionLine += "  ⚠ Różnica wersji";
-            Dictionary<string, object> legendary = AsDictionary(result["legendary"]);
-            legendaryInstalled = GetBool(legendary, "installed");
-            Dictionary<string, object> microphone = AsDictionary(result["microphone"]);
-            string microphoneReason = GetText(microphone, "reason", "worker_missing");
-            string microphoneStatus = microphoneReason == "ready" ? "gotowy"
-                : microphoneReason == "worker_missing" ? "brak renderera"
-                : "problem z endpointem Steam";
-            gatewayDetails.Text = "Port " + GetText(gateway, "port", "—") + "  •  sparowane urządzenia: " +
-                GetText(gateway, "paired_clients", "0") + "\n" + versionLine + "\nLegendary: " +
-                (legendaryInstalled ? "jest" : "brak") +
-                "  •  Mikrofon: " + microphoneStatus;
-            string active = GetText(result, "active_profile", "");
-            activeProfile.Text = String.IsNullOrWhiteSpace(active) ? "Ostatnio używany profil: brak danych" : "Ostatnio używany profil: " + active;
+            string reason = await Task.Run(delegate { return backend.ProbeMicrophone(); });
+            microphone = reason == "ready" ? "gotowy"
+                : reason == "worker_missing" ? "brak renderera" : "problem z endpointem Steam";
+            RefreshStatus();
+        }
+
+        private void RenderStatus(HostStatus status)
+        {
+            GatewayStatus gateway = status.Gateway;
+            gatewayState.Text = !gateway.Installed ? "● NIE ZAINSTALOWANO"
+                : gateway.State == "running" ? "● ONLINE"
+                : gateway.State == "starting" ? "● URUCHAMIANIE"
+                : gateway.State == "recovering" ? "● PONOWNY START" : "● ZATRZYMANY";
+            gatewayState.ForeColor = gateway.State == "running" ? good : bad;
+            string versionLine = gateway.State != "running"
+                ? "Wersja: " + status.InstalledVersion
+                : "Wersja: " + status.InstalledVersion + " / działa: " + gateway.RuntimeVersion;
+            if (gateway.VersionMismatch) versionLine += "  ⚠ Różnica wersji — użyj „Napraw”";
+            legendaryInstalled = status.LegendaryInstalled;
+            gatewayDetails.Text = "Port " + gateway.Port + "  •  sparowane urządzenia: " +
+                gateway.PairedClients + (gateway.PairingSeconds > 0
+                    ? "  •  parowanie aktywne jeszcze " + (gateway.PairingSeconds + 59) / 60 + " min" : "") +
+                "\n" + versionLine + "\nVibepollo: " +
+                (status.VibepolloTokenSaved ? "token komputera zapisany" : "brak tokenu — użyj „Vibepollo…”") +
+                "\nLegendary: " + (legendaryInstalled ? "jest" : "brak") + "  •  Mikrofon: " + microphone;
 
             string selected = SelectedProfileId();
             profiles.BeginUpdate();
             profiles.Items.Clear();
-            IEnumerable values = result["profiles"] as IEnumerable;
-            if (values != null)
+            foreach (ProfileStatus profile in status.Profiles)
             {
-                foreach (object item in values)
-                {
-                    Dictionary<string, object> profile = AsDictionary(item);
-                    string id = GetText(profile, "id", "");
-                    ListViewItem row = new ListViewItem(GetText(profile, "name", id));
-                    row.Name = id;
-                    row.Tag = profile;
-                    row.SubItems.Add(GetText(profile, "owner", "—"));
-                    if (discordInstalled) row.SubItems.Add(ProcessStatus(id, profile, "discord"));
-                    row.SubItems.Add(ProcessStatus(id, profile, "game_provider"));
-                    row.SubItems.Add(GetBool(profile, "pin_required") ? "WŁ." : "WYŁ.");
-                    row.SubItems.Add(RemoteSignInStatus(profile));
-                    profiles.Items.Add(row);
-                    if (id == selected) row.Selected = true;
-                }
+                ListViewItem row = new ListViewItem(profile.Name);
+                row.Name = profile.Id;
+                row.Tag = profile;
+                row.SubItems.Add(profile.Owner.Length == 0 ? "—" : profile.Owner);
+                if (discordInstalled) row.SubItems.Add(ProcessStatus(profile.Id, profile.Discord, true));
+                row.SubItems.Add(ProcessStatus(profile.Id, profile.Agent, false));
+                row.SubItems.Add(profile.PinRequired ? "WŁ." : "WYŁ.");
+                // The Login Broker's state is the Configurator's to read (elevated).
+                row.SubItems.Add(profile.RemoteSignInEnabled ? "SPRAWDŹ" : "WYŁ.");
+                profiles.Items.Add(row);
+                if (profile.Id == selected) row.Selected = true;
             }
             profiles.EndUpdate();
             if (profiles.SelectedItems.Count == 0 && profiles.Items.Count > 0)
                 profiles.Items[0].Selected = true;
             UpdateConnectionControls();
+            footer.Text = "Status odświeżony: " + DateTime.Now.ToString("HH:mm:ss") +
+                ". Operacje dotyczące innych kont wymagają zalogowania na ich konto Windows.";
         }
 
-        private static string StatusLabel(string value)
+        // The tray's own process host first; a running child is then judged by its answer.
+        private string ProcessStatus(string id, string health, bool discordChild)
         {
-            if (value == "running" || value == "online") return "ONLINE";
-            if (value == "disabled") return "WYŁ.";
-            if (value == "unavailable") return "INNE KONTO";
+            string hosted = processHost.Describe(id, discordChild);
+            if (hosted != null) return hosted;
+            if (health == "online") return "ONLINE";
+            if (health == "disabled") return "WYŁ.";
+            if (health == "error") return "BŁĄD";
             return "OFFLINE";
-        }
-
-        // The tray's own process host first; a running child is then judged by its /health.
-        private string ProcessStatus(string id, Dictionary<string, object> profile, string name)
-        {
-            string hosted = processHost.Describe(id, name == "discord");
-            return hosted ?? StatusLabel(GetText(profile, name, "stopped"));
-        }
-
-        private static string RemoteSignInStatus(Dictionary<string, object> profile)
-        {
-            if (!GetBool(profile, "remote_sign_in_enabled")) return "WYŁ.";
-            string state = GetText(profile, "remote_sign_in", "unavailable");
-            if (state == "ready") return "GOTOWE";
-            if (state == "action_required") return "USTAW";
-            if (state == "unsupported") return "NIEOBSŁ.";
-            return "SPRAWDŹ";
         }
 
         private string SelectedProfileId()
@@ -1222,174 +1182,137 @@ namespace MoonWaker.HostControl
             return profiles.SelectedItems[0].Name;
         }
 
-        private Dictionary<string, object> SelectedProfile()
+        private ProfileStatus SelectedProfile()
         {
             if (profiles.SelectedItems.Count == 0) return null;
-            return profiles.SelectedItems[0].Tag as Dictionary<string, object>;
+            return profiles.SelectedItems[0].Tag as ProfileStatus;
         }
 
         private void UpdateConnectionControls()
         {
-            Dictionary<string, object> profile = SelectedProfile();
+            ProfileStatus profile = SelectedProfile();
+            Label[] states = { steamConnectionState, epicConnectionState, playniteConnectionState };
             if (profile == null)
             {
-                steamConnectionState.Text = "Wybierz profil";
-                epicConnectionState.Text = "Wybierz profil";
-                playniteConnectionState.Text = "Wybierz profil";
-                steamConnectionState.ForeColor = muted;
-                epicConnectionState.ForeColor = muted;
-                playniteConnectionState.ForeColor = muted;
+                foreach (Label state in states)
+                {
+                    state.Text = "Wybierz profil";
+                    state.ForeColor = muted;
+                }
                 steamConnectionButton.Enabled = false;
                 epicConnectionButton.Enabled = false;
                 playniteConnectionButton.Enabled = false;
                 integrationsButton.Enabled = false;
                 return;
             }
-            bool available = GetBool(profile, "platform_controls_available");
-            bool steamConnected = GetBool(profile, "steam_connected");
-            bool epicConnected = GetBool(profile, "epic_connected");
-            bool playniteConnected = GetBool(profile, "playnite_connected");
-            steamConnectionState.Text = steamConnected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
-            epicConnectionState.Text = epicConnected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
-            playniteConnectionState.Text = playniteConnected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
-            steamConnectionState.ForeColor = steamConnected
-                ? Color.FromArgb(129, 226, 169) : (available ? muted : Color.FromArgb(255, 170, 170));
-            epicConnectionState.ForeColor = epicConnected
-                ? Color.FromArgb(129, 226, 169) : (available ? muted : Color.FromArgb(255, 170, 170));
-            playniteConnectionState.ForeColor = playniteConnected
-                ? Color.FromArgb(129, 226, 169) : (available ? muted : Color.FromArgb(255, 170, 170));
-            steamConnectionButton.Text = steamConnected ? "Disconnect Steam" : "Connect Steam";
-            epicConnectionButton.Text = epicConnected ? "Disconnect Epic" : "Connect Epic";
-            playniteConnectionButton.Text = playniteConnected ? "Disconnect Playnite" : "Connect Playnite";
-            steamConnectionButton.Enabled = available;
+            bool available = profile.CurrentUser;
+            ShowConnection(steamConnectionState, steamConnectionButton, profile.SteamConnected, available, "Steam");
+            ShowConnection(epicConnectionState, epicConnectionButton, profile.EpicConnected, available, "Epic");
+            ShowConnection(playniteConnectionState, playniteConnectionButton, profile.PlayniteConnected,
+                available, "Playnite");
             epicConnectionButton.Enabled = available && legendaryInstalled;
-            playniteConnectionButton.Enabled = available;
             integrationsButton.Enabled = available;
             if (!available)
-            {
-                steamConnectionState.Text = "Zaloguj się na ten profil";
-                epicConnectionState.Text = "Zaloguj się na ten profil";
-                playniteConnectionState.Text = "Zaloguj się na ten profil";
-            }
-            else if (!legendaryInstalled)
-            {
-                epicConnectionState.Text = "Brak Legendary — zaktualizuj Host";
-            }
+                foreach (Label state in states) state.Text = "Zaloguj się na ten profil";
+            else if (!legendaryInstalled) epicConnectionState.Text = "Brak Legendary — zaktualizuj Host";
         }
 
-        private void RepairProfile()
+        private void ShowConnection(Label state, Button button, bool connected, bool available, string name)
         {
-            string id = SelectedProfileId();
-            if (String.IsNullOrWhiteSpace(id)) { MessageBox.Show(this, "Wybierz profil.", "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            if (id != processHost.ProfileId)
-            {
-                MessageBox.Show(this, "Procesy tego profilu działają na jego koncie Windows. Zaloguj się na nie, aby je naprawić.",
-                    "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            processHost.RestartAll();
-            footer.Text = "Uruchamiam ponownie procesy profilu…";
+            state.Text = connected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
+            state.ForeColor = connected ? good : (available ? muted : bad);
+            button.Text = (connected ? "Odłącz " : "Połącz ") + name;
+            button.Enabled = available;
         }
 
-        private async void ConfigureSteamWebApi()
+        // One "Napraw": the Gateway service and this account's hosted processes, where needed.
+        private async void Repair()
         {
-            string id = SelectedProfileId();
-            if (String.IsNullOrWhiteSpace(id))
+            footer.Text = "Naprawiam…";
+            try
             {
-                MessageBox.Show(this, "Wybierz profil.", "MoonWaker",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                RepairResult result = await Task.Run(delegate { return backend.Repair(processHost); });
+                string restarted = result.Restarted.Count == 0 ? "" :
+                    "Uruchomiono ponownie: " + String.Join(", ", result.Restarted.ToArray()) + ".";
+                if (result.Problem != null)
+                    MessageBox.Show(this, (restarted + "\n\n" + result.Problem).Trim(), "Napraw",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                else footer.Text = restarted.Length > 0 ? restarted :
+                    "Gateway i procesy profilu tego konta działają; nie było czego naprawiać.";
             }
-            using (SteamApiKeyDialog dialog = new SteamApiKeyDialog(id))
+            catch (Exception ex)
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                string key = dialog.ApiKey;
-                try
-                {
-                    footer.Text = "Zapisuję klucz Steam Web API…";
-                    Dictionary<string, object> result = await RunControlAsync(
-                        "ConfigureSteamWebApi", id, key);
-                    if (!IsOk(result))
-                        throw new InvalidOperationException(GetText(result, "error",
-                            "Nie udało się zapisać klucza Steam Web API."));
-                    if (!GetBool(result, "connected"))
-                        throw new InvalidOperationException("Host Control nie potwierdził zapisu klucza Steam Web API.");
-                    Dictionary<string, object> profile = SelectedProfile();
-                    if (profile != null)
-                    {
-                        profile["steam_connected"] = true;
-                        profile["steam_web_api_configured"] = true;
-                        UpdateConnectionControls();
-                    }
-                    MessageBox.Show(this,
-                        "Klucz został zapisany dla profilu " + id + " i zabezpieczony przez Windows DPAPI.",
-                        "Steam Web API", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    RefreshStatus();
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(this, ex.Message, "Steam Web API",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    RefreshStatus();
-                }
-                finally { key = null; }
+                MessageBox.Show(this, ex.Message, "Napraw", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            RefreshStatus();
         }
 
         private void SteamConnectionClicked()
         {
-            string id = SelectedProfileId();
-            Dictionary<string, object> profile = SelectedProfile();
-            if (String.IsNullOrWhiteSpace(id) || profile == null) return;
-            if (!GetBool(profile, "steam_connected"))
+            ProfileStatus profile = SelectedProfile();
+            if (profile == null) return;
+            if (!profile.SteamConnected)
             {
-                ConfigureSteamWebApi();
+                ConfigureSteamWebApi(profile.Id);
                 return;
             }
             string warning = "Odłączenie Steam usunie zaszyfrowany klucz Web API dla tego profilu. " +
                 "MoonWaker nie będzie mógł odświeżać pełnej biblioteki Steam. Lokalne manifesty nadal " +
                 "potwierdzą zainstalowane gry, a ostatni snapshot może pozostać widoczny.\n\nKontynuować?";
-            if (MessageBox.Show(this, warning, "Disconnect Steam", MessageBoxButtons.YesNo,
+            if (MessageBox.Show(this, warning, "Odłącz Steam", MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning) == DialogResult.Yes)
-                RunPlatformAction("DisconnectSteam", id, "Steam został odłączony.");
+                RunPlatformAction(delegate { backend.RemoveSteamWebApiKey(profile.Id); },
+                    "Steam został odłączony.", false);
+        }
+
+        private void ConfigureSteamWebApi(string id)
+        {
+            using (SteamApiKeyDialog dialog = new SteamApiKeyDialog(id))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                string key = dialog.ApiKey;
+                RunPlatformAction(delegate { backend.SaveSteamWebApiKey(id, key); },
+                    "Klucz został zapisany dla profilu " + id + " i zabezpieczony przez Windows DPAPI.", false);
+            }
         }
 
         private void EpicConnectionClicked()
         {
-            string id = SelectedProfileId();
-            Dictionary<string, object> profile = SelectedProfile();
-            if (String.IsNullOrWhiteSpace(id) || profile == null) return;
-            if (GetBool(profile, "epic_connected"))
+            ProfileStatus profile = SelectedProfile();
+            if (profile == null) return;
+            if (profile.EpicConnected)
             {
                 string warning = "Odłączenie Epic usunie uwierzytelnienie Legendary. MoonWaker nie będzie " +
                     "odświeżać katalogu Epic ani uruchamiać, instalować lub odinstalowywać gier Epic do " +
                     "ponownego połączenia. Pliki gier nie zostaną usunięte.\n\nKontynuować?";
-                if (MessageBox.Show(this, warning, "Disconnect Epic", MessageBoxButtons.YesNo,
+                if (MessageBox.Show(this, warning, "Odłącz Epic", MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning) == DialogResult.Yes)
-                    RunPlatformAction("DisconnectEpic", id, "Epic został odłączony od Legendary.");
+                    RunPlatformAction(delegate { backend.DisconnectEpic(profile.Id); },
+                        "Epic został odłączony od Legendary.", false);
                 return;
             }
             string explanation = "Obsługa Epic działa przez Legendary, nie przez Epic Games Launcher. " +
                 "Legendary utrzymuje własny katalog i stan instalacji; gry nie będą synchronizowane z " +
                 "Epic Games Launcherem.\n\nLogowanie otworzy interaktywny proces Legendary. MoonWaker nie " +
                 "przechwytuje hasła Epic. Kontynuować?";
-            if (MessageBox.Show(this, explanation, "Connect Epic", MessageBoxButtons.YesNo,
+            if (MessageBox.Show(this, explanation, "Połącz Epic", MessageBoxButtons.YesNo,
                 MessageBoxIcon.Information) == DialogResult.Yes)
-                RunPlatformAction("ConnectEpic", id, "Epic został połączony przez Legendary.");
+                RunPlatformAction(delegate { backend.ConnectEpic(profile.Id); },
+                    "Epic został połączony przez Legendary.", false);
         }
 
-        private async void PlayniteConnectionClicked()
+        private void PlayniteConnectionClicked()
         {
-            string id = SelectedProfileId();
-            Dictionary<string, object> profile = SelectedProfile();
-            if (String.IsNullOrWhiteSpace(id) || profile == null) return;
-            if (GetBool(profile, "playnite_connected"))
+            ProfileStatus profile = SelectedProfile();
+            if (profile == null) return;
+            if (profile.PlayniteConnected)
             {
                 if (MessageBox.Show(this,
                         "Odłączyć opcjonalny katalog Playnite? Steam i Epic nadal będą działać bez zmian.",
-                        "Disconnect Playnite", MessageBoxButtons.YesNo,
+                        "Odłącz Playnite", MessageBoxButtons.YesNo,
                         MessageBoxIcon.Warning) == DialogResult.Yes)
-                    RunPlatformAction("DisconnectPlaynite", id, "Playnite został odłączony.");
+                    RunPlatformAction(delegate { backend.DisconnectPlaynite(profile.Id); },
+                        "Playnite został odłączony.", true);
                 return;
             }
             using (FolderBrowserDialog dialog = new FolderBrowserDialog())
@@ -1397,72 +1320,42 @@ namespace MoonWaker.HostControl
                 dialog.Description = "Wybierz katalog instalacji Playnite z zainstalowanym SunshinePlaynite Connector.";
                 dialog.ShowNewFolderButton = false;
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                try
-                {
-                    footer.Text = "Łączę opcjonalny katalog Playnite…";
-                    Dictionary<string, object> result = await RunControlAsync(
-                        "ConnectPlaynite", id, null, dialog.SelectedPath);
-                    if (!IsOk(result)) throw new InvalidOperationException(
-                        GetText(result, "error", "Nie udało się połączyć Playnite."));
-                    processHost.RestartAll();
-                    MessageBox.Show(this, "Playnite został połączony z profilem.",
-                        "MoonWaker Host Control", MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(this, ex.Message, "Playnite",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                finally { RefreshStatus(); }
+                string directory = dialog.SelectedPath;
+                RunPlatformAction(delegate { backend.ConnectPlaynite(profile.Id, directory); },
+                    "Playnite został połączony z profilem. Uruchom ponownie Playnite, aby wczytał łatkę MoonWaker.",
+                    true);
             }
         }
 
-        private async void RunPlatformAction(string action, string profile, string successMessage)
+        // Saving what the Agent or Discord Bridge reads at start restarts the hosted processes.
+        private async void RunPlatformAction(Action action, string successMessage, bool restartProcesses)
         {
             try
             {
-                footer.Text = "Aktualizuję połączenie platformy…";
-                Dictionary<string, object> result = await RunControlAsync(action, profile);
-                if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error", "Operacja nie powiodła się."));
-                if (action == "DisconnectPlaynite") processHost.RestartAll();
+                footer.Text = "Wykonuję operację…";
+                await Task.Run(action);
+                if (restartProcesses) processHost.RestartAll();
                 MessageBox.Show(this, successMessage, "MoonWaker Host Control",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
-                RefreshStatus();
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, ex.Message, "MoonWaker Host Control",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
-                RefreshStatus();
             }
-        }
-
-        private async void RunAction(string action, string profile)
-        {
-            try
-            {
-                footer.Text = "Wykonuję operację…";
-                Dictionary<string, object> result = await RunControlAsync(action, profile);
-                if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error", "Operacja nie powiodła się."));
-                await Task.Delay(700);
-                RefreshStatus();
-            }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "MoonWaker Host Control", MessageBoxButtons.OK, MessageBoxIcon.Error); RefreshStatus(); }
+            RefreshStatus();
         }
 
         private async void PairGateway()
         {
             try
             {
-                Dictionary<string, object> result = await RunControlAsync("PairGateway", null);
-                if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error", "Nie udało się uruchomić parowania."));
-                string code = GetText(result, "pairing_code", "");
+                string code = await Task.Run(delegate { return backend.CreatePairingCode(); });
                 MessageBox.Show(this, "Kod parowania:\n\n" + code + "\n\nKod jest ważny przez 10 minut.",
                     "Parowanie MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                RefreshStatus();
             }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "MoonWaker Host Control", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            RefreshStatus();
         }
 
         private async void ExportDiagnostics()
@@ -1470,76 +1363,44 @@ namespace MoonWaker.HostControl
             try
             {
                 footer.Text = "Eksportuję diagnostykę…";
-                Dictionary<string, object> result = await RunControlAsync(
-                    "ExportDiagnostics", null);
-                if (!IsOk(result)) throw new InvalidOperationException(
-                    GetText(result, "error", "Nie udało się wyeksportować diagnostyki."));
-                MessageBox.Show(this, "Pakiet diagnostyczny zapisano w:\n\n" +
-                    GetText(result, "path", ""), "MoonWaker Host Control",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                DiagnosticsExport export = await Task.Run(delegate { return backend.ExportDiagnostics(null); });
+                MessageBox.Show(this, "Pakiet diagnostyczny zapisano w:\n\n" + export.Path,
+                    "MoonWaker Host Control", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, ex.Message, "MoonWaker Host Control",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-            finally { RefreshStatus(); }
+            RefreshStatus();
         }
 
-        private void ClearDiscord()
+        private void ConfigureIntegrations()
         {
-            string id = SelectedProfileId();
-            if (String.IsNullOrWhiteSpace(id)) { MessageBox.Show(this, "Wybierz profil.", "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-            DialogResult result = MessageBox.Show(this, "Usunąć token OAuth i lokalne dane Discorda dla profilu " + id + "?",
-                "Usuń dane Discorda", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (result != DialogResult.Yes) return;
-            DialogResult machine = MessageBox.Show(this,
-                "Czy usunąć również wspólne dla komputera Client ID i Client Secret aplikacji Discord?\n\nWybierz Nie, jeśli inne profile nadal korzystają z Discorda.",
-                "Wspólne dane aplikacji Discord", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-            if (machine == DialogResult.Cancel) return;
-            RunAction(machine == DialogResult.Yes ? "ClearDiscordMachine" : "ClearDiscord", id);
-        }
-
-        private async void ConfigureIntegrations()
-        {
-            string id = SelectedProfileId();
-            Dictionary<string, object> profile = SelectedProfile();
-            if (String.IsNullOrWhiteSpace(id) || profile == null) return;
-            if (!GetBool(profile, "platform_controls_available"))
+            ProfileStatus profile = SelectedProfile();
+            if (profile == null) return;
+            if (!profile.CurrentUser)
             {
                 MessageBox.Show(this,
                     "Zaloguj się na konto Windows właściciela tego profilu, aby skonfigurować Discord.",
-                    "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    "Integracje Discorda", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            using (IntegrationsDialog dialog = new IntegrationsDialog(id,
-                GetBool(profile, "discord_configured")))
+            using (IntegrationsDialog dialog = new IntegrationsDialog(profile.Id, profile.DiscordConfigured))
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                IntegrationSettings settings = dialog.Settings;
-                try
+                DialogResult choice = dialog.ShowDialog(this);
+                if (choice == DialogResult.Abort)
                 {
-                    footer.Text = "Konfiguruję Discord…";
-                    Dictionary<string, object> result = await RunControlAsync(
-                        "ConfigureIntegrations", id, null, null, settings);
-                    if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error",
-                        "Nie udało się skonfigurować integracji."));
-                    processHost.RestartAll();
-                    MessageBox.Show(this,
-                        "Integracje profilu zostały zapisane. Jeśli Discord wymaga autoryzacji OAuth, otwórz go i użyj „Napraw”.",
-                        "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RunPlatformAction(delegate { backend.DisconnectDiscord(profile.Id); },
+                        "Discord został odłączony od profilu.", true);
+                    return;
                 }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(this, ex.Message, "Integracje MoonWaker",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                finally
-                {
-                    settings.ClearSecrets();
-                    dialog.ClearSecrets();
-                    RefreshStatus();
-                }
+                if (choice != DialogResult.OK) return;
+                string clientId = dialog.ClientId;
+                string secret = dialog.TakeSecret();
+                RunPlatformAction(delegate { backend.ConfigureDiscord(profile.Id, clientId, secret); },
+                    "Dane Discorda zostały zapisane. Autoryzację OAuth zatwierdzisz w aplikacji Discord na tym komputerze przy pierwszym użyciu Discorda z TV.",
+                    true);
             }
         }
 
@@ -1578,200 +1439,15 @@ namespace MoonWaker.HostControl
                 info.Verb = "runas";
                 info.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
                 using (Process process = Process.Start(info))
-                {
                     await Task.Run(delegate { process.WaitForExit(); });
-                    if (mode == "add" && process.ExitCode == ProfileCreatedExitCode)
-                        OpenVibepolloAccountPage();
-                }
-                RefreshStatus();
             }
             catch (System.ComponentModel.Win32Exception ex)
             {
                 if (ex.NativeErrorCode != 1223)
                     MessageBox.Show(this, ex.Message, "MoonWaker Host Control",
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
-                RefreshStatus();
             }
-        }
-
-        private void OpenVibepolloAccountPage()
-        {
-            try
-            {
-                ProcessStartInfo info = new ProcessStartInfo("https://127.0.0.1:47990");
-                info.UseShellExecute = true;
-                Process.Start(info);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, "Nie udało się otworzyć panelu Vibepollo: " + ex.Message,
-                    "MoonWaker Host Control", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-
-        private async Task<Dictionary<string, object>> RunControlAsync(string action, string profile)
-        {
-            return await RunControlAsync(action, profile, null, null);
-        }
-
-        private async Task<Dictionary<string, object>> RunControlAsync(
-            string action, string profile, string steamApiKey)
-        {
-            return await RunControlAsync(action, profile, steamApiKey, null);
-        }
-
-        private async Task<Dictionary<string, object>> RunControlAsync(
-            string action, string profile, string steamApiKey,
-            string playniteDirectory)
-        {
-            return await RunControlAsync(action, profile, steamApiKey,
-                playniteDirectory, null);
-        }
-
-        private async Task<Dictionary<string, object>> RunControlAsync(
-            string action, string profile, string steamApiKey,
-            string playniteDirectory, IntegrationSettings integrations)
-        {
-            return await Task.Run(delegate
-            {
-                if (!File.Exists(script)) throw new FileNotFoundException("Brak komponentu sterującego.", script);
-                string resultPath = Path.Combine(Path.GetTempPath(), "MoonWakerControl-" + Guid.NewGuid().ToString("N") + ".json");
-                bool hasSteamApiKey = steamApiKey != null && action == "ConfigureSteamWebApi";
-                bool hasIntegrationData = integrations != null && action == "ConfigureIntegrations";
-                string steamDiagnosticPath = hasSteamApiKey ? SteamConfigurationDiagnosticPath() : null;
-                string arguments = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(script) + " -Action " + Quote(action) +
-                    (String.IsNullOrWhiteSpace(profile) ? "" : " -ProfileId " + Quote(profile)) +
-                    (hasSteamApiKey ? " -SteamWebApiKeyProtectedFromEnvironment" : "") +
-                    (hasSteamApiKey ? " -SteamWebApiDiagnosticPath " + Quote(steamDiagnosticPath) : "") +
-                    (hasIntegrationData ? " -IntegrationDataProtectedFromEnvironment" : "") +
-                    (!String.IsNullOrWhiteSpace(playniteDirectory)
-                        ? " -PlayniteDirectory " + Quote(playniteDirectory) : "") +
-                    " -ResultPath " + Quote(resultPath);
-                try
-                {
-                    if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(steamDiagnosticPath, profile, "child_starting", 0);
-                    ProcessStartInfo info = new ProcessStartInfo("powershell.exe", arguments);
-                    info.UseShellExecute = false;
-                    if (hasSteamApiKey)
-                    {
-                        info.EnvironmentVariables["MOONWAKER_STEAM_WEB_API_PROTECTED"] =
-                            ProtectForCurrentUser(steamApiKey);
-                    }
-                    if (hasIntegrationData)
-                    {
-                        info.EnvironmentVariables["MOONWAKER_DISCORD_CONFIGURE"] =
-                            integrations.ConfigureDiscord ? "1" : "0";
-                        info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_ID"] =
-                            integrations.DiscordClientId ?? "";
-                        info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_SECRET_PROTECTED"] =
-                            String.IsNullOrWhiteSpace(integrations.DiscordClientSecret) ? "" :
-                            ProtectForCurrentUser(integrations.DiscordClientSecret);
-                    }
-                    info.CreateNoWindow = true;
-                    info.RedirectStandardOutput = true;
-                    info.RedirectStandardError = true;
-                    info.StandardOutputEncoding = Encoding.Default;
-                    info.StandardErrorEncoding = Encoding.Default;
-                    using (Process process = Process.Start(info))
-                    {
-                        if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(
-                            steamDiagnosticPath, profile, "child_started", process.Id);
-                        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-                        Task<string> stderr = process.StandardError.ReadToEndAsync();
-                        int timeout = action == "ConnectEpic" ? 900000 :
-                            action == "ConfigureIntegrations" ? 120000 :
-                            action == "ConnectPlaynite" ? 90000 :
-                            action == "ExportDiagnostics" ? 120000 :
-                            action == "CloseSession" ? 120000 :
-                            action.EndsWith("Gateway", StringComparison.Ordinal) ? 60000 : 30000;
-                        if (!process.WaitForExit(timeout))
-                        {
-                            if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(
-                                steamDiagnosticPath, profile, "child_timeout", process.Id);
-                            try { process.Kill(); } catch { }
-                            return Error("Operacja Host Control przekroczyła limit czasu. Szczegóły: " + steamDiagnosticPath);
-                        }
-                        process.WaitForExit();
-                        if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(
-                            steamDiagnosticPath, profile, "child_exited", process.Id);
-                        string output = "";
-                        if (Task.WaitAll(new Task[] { stdout, stderr }, 2000))
-                            output = stdout.Result;
-                        if (File.Exists(resultPath)) output = File.ReadAllText(resultPath, Encoding.UTF8).TrimStart('\uFEFF');
-                        if (String.IsNullOrWhiteSpace(output)) return Error("Brak odpowiedzi komponentu sterującego.");
-                        return json.Deserialize<Dictionary<string, object>>(output.Trim());
-                    }
-                }
-                catch (System.ComponentModel.Win32Exception ex) { return Error(ex.Message); }
-                finally { try { File.Delete(resultPath); } catch { } }
-            });
-        }
-
-        private static string ProtectForCurrentUser(string value)
-        {
-            byte[] plain = Encoding.Unicode.GetBytes(value);
-            byte[] encrypted = null;
-            try
-            {
-                encrypted = ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser);
-                StringBuilder text = new StringBuilder(encrypted.Length * 2);
-                foreach (byte item in encrypted) text.Append(item.ToString("x2"));
-                return text.ToString();
-            }
-            finally
-            {
-                Array.Clear(plain, 0, plain.Length);
-                if (encrypted != null) Array.Clear(encrypted, 0, encrypted.Length);
-            }
-        }
-
-        private static string SteamConfigurationDiagnosticPath()
-        {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MoonWaker", "logs", "steam-web-api-configure.log");
-        }
-
-        private static void WriteSteamConfigurationDiagnostic(
-            string path, string profile, string phase, int childPid)
-        {
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(path));
-                if (File.Exists(path) && new FileInfo(path).Length > 65536) File.WriteAllText(path, "");
-                string line = DateTimeOffset.Now.ToString("o") + " pid=" + Process.GetCurrentProcess().Id +
-                    " child_pid=" + childPid + " profile=" + profile +
-                    " component=host-control phase=" + phase + Environment.NewLine;
-                File.AppendAllText(path, line, Encoding.UTF8);
-            }
-            catch { }
-        }
-
-        private static Dictionary<string, object> Error(string message)
-        {
-            Dictionary<string, object> value = new Dictionary<string, object>();
-            value["ok"] = false;
-            value["error"] = message;
-            return value;
-        }
-
-        private static Dictionary<string, object> AsDictionary(object value)
-        {
-            return value as Dictionary<string, object> ?? new Dictionary<string, object>();
-        }
-
-        private static bool IsOk(Dictionary<string, object> value) { return GetBool(value, "ok"); }
-        private static bool GetBool(Dictionary<string, object> value, string key)
-        {
-            object found;
-            if (!value.TryGetValue(key, out found) || found == null) return false;
-            bool parsed;
-            return found is bool ? (bool)found : Boolean.TryParse(found.ToString(), out parsed) && parsed;
-        }
-
-        private static string GetText(Dictionary<string, object> value, string key, string fallback)
-        {
-            object found;
-            return value.TryGetValue(key, out found) && found != null ? found.ToString() : fallback;
+            RefreshStatus();
         }
 
         private static string ReadHostVersion()
@@ -1862,43 +1538,29 @@ namespace MoonWaker.HostControl
         }
     }
 
-    internal sealed class IntegrationSettings
-    {
-        internal bool ConfigureDiscord;
-        internal string DiscordClientId;
-        internal string DiscordClientSecret;
-
-        internal void ClearSecrets()
-        {
-            DiscordClientSecret = null;
-        }
-    }
-
+    // Discord application data of the selected profile: Zapisz, or Odłącz (DialogResult.Abort)
+    // when the profile has Discord configured.
     internal sealed class IntegrationsDialog : Form
     {
         private readonly bool discordWasConfigured;
-        private readonly CheckBox configureDiscord = new CheckBox();
         private readonly TextBox discordId = new TextBox();
         private readonly TextBox discordSecret = new TextBox();
 
-        internal IntegrationSettings Settings
+        internal string ClientId { get { return discordId.Text.Trim(); } }
+
+        internal string TakeSecret()
         {
-            get
-            {
-                return new IntegrationSettings {
-                    ConfigureDiscord = configureDiscord.Checked,
-                    DiscordClientId = discordId.Text.Trim(),
-                    DiscordClientSecret = discordSecret.Text
-                };
-            }
+            string value = discordSecret.Text;
+            discordSecret.Clear();
+            return value;
         }
 
         internal IntegrationsDialog(string profileId, bool discordConfigured)
         {
             discordWasConfigured = discordConfigured;
-            Text = "Integracje MoonWaker";
+            Text = "Integracje Discorda";
             Icon = MoonWakerIcon.Create();
-            ClientSize = new Size(720, 300);
+            ClientSize = new Size(720, 270);
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -1910,85 +1572,72 @@ namespace MoonWaker.HostControl
             AutoScaleMode = AutoScaleMode.Dpi;
 
             AddLabel("Discord", 26, 18, 620, 34, 16F, FontStyle.Bold, Color.White);
-            AddLabel("Profil: " + profileId + ". Sekrety są zapisywane dla aktualnego konta Windows.",
-                28, 55, 650, 25, 9F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
+            AddLabel("Profil: " + profileId + ". Sekrety są zapisywane dla aktualnego konta Windows. " +
+                (discordConfigured ? "Discord jest skonfigurowany; puste pola zachowają dane."
+                    : "Discord nie jest skonfigurowany."),
+                28, 55, 660, 40, 9F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
+            AddLabel("Client ID", 30, 100, 280, 22, 9F, FontStyle.Regular, Color.White);
+            AddLabel("Client Secret", 365, 100, 280, 22, 9F, FontStyle.Regular, Color.White);
+            ConfigureBox(discordId, 30, 124, 315, false);
+            ConfigureBox(discordSecret, 365, 124, 325, true);
+            AddLabel("Przy pierwszej konfiguracji podaj oba pola. Discord poprosi o autoryzację OAuth przy pierwszym użyciu z TV.",
+                30, 162, 660, 34, 8.7F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
 
-            configureDiscord.Text = discordConfigured
-                ? "Discord Bridge — skonfigurowany (puste pola zachowają dane)"
-                : "Skonfiguruj Discord Bridge";
-            configureDiscord.SetBounds(28, 91, 650, 28);
-            configureDiscord.ForeColor = Color.White;
-            configureDiscord.Checked = true;
-            configureDiscord.CheckedChanged += delegate { UpdateFields(); };
-            Controls.Add(configureDiscord);
-            AddLabel("Client ID", 30, 124, 280, 22, 9F, FontStyle.Regular, Color.White);
-            AddLabel("Client Secret", 365, 124, 280, 22, 9F, FontStyle.Regular, Color.White);
-            ConfigureBox(discordId, 30, 148, 315, false);
-            ConfigureBox(discordSecret, 365, 148, 325, true);
-            AddLabel("Przy pierwszej konfiguracji podaj oba pola. Discord uruchomi autoryzację OAuth przy starcie Bridge'a.",
-                30, 184, 660, 34, 8.7F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
-
-            AddLabel("Vibepollo jest ustawieniem komputera: token zapisuje przycisk „Vibepollo…” w panelu Gateway.",
-                30, 220, 660, 22, 8.7F, FontStyle.Regular, Color.FromArgb(164, 171, 193));
-
-            Button save = new Button();
-            save.Text = "Zapisz";
-            save.SetBounds(468, 248, 102, 38);
-            save.BackColor = Color.FromArgb(116, 100, 255);
-            save.ForeColor = Color.White;
-            save.FlatStyle = FlatStyle.Flat;
+            if (discordConfigured)
+            {
+                Button disconnect = NewButton("Odłącz", 30, 214, 108, Color.FromArgb(28, 33, 45));
+                disconnect.ForeColor = Color.FromArgb(255, 180, 180);
+                disconnect.Click += delegate
+                {
+                    if (MessageBox.Show(this, "Usunąć token OAuth i Client Secret Discorda dla profilu " +
+                            profileId + "? Discord Bridge tego profilu przestanie działać.",
+                            "Odłącz Discord", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                        return;
+                    DialogResult = DialogResult.Abort;
+                    Close();
+                };
+            }
+            Button save = NewButton("Zapisz", 468, 214, 102, Color.FromArgb(116, 100, 255));
             save.FlatAppearance.BorderSize = 0;
             save.Click += SaveClicked;
-            Controls.Add(save);
-            Button cancel = new Button();
-            cancel.Text = "Anuluj";
+            Button cancel = NewButton("Anuluj", 582, 214, 108, Color.FromArgb(28, 33, 45));
             cancel.DialogResult = DialogResult.Cancel;
-            cancel.SetBounds(582, 248, 108, 38);
-            cancel.BackColor = Color.FromArgb(28, 33, 45);
-            cancel.ForeColor = Color.White;
-            cancel.FlatStyle = FlatStyle.Flat;
-            cancel.FlatAppearance.BorderColor = Color.FromArgb(77, 85, 109);
-            Controls.Add(cancel);
             AcceptButton = save;
             CancelButton = cancel;
-            FormClosed += delegate { if (DialogResult != DialogResult.OK) ClearSecrets(); };
-            UpdateFields();
+            FormClosed += delegate { if (DialogResult != DialogResult.OK) discordSecret.Clear(); };
         }
 
         private void SaveClicked(object sender, EventArgs e)
         {
-            if (!configureDiscord.Checked)
+            bool hasId = !String.IsNullOrWhiteSpace(discordId.Text);
+            bool hasSecret = !String.IsNullOrWhiteSpace(discordSecret.Text);
+            if (hasId != hasSecret || (!discordWasConfigured && !hasId))
             {
-                MessageBox.Show(this, "Zaznacz konfigurację Discorda.",
-                    "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, "Przy pierwszej konfiguracji Discorda podaj Client ID i Client Secret.",
+                    "Integracje Discorda", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            if (configureDiscord.Checked)
+            if (hasId && !System.Text.RegularExpressions.Regex.IsMatch(ClientId, "^[0-9]{17,20}$"))
             {
-                bool hasId = !String.IsNullOrWhiteSpace(discordId.Text);
-                bool hasSecret = !String.IsNullOrWhiteSpace(discordSecret.Text);
-                if (hasId != hasSecret || (!discordWasConfigured && !hasId))
-                {
-                    MessageBox.Show(this, "Przy pierwszej konfiguracji Discorda podaj Client ID i Client Secret.",
-                        "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                if (hasId && !System.Text.RegularExpressions.Regex.IsMatch(
-                    discordId.Text.Trim(), "^[0-9]{17,20}$"))
-                {
-                    MessageBox.Show(this, "Discord Client ID musi zawierać od 17 do 20 cyfr.",
-                        "Integracje MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
+                MessageBox.Show(this, "Discord Client ID musi zawierać od 17 do 20 cyfr.",
+                    "Integracje Discorda", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
             }
             DialogResult = DialogResult.OK;
             Close();
         }
 
-        private void UpdateFields()
+        private Button NewButton(string text, int x, int y, int width, Color color)
         {
-            discordId.Enabled = configureDiscord.Checked;
-            discordSecret.Enabled = configureDiscord.Checked;
+            Button button = new Button();
+            button.Text = text;
+            button.SetBounds(x, y, width, 38);
+            button.BackColor = color;
+            button.ForeColor = Color.White;
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderColor = Color.FromArgb(77, 85, 109);
+            Controls.Add(button);
+            return button;
         }
 
         private void AddLabel(string text, int x, int y, int width, int height,
@@ -2011,11 +1660,6 @@ namespace MoonWaker.HostControl
             box.UseSystemPasswordChar = secret;
             Controls.Add(box);
         }
-
-        internal void ClearSecrets()
-        {
-            discordSecret.Clear();
-        }
     }
 
     internal sealed class SteamApiKeyDialog : Form
@@ -2026,7 +1670,7 @@ namespace MoonWaker.HostControl
 
         public SteamApiKeyDialog(string profileId)
         {
-            Text = "Steam Web API key";
+            Text = "Klucz Steam Web API";
             Icon = MoonWakerIcon.Create();
             ClientSize = new Size(620, 236);
             MinimumSize = new Size(620, 275);
@@ -2041,19 +1685,19 @@ namespace MoonWaker.HostControl
             AutoScaleMode = AutoScaleMode.Dpi;
 
             Label title = new Label();
-            title.Text = "Connect a Steam Web API key";
+            title.Text = "Połącz klucz Steam Web API";
             title.Font = new Font("Segoe UI", 14F, FontStyle.Bold);
             title.SetBounds(24, 20, 440, 30);
             Controls.Add(title);
 
             Label profile = new Label();
-            profile.Text = "Profile: " + profileId;
+            profile.Text = "Profil: " + profileId;
             profile.ForeColor = Color.FromArgb(164, 171, 193);
             profile.SetBounds(26, 54, 500, 24);
             Controls.Add(profile);
 
             Label prompt = new Label();
-            prompt.Text = "32-character Steam Web API key";
+            prompt.Text = "32-znakowy klucz Steam Web API";
             prompt.SetBounds(26, 88, 360, 22);
             Controls.Add(prompt);
 
@@ -2070,8 +1714,8 @@ namespace MoonWaker.HostControl
             Button help = new Button();
             help.Name = "SteamApiHelpButton";
             help.Text = "?";
-            help.AccessibleName = "How to get a Steam Web API key";
-            help.AccessibleDescription = "Shows key registration and secure storage instructions.";
+            help.AccessibleName = "Jak uzyskać klucz Steam Web API";
+            help.AccessibleDescription = "Pokazuje, jak zarejestrować klucz i jak MoonWaker go przechowuje.";
             help.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
             help.SetBounds(536, 109, 46, 38);
             help.FlatStyle = FlatStyle.Flat;
@@ -2086,16 +1730,16 @@ namespace MoonWaker.HostControl
             };
             Controls.Add(help);
             ToolTip tip = new ToolTip();
-            tip.SetToolTip(help, "How to get and store a Steam Web API key");
+            tip.SetToolTip(help, "Jak uzyskać i przechować klucz Steam Web API");
 
             Label storage = new Label();
-            storage.Text = "The key is stored for this Windows user using DPAPI and is never returned by Gateway.";
+            storage.Text = "Klucz jest zapisywany dla tego konta Windows przez DPAPI; Gateway nigdy go nie zwraca.";
             storage.ForeColor = Color.FromArgb(164, 171, 193);
             storage.SetBounds(26, 152, 560, 34);
             Controls.Add(storage);
 
             Button save = new Button();
-            save.Text = "Save key";
+            save.Text = "Zapisz klucz";
             save.DialogResult = DialogResult.None;
             save.SetBounds(354, 190, 108, 36);
             save.BackColor = Color.FromArgb(116, 100, 255);
@@ -2108,7 +1752,7 @@ namespace MoonWaker.HostControl
                     keyBox.Text.Trim(), "^[A-Fa-f0-9]{32}$"))
                 {
                     MessageBox.Show(this,
-                        "Enter exactly 32 hexadecimal characters.", "Steam Web API",
+                        "Wpisz dokładnie 32 znaki szesnastkowe.", "Steam Web API",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     keyBox.Focus();
                     return;
@@ -2119,7 +1763,7 @@ namespace MoonWaker.HostControl
             Controls.Add(save);
 
             Button cancel = new Button();
-            cancel.Text = "Cancel";
+            cancel.Text = "Anuluj";
             cancel.DialogResult = DialogResult.Cancel;
             cancel.SetBounds(474, 190, 108, 36);
             cancel.FlatStyle = FlatStyle.Flat;
@@ -2138,23 +1782,23 @@ namespace MoonWaker.HostControl
     {
         private const string RegistrationUrl = "https://steamcommunity.com/dev/apikey";
         private const string Instructions =
-            "HOW TO GET A STEAM WEB API KEY\r\n\r\n" +
-            "1. Open the official Steam registration page:\r\n" + RegistrationUrl + "\r\n\r\n" +
-            "2. Sign in with the Steam account whose library MoonWaker should read.\r\n\r\n" +
-            "3. Enter localhost in the Domain Name field for this local integration.\r\n\r\n" +
-            "4. Review and accept the Steam Web API Terms of Use, then register the key.\r\n\r\n" +
-            "5. Copy the generated 32-character key into the masked field in Host Control.\r\n\r\n" +
-            "STORAGE AND SECURITY\r\n\r\n" +
-            "• The key is stored in the selected MoonWaker profile as steam-web-api-key.dpapi.\r\n" +
-            "• Windows DPAPI encrypts it for the Windows account that owns the profile.\r\n" +
-            "• The key is not stored in config.json, command-line arguments, logs, audit files, or Gateway responses.\r\n" +
-            "• MoonWaker sends it only to api.steampowered.com over HTTPS with normal certificate validation.\r\n" +
-            "• Host Control never displays a previously stored key. Re-entering a key replaces it.\r\n" +
-            "• Never paste the key into chat or share it. If it is exposed, revoke it on the Steam registration page and create a new one.";
+            "JAK UZYSKAĆ KLUCZ STEAM WEB API\r\n\r\n" +
+            "1. Otwórz oficjalną stronę rejestracji Steam:\r\n" + RegistrationUrl + "\r\n\r\n" +
+            "2. Zaloguj się na konto Steam, którego bibliotekę ma czytać MoonWaker.\r\n\r\n" +
+            "3. W polu Domain Name wpisz localhost (integracja lokalna).\r\n\r\n" +
+            "4. Przeczytaj i zaakceptuj Steam Web API Terms of Use, a potem zarejestruj klucz.\r\n\r\n" +
+            "5. Skopiuj wygenerowany 32-znakowy klucz do maskowanego pola w Host Control.\r\n\r\n" +
+            "PRZECHOWYWANIE I BEZPIECZEŃSTWO\r\n\r\n" +
+            "• Klucz jest zapisywany w wybranym profilu MoonWaker jako steam-web-api-key.dpapi.\r\n" +
+            "• Windows DPAPI szyfruje go dla konta Windows, które jest właścicielem profilu.\r\n" +
+            "• Klucza nie ma w config.json, argumentach wiersza poleceń, logach, plikach audytu ani odpowiedziach Gatewaya.\r\n" +
+            "• MoonWaker wysyła go tylko do api.steampowered.com przez HTTPS ze zwykłą weryfikacją certyfikatu.\r\n" +
+            "• Host Control nigdy nie pokazuje zapisanego klucza. Wpisanie nowego klucza zastępuje poprzedni.\r\n" +
+            "• Nie wklejaj klucza na czacie i nie udostępniaj go. Jeśli wycieknie, unieważnij go na stronie rejestracji Steam i utwórz nowy.";
 
         public SteamApiHelpForm()
         {
-            Text = "Steam Web API key help";
+            Text = "Pomoc: klucz Steam Web API";
             Icon = MoonWakerIcon.Create();
             ClientSize = new Size(760, 620);
             MinimumSize = new Size(640, 520);
@@ -2197,7 +1841,7 @@ namespace MoonWaker.HostControl
             layout.Controls.Add(buttons, 0, 1);
 
             Button close = new Button();
-            close.Text = "Close";
+            close.Text = "Zamknij";
             close.DialogResult = DialogResult.OK;
             close.Size = new Size(100, 34);
             close.FlatStyle = FlatStyle.Flat;
@@ -2206,8 +1850,8 @@ namespace MoonWaker.HostControl
             buttons.Controls.Add(close);
 
             Button open = new Button();
-            open.Text = "Open Steam key page";
-            open.Size = new Size(180, 34);
+            open.Text = "Otwórz stronę klucza Steam";
+            open.Size = new Size(220, 34);
             open.FlatStyle = FlatStyle.Flat;
             open.FlatAppearance.BorderColor = Color.FromArgb(116, 100, 255);
             open.BackColor = Color.FromArgb(28, 33, 45);

@@ -70,6 +70,7 @@ try {
         "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1",
         "host-services/install/Prepare-MoonWakerHost.ps1",
         "host-services/control/MoonWakerHostConfigurator.cs",
+        "host-services/control/HostControlBackend.cs",
         "host-services/control/ChildProfileForms.cs",
         "host-services/control/MoonWakerHostConfigurator.manifest",
         "host-services/control/Test-MoonWakerHostConfigurator.ps1",

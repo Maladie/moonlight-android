@@ -61,7 +61,6 @@ namespace MoonWaker.HostConfigurator
                     else throw new InvalidOperationException("Nieznany tryb konfiguratora.");
                 }
                 Application.Run(form);
-                if (mode == "add" && form.DialogResult == DialogResult.OK) return 10;
             }
             catch (Exception ex)
             {
@@ -2369,33 +2368,41 @@ namespace MoonWaker.HostConfigurator
 
     internal static class ProfileProvisioner
     {
+        // The data directory of a profile ReserveProfile has just registered (with its ports).
         internal static void Provision(GatewayRegistryStore store, ProfileRecord profile)
         {
-            string script = TrustedInstalledFile(store, "install", "Install-WakePlayProfile.ps1");
-            List<string> args = new List<string>();
-            args.Add("-NoProfile");
-            args.Add("-ExecutionPolicy");
-            args.Add("Bypass");
-            args.Add("-File");
-            args.Add(script);
-            args.Add("-ProfileId"); args.Add(profile.Id);
-            args.Add("-ProfileName"); args.Add(profile.DisplayName);
-            args.Add("-OwnerSid"); args.Add(profile.Sid);
-            args.Add("-OwnerName"); args.Add(profile.AccountName);
-            args.Add("-InstallRoot"); args.Add(store.ProfilesRoot);
-            args.Add("-GatewayConfigPath"); args.Add(store.ConfigPath);
-            args.Add("-GatewayDirectory"); args.Add(store.GatewayDirectory);
-            args.Add("-DiscordPort"); args.Add(profile.DiscordPort.ToString());
-            args.Add("-GameProviderPort"); args.Add(profile.GameProviderPort.ToString());
-            args.Add("-SkipPlaynite");
-            args.Add("-SkipGatewayRegistration");
-            args.Add("-MachineProvisioning");
-            args.Add("-SkipStart");
-            Run(TrustedSystemExecutable("WindowsPowerShell", "v1.0", "powershell.exe"),
-                JoinArguments(args), 120000, false);
+            RequireSupportedAccount(profile.Sid, profile.AccountName);
+            new ProfileProvisioning {
+                ProfilesRoot = store.ProfilesRoot,
+                BridgeSource = TrustedInstalledDirectory(store, "bridge-source"),
+                ProfileId = profile.Id,
+                OwnerSid = profile.Sid,
+                DiscordPort = profile.DiscordPort,
+                GameProviderPort = profile.GameProviderPort
+            }.Run();
+        }
+
+        // The account was chosen from this list a moment ago; it must still be an enabled,
+        // supported local account with the same name.
+        private static void RequireSupportedAccount(string sid, string qualifiedName)
+        {
+            foreach (LocalAccount account in LocalAccountEnumerator.EnumerateSupported())
+                if (String.Equals(account.Sid, sid, StringComparison.OrdinalIgnoreCase) &&
+                    String.Equals(account.QualifiedName, qualifiedName, StringComparison.OrdinalIgnoreCase))
+                    return;
+            throw new InvalidOperationException(
+                "Wybrane konto Windows nie jest już włączonym, obsługiwanym kontem lokalnym albo zmieniło nazwę.");
         }
 
         internal static void RemoveArtifacts(GatewayRegistryStore store, ProfileRecord profile)
+        {
+            RemoveArtifacts(store, profile, TimeSpan.FromSeconds(10));
+        }
+
+        // The tombstone PrepareRemoval wrote ends the profile's Agent (authority lost) and, with
+        // it, its Discord Bridge; the owner's tray kills them within a second or two. Until both
+        // stop answering on loopback and their files are released, deletion is retried.
+        internal static void RemoveArtifacts(GatewayRegistryStore store, ProfileRecord profile, TimeSpan wait)
         {
             if (String.IsNullOrWhiteSpace(profile.DeletionNonce))
                 throw new InvalidOperationException("Brak trwałego znacznika usuwania profilu.");
@@ -2407,141 +2414,38 @@ namespace MoonWaker.HostConfigurator
             if (!exactRoot) return;
             if (File.Exists(actual))
                 throw new InvalidOperationException("Ścieżka danych profilu jest plikiem.");
-            if (Directory.Exists(actual)) Directory.Delete(actual, true);
-        }
-
-        private static RegistryKey OpenMachineRegistry(bool writable)
-        {
-            RegistryView view = Environment.Is64BitOperatingSystem
-                ? RegistryView.Registry64 : RegistryView.Registry32;
-            return RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
-        }
-
-        private static bool HasTrustedProfileRootProvenance(ProfileRecord profile, string root)
-        {
-            if (!HasValidSid(profile.Sid)) return false;
-            try
+            Stopwatch clock = Stopwatch.StartNew();
+            for (int delay = 100; ; delay = Math.Min(delay * 2, 1000))
             {
-                using (RegistryKey machine = OpenMachineRegistry(false))
-                using (RegistryKey parent = machine.OpenSubKey(
-                    @"SOFTWARE\MoonWaker\ProfileRootProvenance", false))
+                if (!LoopbackAnswers(profile.GameProviderPort) && !LoopbackAnswers(profile.DiscordPort))
                 {
-                    if (parent == null || !TrustedRegistryKey(parent)) return false;
-                    using (RegistryKey marker = parent.OpenSubKey(profile.Id, false))
+                    try
                     {
-                    if (marker == null || !TrustedRegistryKey(marker)) return false;
-                    RegistrySecurity security = marker.GetAccessControl(
-                        AccessControlSections.Access | AccessControlSections.Owner);
-                    string markerOwner = security.GetOwner(typeof(SecurityIdentifier)).Value;
-                    if (!security.AreAccessRulesProtected ||
-                        (markerOwner != "S-1-5-18" && markerOwner != "S-1-5-32-544")) return false;
-                    bool system = false, administrators = false;
-                    foreach (RegistryAccessRule rule in security.GetAccessRules(
-                        true, false, typeof(SecurityIdentifier)))
-                    {
-                        string sid = rule.IdentityReference.Value;
-                        if (rule.IsInherited || rule.AccessControlType != AccessControlType.Allow ||
-                            (rule.RegistryRights & RegistryRights.FullControl) != RegistryRights.FullControl ||
-                            (sid != "S-1-5-18" && sid != "S-1-5-32-544")) return false;
-                        if (sid == "S-1-5-18") system = true;
-                        if (sid == "S-1-5-32-544") administrators = true;
+                        if (Directory.Exists(actual)) Directory.Delete(actual, true);
+                        return;
                     }
-                    return system && administrators &&
-                        Convert.ToInt32(marker.GetValue("Version", 0)) == 1 &&
-                        String.Equals(Convert.ToString(marker.GetValue("ProfileId", "")),
-                            profile.Id, StringComparison.Ordinal) &&
-                        String.Equals(Convert.ToString(marker.GetValue("ProfileRoot", "")),
-                            Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase) &&
-                        String.Equals(Convert.ToString(marker.GetValue("OwnerSid", "")),
-                            profile.Sid, StringComparison.OrdinalIgnoreCase);
-                    }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
                 }
+                if (clock.Elapsed >= wait)
+                    throw new InvalidOperationException(
+                        "Procesy profilu nadal działają albo trzymają jego pliki, więc katalog danych nie " +
+                        "został usunięty. Profil pozostaje oznaczony do usunięcia — ponów usuwanie za chwilę.");
+                Thread.Sleep(delay);
             }
-            catch { return false; }
         }
 
-        private static bool TrustedRegistryKey(RegistryKey key)
+        private static bool LoopbackAnswers(int port)
         {
-            RegistrySecurity security = key.GetAccessControl(
-                AccessControlSections.Access | AccessControlSections.Owner);
-            string owner = security.GetOwner(typeof(SecurityIdentifier)).Value;
-            if (!security.AreAccessRulesProtected ||
-                (owner != "S-1-5-18" && owner != "S-1-5-32-544")) return false;
-            bool system = false, administrators = false;
-            foreach (RegistryAccessRule rule in security.GetAccessRules(
-                true, false, typeof(SecurityIdentifier)))
+            if (port == 0) return false;
+            using (System.Net.Sockets.TcpClient client = new System.Net.Sockets.TcpClient())
             {
-                string sid = rule.IdentityReference.Value;
-                if (rule.IsInherited || rule.AccessControlType != AccessControlType.Allow ||
-                    (sid != "S-1-5-18" && sid != "S-1-5-32-544") ||
-                    (rule.RegistryRights & RegistryRights.FullControl) != RegistryRights.FullControl)
-                    return false;
-                if (sid == "S-1-5-18") system = true;
-                if (sid == "S-1-5-32-544") administrators = true;
-            }
-            return system && administrators;
-        }
-
-        private static void RemoveProfileRootProvenance(ProfileRecord profile, string root)
-        {
-            if (!HasTrustedProfileRootProvenance(profile, root))
-                throw new InvalidOperationException(
-                    "Znacznik pochodzenia katalogu profilu zmienił się; profil pozostaje oznaczony do usunięcia.");
-            using (RegistryKey machine = OpenMachineRegistry(true))
-            using (RegistryKey parent = machine.OpenSubKey(
-                @"SOFTWARE\MoonWaker\ProfileRootProvenance", true))
-            {
-                if (parent == null) throw new InvalidOperationException(
-                    "Brak chronionego rejestru pochodzenia katalogów profili.");
-                parent.DeleteSubKey(profile.Id, false);
+                try { return client.ConnectAsync(System.Net.IPAddress.Loopback, port).Wait(250) && client.Connected; }
+                catch { return false; }
             }
         }
 
-        private static void RequireNoRunningOwnerProcesses(ProfileRecord profile, string profileRoot)
-        {
-            // Host Control's tray runs the Agent and Discord Bridge from the installation with
-            // this profile's data directory as an argument.
-            string rootPrefix = profileRoot.TrimEnd('\\') + "\\";
-            string[] markers = new string[] { "DiscordBridge.ps1", "GameProviderBridge.py" };
-            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                "SELECT ProcessId,CommandLine FROM Win32_Process"))
-            using (ManagementObjectCollection processes = searcher.Get())
-            {
-                foreach (ManagementObject process in processes)
-                {
-                    string commandLine = Convert.ToString(process["CommandLine"]);
-                    int processId = Convert.ToInt32(process["ProcessId"]);
-                    if (processId <= 4) continue;
-                    bool matchesRoot = commandLine.IndexOf(rootPrefix,
-                        StringComparison.OrdinalIgnoreCase) >= 0;
-                    bool known = false;
-                    foreach (string marker in markers)
-                        if (commandLine.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0)
-                        { known = true; break; }
-                    if (!HasValidSid(profile.Sid))
-                    {
-                        if (known && matchesRoot)
-                            throw new InvalidOperationException(
-                                "Starszy profil nie ma SID i nadal działa. Zatrzymaj go lub wyloguj konto, a potem ponów usunięcie.");
-                        continue;
-                    }
-                    ManagementBaseObject input = null;
-                    InvokeMethodOptions options = null;
-                    ManagementBaseObject owner = process.InvokeMethod("GetOwnerSid", input, options);
-                    if (owner == null || (owner.Properties["ReturnValue"] != null &&
-                        Convert.ToUInt32(owner["ReturnValue"]) != 0))
-                        throw new InvalidOperationException(
-                            "Nie można potwierdzić, że konto profilu jest wylogowane. Ponów próbę.");
-                    string ownerSid = owner == null ? "" : Convert.ToString(owner["Sid"]);
-                    if (String.Equals(ownerSid, profile.Sid, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException(
-                            "Konto Windows profilu nadal ma uruchomione procesy. Wyloguj je i ponów usunięcie; MoonWaker nie wyloguje go automatycznie.");
-                }
-            }
-        }
-
-        private static string TrustedInstalledFile(GatewayRegistryStore store, string directory,
-            string name)
+        private static string TrustedInstalledDirectory(GatewayRegistryStore store, string name)
         {
             string root = Path.GetFullPath(store.InstallRoot).TrimEnd('\\');
             string control = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(
@@ -2551,31 +2455,11 @@ namespace MoonWaker.HostConfigurator
                     verifiedRoot.FullName.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
                 throw new UnauthorizedAccessException(
                     "Rejestr Gateway nie należy do chronionej instalacji konfiguratora.");
-            string candidate = Path.GetFullPath(Path.Combine(root, directory, name));
-            if (!candidate.StartsWith(root + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase) || !File.Exists(candidate))
-                throw new FileNotFoundException("Brak chronionego składnika instalacji MoonWaker.", candidate);
+            string candidate = Path.Combine(root, name);
+            if (!Directory.Exists(candidate))
+                throw new DirectoryNotFoundException("Brak chronionego składnika instalacji MoonWaker: " + candidate);
             EnsureOrdinaryPath(candidate);
             return candidate;
-        }
-
-        private static string TrustedSystemExecutable(params string[] relativeParts)
-        {
-            string system = Environment.SystemDirectory;
-            if (Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess)
-            {
-                DirectoryInfo parent = Directory.GetParent(system);
-                if (parent == null) throw new InvalidOperationException(
-                    "Nie można ustalić chronionego katalogu systemu Windows.");
-                system = Path.Combine(parent.FullName, "Sysnative");
-            }
-            string executable = system;
-            foreach (string part in relativeParts) executable = Path.Combine(executable, part);
-            executable = Path.GetFullPath(executable);
-            if (!File.Exists(executable))
-                throw new FileNotFoundException("Brak zaufanego narzędzia systemu Windows.", executable);
-            EnsureOrdinaryPath(executable);
-            return executable;
         }
 
         private static bool HasValidSid(string value)
@@ -2598,20 +2482,14 @@ namespace MoonWaker.HostConfigurator
                 string expected = Path.GetFullPath(Path.Combine(store.ProfilesRoot, profile.Id));
                 string actual = String.IsNullOrWhiteSpace(profile.Root)
                     ? expected : Path.GetFullPath(profile.Root);
-                string failedStaging = Path.Combine(store.ProfilesRoot,
-                    ".moonwaker-stage-" + profile.Id);
-                string retired = Path.Combine(store.ProfilesRoot, ".moonwaker-delete-" +
-                    profile.Id + "-" + profile.DeletionNonce);
-                bool present = Directory.Exists(actual) || File.Exists(actual) ||
-                    Directory.Exists(failedStaging) || File.Exists(failedStaging) ||
-                    Directory.Exists(retired) || File.Exists(retired);
                 return !String.Equals(expected.TrimEnd('\\'), actual.TrimEnd('\\'),
                     StringComparison.OrdinalIgnoreCase);
             }
             catch { return true; }
         }
 
-        private static void EnsureOrdinaryPath(string path)
+        // No existing component of the path is a reparse point.
+        internal static void EnsureOrdinaryPath(string path)
         {
             FileSystemInfo cursor = File.Exists(path)
                 ? (FileSystemInfo)new FileInfo(path) : new DirectoryInfo(path);
@@ -2625,149 +2503,134 @@ namespace MoonWaker.HostConfigurator
                 cursor = parent;
             }
         }
+    }
 
-        private static FileSystemSecurity RemovalSecurity(bool directory)
+    // Creates one new profile's data directory: <profiles>\<id> with the Agent's and, when
+    // Discord is installed, Discord Bridge's configuration seeded from bridge-source's examples
+    // and the profile's ports. Then the whole tree gets a protected ACL owned by Administrators:
+    // SYSTEM and Administrators full, the owner account Modify; the root last, so the account
+    // cannot change the tree during the walk. The profile's registry entry is not touched here.
+    // An input-only command: the elevated Configurator runs it with what it has validated.
+    internal sealed class ProfileProvisioning
+    {
+        private const string SystemSid = "S-1-5-18";
+        private const string AdministratorsSid = "S-1-5-32-544";
+        internal string ProfilesRoot;
+        internal string BridgeSource;
+        internal string ProfileId;
+        internal string OwnerSid;
+        internal int DiscordPort;
+        internal int GameProviderPort;
+
+        internal void Run()
         {
-            FileSystemSecurity security = directory
-                ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
-            security.SetAccessRuleProtection(true, false);
-            security.SetOwner(new SecurityIdentifier(
-                WellKnownSidType.BuiltinAdministratorsSid, null));
-            InheritanceFlags inheritance = directory
-                ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit
-                : InheritanceFlags.None;
-            foreach (SecurityIdentifier sid in new SecurityIdentifier[] {
-                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
-                security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
-                    inheritance, PropagationFlags.None, AccessControlType.Allow));
-            return security;
+            ProtectTree(CreateLayout());
         }
 
-        private static DirectorySecurity ProfilesRootSecurity()
+        internal string CreateLayout()
         {
-            DirectorySecurity security = new DirectorySecurity();
-            security.SetAccessRuleProtection(true, false);
-            security.SetOwner(new SecurityIdentifier(
-                WellKnownSidType.BuiltinAdministratorsSid, null));
-            foreach (SecurityIdentifier sid in new SecurityIdentifier[] {
-                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
-                security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
-                    InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
-            security.AddAccessRule(new FileSystemAccessRule(
-                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
-                FileSystemRights.ReadAndExecute, InheritanceFlags.None,
-                PropagationFlags.None, AccessControlType.Allow));
-            return security;
-        }
-
-        private static void ProtectProfilesRootForManagement(string profilesRoot)
-        {
-            profilesRoot = Path.GetFullPath(profilesRoot);
-            EnsureOrdinaryPath(profilesRoot);
-            DirectoryInfo root = new DirectoryInfo(profilesRoot);
-            DirectorySecurity security = ProfilesRootSecurity();
-            if (root.Exists) Directory.SetAccessControl(profilesRoot, security);
-            else root.Create(security);
-            EnsureOrdinaryPath(profilesRoot);
-            DirectorySecurity applied = Directory.GetAccessControl(profilesRoot,
-                AccessControlSections.Access | AccessControlSections.Owner);
-            string owner = applied.GetOwner(typeof(SecurityIdentifier)).Value;
-            if (!applied.AreAccessRulesProtected ||
-                (owner != "S-1-5-18" && owner != "S-1-5-32-544"))
+            if (!GatewayRegistryStore.IsValidProfileId(ProfileId))
+                throw new InvalidOperationException("Nieprawidłowy identyfikator profilu.");
+            new SecurityIdentifier(OwnerSid);
+            bool discord = File.Exists(Path.Combine(BridgeSource, "discord", "DiscordBridge.ps1"));
+            if (!ValidPort(GameProviderPort) || (discord && !ValidPort(DiscordPort)))
+                throw new InvalidOperationException("Porty Bridge'y muszą mieścić się w zakresie 1024–65535.");
+            if (discord && DiscordPort == GameProviderPort)
+                throw new InvalidOperationException("Discord Bridge i Agent muszą używać różnych portów.");
+            string profilesRoot = Path.GetFullPath(ProfilesRoot).TrimEnd('\\');
+            if (File.Exists(profilesRoot))
+                throw new InvalidOperationException("Katalog profili jest plikiem; tworzenie profilu zatrzymane.");
+            string root = Path.Combine(profilesRoot, ProfileId);
+            ProfileProvisioner.EnsureOrdinaryPath(root);
+            if (Directory.Exists(root) || File.Exists(root))
                 throw new InvalidOperationException(
-                    "Nie udało się ochronić katalogu profili przed zmianami innych użytkowników.");
+                    "Zarezerwowany katalog profilu już istnieje. Usuń nieudany profil jawnie i ponów próbę.");
+            Directory.CreateDirectory(root);
+
+            if (discord)
+            {
+                Dictionary<string, object> config = Seed(root, "discord", "discord",
+                    "discord_bridge_config.example.json");
+                config["port"] = DiscordPort;
+                Write(Path.Combine(root, "discord", "discord_bridge_config.json"), config);
+            }
+            Dictionary<string, object> provider = Seed(root, "playnite", "game-provider", "config.example.json");
+            provider["listen_port"] = GameProviderPort;
+            provider["epic_legendary_enabled"] = true;
+            provider["playnite_enabled"] = false;
+            if (!provider.ContainsKey("legendary_path")) provider["legendary_path"] = "";
+            Write(Path.Combine(root, "game-provider", "config.json"), provider);
+            return root;
         }
 
-        private static void ProtectTreeForRemoval(string profileRoot)
+        private static bool ValidPort(int port) { return port >= 1024 && port <= 65535; }
+
+        private Dictionary<string, object> Seed(string root, string source, string destination, string example)
         {
-            EnsureOrdinaryPath(profileRoot);
-            Directory.SetAccessControl(profileRoot, (DirectorySecurity)RemovalSecurity(true));
+            Directory.CreateDirectory(Path.Combine(root, destination));
+            return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(
+                File.ReadAllText(Path.Combine(BridgeSource, source, example), Encoding.UTF8));
+        }
+
+        private static void Write(string path, Dictionary<string, object> value)
+        {
+            File.WriteAllText(path, new JavaScriptSerializer().Serialize(value), new UTF8Encoding(false));
+        }
+
+        internal void ProtectTree(string root)
+        {
+            ProfileProvisioner.EnsureOrdinaryPath(root);
+            if (!Directory.Exists(root))
+                throw new InvalidOperationException("Nowy katalog profilu zniknął podczas tworzenia.");
             Stack<DirectoryInfo> pending = new Stack<DirectoryInfo>();
-            pending.Push(new DirectoryInfo(profileRoot));
+            pending.Push(new DirectoryInfo(root));
             while (pending.Count != 0)
             {
                 foreach (FileSystemInfo item in pending.Pop().GetFileSystemInfos())
                 {
                     if ((item.Attributes & FileAttributes.ReparsePoint) != 0)
                         throw new InvalidOperationException(
-                            "Katalog profilu zawiera dowiązanie; usunięcie zostało zatrzymane.");
+                            "Katalog profilu zawiera dowiązanie; tworzenie profilu zatrzymane.");
                     DirectoryInfo directory = item as DirectoryInfo;
                     if (directory != null)
                     {
-                        Directory.SetAccessControl(directory.FullName,
-                            (DirectorySecurity)RemovalSecurity(true));
+                        Directory.SetAccessControl(directory.FullName, (DirectorySecurity)Security(true));
+                        RequireTrustedOwner(Directory.GetAccessControl(directory.FullName));
                         pending.Push(directory);
                     }
-                    else File.SetAccessControl(item.FullName, (FileSecurity)RemovalSecurity(false));
+                    else
+                    {
+                        File.SetAccessControl(item.FullName, (FileSecurity)Security(false));
+                        RequireTrustedOwner(File.GetAccessControl(item.FullName));
+                    }
                 }
             }
+            Directory.SetAccessControl(root, (DirectorySecurity)Security(true));
+            RequireTrustedOwner(Directory.GetAccessControl(root));
         }
 
-        private static int Run(string fileName, string arguments, int timeoutMilliseconds,
-            bool ignoreExitCode)
+        internal FileSystemSecurity Security(bool directory)
         {
-            ProcessStartInfo info = new ProcessStartInfo(fileName, arguments);
-            info.UseShellExecute = false;
-            info.CreateNoWindow = true;
-            info.RedirectStandardOutput = true;
-            info.RedirectStandardError = true;
-            using (Process process = Process.Start(info))
-            {
-                System.Threading.Tasks.Task<string> output = process.StandardOutput.ReadToEndAsync();
-                System.Threading.Tasks.Task<string> error = process.StandardError.ReadToEndAsync();
-                if (!process.WaitForExit(timeoutMilliseconds))
-                {
-                    try { process.Kill(); } catch { }
-                    throw new TimeoutException("Konfiguracja profilu przekroczyła limit czasu.");
-                }
-                process.WaitForExit();
-                if (!ignoreExitCode && process.ExitCode != 0)
-                {
-                    System.Threading.Tasks.Task.WaitAll(new System.Threading.Tasks.Task[] {
-                        output, error }, 2000);
-                    string message = String.IsNullOrWhiteSpace(error.Result) ? output.Result : error.Result;
-                    throw new InvalidOperationException(String.IsNullOrWhiteSpace(message)
-                        ? "Instalator profilu zakończył się błędem." : message.Trim());
-                }
-                return process.ExitCode;
-            }
+            FileSystemSecurity security = directory
+                ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.SetOwner(new SecurityIdentifier(AdministratorsSid));
+            InheritanceFlags inheritance = directory
+                ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit : InheritanceFlags.None;
+            security.SetAccessRule(new FileSystemAccessRule(new SecurityIdentifier(SystemSid),
+                FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Allow));
+            security.SetAccessRule(new FileSystemAccessRule(new SecurityIdentifier(AdministratorsSid),
+                FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Allow));
+            security.SetAccessRule(new FileSystemAccessRule(new SecurityIdentifier(OwnerSid),
+                FileSystemRights.Modify, inheritance, PropagationFlags.None, AccessControlType.Allow));
+            return security;
         }
 
-        internal static string JoinArguments(IEnumerable<string> values)
+        private static void RequireTrustedOwner(FileSystemSecurity security)
         {
-            StringBuilder result = new StringBuilder();
-            foreach (string value in values)
-            {
-                if (result.Length > 0) result.Append(' ');
-                result.Append(QuoteArgument(value ?? ""));
-            }
-            return result.ToString();
-        }
-
-        private static string QuoteArgument(string value)
-        {
-            if (value.Length > 0 && value.IndexOfAny(new char[] { ' ', '\t', '\n', '\v', '"' }) < 0)
-                return value;
-            StringBuilder result = new StringBuilder("\"");
-            int slashes = 0;
-            foreach (char character in value)
-            {
-                if (character == '\\') { slashes++; continue; }
-                if (character == '"')
-                {
-                    result.Append('\\', (slashes * 2) + 1);
-                    result.Append('"');
-                    slashes = 0;
-                    continue;
-                }
-                if (slashes > 0) { result.Append('\\', slashes); slashes = 0; }
-                result.Append(character);
-            }
-            if (slashes > 0) result.Append('\\', slashes * 2);
-            result.Append('"');
-            return result.ToString();
+            string owner = security.GetOwner(typeof(SecurityIdentifier)).Value;
+            if (owner != SystemSid && owner != AdministratorsSid)
+                throw new InvalidOperationException("Element katalogu profilu ma niezaufanego właściciela ACL.");
         }
     }
 
@@ -3088,7 +2951,7 @@ namespace MoonWaker.HostConfigurator
             bool finalized = false;
             try
             {
-                status.Text = "Rezerwuję profil i instaluję Bridge…";
+                status.Text = "Rezerwuję profil i tworzę jego katalog…";
                 status.ForeColor = Ui.Muted;
                 reservation = store.ReserveProfile(account, displayName.Text);
                 await System.Threading.Tasks.Task.Run(delegate {
@@ -3102,14 +2965,13 @@ namespace MoonWaker.HostConfigurator
                     brokerState.State == "unavailable"
                     ? MessageBox.Show(this,
                         "Profil został utworzony dla " + reservation.AccountName +
-                        ". Zdalne logowanie będzie dostępne po zainstalowaniu usługi Login Broker. " +
-                        "Po zamknięciu konfiguratora otworzy się panel Vibepollo, aby utworzyć konto.",
+                        ". Zdalne logowanie będzie dostępne po zainstalowaniu usługi Login Broker.",
                         "MoonWaker Host Configurator", MessageBoxButtons.OK,
                         MessageBoxIcon.Information)
                     : MessageBox.Show(this,
                         "Profil został utworzony dla " + reservation.AccountName +
                         ". Zdalne logowanie pozostaje wyłączone, dopóki nie zapiszesz hasła w Login Broker.\n\n" +
-                        "Skonfigurować je teraz? Po zamknięciu konfiguratora otworzy się panel Vibepollo, aby utworzyć konto.",
+                        "Skonfigurować je teraz?",
                         "MoonWaker Host Configurator", MessageBoxButtons.YesNo,
                         MessageBoxIcon.Information);
                 if (configureRemote == DialogResult.Yes)
@@ -4623,10 +4485,139 @@ namespace MoonWaker.HostConfigurator
                 Assert(Directory.GetFiles(gateway, "*.tmp").Length == 0,
                     "Atomic writer left a temporary file.");
                 Console.WriteLine("MoonWaker Host Configurator registry tests passed.");
+                TestProfileProvisioning(root);
+                Console.WriteLine("MoonWaker Host Configurator profile provisioning tests passed.");
+                TestRemoveArtifacts(store);
+                Console.WriteLine("MoonWaker Host Configurator profile removal tests passed.");
             }
             finally
             {
                 if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }
+
+        // Removal waits for the profile's Agent (a loopback listener here) to stop answering and
+        // for its files to be released; past the limit the directory stays and the error says so.
+        private static void TestRemoveArtifacts(GatewayRegistryStore store)
+        {
+            System.Net.Sockets.TcpListener agent = new System.Net.Sockets.TcpListener(
+                System.Net.IPAddress.Loopback, 0);
+            agent.Start();
+            int port = ((System.Net.IPEndPoint)agent.LocalEndpoint).Port;
+            string directory = Path.Combine(store.ProfilesRoot, "removed");
+            Directory.CreateDirectory(Path.Combine(directory, "game-provider", "logs"));
+            string log = Path.Combine(directory, "game-provider", "logs", "provider-diagnostics.jsonl");
+            ProfileRecord profile = new ProfileRecord {
+                Id = "removed", Root = directory, DeletionNonce = "nonce",
+                GameProviderEndpoint = "http://127.0.0.1:" + port, DiscordEndpoint = "" };
+            File.WriteAllText(log, "{}");
+            FileStream held = null;
+            try
+            {
+                bool refused = false;
+                try { ProfileProvisioner.RemoveArtifacts(store, profile, TimeSpan.FromSeconds(1)); }
+                catch (InvalidOperationException error) { refused = error.Message.Contains("oznaczony do usunięcia"); }
+                Assert(refused && File.Exists(log), "Removal did not wait for a running Agent.");
+                agent.Stop();
+                held = new FileStream(log, FileMode.Open, FileAccess.Write, FileShare.None);
+                refused = false;
+                try { ProfileProvisioner.RemoveArtifacts(store, profile, TimeSpan.FromSeconds(1)); }
+                catch (InvalidOperationException) { refused = true; }
+                Assert(refused && File.Exists(log), "Removal did not wait for files still in use.");
+                // Released while removal waits: it finishes.
+                FileStream release = held;
+                Thread releaser = new Thread(delegate() { Thread.Sleep(700); release.Dispose(); });
+                releaser.Start();
+                Stopwatch clock = Stopwatch.StartNew();
+                ProfileProvisioner.RemoveArtifacts(store, profile);
+                releaser.Join();
+                Assert(!Directory.Exists(directory) && clock.ElapsedMilliseconds >= 600 &&
+                    clock.ElapsedMilliseconds < 5000, "Removal did not retry until the files were released.");
+            }
+            finally
+            {
+                if (held != null) held.Dispose();
+                agent.Stop();
+            }
+        }
+
+        // The data directory of a new profile under a temporary installation. The ACL walk needs
+        // an elevated token (owner Administrators); without one only its descriptor is checked.
+        private static void TestProfileProvisioning(string root)
+        {
+            string source = Path.Combine(root, "bridge-source");
+            Directory.CreateDirectory(Path.Combine(source, "playnite"));
+            File.WriteAllText(Path.Combine(source, "playnite", "config.example.json"),
+                "{\"listen_host\":\"127.0.0.1\",\"listen_port\":8780,\"epic_legendary_enabled\":false," +
+                "\"playnite_enabled\":true,\"streamed_display\":\"\"}");
+            string sid = WindowsIdentity.GetCurrent().User.Value;
+            ProfileProvisioning provisioning = new ProfileProvisioning {
+                ProfilesRoot = Path.Combine(root, "profiles"), BridgeSource = source,
+                ProfileId = "p-one", OwnerSid = sid, DiscordPort = 8800, GameProviderPort = 8801 };
+            string profile = provisioning.CreateLayout();
+            Assert(profile == Path.Combine(root, "profiles", "p-one"), "Profile root is not <profiles>\\<id>.");
+            Dictionary<string, object> provider = jsonDocument(File.ReadAllText(
+                Path.Combine(profile, "game-provider", "config.json")));
+            Assert(Convert.ToInt32(provider["listen_port"]) == 8801 &&
+                (bool)provider["epic_legendary_enabled"] && !(bool)provider["playnite_enabled"] &&
+                (string)provider["legendary_path"] == "" && (string)provider["listen_host"] == "127.0.0.1",
+                "The Agent configuration was not seeded from its example with the profile's port.");
+            Assert(!Directory.Exists(Path.Combine(profile, "discord")),
+                "A profile got Discord data although Discord is not installed.");
+            Assert(Directory.GetFiles(profile, "*", SearchOption.AllDirectories).Length == 1,
+                "Provisioning copied code or other files into the profile.");
+            bool refused = false;
+            try { provisioning.CreateLayout(); }
+            catch (InvalidOperationException) { refused = true; }
+            Assert(refused, "Provisioning reused an existing profile root.");
+
+            Directory.CreateDirectory(Path.Combine(source, "discord"));
+            File.WriteAllText(Path.Combine(source, "discord", "DiscordBridge.ps1"), "");
+            File.WriteAllText(Path.Combine(source, "discord", "discord_bridge_config.example.json"),
+                "{\"client_id\":\"\",\"port\":8765,\"scopes\":[\"rpc\"]}");
+            provisioning.ProfileId = "p-two";
+            provisioning.GameProviderPort = 8800;
+            refused = false;
+            try { provisioning.CreateLayout(); }
+            catch (InvalidOperationException) { refused = true; }
+            Assert(refused && !Directory.Exists(Path.Combine(root, "profiles", "p-two")),
+                "Discord and the Agent were given one port.");
+            provisioning.GameProviderPort = 1000;
+            refused = false;
+            try { provisioning.CreateLayout(); }
+            catch (InvalidOperationException) { refused = true; }
+            Assert(refused, "A port below 1024 was accepted.");
+            provisioning.GameProviderPort = 8802;
+            profile = provisioning.CreateLayout();
+            Dictionary<string, object> discord = jsonDocument(File.ReadAllText(
+                Path.Combine(profile, "discord", "discord_bridge_config.json")));
+            Assert(Convert.ToInt32(discord["port"]) == 8800 && discord.ContainsKey("scopes"),
+                "Discord configuration was not seeded with the profile's port.");
+
+            DirectorySecurity security = (DirectorySecurity)provisioning.Security(true);
+            Assert(security.AreAccessRulesProtected &&
+                security.GetOwner(typeof(SecurityIdentifier)).Value == "S-1-5-32-544",
+                "The profile ACL is not protected or not owned by Administrators.");
+            Dictionary<string, FileSystemRights> rights = new Dictionary<string, FileSystemRights>();
+            foreach (FileSystemAccessRule rule in security.GetAccessRules(true, false, typeof(SecurityIdentifier)))
+            {
+                Assert(rule.AccessControlType == AccessControlType.Allow && rule.InheritanceFlags ==
+                    (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit),
+                    "A profile directory rule is not an inherited allow rule.");
+                rights[rule.IdentityReference.Value] = rule.FileSystemRights;
+            }
+            Assert(rights.Count == 3 && rights["S-1-5-18"] == FileSystemRights.FullControl &&
+                rights["S-1-5-32-544"] == FileSystemRights.FullControl &&
+                (rights[sid] & FileSystemRights.Modify) == FileSystemRights.Modify &&
+                (rights[sid] & (FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership)) == 0,
+                "The profile ACL is not SYSTEM/Administrators full and owner Modify.");
+            if (new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
+            {
+                provisioning.ProtectTree(profile);
+                foreach (string path in Directory.GetFileSystemEntries(profile, "*", SearchOption.AllDirectories))
+                    Assert(File.GetAccessControl(path).AreAccessRulesProtected &&
+                        File.GetAccessControl(path).GetOwner(typeof(SecurityIdentifier)).Value == "S-1-5-32-544",
+                        "A profile element kept its inherited ACL: " + path);
             }
         }
 

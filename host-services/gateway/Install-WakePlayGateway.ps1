@@ -275,8 +275,8 @@ switch ($LASTEXITCODE) {
     default { throw "Unable to grant the Gateway read access to Vibepollo's files: $($vibepolloAccess -join ' ')" }
 }
 
-# Host Control's existing Start/Stop/Restart buttons control only this service.
-# Interactive-user rights do not grant writes to Gateway configuration or keys.
+# Interactive users may start, stop and query only this service: Host Control's "Napraw"
+# restarts it without elevation. These rights grant no writes to Gateway configuration or keys.
 & $sc sdset $serviceName `
     "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPLOCRRC;;;IU)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Unable to configure Gateway service controls." }
@@ -296,8 +296,7 @@ if (-not $SkipFirewall) {
 $pairingCode = $null
 $processId = $null
 $startupErrorPath = Join-Path $InstallDirectory "gateway-startup-error.txt"
-Remove-Item -LiteralPath (Join-Path $InstallDirectory "gateway-manually-stopped"),
-    (Join-Path $InstallDirectory "gateway-supervisor-stop"), $startupErrorPath `
+Remove-Item -LiteralPath (Join-Path $InstallDirectory "gateway-supervisor-stop"), $startupErrorPath `
     -Force -ErrorAction SilentlyContinue
 if (-not $SkipStart) {
     $pairingCode = [string](Get-Random -Minimum 100000 -Maximum 999999)

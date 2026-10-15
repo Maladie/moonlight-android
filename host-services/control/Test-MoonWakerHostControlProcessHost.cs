@@ -242,7 +242,7 @@ namespace MoonWaker.HostControl
                     WaitForExit(discordId, "Discord stops when the Agent loses authority");
                     host.Tick();
                     Expect(host.ProcessId(false) == 0 && host.ProcessId(true) == 0 &&
-                        host.Describe("p", false) == "BRAK UPRAWNIEŃ", "authority loss blocks");
+                        host.Describe("p", false) == ProfileProcessHost.AuthorityLostStatus, "authority loss blocks");
                     WriteRegistry(root, "p", "y");
                     RunBoth(host, "a changed registry entry ends the block");
 

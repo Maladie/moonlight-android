@@ -91,10 +91,10 @@ function Assert-MoonWakerProcessesStopped {
                  $commandLine.IndexOf("Start-MoonWakerGateway.ps1", [StringComparison]::OrdinalIgnoreCase) -ge 0)
             })
     } catch {
-        throw "Cannot verify that MoonWaker Gateway is stopped. Stop it in Host Control and retry."
+        throw "Cannot verify that MoonWaker Gateway is stopped. Retry the installation."
     }
     if ($gatewayProcesses.Count -gt 0) {
-        throw "MoonWaker Gateway is running. Stop it in Host Control and retry the update."
+        throw "A MoonWaker Gateway process is still running. End it and retry the update."
     }
 }
 
@@ -205,8 +205,6 @@ if (-not (Test-Path -LiteralPath (Join-Path $toolsSource "legendary\legendary.ex
     throw "The MoonWaker package does not contain the required Legendary executable."
 }
 Copy-Item -LiteralPath (Join-Path $toolsSource "legendary") -Destination $toolsDirectory -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-WakePlayProfile.ps1") `
-    -Destination $installScripts -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Uninstall-MoonWakerHostServices.ps1") `
     -Destination $installScripts -Force
 

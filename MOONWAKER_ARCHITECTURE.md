@@ -475,8 +475,15 @@ remote sign-in for a device.
 
 Host Control owns profile and device management. Its separate elevated
 Configurator enumerates local accounts, creates/edits/removes MoonWaker
-profiles, manages grants, and collects a password directly in the elevated
-window. Passwords are sent only over the local management pipe to
+profiles (including each new profile's data directory and its ACL, in process),
+manages grants, and collects a password directly in the elevated window. Host
+Control's own backend runs in the unelevated tray without PowerShell: its status
+only reads what the Gateway publishes and the loopback answers of the hosted
+processes, and the account's actions (pairing code, close session, Steam key and
+Discord secret under the account's DPAPI, Legendary, Playnite) use the existing
+file channels. Its one **Napraw** restarts the Gateway service (start/stop are
+granted to interactive users by the service DACL) and the account's hosted
+processes, only where they do not work. Passwords are sent only over the local management pipe to
 `MoonWakerLoginBroker`; they never pass through Gateway, Android, PowerShell
 arguments, environment variables, ordinary configuration, or logs.
 

@@ -30,7 +30,7 @@ including after a retained game switch or reconnect.
 
 Steam ownership comes from `IPlayerService/GetOwnedGames`; the active SteamID is
 read from the trusted local `loginusers.vdf`. Configure the Web API key for the
-profile with Host Control action `ConfigureSteamWebApi`. The key is stored with
+profile in Host Control (**Połącz Steam**). The key is stored with
 the current Windows user's DPAPI protection and is never returned by health or
 Gateway responses. Local `appmanifest_*.acf` files remain the sole authority for
 Steam installation state and install directories. Epic ownership and install
@@ -85,7 +85,8 @@ value, for example when Vibepollo creates its virtual display dynamically.
 
 The current Sunshine connector already supports the launcher handshake,
 `launch` commands and game start/stop status. The next integration step extends
-that connector with `Install-WakePlayConnectorPatch.ps1`. The patch is
+that connector with `PatchPlayniteConnector.py`, which Host Control's **Połącz Playnite**
+runs (check, then `--apply`) with the installation's Python. The patch is
 idempotent, validates exact structural anchors and creates a
 `.wakeplay-backup` before changing the installed module. It reuses the
 connector's existing metadata functions to mirror library snapshots only to the

@@ -9,7 +9,6 @@ $paths = [ordered]@{
     Wrapper = Join-Path $root "install\Invoke-MoonWakerMachineInstall.ps1"
     Host = Join-Path $root "install\Install-WakePlayHost.ps1"
     Uninstall = Join-Path $root "install\Uninstall-MoonWakerHostServices.ps1"
-    Profile = Join-Path $root "install\Install-WakePlayProfile.ps1"
     Gateway = Join-Path $root "gateway\Install-WakePlayGateway.ps1"
     UpdaterInstaller = Join-Path $root "updater\Install-MoonWakerHotUpdater.ps1"
     GatewayRuntime = Join-Path $root "gateway\wakeplay_gateway.py"
@@ -193,14 +192,21 @@ Assert-Contains "StartGateway" @(
     '$registryLockPath = "$ConfigPath.lock"',
     '"--registry-lock", $registryLockPath'
 )
-Assert-Contains "MachineStartGateway" @(
-    'Remove-Item -LiteralPath (Join-Path $GatewayDirectory "gateway-manually-stopped")'
-)
+# The Gateway is an automatic service: nothing marks it as stopped by hand.
+foreach ($name in @("MachineStartGateway", "StopGateway", "Gateway")) {
+    if ($sources[$name].Contains("gateway-manually-stopped")) {
+        throw "$name still handles the manual Gateway stop marker."
+    }
+}
+# Host Control's Configurator provisions profiles in C#; no profile installer is shipped.
+if ($sources.Host.Contains("Install-WakePlayProfile.ps1") -or
+    (Test-Path -LiteralPath (Join-Path $root "install\Install-WakePlayProfile.ps1"))) {
+    throw "The PowerShell profile installer is still installed."
+}
 Assert-Contains "DiscordBridge" @(
     '$mutexScope = $DataRoot.ToLowerInvariant()',
     'DiscordUnifiedRemoteRpcBridge_$mutexScope'
 )
-Assert-Contains "Profile" @('$GatewayRegistryLockPath = "$GatewayConfigPath.lock"')
 Assert-Contains "Configurator" @(
     'RegistryLockPath = ConfigPath + ".lock";',
     "FileMode.OpenOrCreate",
@@ -254,7 +260,7 @@ foreach ($unsafeCom in @("launchHostControl", "Shell.Application", "WScript.Shel
     }
 }
 
-foreach ($name in @("Prepare", "Wrapper", "Host", "Uninstall", "Profile", "Gateway", "UpdaterInstaller", "BrokerInstaller", "StartGateway", "MachineStartGateway", "StopGateway", "DiscordBridge")) {
+foreach ($name in @("Prepare", "Wrapper", "Host", "Uninstall", "Gateway", "UpdaterInstaller", "BrokerInstaller", "StartGateway", "MachineStartGateway", "StopGateway", "DiscordBridge")) {
     $tokens = $null
     $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile(

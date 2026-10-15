@@ -131,20 +131,22 @@ try {
         throw "Host Control and Configurator privilege manifests are not separated."
     }
 
-    $profileInstaller = Get-Content -LiteralPath (
-        Join-Path (Split-Path -Parent $PSScriptRoot) "install\Install-WakePlayProfile.ps1") -Raw
-    foreach ($required in @(
-        '$provisioningOwner.sid', '$MachineProvisioning',
-        'Machine profile root must be exactly', 'Protect-ProfileTree $true',
-        '$GatewayConfigPath.lock')) {
-        if (-not $profileInstaller.Contains($required)) {
+    # Profile provisioning runs in the elevated Configurator itself (the self-test above covers
+    # its layout and ACL): no PowerShell profile installer, no startup task, no Bridge code.
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) "install\Install-WakePlayProfile.ps1")) {
+        throw "The PowerShell profile installer still exists."
+    }
+    $provisioner = [regex]::Match($source,
+        '(?s)internal static class ProfileProvisioner.+?internal enum BrokerOperation').Value
+    foreach ($required in @('RequireSupportedAccount(profile.Sid, profile.AccountName)',
+            'TrustedInstalledDirectory(store, "bridge-source")', 'ProtectTree(CreateLayout())',
+            'EnsureOrdinaryPath(root)', 'Directory.SetAccessControl(root, (DirectorySecurity)Security(true))')) {
+        if (-not $provisioner.Contains($required)) {
             throw "Profile provisioning contract is missing: $required"
         }
     }
-    # Host Control's tray starts the profile's processes; provisioning registers no
-    # startup task and copies no Bridge code into the profile.
-    if ($profileInstaller -match '(?i)OwnerPassword|TaskPassword|ScheduledTask|GameProviderBridge\.py|Startup') {
-        throw "Profile provisioning registers startup or copies Bridge code into the profile."
+    if ($provisioner -match '(?i)powershell|ScheduledTask|GameProviderBridge\.py|Startup|ProcessStartInfo') {
+        throw "Profile provisioning starts processes, registers startup or copies Bridge code."
     }
     $agentGuard = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
         "bridges\playnite\AgentGuard.py") -Raw

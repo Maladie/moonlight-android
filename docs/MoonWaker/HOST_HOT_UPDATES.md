@@ -16,6 +16,12 @@ Gateway service read access to Vibepollo's configuration files, and install the
 Configurator with `--mode vibepollo` and `--mode vibepollo-access`. A hot update of the
 Gateway files alone leaves the Gateway without a Vibepollo token.
 
+Host Control and its Configurator are compiled executables (`control\`), outside the
+allowlist: their backend (status, pairing, close session, Steam/Epic/Playnite/Discord
+settings, Napraw) and profile provisioning change only with the full installer. Host
+Control no longer stops or starts the Gateway and no longer writes a manual-stop marker;
+the updater's stop and start of Gateway are unaffected.
+
 ## Local development trust
 
 The full installer installs `MoonWakerHotUpdater` once with administrator rights.

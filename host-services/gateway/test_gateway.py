@@ -303,8 +303,8 @@ class GatewayStateTest(unittest.TestCase):
         self.assertIsNotNone(files)
         self.assertNotIn("MoonWakerDiscordAudioWorker.exe", files.group(1))
         self.assertIn('$discordWorker = "MoonWakerDiscordAudioWorker.exe"', installer)
-        self.assertIn("Remove-Item -LiteralPath (Join-Path $InstallDirectory $discordWorker)",
-                      installer)
+        self.assertIn("$installedWorker = Join-Path $InstallDirectory $discordWorker", installer)
+        self.assertIn("Remove-Item -LiteralPath $installedWorker", installer)
 
     def test_capabilities_report_discord_unavailable_without_discord_installed(self):
         state = GatewayState(self.config_path, None)
