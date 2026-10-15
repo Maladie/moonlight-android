@@ -58,14 +58,12 @@ public class SessionFailureControlRejectionTest {
         assertTrue(failed.indexOf("ConsoleActivity.offerHardTerminate(Game.this, hostId)",
                 pending) > 0);
         for (String strings : new String[] {"values", "values-pl"}) {
-            assertTrue(SourceText.read(java.nio.file.Paths.get(
-                    "src/main/res/" + strings + "/strings.xml"))
+            assertTrue(SourceText.module("src/main/res/" + strings + "/strings.xml")
                     .contains("<string name=\"control_operation_pending\">"));
         }
     }
 
     private static String source(String path) throws Exception {
-        return SourceText.read(java.nio.file.Paths.get(
-                "src/main/java/com/limelight/" + path));
+        return SourceText.main(path);
     }
 }

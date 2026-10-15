@@ -3,7 +3,6 @@ package com.limelight.stream;
 import android.content.Context;
 import android.content.Intent;
 import android.net.wifi.WifiManager;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -166,12 +165,10 @@ public final class AndroidStreamRuntime {
                         "Moonlight High Perf Lock");
                 highPerfLock.setReferenceCounted(false);
                 highPerfLock.acquire();
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    lowLatencyLock = wifi.createWifiLock(
-                            WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Moonlight Low Latency Lock");
-                    lowLatencyLock.setReferenceCounted(false);
-                    lowLatencyLock.acquire();
-                }
+                lowLatencyLock = wifi.createWifiLock(
+                        WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Moonlight Low Latency Lock");
+                lowLatencyLock.setReferenceCounted(false);
+                lowLatencyLock.acquire();
             } catch (SecurityException e) {
                 // Some Samsung devices throw here despite WAKE_LOCK in the manifest.
                 LimeLog.warning("Wi-Fi lock unavailable: " + e.getMessage());
@@ -280,21 +277,26 @@ public final class AndroidStreamRuntime {
                     record.getBooleanExtra(Game.EXTRA_CHILD_PROFILE, false)
                     ? PlayniteTransitionGateway.ActorContext.child(profileId, executionProfileId)
                     : PlayniteTransitionGateway.ActorContext.parent(profileId);
-            // Any close that left something of this start is told to the user; a host a
-            // newer generation or another owner took over is silent.
-            new Thread(() -> Game.reportGameLeftOnHost(app,
-                    HostSessionTermination.closeAbandonedStart(
-                    app, record.getStringExtra(Game.EXTRA_PC_UUID),
-                    record.getStringExtra(Game.EXTRA_HOST),
-                    record.getIntExtra(Game.EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
-                    record.getIntExtra(Game.EXTRA_HTTPS_PORT, 0),
-                    record.getStringExtra(Game.EXTRA_UNIQUEID),
-                    record.getByteArrayExtra(Game.EXTRA_SERVER_CERT),
-                    // No game id: this attempt has no verified game identity, so the close stops
-                    // no game; one still running reports CLOSED_GAME_UNVERIFIED, told to the user.
-                    streamSessionId, record.getIntExtra(Game.EXTRA_APP_ID, 0), "",
-                    controlGeneration, actor), true),
-                    "MoonWaker-CloseAbandonedLaunch").start();
+            // Any close that left something of this start is told to the user: a game left as
+            // a notice, an end the host did not confirm as the Home's session state.
+            String hostId = record.getStringExtra(Game.EXTRA_PC_UUID);
+            new Thread(() -> {
+                HostSessionTermination.Outcome outcome = HostSessionTermination.closeAbandonedStart(
+                        app, hostId, record.getStringExtra(Game.EXTRA_HOST),
+                        record.getIntExtra(Game.EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
+                        record.getIntExtra(Game.EXTRA_HTTPS_PORT, 0),
+                        record.getStringExtra(Game.EXTRA_UNIQUEID),
+                        record.getByteArrayExtra(Game.EXTRA_SERVER_CERT),
+                        // No game id: this attempt has no verified game identity, so the close
+                        // stops no game; one still running reports CLOSED_GAME_UNVERIFIED.
+                        streamSessionId, record.getIntExtra(Game.EXTRA_APP_ID, 0), "",
+                        controlGeneration, actor);
+                Game.reportGameLeftOnHost(app, outcome, true);
+                if (!outcome.streamClosed()) {
+                    sessionModel().post(new SessionEvent.TerminationUnconfirmed(hostId,
+                            actor.actorProfileId, actor.executionProfileId));
+                }
+            }, "MoonWaker-CloseAbandonedLaunch").start();
         }
 
         @Override public void runtimeEnded() {

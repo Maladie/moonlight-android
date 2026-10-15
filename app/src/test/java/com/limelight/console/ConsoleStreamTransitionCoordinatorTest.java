@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.console.transition.PresentationBarrier;
+
 import com.limelight.session.SessionModel;
 import com.limelight.session.SessionModelDriver;
 
@@ -238,7 +240,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         gateway.snapshotActions.add(() -> {
             // The user started a new request; the old observation still polls once more.
             harness.controller.begin(next);
-            harness.controller.overlayRendered(next.id);
+            harness.controller.coverSettled(next.id, PresentationBarrier.Outcome.SUBMITTED);
             harness.controller.streamConnected(next.id);
             clock.value = 600_000L;
         });
@@ -345,10 +347,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void launcherPromptBeforeAnyGameIdentityOffersRevealAtOnce() {
+    public void launcherPromptBeforeAnyGameIdentityOffersRevealOncePersistent() {
         FakeGateway gateway = gatewayWith(snapshot(true, true, "starting", "", 0,
                 false, "game", 0, "launcher_interaction_required"));
-        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, new FakeClock(),
+                new InterruptingSleeper(), LAUNCHER_DEBOUNCE_ELAPSES);
         makeTransportReady(harness.controller);
 
         harness.runObservation();
@@ -356,6 +359,28 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
                 harness.controller.snapshot().state);
         assertTrue(harness.controller.snapshot().manualRevealAvailable);
+    }
+
+    @Test
+    public void transientLauncherPromptNeverShowsAttention() {
+        FakeGateway gateway = gatewayWith(
+                snapshot(true, true, "starting", "", 0,
+                        false, "game", 0, "launcher_interaction_required"),
+                snapshot(true, true, "starting", "", 0, false, "game", 0, ""));
+        List<Runnable> debounces = new ArrayList<>();
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> {
+                    if (delay == LaunchTransitionController.LAUNCHER_ATTENTION_DEBOUNCE_MS) {
+                        debounces.add(action);
+                    }
+                });
+        makeTransportReady(harness.controller);
+
+        harness.runObservation();
+        debounces.forEach(Runnable::run);
+
+        assertEquals(1, debounces.size());
+        assertFalse(harness.states.contains(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED));
     }
 
     @Test
@@ -392,7 +417,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void launcherAttentionIsProviderIndependentAndStopsReadinessTimeout() {
         FakeGateway gateway = gatewayWith(snapshot(true, true, "running", GAME, 42,
                 false, "game", 0, "launcher_interaction_required"));
-        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, new FakeClock(),
+                new InterruptingSleeper(), LAUNCHER_DEBOUNCE_ELAPSES);
         makeTransportReady(harness.controller);
 
         harness.runObservation();
@@ -414,7 +440,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         makeTransportReady(harness.controller);
         gateway.snapshotActions.add(() -> { });
         gateway.snapshotActions.add(() -> {
-            harness.controller.videoFrameRendered("transition-1");
+            harness.controller.videoFrameRendered("transition-1", harness.controller.snapshot().frameEdge, System.nanoTime());
             assertTrue(harness.controller.snapshot().manualRevealAvailable);
             harness.controller.showStreamAnyway("transition-1");
             harness.controller.revealCompleted("transition-1");
@@ -437,7 +463,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void wrongDisplayRecoversPrivacyWithSpecificReason() {
+    public void wrongDisplayAfterRevealIsANoticeWithSpecificReason() {
         FakeGateway gateway = gatewayWith(snapshotReadyGame(),
                 snapshot(true, true, "running", GAME, 42,
                         false, "game", 0, "target_on_wrong_display"));
@@ -445,15 +471,15 @@ public class ConsoleStreamTransitionCoordinatorTest {
         makeTransportReady(harness.controller);
         gateway.snapshotActions.add(() -> { });
         gateway.snapshotActions.add(() -> {
-            harness.controller.videoFrameRendered("transition-1");
+            harness.controller.videoFrameRendered("transition-1", harness.controller.snapshot().frameEdge, System.nanoTime());
             harness.controller.revealCompleted("transition-1");
         });
 
         harness.runObservation();
 
-        assertTrue(harness.controller.snapshot().overlayVisible);
-        assertTrue(harness.controller.snapshot().inputBlocked);
-        assertEquals("wrong display", harness.controller.snapshot().detail);
+        assertFalse(harness.controller.snapshot().overlayVisible);
+        assertFalse(harness.controller.snapshot().inputBlocked);
+        assertEquals("wrong display", harness.controller.snapshot().notice);
     }
 
     @Test
@@ -491,7 +517,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         controller.surfaceReady(providerSpec.id);
         controller.inputPipelineReady(providerSpec.id);
         controller.streamConnected(providerSpec.id);
-        controller.videoFrameRendered(providerSpec.id);
+        controller.videoFrameRendered(providerSpec.id, controller.snapshot().frameEdge, System.nanoTime());
 
         assertEquals("host locked", controller.snapshot().detail);
         assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
@@ -525,7 +551,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
                 false, "game", 0, "host_session_locked");
         FakeGateway gateway = gatewayWith(locked, snapshotReadyGame(), locked);
-        gateway.unlockResult = true;
+        gateway.unlockResult = PlayniteTransitionGateway.HostUnlock.UNLOCKED;
         Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
         gateway.snapshotActions.add(() -> { });
         gateway.snapshotActions.add(() -> {
@@ -545,11 +571,87 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void readyWithoutAttemptWhileStillLockedRetriesUntilTheAttemptUnlocks() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        // Bridge reports the lock before Windows commits it: the broker still says ready.
+        FakeGateway gateway = gatewayWith(locked, locked, snapshotReadyGame());
+        gateway.unlockResults.add(PlayniteTransitionGateway.HostUnlock.READY_WITHOUT_ATTEMPT);
+        gateway.unlockResult = PlayniteTransitionGateway.HostUnlock.UNLOCKED;
+        FakeClock clock = new FakeClock();
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new SettleSleeper(clock));
+
+        harness.runObservation();
+
+        assertEquals(2, gateway.unlockCalls);
+        assertFalse(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+        assertTrue(harness.states.contains(LaunchTransitionState.GAME_READY));
+    }
+
+    @Test
+    public void readyWithoutAttemptUntilTheWindowExpiresShowsTheManualGate() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(
+                locked, locked, locked, locked, locked, locked, locked, locked, locked);
+        gateway.unlockResult = PlayniteTransitionGateway.HostUnlock.READY_WITHOUT_ATTEMPT;
+        FakeClock clock = new FakeClock();
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new SettleSleeper(clock));
+
+        harness.runObservation();
+
+        // 0, 750, ... 4500 ms: eight ensures inside the 5 s window, then the manual gate.
+        assertEquals(8, gateway.unlockCalls);
+        assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
+                harness.controller.snapshot().state);
+        assertTrue(harness.controller.snapshot().overlayVisible);
+    }
+
+    @Test
+    public void refusalAfterReadyWithoutAttemptShowsTheManualGateImmediately() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, locked, locked);
+        gateway.unlockResults.add(PlayniteTransitionGateway.HostUnlock.READY_WITHOUT_ATTEMPT);
+        gateway.unlockResult = PlayniteTransitionGateway.HostUnlock.NOT_READY;
+        FakeClock clock = new FakeClock();
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new SettleSleeper(clock));
+
+        harness.runObservation();
+
+        assertEquals(2, gateway.unlockCalls);
+        assertEquals(750L, clock.value);
+        assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
+                harness.controller.snapshot().state);
+    }
+
+    @Test
+    public void cancelDuringTheLockSettleWindowStopsTheRetries() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, locked, locked);
+        gateway.unlockResult = PlayniteTransitionGateway.HostUnlock.READY_WITHOUT_ATTEMPT;
+        FakeClock clock = new FakeClock();
+        SettleSleeper sleeper = new SettleSleeper(clock);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock, sleeper);
+        sleeper.onSettle = harness.coordinator::stop;
+
+        harness.runObservation();
+
+        assertEquals(1, gateway.unlockCalls);
+        assertEquals(1, gateway.snapshotIndex);
+        assertFalse(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
+    }
+
+    @Test
     public void hostUnlockStoppedTransitionCancelsPollingAndIgnoresTheResult() {
         PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
                 false, "game", 0, "host_session_locked");
         FakeGateway gateway = gatewayWith(locked, snapshotReadyGame());
-        gateway.unlockResult = true;
+        gateway.unlockResult = PlayniteTransitionGateway.HostUnlock.UNLOCKED;
         Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
         gateway.onUnlock = () -> {
             assertFalse(gateway.unlockCancelled.getAsBoolean());
@@ -566,7 +668,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void stabilizingAndLostWindowKeepPrivacyGateClosed() {
+    public void stabilizingKeepsTheGateClosedAndLostWindowAfterRevealIsANotice() {
         FakeGateway stabilizing = gatewayWith(snapshot(true, true, "running", GAME, 42,
                 false, "game", 1, "stabilizing_target_window"));
         Harness first = new Harness(LaunchTransitionType.GAME, stabilizing);
@@ -582,8 +684,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
         second.runObservation();
         assertEquals(LaunchTransitionState.GAME_WINDOW_STABILIZING,
                 second.controller.snapshot().state);
-        assertTrue(second.controller.snapshot().inputBlocked);
-        assertEquals("window not active", second.controller.snapshot().detail);
+        assertFalse(second.controller.snapshot().overlayVisible);
+        assertFalse(second.controller.snapshot().inputBlocked);
+        assertEquals("window not active", second.controller.snapshot().notice);
     }
 
     @Test
@@ -816,7 +919,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
         gateway.events.add(events(3,
                 event(2, "game-stopping", GAME, "Game"),
                 event(3, "game-stopped", GAME, "Game")));
-        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, new FakeClock(),
+                new InterruptingSleeper(), LAUNCHER_DEBOUNCE_ELAPSES);
         makeTransportReady(harness.controller);
         gateway.snapshotActions.add(() -> { });
         gateway.snapshotActions.add(() -> {
@@ -861,7 +965,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             }
         });
         controller.begin(spec(LaunchTransitionType.PLAYNITE));
-        controller.overlayRendered("transition-1");
+        controller.coverSettled("transition-1", PresentationBarrier.Outcome.SUBMITTED);
         FakeGateway gateway = gatewayWith(
                 snapshot(true, false, "idle", "", 0, false, "playnite", 0, ""),
                 snapshot(true, false, "idle", "", 0, false, "playnite", 0, ""),
@@ -1042,7 +1146,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "gog:Some_Game", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
-        controller.overlayRendered(providerSpec.id);
+        controller.coverSettled(providerSpec.id, PresentationBarrier.Outcome.SUBMITTED);
         FakeGateway gateway = new FakeGateway();
         gateway.snapshots.add(new IOException("stop observation"));
         ConsoleStreamTransitionCoordinator coordinator =
@@ -1067,7 +1171,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "gog:Some_Game", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
-        controller.overlayRendered(providerSpec.id);
+        controller.coverSettled(providerSpec.id, PresentationBarrier.Outcome.SUBMITTED);
         FakeGateway gateway = new FakeGateway();
         FakeCallbacks callbacks = new FakeCallbacks();
         callbacks.controlAuthorized = false;
@@ -1136,7 +1240,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "steam:289070", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
-        controller.overlayRendered(providerSpec.id);
+        controller.coverSettled(providerSpec.id, PresentationBarrier.Outcome.SUBMITTED);
         CountDownLatch startEntered = new CountDownLatch(1);
         CountDownLatch releaseStart = new CountDownLatch(1);
         CountDownLatch cleanupCalled = new CountDownLatch(1);
@@ -1198,7 +1302,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "steam:289070", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
-        controller.overlayRendered(providerSpec.id);
+        controller.coverSettled(providerSpec.id, PresentationBarrier.Outcome.SUBMITTED);
         LaunchTransitionState before = controller.snapshot().state;
         CountDownLatch startEntered = new CountDownLatch(1);
         CountDownLatch releaseStart = new CountDownLatch(1);
@@ -1236,7 +1340,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "steam:289070", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
-        controller.overlayRendered(providerSpec.id);
+        controller.coverSettled(providerSpec.id, PresentationBarrier.Outcome.SUBMITTED);
         CountDownLatch observationEntered = new CountDownLatch(1);
         CountDownLatch releaseObservation = new CountDownLatch(1);
         CountDownLatch startCalled = new CountDownLatch(1);
@@ -1280,7 +1384,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(0, gateway.snapshotIndex);
         controller.surfaceReady(providerSpec.id);
         controller.inputPipelineReady(providerSpec.id);
-        controller.videoFrameRendered(providerSpec.id);
+        controller.videoFrameRendered(providerSpec.id, controller.snapshot().frameEdge, System.nanoTime());
         assertFalse(controller.snapshot().revealAuthorized);
 
         releaseStart.countDown();
@@ -1297,7 +1401,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 "steam:289070", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
-        controller.overlayRendered(providerSpec.id);
+        controller.coverSettled(providerSpec.id, PresentationBarrier.Outcome.SUBMITTED);
         FakeGateway gateway = new FakeGateway();
         gateway.snapshots.add(new IOException("stop observation"));
         gateway.startError = new IOException("launcher_interaction_required");
@@ -1317,7 +1421,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         controller.surfaceReady(providerSpec.id);
         controller.streamConnected(providerSpec.id);
-        controller.videoFrameRendered(providerSpec.id);
+        controller.videoFrameRendered(providerSpec.id, controller.snapshot().frameEdge, System.nanoTime());
         assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
                 controller.snapshot().state);
         assertEquals(1, gateway.startGameCalls);
@@ -2660,7 +2764,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     private static LaunchTransitionController providerController(LaunchTransitionSpec spec) {
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(spec);
-        controller.overlayRendered(spec.id);
+        controller.coverSettled(spec.id, PresentationBarrier.Outcome.SUBMITTED);
         return controller;
     }
 
@@ -2694,7 +2798,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
             if (states != null) states.add(snapshot.state);
         });
         controller.begin(spec(type));
-        controller.overlayRendered("transition-1");
+        controller.coverSettled("transition-1", PresentationBarrier.Outcome.SUBMITTED);
         return controller;
     }
 
@@ -2707,7 +2811,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 LaunchTransitionType.GAME, GAME);
         controller.targetWindowReady("transition-1", HOST,
                 LaunchTransitionType.GAME, GAME);
-        controller.videoFrameRendered("transition-1");
+        controller.videoFrameRendered("transition-1", controller.snapshot().frameEdge, System.nanoTime());
         controller.revealCompleted("transition-1");
         assertEquals(LaunchTransitionState.GAME_RUNNING, controller.snapshot().state);
     }
@@ -2716,7 +2820,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         controller.surfaceReady("transition-1");
         controller.inputPipelineReady("transition-1");
         controller.streamConnected("transition-1");
-        controller.videoFrameRendered("transition-1");
+        controller.videoFrameRendered("transition-1", controller.snapshot().frameEdge, System.nanoTime());
     }
 
     private static PlayniteTransitionGateway.Snapshot snapshotReadyPlaynite() {
@@ -2753,6 +2857,14 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 false, "game", 0, reason, false, processId > 0 ? PROCESS_TOKEN : "", "", "",
                 "", ageMs);
     }
+
+    /** The launcher debounce elapses at once; other delayed actions never run. */
+    private static final ConsoleStreamTransitionCoordinator.Scheduler LAUNCHER_DEBOUNCE_ELAPSES =
+            (action, delay) -> {
+                if (delay == LaunchTransitionController.LAUNCHER_ATTENTION_DEBOUNCE_MS) {
+                    action.run();
+                }
+            };
 
     private static FakeGateway gatewayWith(PlayniteTransitionGateway.Snapshot... snapshots) {
         FakeGateway gateway = new FakeGateway();
@@ -2850,15 +2962,19 @@ public class ConsoleStreamTransitionCoordinatorTest {
         boolean focusGameError;
         boolean observeStartedProcessThenStop;
         int unlockCalls;
-        boolean unlockResult;
+        PlayniteTransitionGateway.HostUnlock unlockResult =
+                PlayniteTransitionGateway.HostUnlock.NOT_READY;
+        /** Answers of the first ensures; afterwards {@link #unlockResult}. */
+        final List<PlayniteTransitionGateway.HostUnlock> unlockResults = new ArrayList<>();
         Runnable onUnlock;
         java.util.function.BooleanSupplier unlockCancelled;
 
-        @Override public boolean unlockHostSession(java.util.function.BooleanSupplier cancelled) {
+        @Override public PlayniteTransitionGateway.HostUnlock unlockHostSession(
+                java.util.function.BooleanSupplier cancelled) {
             unlockCalls++;
             unlockCancelled = cancelled;
             if (onUnlock != null) onUnlock.run();
-            return unlockResult;
+            return unlockResults.isEmpty() ? unlockResult : unlockResults.remove(0);
         }
 
         @Override public PlayniteTransitionGateway.Snapshot snapshot() throws IOException {
@@ -3009,6 +3125,20 @@ public class ConsoleStreamTransitionCoordinatorTest {
             implements ConsoleStreamTransitionCoordinator.Sleeper {
         @Override public void sleep(long delayMs) throws InterruptedException {
             throw new InterruptedException("end test observation");
+        }
+    }
+
+    /** Advances the clock through the lock settle retries; any other sleep ends observation. */
+    private static final class SettleSleeper extends InterruptingSleeper {
+        final FakeClock clock;
+        Runnable onSettle;
+        SettleSleeper(FakeClock clock) { this.clock = clock; }
+        @Override public void sleep(long delayMs) throws InterruptedException {
+            if (delayMs != ConsoleStreamTransitionCoordinator.HOST_LOCK_SETTLE_RETRY_MS) {
+                super.sleep(delayMs);
+            }
+            clock.value += delayMs;
+            if (onSettle != null) onSettle.run();
         }
     }
 

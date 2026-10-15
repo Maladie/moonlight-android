@@ -199,20 +199,20 @@ public abstract class SessionEvent<R> {
     }
 
     static final class HomeFrameResult extends BooleanEvent {
-        private final long claim;
+        private final long operation;
         private final Controller owner;
         private final Snapshot expected;
         private final boolean accepted;
 
-        HomeFrameResult(long claim, Controller owner, Snapshot expected, boolean accepted) {
-            this.claim = claim;
+        HomeFrameResult(long operation, Controller owner, Snapshot expected, boolean accepted) {
+            this.operation = operation;
             this.owner = owner;
             this.expected = expected;
             this.accepted = accepted;
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            m.homeFrameResult(claim, owner, expected, accepted, reply);
+            m.homeFrameResult(operation, owner, expected, accepted, reply);
         }
     }
 
@@ -225,93 +225,96 @@ public abstract class SessionEvent<R> {
 
     // ---- preparing (warm-up) -------------------------------------------------------------------
 
-    /** Identity of one preparing attempt. */
+    /** Identity of one preparing operation (the model assigned it when PREPARING began). */
     abstract static class PreparingEvent extends BooleanEvent {
         final Controller owner;
-        final String sessionId, hostId, transitionId;
+        final String sessionId, hostId;
         final int appId;
-        final long attempt;
+        final long operation;
 
         PreparingEvent(Controller owner, String sessionId, String hostId, int appId,
-                       String transitionId, long attempt) {
+                       long operation) {
             this.owner = owner;
             this.sessionId = sessionId;
             this.hostId = hostId;
             this.appId = appId;
-            this.transitionId = transitionId;
-            this.attempt = attempt;
+            this.operation = operation;
         }
     }
 
-    public static final class PreparingBegun extends PreparingEvent {
-        private final String profileId, gameId;
+    /** Enters PREPARING; replies the preparing operation the model assigned (0: refused). */
+    public static final class PreparingBegun extends SessionEvent<Long> {
+        private final Controller owner;
+        private final String sessionId, hostId, profileId, gameId;
+        private final int appId;
 
         public PreparingBegun(Controller owner, String sessionId, String hostId,
-                              String profileId, int appId, String gameId,
-                              String transitionId, long attempt) {
-            super(owner, sessionId, hostId, appId, transitionId, attempt);
+                              String profileId, int appId, String gameId) {
+            this.owner = owner;
+            this.sessionId = sessionId;
+            this.hostId = hostId;
             this.profileId = profileId;
+            this.appId = appId;
             this.gameId = gameId;
         }
 
-        @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            reply.accept(m.beginPreparing(owner, sessionId, hostId, profileId, appId, gameId,
-                    transitionId, attempt));
+        @Override Long failure() { return 0L; }
+
+        @Override void apply(SessionModel m, Reply<Long> reply) {
+            reply.accept(m.beginPreparing(owner, sessionId, hostId, profileId, appId, gameId));
         }
     }
 
     public static final class PreparingCompleted extends PreparingEvent {
         public PreparingCompleted(Controller owner, Snapshot preparing) {
             super(owner, preparing.streamSessionId, preparing.hostId, preparing.appId,
-                    preparing.transitionId, preparing.attempt);
+                    preparing.preparingOperation);
         }
 
         PreparingCompleted(Controller owner, String sessionId, String hostId, int appId,
-                           String transitionId, long attempt) {
-            super(owner, sessionId, hostId, appId, transitionId, attempt);
+                           long operation) {
+            super(owner, sessionId, hostId, appId, operation);
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            reply.accept(m.completePreparing(owner, sessionId, hostId, appId, transitionId,
-                    attempt));
+            reply.accept(m.completePreparing(owner, sessionId, hostId, appId, operation));
         }
     }
 
     public static final class PreparingCancelled extends PreparingEvent {
         public PreparingCancelled(Controller owner, Snapshot preparing) {
             super(owner, preparing.streamSessionId, preparing.hostId, preparing.appId,
-                    preparing.transitionId, preparing.attempt);
+                    preparing.preparingOperation);
         }
 
         PreparingCancelled(Controller owner, String sessionId, String hostId, int appId,
-                           String transitionId, long attempt) {
-            super(owner, sessionId, hostId, appId, transitionId, attempt);
+                           long operation) {
+            super(owner, sessionId, hostId, appId, operation);
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            reply.accept(m.cancelPreparing(owner, sessionId, hostId, appId, transitionId,
-                    attempt));
+            reply.accept(m.cancelPreparing(owner, sessionId, hostId, appId, operation));
         }
     }
 
     public static final class PreparingTransportLost extends PreparingEvent {
         public PreparingTransportLost(Controller owner, Snapshot preparing) {
             super(owner, preparing.streamSessionId, preparing.hostId, preparing.appId,
-                    preparing.transitionId, preparing.attempt);
+                    preparing.preparingOperation);
         }
 
         PreparingTransportLost(Controller owner, String sessionId, String hostId, int appId,
-                               String transitionId, long attempt) {
-            super(owner, sessionId, hostId, appId, transitionId, attempt);
+                               long operation) {
+            super(owner, sessionId, hostId, appId, operation);
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
             reply.accept(m.markPreparingReconnectRequired(owner, sessionId, hostId, appId,
-                    transitionId, attempt));
+                    operation));
         }
     }
 
-    /** Asks the transport owner to cancel exactly this preparing attempt. */
+    /** Asks the transport owner to cancel exactly this preparing operation. */
     public static final class CancelPreparingTransport extends BooleanEvent {
         private final Snapshot expected;
 
@@ -388,21 +391,18 @@ public abstract class SessionEvent<R> {
     public static final class PreparingSwitchUpdated extends BooleanEvent {
         private final Controller owner;
         private final SwitchRequest request;
-        private final String expectedGameId, newGameId, newTransitionId;
+        private final String expectedGameId, newGameId;
 
         public PreparingSwitchUpdated(Controller owner, SwitchRequest request,
-                                      String expectedGameId, String newGameId,
-                                      String newTransitionId) {
+                                      String expectedGameId, String newGameId) {
             this.owner = owner;
             this.request = request;
             this.expectedGameId = expectedGameId;
             this.newGameId = newGameId;
-            this.newTransitionId = newTransitionId;
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            reply.accept(m.updatePreparingSwitch(owner, request, expectedGameId, newGameId,
-                    newTransitionId));
+            reply.accept(m.updatePreparingSwitch(owner, request, expectedGameId, newGameId));
         }
     }
 
@@ -773,6 +773,23 @@ public abstract class SessionEvent<R> {
 
         @Override void apply(SessionModel m, Reply<Void> reply) {
             m.localCloseFinished(hostId, actorProfileId, executionProfileId, token, closed);
+            reply.accept(null);
+        }
+    }
+
+    /**
+     * This client stopped its stream at once, and the host did not confirm that the session
+     * ended. Only a fact for the Home to show and "Check again" to resolve: no ownership or
+     * reconnect material is restored.
+     */
+    public static final class TerminationUnconfirmed extends ProjectionEvent<Void> {
+        public TerminationUnconfirmed(String hostId, String actorProfileId,
+                                      String executionProfileId) {
+            super(hostId, actorProfileId, executionProfileId);
+        }
+
+        @Override void apply(SessionModel m, Reply<Void> reply) {
+            m.terminationUnconfirmed(hostId, actorProfileId, executionProfileId);
             reply.accept(null);
         }
     }

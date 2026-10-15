@@ -16,6 +16,7 @@ import com.limelight.binding.audio.UsbMicrophoneService;
 import com.limelight.binding.audio.UsbMicrophonePermissionActivity;
 import com.limelight.binding.audio.DiscordAudioDownlink;
 import com.limelight.console.HostGatewayStore;
+import com.limelight.console.PlayQueue;
 import com.limelight.console.ProfileAuthorization;
 import com.limelight.gateway.GatewayConnection;
 
@@ -25,7 +26,7 @@ import com.limelight.session.SessionModel;
 import java.io.File;
 
 public final class MoonWakerApplication extends Application implements
-        Application.ActivityLifecycleCallbacks, SessionModel.Owner,
+        Application.ActivityLifecycleCallbacks, SessionModel.Owner, PlayQueue.Owner,
         SharedPreferences.OnSharedPreferenceChangeListener {
     private static final java.util.concurrent.atomic.AtomicInteger STARTED_ACTIVITIES =
             new java.util.concurrent.atomic.AtomicInteger();
@@ -39,9 +40,14 @@ public final class MoonWakerApplication extends Application implements
     private final DiscordAudioDownlink discordAudio = new DiscordAudioDownlink();
     private final Runnable stopDiscordAudio = discordAudio::stop;
     private SessionModel sessionModel;
+    private final PlayQueue playQueue = new PlayQueue(android.os.SystemClock::uptimeMillis);
 
     @Override public SessionModel sessionModel() {
         return sessionModel;
+    }
+
+    @Override public PlayQueue playQueue() {
+        return playQueue;
     }
 
     @Override public void onCreate() {
@@ -183,7 +189,11 @@ public final class MoonWakerApplication extends Application implements
     }
 
     @Override public void onActivityStopped(Activity activity) {
-        STARTED_ACTIVITIES.decrementAndGet();
+        // The user left MoonWaker (not a screen handed over to the next, nor recreated):
+        // nothing queued behind a close waits for them.
+        if (STARTED_ACTIVITIES.decrementAndGet() == 0 && !activity.isChangingConfigurations()) {
+            playQueue.appLeft();
+        }
     }
 
     /** True while any MoonWaker Activity is started, i.e. the app may start a foreground service. */

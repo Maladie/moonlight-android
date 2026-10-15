@@ -17,31 +17,21 @@ public class GameAutoWarmUpContractTest {
         String game = source();
         String create = between(game, "protected void onCreate(",
                 "private MediaCodecDecoderRenderer createDecoderRenderer");
-        String accepted = between(game, "public boolean preparingHomeFrameSubmitted(",
-                "public void terminateRetainedSession(");
 
+        // The Home-frame handshake itself (one claim per preparing operation, stale ones
+        // rejected) is a model scenario: SessionModelTest, S09 C4.
         // A fresh warm-up claims PREPARING before opening Home; only a reattached presentation
         // whose Home frame the coordinator already accepted skips that (resumeAcceptedWarmUp).
         assertTrue(create.indexOf("if (reattachPending && resumeAcceptedWarmUp())")
                 < create.indexOf("beginAutoWarmUpPreparing("));
         assertTrue(create.indexOf("beginAutoWarmUpPreparing(")
                 < create.lastIndexOf("openPreparingConsoleHome()"));
-        String resume = between(game, "private boolean resumeAcceptedWarmUp()",
-                "private void resumeAttachedTransport()");
-        assertTrue(resume.indexOf("isPreparingHomeFrameAccepted(")
-                < resume.indexOf("transitionCoordinator.start()"));
         String warmUp = create.substring(create.lastIndexOf(
                 "if (hasAutoWarmUpTransportIdentity())"));
         assertFalse(warmUp.substring(0, warmUp.indexOf("} else {")).contains(
                 "transitionCoordinator.start()"));
         assertFalse(warmUp.substring(0, warmUp.indexOf("} else {")).contains(
                 "startConnectionIfReady("));
-        assertTrue(accepted.indexOf("compareAndSet(false, true)")
-                < accepted.indexOf("transitionController.overlayRendered"));
-        assertTrue(accepted.indexOf("transitionController.overlayRendered")
-                < accepted.indexOf("transitionCoordinator.start()"));
-        assertTrue(accepted.indexOf("transitionCoordinator.start()")
-                < accepted.indexOf("startConnectionIfReady("));
     }
 
     /** TV 2026-10-14: resuming a retained warm-up kept it hidden, a black cover with no action. */
@@ -62,15 +52,16 @@ public class GameAutoWarmUpContractTest {
         // SessionOrchestrator decides; this only executes its answer.
         assertOrdered(takeOver, "SessionOrchestrator.UserIntent.RETURN_FROM_HOME",
                 "ActionKind.TAKE_OVER_WARM_UP", "clearAutoWarmUpIdentity()",
-                "showFullTransitionAppearance()", "setAudioVolume(attachment, 1f)",
-                "enableSensors()", "applyTransitionSnapshot(transitionController.snapshot())");
+                "showFullTransitionAppearance()", "applyStreamAudio(currentTransitionSnapshot());",
+                "enableSensors()", "transitionController.takenOver(transitionSpec.id);",
+                "applyTransitionSnapshot(transitionController.snapshot())");
         assertFalse(takeOver.contains("isExactAutoWarmUpPreparing("));
         assertOrdered(state, "state.resumed = presentationResumed",
                 "state.hiddenWarmUp = isOwnedHiddenAutoWarmUp()",
                 "state.warmUpPreparing = isExactAutoWarmUpPreparing(",
                 "state.switchRequested = pendingRetainedSwitch.busy()");
-        // The controller says when the cover needs a fresh frame; the presentation arms it.
-        assertTrue(snapshot.contains("snapshot.awaitingVideoFrame"));
+        // The controller says when the cover needs a fresh frame; FrameArmingPolicy arms it.
+        assertTrue(snapshot.contains("armNextVideoFrame(snapshot, "));
         assertFalse(snapshot.contains("waitingForPostTargetFrame"));
     }
 
@@ -118,10 +109,10 @@ public class GameAutoWarmUpContractTest {
         assertTrue(create.contains("consoleLoadingView.showNeutralWarmUpAppearance()"));
         assertTrue(create.contains("else {\n"
                 + "                consoleLoadingView.setSplashArtwork("));
-        assertTrue(create.indexOf("consoleLoadingView.showNeutralWarmUpAppearance()")
-                < create.indexOf("consoleLoadingView.doAfterNextFrame("));
+        assertOrdered(create, "consoleLoadingView.showNeutralWarmUpAppearance()",
+                "awaitCover(startId, outcome -> {");
         assertTrue(apply.indexOf("consoleLoadingView.showFullTransitionAppearance()")
-                < apply.indexOf("transitionController.begin(next)"));
+                < apply.indexOf("transitionController.beginOnKeptTransport(next)"));
     }
 
     @Test public void windowCoversWhatIsUnderItOnlyOnceItsOwnFrameIsReady() throws IOException {
@@ -154,8 +145,11 @@ public class GameAutoWarmUpContractTest {
                 < start.indexOf("} else {"));
         assertTrue(start.indexOf("consoleLoadingView.setSeeThrough(true);")
                 < start.indexOf("} else {"));
-        assertTrue(start.indexOf("} else {") < start.indexOf(
-                "decor.postOnAnimation(() -> decor.postOnAnimation(this::coverScreen));"));
+        // Its first frame settles through the barrier; every outcome covers the window.
+        assertOrdered(start, "} else {",
+                "new ViewFrameSource(getWindow().getDecorView()).await(\"window\",",
+                "outcome -> coverScreen());");
+        assertFalse(start.contains("postOnAnimation"));
 
         // The hidden warm-up covers the screen with the Home's accepted frame, before the
         // transport is asked to start, and whenever it turns into a game or loses its Home.
@@ -236,13 +230,17 @@ public class GameAutoWarmUpContractTest {
         String connected = between(game, "public void connectionStarted()",
                 "private ConsoleStreamTransitionCoordinator createTransitionCoordinator");
 
-        assertTrue(firstFrame.contains("isOwnedHiddenAutoWarmUp()"));
-        assertTrue(firstFrame.indexOf("isOwnedHiddenAutoWarmUp()")
-                < firstFrame.indexOf("transitionController.videoFrameRendered"));
-        assertTrue(snapshot.contains(
-                "isOwnedHiddenAutoWarmUp() || snapshot.inputBlocked"));
+        // A hidden warm-up's cover follows the controller like any other; never uncovered.
+        assertFalse(firstFrame.contains("showOpaque"));
+        assertFalse(firstFrame.contains("videoFrameRendered("));
+        assertOrdered(snapshot, "if (lastTransitionOverlayVisible && !snapshot.overlayVisible",
+                "&& !isOwnedHiddenAutoWarmUp()) {", "consoleLoadingView.revealStream(");
+        // The one routing decision (LaunchTransitionControllerTest): a hidden warm-up's input
+        // never reaches the host.
+        assertTrue(snapshot.contains("controllerHandler.setInputSuppressed(!LaunchTransitionController"
+                + ".inputReachesHost(\n                    snapshot, isOwnedHiddenAutoWarmUp()));"));
         assertTrue(snapshot.contains("!isOwnedHiddenAutoWarmUp()"));
-        assertTrue(start.indexOf("if (isOwnedHiddenAutoWarmUp()) runtime.setAudioVolume(attachment, 0f)")
+        assertTrue(start.indexOf("applyStreamAudio(currentTransitionSnapshot());")
                 < start.indexOf("runtime.start();"));
         assertTrue(connected.contains(
                 "if (!isDestroyed() && !isOwnedHiddenAutoWarmUp())"));
@@ -258,7 +256,7 @@ public class GameAutoWarmUpContractTest {
                 "public void terminateRetainedSession(");
 
         assertFalse(preparingHome.contains("enterHome("));
-        assertTrue(preparingHome.contains("runtime.setAudioVolume(attachment, 0f)"));
+        assertTrue(game.contains("streamHomeVisible = true;\n        applyStreamAudio(currentTransitionSnapshot());"));
         assertTrue(preparingHome.contains("setInputSuppressed(true)"));
         assertTrue(background.contains("isExactAutoWarmUpPreparing(preparing)"));
         assertTrue(background.contains("parkWarmUpWhenConnected = true"));
@@ -359,8 +357,8 @@ public class GameAutoWarmUpContractTest {
         String setup = between(game, "private void applyRetainedTransition(",
                 "private void advancePreparingSwitch(");
 
-        assertTrue(begin.indexOf("consoleLoadingView.doAfterNextFrame")
-                < begin.indexOf("beginRetainedProviderSwitch(operation)"));
+        assertOrdered(begin, "awaitCover(operation.oldSpec.id, cancelled, outcome -> {",
+                "beginRetainedProviderSwitch(operation)");
         assertTrue(begin.contains("operation.oldSpec.type == LaunchTransitionType.GENERIC"));
         assertTrue(begin.indexOf("operation.oldCoordinator.close()")
                 < begin.indexOf("beginNewRetainedGameAttempt(operation)"));
@@ -374,7 +372,7 @@ public class GameAutoWarmUpContractTest {
         assertTrue(sameGame.contains("transferProviderOwnershipTo(replacement)"));
         assertFalse(sameGame.contains("startGame("));
         assertFalse(sameGame.contains("stopGame("));
-        assertTrue(setup.indexOf("transitionController.begin(next)")
+        assertTrue(setup.indexOf("transitionController.beginOnKeptTransport(next)")
                 < setup.indexOf("autoWarmUpConvertedToGame = true"));
         assertFalse(newGame.contains("startConnectionIfReady"));
     }
@@ -389,10 +387,10 @@ public class GameAutoWarmUpContractTest {
         String launchHome = between(game, "private void launchConsoleHome(",
                 "private void showOverlayMenuWithBattery()");
 
-        assertTrue(clear.contains("autoWarmUpAttempt = 0L"));
+        assertTrue(clear.contains("autoWarmUp = false"));
         assertTrue(clear.contains("autoWarmUpRetained = false"));
-        assertTrue(clear.contains("removeExtra(EXTRA_AUTO_WARM_UP_ATTEMPT)"));
-        assertTrue(clear.contains("removeExtra(ConsoleActivity.EXTRA_WARM_UP_ATTEMPT)"));
+        assertTrue(clear.contains("removeExtra(EXTRA_AUTO_WARM_UP)"));
+        assertTrue(clear.contains("removeExtra(ConsoleActivity.EXTRA_PREPARING_OPERATION)"));
         assertTrue(apply.contains("else if (hasAutoWarmUpTransportIdentity())"
                 + " clearAutoWarmUpIdentity()"));
         assertTrue(launchHome.contains("preparing ? 0 : android.R.anim.fade_in"));
@@ -428,7 +426,7 @@ public class GameAutoWarmUpContractTest {
 
         assertOrdered(newGame, "advancePreparingSwitch(",
                 "applyRetainedTransition(");
-        assertOrdered(setup, "transitionController.begin(next)",
+        assertOrdered(setup, "transitionController.beginOnKeptTransport(next)",
                 "autoWarmUpConvertedToGame = true");
         assertTrue(completion.contains("new SessionEvent.PreparingCompleted(runtime, preparing)"));
         assertTrue(completion.contains("clearAutoWarmUpIdentity()"));
@@ -498,8 +496,9 @@ public class GameAutoWarmUpContractTest {
         String neutral = between(game,
                 "private void persistRejectedProviderTransitionAsNeutral()",
                 "private String currentSessionGameId()");
-        String home = between(game, "private void openConsoleHome()",
+        String home = between(game, "private boolean openConsoleHome()",
                 "private void openPreparingConsoleHome()");
+
         String retry = between(game, "private void restartStreamForRetry()",
                 "private boolean retryStillCurrent(");
 

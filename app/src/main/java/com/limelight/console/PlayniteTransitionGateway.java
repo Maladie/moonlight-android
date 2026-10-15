@@ -474,6 +474,16 @@ public final class PlayniteTransitionGateway {
 
     static final long HOST_UNLOCK_TIMEOUT_MILLIS = 30_000L;
 
+    /** Outcome of one session ensure. */
+    public enum HostUnlock {
+        /** An unlock attempt ran and the host reports the session ready. */
+        UNLOCKED,
+        /** The host answered ready without starting any attempt: it saw no lock. */
+        READY_WITHOUT_ATTEMPT,
+        /** Refused, failed, uncorrelated, cancelled or timed out. */
+        NOT_READY
+    }
+
     /**
      * One {@code system/session/ensure} for this actor, followed by its attempt until the host
      * reports the session ready, refuses, or the bound expires (the attempt is then cancelled).
@@ -481,7 +491,7 @@ public final class PlayniteTransitionGateway {
      * the caller's cancellation, the bound or a failed poll cancel the live attempt, so the
      * broker never unlocks Windows for a launch that no longer wants it.
      */
-    public boolean unlockHostSession(BooleanSupplier cancelled)
+    public HostUnlock unlockHostSession(BooleanSupplier cancelled)
             throws IOException, InterruptedException {
         String requestId = "android-unlock-" + UUID.randomUUID();
         HostLaunchPreflight.Session session = HostLaunchPreflight.Session.from(
@@ -490,18 +500,19 @@ public final class PlayniteTransitionGateway {
         long deadline = monotonicClock.getAsLong() + HOST_UNLOCK_TIMEOUT_MILLIS;
         boolean settled = false;
         try {
-            if (!correlated(session, requestId, attemptId)) return false;
+            if (!correlated(session, requestId, attemptId)) return HostUnlock.NOT_READY;
             while (session.canPoll()) {
                 if (cancelled.getAsBoolean()
-                        || monotonicClock.getAsLong() >= deadline) return false;
+                        || monotonicClock.getAsLong() >= deadline) return HostUnlock.NOT_READY;
                 Thread.sleep(session.retryAfterMs);
-                if (cancelled.getAsBoolean()) return false;
+                if (cancelled.getAsBoolean()) return HostUnlock.NOT_READY;
                 session = HostLaunchPreflight.Session.from(client.getWindowsSessionStatus(
                         connection, requestId, attemptId));
-                if (!correlated(session, requestId, attemptId)) return false;
+                if (!correlated(session, requestId, attemptId)) return HostUnlock.NOT_READY;
             }
             settled = true;
-            return session.isReady();
+            if (!session.isReady()) return HostUnlock.NOT_READY;
+            return attemptId.isEmpty() ? HostUnlock.READY_WITHOUT_ATTEMPT : HostUnlock.UNLOCKED;
         } finally {
             if (!settled && !attemptId.isEmpty()) cancelUnlock(requestId, attemptId);
         }

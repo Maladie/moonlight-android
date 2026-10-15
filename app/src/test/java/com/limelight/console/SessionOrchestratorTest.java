@@ -4,7 +4,10 @@ import com.limelight.session.SessionModel;
 import com.limelight.session.SessionModelDriver;
 import com.limelight.session.SessionResumeManager;
 
+import com.limelight.console.transition.LaunchTransitionController;
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.console.transition.PresentationBarrier;
+import com.limelight.console.transition.PresentationBarrierTest;
 import com.limelight.nvstream.http.NvApp;
 
 import org.junit.Test;
@@ -116,7 +119,7 @@ public class SessionOrchestratorTest {
         effects.deferLoading = true;
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         orchestrator.play(game());
@@ -133,11 +136,44 @@ public class SessionOrchestratorTest {
         assertEquals(effects.prepareRequest, effects.preparedLaunchRequest);
     }
 
+    /**
+     * Play in the console: the loading cover's frame never comes (its view stopped drawing).
+     * The barrier's deadline still hands the Play on, so it launches instead of hanging.
+     */
+    @Test public void playLaunchesWhenTheLoadingCoverNeverDraws() {
+        Fake effects = new Fake();
+        effects.deferLoading = true;
+        PresentationBarrierTest.ManualTime time = new PresentationBarrierTest.ManualTime();
+        PresentationBarrier cover = time.barrier();
+
+        orchestrator(effects).play(game());
+        assertEquals(0, effects.launches);
+        cover.await("console-loading", 1L, PresentationBarrier.COVER_DEADLINE_MS,
+                LaunchTransitionController.runUnlessCancelled(effects.opaqueCallbacks.remove()));
+        time.advance(PresentationBarrier.COVER_DEADLINE_MS);
+
+        assertEquals(1, effects.launches);
+    }
+
+    @Test public void cancelledLoadingCoverLeavesThePlayToItsCancelPath() {
+        Fake effects = new Fake();
+        effects.deferLoading = true;
+        PresentationBarrierTest.ManualTime time = new PresentationBarrierTest.ManualTime();
+        PresentationBarrier cover = time.barrier();
+
+        orchestrator(effects).play(game());
+        cover.await("console-loading", 1L, PresentationBarrier.COVER_DEADLINE_MS,
+                LaunchTransitionController.runUnlessCancelled(effects.opaqueCallbacks.remove()));
+        cover.cancel("console-loading");
+        time.advance(10_000L);
+
+        assertEquals(0, effects.launches);
+    }
     @Test public void readyWarmUpWithoutSelectionLaunchesImmediatelyOnce() {
         Fake effects = new Fake();
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         worker.runNext();
@@ -155,7 +191,7 @@ public class SessionOrchestratorTest {
         effects.mayOpenPreparedHost = false;
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         // The preparation itself is not held back: only the launch waits.
@@ -180,7 +216,7 @@ public class SessionOrchestratorTest {
         effects.mayOpenPreparedHost = false;
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         worker.runNext();
@@ -205,7 +241,7 @@ public class SessionOrchestratorTest {
             effects.mayOpenPreparedHost = false;
             QueuedExecutor worker = new QueuedExecutor();
             QueuedDispatcher main = new QueuedDispatcher();
-            SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+            SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
             orchestrator.prepareHost("host", "default");
             worker.runNext();
@@ -226,7 +262,7 @@ public class SessionOrchestratorTest {
         effects.deferLoading = true;
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         worker.runNext();
@@ -246,7 +282,7 @@ public class SessionOrchestratorTest {
         effects.deferLoading = true;
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         orchestrator.play(game());
@@ -277,7 +313,7 @@ public class SessionOrchestratorTest {
             QueuedExecutor worker = new QueuedExecutor();
             QueuedDispatcher main = new QueuedDispatcher();
             SessionOrchestrator orchestrator = new SessionOrchestrator(
-                    effects, worker, main);
+                    effects, worker, main, effects.queue);
             orchestrator.prepareHost("host", "default");
             worker.runNext();
             if (action == 0) orchestrator.cancel();
@@ -295,7 +331,7 @@ public class SessionOrchestratorTest {
         effects.preparedWarmUp = null;
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         worker.runNext();
@@ -312,7 +348,7 @@ public class SessionOrchestratorTest {
         effects.preparedWarmUp = null;
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         orchestrator.play(game());
@@ -329,7 +365,7 @@ public class SessionOrchestratorTest {
         Fake effects = new Fake();
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         assertTrue(orchestrator.prepareHost("host", "default") > 0L);
         assertTrue(orchestrator.hasPreparationForHost("host"));
@@ -343,7 +379,7 @@ public class SessionOrchestratorTest {
         Fake effects = new Fake();
         QueuedExecutor worker = new QueuedExecutor();
         QueuedDispatcher main = new QueuedDispatcher();
-        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main, effects.queue);
 
         orchestrator.prepareHost("host", "default");
         orchestrator.play(PlayIntent.playniteGame(
@@ -1173,64 +1209,55 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.launches);
     }
 
-    @Test public void endingAGameBesideALiveStreamRejectsOnlyAnotherGame() {
+    @Test public void endingAGameBesideALiveStreamQueuesOnlyAnotherGame() {
         Fake effects = new Fake();
         effects.snapshot = endingGame(7, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
 
-        orchestrator(effects).play(game());
+        orchestrator.play(game());
 
-        assertEquals(SessionOrchestrator.Rejection.TERMINATING, effects.rejection);
+        assertNotNull(orchestrator.queued());
+        assertNull(effects.rejection);
         assertEquals(0, effects.launches);
     }
 
-    @Test public void terminatingWithRecoveryRequiredRejectsBeforeAnyLoadingLayer() {
+    @Test public void terminatingWithRecoveryRequiredQueuesBeforeAnyLoadingLayer() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other",
                 SessionSnapshot.ObservationState.RECOVERY_REQUIRED);
+        SessionOrchestrator orchestrator = orchestrator(effects);
 
-        orchestrator(effects).play(game());
+        orchestrator.play(game());
 
-        assertEquals(SessionOrchestrator.Rejection.TERMINATING, effects.rejection);
+        assertNotNull(orchestrator.queued());
+        assertNull(effects.rejection);
         assertTrue(effects.failures.isEmpty());
         assertEquals(0, effects.loadings);
         assertEquals(0, effects.refreshes);
     }
 
-    @Test public void terminatingSeenUnderLoadingLayerFailsVisibly() {
-        Fake effects = new Fake();
-        effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
-        effects.onRefresh = () -> effects.snapshot =
-                snapshot(SessionSnapshot.State.TERMINATING, 42, "game");
-
-        orchestrator(effects).play(game());
-
-        assertEquals(java.util.Collections.singletonList(
-                SessionFailure.UNCERTAIN_TERMINATING), effects.failures);
-        assertEquals(java.util.Collections.singletonList(1), effects.loadingsAtFailure);
-        assertNull(effects.rejection);
-        assertEquals(0, effects.reconnects);
-        assertEquals(0, effects.launches);
-    }
-
-    @Test public void retryWhileStillTerminatingRejectsUnderTheRaisedLoadingLayer() {
+    /** TV 2026-10-15: a Play under the raised loading layer is queued too, never refused. */
+    @Test public void terminatingSeenUnderLoadingLayerQueuesThePlayOnItsCover() {
         Fake effects = new Fake();
         effects.snapshot = recovery(SessionSnapshot.State.RECONNECT_REQUIRED, "", false);
         effects.onRefresh = () -> effects.snapshot =
                 snapshot(SessionSnapshot.State.TERMINATING, 42, "game");
         SessionOrchestrator orchestrator = orchestrator(effects);
+
         orchestrator.play(game());
-        assertEquals(java.util.Collections.singletonList(
-                SessionFailure.UNCERTAIN_TERMINATING), effects.failures);
+
+        assertNotNull(orchestrator.queued());
+        assertTrue(effects.failures.isEmpty());
         assertNull(effects.rejection);
-
-        // Retry re-enters with the layer still up; the Activity's reject must show it there.
-        orchestrator.retry();
-
-        assertEquals(SessionOrchestrator.Rejection.TERMINATING, effects.rejection);
-        assertEquals(1, effects.failures.size());
         assertEquals(1, effects.loadings);
         assertEquals(0, effects.reconnects);
         assertEquals(0, effects.launches);
+
+        // The host confirms the close: the queued Play starts once.
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+        assertNull(orchestrator.queued());
+        assertEquals(1, effects.launches);
     }
 
     @Test public void correlatedRecoveryNamingNoGameOnNeutralWarmUpReconnects() {
@@ -1295,7 +1322,7 @@ public class SessionOrchestratorTest {
         Fake effects = new Fake();
         SessionOrchestrator orchestrator = new SessionOrchestrator(effects, action -> {
             throw new java.util.concurrent.RejectedExecutionException();
-        }, Runnable::run);
+        }, Runnable::run, effects.queue);
 
         orchestrator.play(PlayIntent.sunshineApp("host", 42, "App", false, ""));
 
@@ -1379,15 +1406,352 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.launches);
     }
 
-    @Test public void terminatingRejectsWithoutReconnectCloseOrLaunch() {
+    @Test public void terminatingQueuesTheGameWithoutRefusalReconnectCloseOrLaunch() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "game");
+        SessionOrchestrator orchestrator = orchestrator(effects);
 
-        orchestrator(effects).play(game());
+        orchestrator.play(game());
 
-        assertEquals(SessionOrchestrator.Rejection.TERMINATING, effects.rejection);
+        assertNotNull(orchestrator.queued());
+        assertNull(effects.rejection);
+        assertTrue(effects.failures.isEmpty());
+        assertEquals(1, effects.queueChanges);
+        assertEquals(0, effects.loadings);
+        assertEquals(0, effects.readiness);
         assertEquals(0, effects.reconnects);
         assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+        assertEquals(SessionStateResolver.CLOSING_CONFIRMATION_MS, effects.delayMs);
+    }
+
+    @Test public void desktopWhileTerminatingQueuesBehindTheCloseLikeAGame() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "game");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        PlayIntent desktop = PlayIntent.sunshineApp("host", 7, "Desktop", false, "");
+
+        orchestrator.play(desktop);
+
+        assertSame(desktop, orchestrator.queued());
+        assertNull(effects.rejection);
+        assertTrue(effects.failures.isEmpty());
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+        assertEquals(1, effects.launches);
+        assertEquals(7, effects.launchedIntent.sunshineAppId);
+    }
+
+    @Test public void desktopWhileAGameIsQueuedTakesTheSlotNeverDroppingItSilently() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+        PlayIntent desktop = PlayIntent.sunshineApp("host", 7, "Desktop", false, "");
+
+        orchestrator.play(desktop);
+
+        // The newer Play waits in the one slot, shown: never a silent refusal.
+        assertSame(desktop, orchestrator.queued());
+        assertNull(effects.rejection);
+        assertTrue(effects.queueDrops.isEmpty());
+    }
+
+    @Test public void refusedPlayKeepsTheQueuedGame() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+        PlayIntent queued = orchestrator.queued();
+
+        effects.paired = false;
+        orchestrator.play(PlayIntent.sunshineApp("host", 7, "Desktop", false, ""));
+
+        assertEquals(SessionOrchestrator.Rejection.UNPAIRED, effects.rejection);
+        assertSame("a refusal keeps the queue", queued, orchestrator.queued());
+    }
+
+    @Test public void queuedPlayStartsOnceWhenTheHostConfirmsTheClose() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+
+        orchestrator.sessionChanged();
+        assertEquals("still closing: it waits", 0, effects.launches);
+        assertNotNull(orchestrator.queued());
+
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+        orchestrator.sessionChanged();
+        effects.delayed.forEach(Runnable::run);
+
+        // A normal Play through the table: loading, preflight, launch, once.
+        assertNull(orchestrator.queued());
+        assertEquals(1, effects.loadings);
+        assertEquals(1, effects.readiness);
+        assertEquals(1, effects.launches);
+        assertEquals("game", effects.launchedIntent.playniteGameId);
+        assertTrue(effects.queueDrops.isEmpty());
+    }
+
+    @Test public void newPlayReplacesTheQueuedOneInItsSingleSlot() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+        PlayIntent second = PlayIntent.playniteGame("host", 42, "Second", false,
+                "second", "second");
+
+        orchestrator.play(second);
+
+        assertSame(second, orchestrator.queued());
+        effects.delayed.get(0).run();
+        assertTrue("the replaced Play's timeout is stale", effects.queueDrops.isEmpty());
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+        assertEquals(1, effects.launches);
+        assertEquals("second", effects.launchedIntent.playniteGameId);
+    }
+
+    @Test public void playOfTheQueuedGameAgainDoesNothing() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+        PlayIntent first = orchestrator.queued();
+
+        orchestrator.play(game());
+
+        assertSame(first, orchestrator.queued());
+        assertEquals(1, effects.queueChanges);
+        assertEquals(1, effects.delayed.size());
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+        assertEquals(1, effects.launches);
+    }
+
+    @Test public void cancelledQueuedPlayNeverStartsNorTimesOut() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+
+        assertTrue(orchestrator.cancelQueued());
+
+        assertNull(orchestrator.queued());
+        assertFalse(orchestrator.cancelQueued());
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+        effects.delayed.forEach(Runnable::run);
+        assertEquals(0, effects.launches);
+        assertTrue(effects.queueDrops.isEmpty());
+    }
+
+    @Test public void queueSurvivesTheStreamHomeHandoffAndStartsOnce() {
+        // Queued in the stream Home while the session closes.
+        Fake home = new Fake();
+        home.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator homeScreen = orchestrator(home);
+        homeScreen.play(game());
+        assertNotNull(homeScreen.queued());
+
+        // The close ended the stream: the console replaces the Home (its own orchestrator).
+        home.drivesQueue = false;
+        Fake console = new Fake();
+        console.queue = home.queue;
+        console.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator consoleScreen = orchestrator(console);
+        homeScreen.sessionChanged();
+        homeScreen.close();
+        assertEquals("the queue outlives the Home", "game",
+                consoleScreen.queued().playniteGameId);
+
+        // The host confirms the close: the Play starts once, from the console.
+        home.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        console.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        homeScreen.sessionChanged();
+        consoleScreen.sessionChanged();
+        consoleScreen.sessionChanged();
+        home.runDelayed();
+        console.runDelayed();
+
+        assertNull(consoleScreen.queued());
+        assertEquals(0, home.launches);
+        assertEquals(1, console.launches);
+        assertEquals("game", console.launchedIntent.playniteGameId);
+        assertTrue(home.queueDrops.isEmpty());
+        assertTrue(console.queueDrops.isEmpty());
+    }
+
+    /**
+     * TV 2026-10-15: the stream Home started the queued Play as its close was confirmed, then
+     * paused for the console replacing it; the Play was cancelled with the queue already empty.
+     * Undecided, it goes back to the queue and the next screen starts it once.
+     */
+    @Test public void queuedPlayStartedByAScreenThatLeavesGoesToTheNextScreen() {
+        Fake home = new Fake();
+        home.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator homeScreen = orchestrator(home);
+        homeScreen.play(game());
+        home.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        home.deferDispatch = true;
+        homeScreen.sessionChanged();
+        assertNull("started from the queue", homeScreen.queued());
+
+        homeScreen.screenLeft();
+        homeScreen.cancel();
+        home.flushDispatch();
+        assertEquals(0, home.launches);
+
+        Fake console = new Fake();
+        console.queue = home.queue;
+        console.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        SessionOrchestrator consoleScreen = orchestrator(console);
+        assertEquals("game", consoleScreen.queued().playniteGameId);
+        consoleScreen.sessionChanged();
+
+        assertNull(consoleScreen.queued());
+        assertEquals(1, console.launches);
+        assertTrue(console.queueDrops.isEmpty());
+    }
+
+    @Test public void aUserCancelOfAStartedQueuedPlayNeverQueuesItAgain() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        effects.deferDispatch = true;
+        orchestrator.sessionChanged();
+
+        orchestrator.cancel();
+        orchestrator.screenLeft();
+        effects.flushDispatch();
+
+        assertNull(orchestrator.queued());
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void reQueueOfTheRestartedPlayKeepsItsFirstQueuedTime() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+
+        // The delivered snapshot reads the close done, the live one still closing.
+        effects.clock += 30_000L;
+        effects.delivered = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+
+        assertNotNull("the live snapshot queues it again", orchestrator.queued());
+        assertEquals(0, effects.launches);
+        assertEquals("the bound still counts from the first queueing",
+                SessionStateResolver.CLOSING_CONFIRMATION_MS - 30_000L, effects.delayMs);
+    }
+
+    @Test public void timeoutStartsTheQueuedPlayWhenTheCloseEndedMeanwhile() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+
+        // No snapshot was delivered for the end of the close before the bound passed.
+        effects.clock += SessionStateResolver.CLOSING_CONFIRMATION_MS;
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        effects.runDelayed();
+
+        assertNull(orchestrator.queued());
+        assertTrue(effects.queueDrops.isEmpty());
+        assertEquals(1, effects.launches);
+    }
+
+    @Test public void restartAfterTheBoundStillClosingDropsItWithItsMessage() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+
+        effects.clock += SessionStateResolver.CLOSING_CONFIRMATION_MS;
+        effects.delivered = snapshot(SessionSnapshot.State.NONE, 0, "");
+        effects.runDelayed();
+
+        assertNull(orchestrator.queued());
+        assertEquals(java.util.Collections.singletonList(
+                SessionOrchestrator.QueueDrop.CLOSE_UNCONFIRMED), effects.queueDrops);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void closedScreenLeavesTheQueueToTheNextScreen() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+
+        orchestrator.close();
+
+        assertNotNull(orchestrator.queued());
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+        effects.clock += SessionStateResolver.CLOSING_CONFIRMATION_MS;
+        effects.runDelayed();
+        assertEquals(0, effects.launches);
+        assertTrue(effects.queueDrops.isEmpty());
+        assertNotNull(orchestrator.queued());
+    }
+
+    @Test public void unconfirmedCloseDropsTheQueuedPlayWithItsMessage() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+
+        effects.clock += SessionStateResolver.CLOSING_CONFIRMATION_MS;
+        effects.runDelayed();
+
+        assertNull(orchestrator.queued());
+        assertEquals(java.util.Collections.singletonList(
+                SessionOrchestrator.QueueDrop.CLOSE_UNCONFIRMED), effects.queueDrops);
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void failedCloseDropsTheQueuedPlayWithItsMessage() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+
+        effects.snapshot = closeFailed();
+        orchestrator.sessionChanged();
+
+        assertNull(orchestrator.queued());
+        assertEquals(java.util.Collections.singletonList(
+                SessionOrchestrator.QueueDrop.CLOSE_FAILED), effects.queueDrops);
+        assertEquals(0, effects.loadings);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void queuedChildPlayStartsThroughTheSameGates() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        effects.preflightFailure = new HostLaunchPreflight.Failure(
+                HostLaunchPreflight.Stage.TARGET_READY,
+                HostLaunchPreflight.FailureReason.TARGET_UNAVAILABLE);
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        PlayIntent child = PlayIntent.playniteGame("host", "kid", 42, "Game", false,
+                "game", "game");
+        orchestrator.play(child);
+        assertSame(child, orchestrator.queued());
+
+        effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        orchestrator.sessionChanged();
+
+        // The host refused the child's game at its preflight: nothing launches.
+        assertEquals(1, effects.readiness);
+        assertEquals(1, effects.preflightFailures);
         assertEquals(0, effects.launches);
     }
 
@@ -1471,7 +1835,7 @@ public class SessionOrchestratorTest {
         Fake effects = new Fake();
         Queue<Runnable> callbacks = new ArrayDeque<>();
         SessionOrchestrator orchestrator = new SessionOrchestrator(
-                effects, Runnable::run, callbacks::add);
+                effects, Runnable::run, callbacks::add, effects.queue);
 
         orchestrator.play(PlayIntent.sunshineApp("host", 42, "Old", false, ""));
         orchestrator.play(PlayIntent.sunshineApp("host", 77, "New", false, ""));
@@ -1640,7 +2004,7 @@ public class SessionOrchestratorTest {
         return new SessionOrchestrator(effects, direct, action -> {
             if (effects.deferDispatch) effects.dispatched.add(action);
             else action.run();
-        });
+        }, effects.queue);
     }
 
     private static PlayIntent game() {
@@ -1658,6 +2022,16 @@ public class SessionOrchestratorTest {
     private static SessionSnapshot snapshot(SessionSnapshot.State state,
                                             int appId, String gameId) {
         return snapshot(state, appId, gameId, false, "", false);
+    }
+
+    /** The close failed: the game it stopped still runs beside the live stream. */
+    private static SessionSnapshot closeFailed() {
+        return new SessionSnapshot("host", "default", "default",
+                SessionSnapshot.State.ACTIVE, 42, "other", true, false, false, false, false,
+                "", true, SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 42, false,
+                SessionSnapshot.Display.NONE, false, true);
     }
 
     private static SessionSnapshot snapshot(SessionSnapshot.State state,
@@ -1846,6 +2220,39 @@ public class SessionOrchestratorTest {
         @Override public boolean isAvailable() { return available; }
         @Override public boolean isPaired(String hostId) { return paired; }
         @Override public SessionSnapshot resolve(HostProfileKey key) { return snapshot; }
+        /** The delivered snapshot; null: the same as the live one ({@link #snapshot}). */
+        SessionSnapshot delivered;
+        @Override public SessionSnapshot rendered(HostProfileKey key) {
+            return delivered != null ? delivered : snapshot;
+        }
+        long clock = 1_000L;
+        /** The process's queue; screens of one test share it by sharing it here. */
+        PlayQueue queue = new PlayQueue(() -> clock);
+        boolean drivesQueue = true;
+        @Override public boolean drivesQueue() { return drivesQueue; }
+        /** The delayed actions (the queue timeout), run by the test. */
+        final java.util.List<Runnable> delayed = new java.util.ArrayList<>();
+        /** Runs the delayed actions posted so far (those they post stay for the next call). */
+        void runDelayed() {
+            java.util.List<Runnable> due = new java.util.ArrayList<>(delayed);
+            delayed.clear();
+            due.forEach(Runnable::run);
+        }
+        long delayMs;
+        int queueChanges;
+        final java.util.List<SessionOrchestrator.QueueDrop> queueDrops =
+                new java.util.ArrayList<>();
+        @Override public void postDelayed(Runnable action, long delayMs) {
+            delayed.add(action);
+            this.delayMs = delayMs;
+        }
+        @Override public void queueChanged() { queueChanges++; }
+        @Override public void queueDropped(PlayIntent intent,
+                                           SessionOrchestrator.QueueDrop reason) {
+            queueDrops.add(reason);
+        }
+        HostLaunchPreflight.Failure preflightFailure;
+        int preflightFailures;
         @Override public boolean isHostOnline(String hostId) { return hostOnline; }
         @Override public SessionOrchestrator.Retained retained(PlayIntent intent) {
             if (retainedGame != null) {
@@ -1948,6 +2355,10 @@ public class SessionOrchestratorTest {
             preflightAction = action;
             if (onReadiness != null) onReadiness.run();
             if (cancelled.getAsBoolean()) return HostLaunchPreflight.Result.cancelled();
+            if (preflightFailure != null) {
+                return HostLaunchPreflight.Result.failed(preflightFailure.stage,
+                        preflightFailure.reason);
+            }
             // A switch is prepared on the retained stream's own neutral app.
             return HostLaunchPreflight.Result.ready(
                     action == HostLaunchPreflight.Action.SWITCH_RETAINED ? neutralStream()
@@ -1984,7 +2395,9 @@ public class SessionOrchestratorTest {
             launchedSourceSuspendId = sourceSuspendId;
             launchedOwnsFreshSunshineSession = ownsFreshSunshineSession;
         }
-        @Override public void preflightFailed(HostLaunchPreflight.Failure failure) { }
+        @Override public void preflightFailed(HostLaunchPreflight.Failure failure) {
+            preflightFailures++;
+        }
         @Override public void sessionFailed(PlayIntent intent, SessionFailure reason) {
             failures.add(reason);
             loadingsAtFailure.add(loadings);

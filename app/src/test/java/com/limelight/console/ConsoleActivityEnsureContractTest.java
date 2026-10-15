@@ -4,8 +4,6 @@ import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 
 import static com.limelight.SourceText.assertOrdered;
 import static org.junit.Assert.assertEquals;
@@ -13,6 +11,98 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleActivityEnsureContractTest {
+    /**
+     * The Home renders the projection's unconfirmed end (SessionStateProjectionTest) and its
+     * "Check again" is a forced read of the host, decided again from the model afterwards.
+     */
+    @Test public void unconfirmedEndShowsOnTheHomeWithCheckAgain() throws IOException {
+        String source = consoleActivitySource();
+        String status = source.substring(source.indexOf(
+                        "private String hostStatus(ComputerDetails host, SessionSnapshot snapshot,"
+                                + " boolean timed)"),
+                source.indexOf("private String libraryGameName("));
+        assertOrdered(status, "if (snapshot.terminationUnconfirmed) {",
+                "R.string.console_status_termination_unconfirmed",
+                "String closing = closingStatus(snapshot);");
+        String offer = source.substring(source.indexOf("private void offerTerminationCheck("),
+                source.indexOf("private void updateHostSelector()"));
+        assertOrdered(offer, ".terminationUnconfirmed;", "if (terminationCheckAction == null)"
+                + " showTerminationCheck(host);", "R.string.console_check_again",
+                "refreshSessionProjection(host, accepted -> {",
+                "selectedProfileId(current.uuid)).terminationUnconfirmed) {",
+                "showTerminationCheck(current);", "hideSidePanel();");
+        String flush = source.substring(source.indexOf("private void flushConsoleUpdates()"),
+                source.indexOf("private void offerTerminationCheck("));
+        assertTrue(flush.contains("offerTerminationCheck(selected);"));
+    }
+
+    /**
+     * The queued Play is the process's (PlayQueue): leaving a screen (onPause, the stream Home
+     * handed over to the console) never clears it; the resumed console renders and advances
+     * it; only the user leaving MoonWaker, or an explicit cancel or host/profile change, ends it.
+     */
+    @Test public void queuedPlayOutlivesScreenHandoffsAndEndsWhenTheAppLeaves() throws IOException {
+        String source = consoleActivitySource();
+        String preparation = source.substring(source.indexOf(
+                        "private void cancelCurrentPreparation(ChildLaunchBinding preservedBinding)"),
+                source.indexOf("private void resumeSession(ComputerDetails host)"));
+        assertFalse(preparation.contains("cancelQueuedPlay()"));
+        assertTrue(source.contains("}, executor, mainHandler::post, PlayQueue.of(this));"));
+        String resume = source.substring(source.indexOf("protected void onResume() {"),
+                source.indexOf("String hardTerminateOffer"));
+        assertOrdered(resume, "renderQueue();", "sessionOrchestrator.sessionChanged();");
+        String drives = source.substring(source.indexOf("public boolean drivesQueue()"));
+        assertOrdered(drives, "active && !isFinishing()", "initialHostSelectionResolved",
+                "!hostSelectionVisible && profileGateHostUuid == null", "isStreamHome()",
+                "launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID)");
+        // TV 2026-10-15: a queued Play the paused screen started (undecided) goes back to the
+        // queue before that screen's cancel; the entered host starts it, never the PIN gate.
+        String pause = source.substring(source.indexOf("protected void onPause() {"),
+                source.indexOf("protected void onStop()"));
+        assertOrdered(pause, "sessionOrchestrator.screenLeft();",
+                "cancelCurrentPreparation(childStreamHandoff);");
+        String entered = source.substring(source.indexOf(
+                "private void enterHostAfterProfileGate("),
+                source.indexOf("private void closeProfileGate()"));
+        assertOrdered(entered, "selectHost(host, focusApps);",
+                "sessionOrchestrator.sessionChanged();");
+        // Owner 2026-10-15: a queued Play waits on its own launch cover ("waiting for X to
+        // close"), continues on that same cover, and Back on it cancels the queued Play.
+        String queueChanged = source.substring(source.indexOf("@Override public void queueChanged()"),
+                source.indexOf("@Override public void queueDropped("));
+        assertTrue(queueChanged.contains("if (waiting != null) showQueuedCover(waiting);"));
+        assertFalse(queueChanged.contains("stopAndHide"));
+        String effectLoading = source.substring(source.indexOf("@Override public void showLoading("),
+                source.indexOf("@Override public void refreshSession("));
+        assertOrdered(effectLoading, "if (intent == queuedCoverIntent",
+                "queuedCoverIntent = null;", "} else {", "ConsoleActivity.this.showLoading(");
+        String queuedCover = source.substring(source.indexOf("private void showQueuedCover("),
+                source.indexOf("private void endQueuedCover()"));
+        assertOrdered(queuedCover, "R.string.console_queued_waiting_session",
+                "R.string.console_queued_waiting_close, closingName");
+        String cancel = source.substring(source.indexOf("    private void showLoading(String hostName, String appName, String loadingArtworkPath)"));
+        assertOrdered(cancel, "@Override public void onCancel() {",
+                "if (queuedCoverIntent != null) {", "sessionOrchestrator.cancelQueued();",
+                "cancelCurrentPreparation();");
+        // TV 2026-10-15: an earlier launch's cover never shows again when this window does.
+        String stop = source.substring(source.indexOf("@Override protected void onStop() {"),
+                source.indexOf("public void onTrimMemory("));
+        assertOrdered(stop, "loadingLayer.getVisibility() == View.VISIBLE) showHome();",
+                "super.onStop();");
+        // TV 2026-10-15: a launch's cover names its game, never the Gateway's stream target.
+        String launch = source.substring(source.indexOf("presentation.putString(Game.EXTRA_STREAM_TARGET_NAME"),
+                source.indexOf("ServerHelper.doStart(this, app, host"));
+        assertOrdered(launch, "PlayniteTargetResolver.gameCoverTitle(playIntent.appName, app.getAppName())",
+                "presentation.putString(Game.EXTRA_APP_NAME, gameTitle);");
+        String gate = source.substring(source.indexOf("private void showProfileGate("),
+                source.indexOf("private void showPinEntry("));
+        assertFalse("the gate of the same profile keeps the queued Play",
+                gate.contains("cancelQueuedPlay()"));
+        String application = SourceText.main("MoonWakerApplication.java");
+        assertOrdered(application, "STARTED_ACTIVITIES.decrementAndGet() == 0",
+                "!activity.isChangingConfigurations()", "playQueue.appLeft();");
+    }
+
     @Test public void playniteProjectionAndArtworkAreFencedByExactHostProfileKey()
             throws IOException {
         String source = consoleActivitySource();
@@ -502,8 +592,9 @@ public class ConsoleActivityEnsureContractTest {
         String loading = source.substring(source.indexOf(
                          "@Override public void showLoading(PlayIntent intent"),
                 source.indexOf("@Override public void refreshSession("));
+        // The pause keeps the cover over the handoff; only the stop (the stream on screen) ends it.
         String pause = source.substring(source.indexOf("protected void onPause()"),
-                source.indexOf("public void onTrimMemory("));
+                source.indexOf("@Override protected void onStop() {"));
         String back = source.substring(source.indexOf("public void onBackPressed()"),
                 source.indexOf("private void loadKnownHosts("));
         String scopedCancel = source.substring(source.indexOf(
@@ -592,7 +683,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(named.contains("PlaynitePlaytimeFormatter.minutes(minutes,"));
         assertFalse(status.contains("System.currentTimeMillis()"));
         // The library's presentation key reads the status without its minutes.
-        assertTrue(source.contains("+ '|' + hostStatus(host, snapshot, false);"));
+        assertTrue(source.contains("+ '|' + hostStatus(host, snapshot, false)\n"));
         assertTrue(english.contains(
                 "name=\"console_status_game_running\">Game running · %1$s<"));
         assertTrue(polish.contains(
@@ -712,11 +803,12 @@ public class ConsoleActivityEnsureContractTest {
                 + " hasAcceptedPreparingHomeFrame()"));
         assertTrue(create.contains("preparingRelayOwned = hasOwnedPreparingRelay()"
                 + " || hasCompletedPreparingRelay()"));
-        assertTrue(create.indexOf("acceptPreparingHomeFrame()")
-                < create.indexOf("registerFrameCommitCallback"));
         assertTrue(create.contains("boolean ready = hasResolvedInitialHostSelection()"));
-        assertTrue(create.contains("registerFrameCommitCallback"));
-        assertEquals(2, occurrences(create, "postOnAnimation("));
+        // The Home's first frame waits on the barrier (frame commit, minSdk 29) with its
+        // deadline; no animation-callback fallback.
+        assertOrdered(create, "acceptPreparingHomeFrame()",
+                "homeFrames.await(homeFrameFence(), PresentationBarrier.HOME_DEADLINE_MS,");
+        assertFalse(create.contains("postOnAnimation("));
         assertTrue(build.contains("container.setBackgroundResource(R.color.console_background)"));
     }
 
@@ -798,7 +890,8 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(restore.indexOf("SessionSnapshot session = renderedSessionSnapshot(host);")
                 < restore.indexOf("applyPlayniteDiff("));
         assertTrue(restore.contains(
-                "if (!projection.signature().equals(cached.sessionSignature)) return false;"));
+                "if (!playniteTileSessionSignature(projection, host)\n"
+                + "                .equals(cached.sessionSignature)) return false;"));
         assertFalse(restore.contains("cached.sessionProjection"));
         assertFalse(console.contains("final PlayniteSessionPresentation.Projection sessionProjection;"));
         assertFalse(restore.contains("PlayniteTargetResolver.resolve("));
@@ -813,13 +906,8 @@ public class ConsoleActivityEnsureContractTest {
         String create = streamHome.substring(streamHome.indexOf(
                         "protected void onCreate(Bundle state)"),
                 streamHome.indexOf("protected boolean useTransparentWarmUpStartingWindow()"));
-        assertTrue(create.indexOf("if (attempt > 0L && (preparingHomeFrameAccepted"
-                        + " || preparingRelayOwned))")
-                < create.indexOf("registerFrameCommitCallback"));
-        assertTrue(create.substring(create.indexOf(
-                "if (attempt > 0L && (preparingHomeFrameAccepted"
-                        + " || preparingRelayOwned))"),
-                create.indexOf("registerFrameCommitCallback")).contains("return;"));
+        assertOrdered(create, "if (operation > 0L && (preparingHomeFrameAccepted"
+                        + " || preparingRelayOwned))", "return;", "homeFrames.await(");
     }
 
     @Test public void ordinaryRetainedHomeCommitsOnlyAReusedCarouselFrame()
@@ -848,7 +936,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(create.contains(
                 "initialCarouselFramePending = exactRetainedSnapshot() != null"));
         assertFalse(create.contains("if (attempt <= 0L) return;"));
-        assertTrue(create.contains("onInitialCarouselFrameSubmitted"));
+        assertTrue(create.contains("this::onInitialCarouselFrameSettled"));
         assertTrue(streamHome.contains("return initialCarouselFramePending;"));
         assertTrue(streamHome.contains("if (!initialCarouselFramePending)"
                 + " return super.dispatchKeyEvent"));
@@ -914,9 +1002,9 @@ public class ConsoleActivityEnsureContractTest {
 
         String source = streamHomeActivitySource();
         String recreation = source.substring(source.indexOf(
-                        "if (attempt > 0L && (preparingHomeFrameAccepted"
+                        "if (operation > 0L && (preparingHomeFrameAccepted"
                                 + " || preparingRelayOwned))"),
-                source.indexOf("if (attempt > 0L && preparingSnapshot == null)"));
+                source.indexOf("if (operation > 0L && preparingSnapshot == null)"));
         assertTrue(recreation.contains("initialCarouselFramePending = false"));
         assertTrue(recreation.contains("preparingHomeFramePending = false"));
         assertTrue(recreation.indexOf("completeInitialCarouselFrame()")
@@ -947,18 +1035,15 @@ public class ConsoleActivityEnsureContractTest {
     }
 
     private static String consoleActivitySource() throws IOException {
-        Path source = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
-        return SourceText.read(source);
+        return SourceText.main("console/ConsoleActivity.java");
     }
 
     private static String streamHomeActivitySource() throws IOException {
-        Path source = Paths.get("src/main/java/com/limelight/console/StreamHomeActivity.java");
-        return SourceText.read(source);
+        return SourceText.main("console/StreamHomeActivity.java");
     }
 
     private static String resourceSource(String name) throws IOException {
-        Path source = Paths.get("src/main/res", name);
-        return SourceText.read(source);
+        return SourceText.module("src/main/res/" + name);
     }
 
     private static int occurrences(String source, String value) {

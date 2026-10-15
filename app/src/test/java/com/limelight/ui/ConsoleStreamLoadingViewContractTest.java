@@ -10,74 +10,79 @@ import java.nio.file.Paths;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+/**
+ * Wiring only: what the cover shows per state is {@link LoadingCoverModelTest}, its artwork
+ * {@link FencedArtworkTest}. These guard that the view and its callers use them.
+ */
 public class ConsoleStreamLoadingViewContractTest {
-    @Test public void launcherFailureOffersOnlyRevealAndBack() throws IOException {
-        Path source = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
-        String text = SourceText.read(source);
-        String method = text.substring(text.indexOf("public void showLauncherInteraction"),
-                text.indexOf("public void setManualRevealAvailable"));
-
-        assertTrue(method.contains("retryView.setVisibility(GONE)"));
-        assertTrue(method.contains("showAnywayView.setVisibility(allowReveal ? VISIBLE : GONE)"));
-        assertTrue(method.contains("cancelView.setText(R.string.transition_back)"));
-        assertFalse(method.contains("transition_retry"));
+    /**
+     * One card in every background and state: built once, never moved between parents; each
+     * state change redraws it from the model (what it shows: LoadingCoverModelTest).
+     */
+    @Test public void cardStaysInPlaceAndEveryStateRendersFromTheModel() throws IOException {
+        String text = source();
+        assertTrue(text.indexOf("addView(card, cardParams);")
+                == text.lastIndexOf("addView(card, cardParams);"));
+        assertFalse(text.contains("removeView("));
+        String background = text.substring(text.indexOf("private void applyBackground()"),
+                text.indexOf("private void showArtwork("));
+        assertFalse(background.contains("stageView") || background.contains("titleView"));
+        for (String method : new String[]{"public void setStep(int step, String status, String",
+                "private void showFailure(", "public void showLauncherInteraction(",
+                "public void showWarning(", "public void showCancelling()",
+                "public void showClosing(", "public void setManualRevealAvailable(",
+                "public void setFrom("}) {
+            String body = text.substring(text.indexOf(method));
+            body = body.substring(0, body.indexOf("\n    }\n"));
+            assertTrue(method, body.contains("render();"));
+        }
     }
 
-    @Test public void cancellingShowsSpinnerAndNoActions() throws IOException {
+    /**
+     * No state change moves the card: title, stage and the shared message/notice line are one
+     * ellipsized line each, the shared line at a fixed height whatever it shows.
+     */
+    @Test public void textLinesKeepOneFixedLineInEveryState() throws IOException {
         String text = source();
-        String method = text.substring(text.indexOf("public void showCancelling()"),
-                text.indexOf("public void setManualRevealAvailable"));
-
-        assertTrue(method.contains("transition_cancelling"));
-        assertTrue(method.contains("activityView.setVisibility(VISIBLE)"));
-        assertTrue(method.contains("retryView.setVisibility(GONE)"));
-        assertTrue(method.contains("showAnywayView.setVisibility(GONE)"));
-        assertTrue(method.contains("actionsRow.setVisibility(GONE)"));
+        for (String view : new String[]{"titleView", "stageView", "lineView"}) {
+            assertTrue(view, text.contains(view + ".setSingleLine(true);"));
+            assertTrue(view, text.contains(view + ".setEllipsize(TextUtils.TruncateAt.END);"));
+            assertFalse(view, text.contains(view + ".setMaxLines("));
+            assertFalse(view, text.contains(view + ".setSingleLine(false"));
+        }
+        assertTrue(text.contains("lineView.setHeight("));
+        // TV 2026-10-15: the standard backdrop never shows for a frame before the artwork.
+        assertTrue(text.contains("neutral || art || artwork.pending() ? GONE : VISIBLE"));
+        assertFalse(text.contains("append('\\n')"));
     }
 
-    @Test public void endedGameShowsPassiveClosingScreen() throws IOException {
+    /** A switch's cover names the game it leaves, and only while that switch covers. */
+    @Test public void switchCoverNamesTheGameItLeaves() throws IOException {
+        String game = gameSource();
+        String present = game.substring(game.indexOf("private void presentSwitchCover("),
+                game.indexOf("private void endSwitchCover("));
+        String end = game.substring(game.indexOf("private void endSwitchCover("));
+        end = end.substring(0, end.indexOf("\n    }\n"));
+        assertTrue(present.contains("consoleLoadingView.setFrom("));
+        assertTrue(end.contains("consoleLoadingView.setFrom(\"\");"));
+    }
+    /** Neither console nor stream screen decodes on the UI thread: both go through the request. */
+    @Test public void artworkIsRequestedThroughTheFencedRequest() throws IOException {
         String text = source();
-        String method = text.substring(text.indexOf("public void showClosing("),
-                text.indexOf("public void setManualRevealAvailable"));
-
-        assertTrue(method.contains("handler.removeCallbacks(rotateMessage)"));
-        assertTrue(method.contains("messageView.setText(title)"));
-        assertTrue(method.contains("statusView.setText(status)"));
-        assertTrue(method.contains("stepsView.setVisibility(GONE)"));
-        assertTrue(method.contains("showAnywayView.setVisibility(GONE)"));
-        assertTrue(method.contains("actionsRow.setVisibility(GONE)"));
-        assertTrue(method.contains("showSplashArtworkPresentation(true)"));
-        assertFalse(method.contains("requestDefaultActionFocus"));
-        assertTrue(text.contains("if (stopped || error || closingPresentation) return"));
-
-        String setStage = text.substring(text.indexOf("public void setStage("),
-                text.indexOf("public void setStep("));
-        String setStep = text.substring(text.indexOf("public void setStep("),
-                text.indexOf("public String getCurrentMessage("));
-        String showError = text.substring(text.indexOf("public void showError(String title, String details)"),
-                text.indexOf("public void showLauncherInteraction("));
-        String launcherInteraction = text.substring(text.indexOf(
-                        "public void showLauncherInteraction("),
-                text.indexOf("public void showCancelling("));
-        String reveal = text.substring(text.indexOf("public void revealStream(Runnable"),
-                text.indexOf("public void showOpaque("));
-        assertTrue(setStage.contains("if (stopped || closingPresentation) return"));
-        assertTrue(setStep.contains("if (stopped || closingPresentation) return"));
-        assertFalse(setStep.contains("closingPresentation = false"));
-        assertTrue(showError.contains("if (stopped || closingPresentation) return"));
-        assertTrue(launcherInteraction.contains("if (stopped || closingPresentation) return"));
-        assertTrue(reveal.contains("stopped || revealRequested || closingPresentation"));
-
-        String beginNextLaunch = text.substring(text.indexOf(
-                        "public void showFullTransitionAppearance("),
-                text.indexOf("public void setSplashArtwork("));
-        assertTrue(beginNextLaunch.contains("closingPresentation = false"));
-        assertTrue(beginNextLaunch.contains("stepsView.setVisibility(VISIBLE)"));
-
-        String keys = text.substring(text.indexOf("public boolean handleControllerKey"),
-                text.indexOf("public boolean handleControllerMotion"));
-        assertTrue(keys.contains(
-                "if (actionsRow.getVisibility() != VISIBLE) return isLoadingActionKey(keyCode)"));
+        assertFalse(text.contains("decodeSplashArtwork"));
+        assertTrue(text.contains("artwork.request(artworkPath);"));
+        String game = gameSource();
+        assertTrue(game.contains(
+                "consoleLoadingView.setSplashArtwork(operation.request.artworkPath);"));
+        String console = SourceText.read(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        assertTrue(console.contains("streamLoadingView.setSplashArtwork(loadingArtworkPath);"));
+        assertTrue(console.contains("reducedMotion, streamLoadingEpoch);"));
+        assertTrue(game.contains("getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false),\n"
+                + "                    launchStartedAtMillis);"));
+        // Both windows show the same host chip: the same first frame on the handoff.
+        assertTrue(game.contains("this,\n                    getIntent().getStringExtra(EXTRA_PC_NAME),"));
+        assertTrue(console.contains("new ConsoleStreamLoadingView(this, hostName,"));
     }
 
     @Test public void gameEndBypassesLaunchStepsAndRevealActions() throws IOException {
@@ -86,12 +91,19 @@ public class ConsoleStreamLoadingViewContractTest {
                 game.indexOf("static boolean shouldShowTransitionOverlay"));
 
         // Which states are the passive closing screen is the controller snapshot's decision.
-        assertTrue(apply.contains("if (snapshot.closingPresentation())"));
-        assertTrue(apply.contains("consoleLoadingView.showClosing("));
-        assertTrue(apply.indexOf("consoleLoadingView.showClosing(")
-                < apply.indexOf("consoleLoadingView.setStep("));
-        assertTrue(apply.contains("R.string.transition_game_ended"));
-        assertTrue(apply.contains("R.string.transition_returning_library"));
+        // A switch's cover shows the next game first; never the closing of the previous one.
+        // The layer follows each snapshot first (LoadingCoverModel.follow): a closing screen
+        // left by the transition before never blocks what this one allows.
+        SourceText.assertOrdered(apply, "consoleLoadingView.followTransition(snapshot);",
+                "if (switchCover) {",
+                "consoleLoadingView.setStep(1, getString(R.string.transition_preparing_session));",
+                "} else if (snapshot.closingPresentation()) {", "consoleLoadingView.showClosing(",
+                "consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot),");
+
+        assertTrue(apply.contains("R.string.playnite_ending_game"));
+        assertTrue(apply.contains("R.string.transition_waiting_playnite_return"));
+        assertTrue(apply.contains("LaunchTransitionState.HOST_SESSION_LOCKED"));
+        assertTrue(apply.contains("consoleLoadingView.showWarning("));
         // A failure after that closing screen brings the cover's actions back.
         String failure = apply.substring(apply.indexOf(
                 "snapshot.state == LaunchTransitionState.ERROR"));
@@ -99,61 +111,13 @@ public class ConsoleStreamLoadingViewContractTest {
                 < failure.indexOf("consoleLoadingView.showError(getString(title)"));
     }
 
-    @Test public void revealAvailabilityDoesNotStealFocus() throws IOException {
-        String text = source();
-        String method = text.substring(text.indexOf("public void setManualRevealAvailable"),
-                text.indexOf("public boolean handleControllerKey"));
-
-        assertFalse(method.contains("showAnywayView.requestFocus()"));
-        assertTrue(method.contains("if (!changed) return"));
-    }
-
-    @Test public void lockedSessionUsesWarningColorsAndRevealAction() throws IOException {
-        String text = source();
-        String method = text.substring(text.indexOf("public void showWarning("),
-                text.indexOf("public void showCancelling("));
-
-        assertTrue(method.contains("messageView.setTextColor(0xFFFFD166)"));
-        assertTrue(method.contains("statusView.setTextColor(0xFFFFE3A3)"));
-        assertTrue(method.contains("showAnywayView.setVisibility(allowReveal ? VISIBLE : GONE)"));
-        assertTrue(method.contains("retryView.setVisibility(GONE)"));
-
-        String game = gameSource();
-        String apply = game.substring(game.indexOf("private void applyTransitionSnapshot"),
-                game.indexOf("static boolean shouldShowTransitionOverlay"));
-        assertTrue(apply.contains("LaunchTransitionState.HOST_SESSION_LOCKED"));
-        assertTrue(apply.contains("consoleLoadingView.showWarning("));
-        assertTrue(apply.contains("transition_host_session_locked_title"));
-    }
-
-    @Test public void repeatedErrorSnapshotPreservesVisibleActionFocus() throws IOException {
-        String text = source();
-        String method = text.substring(text.indexOf("public void showError(String title,"
-                        + " String details, boolean allowShowAnyway)"),
-                text.indexOf("public void showLauncherInteraction"));
-
-        assertTrue(method.contains("else if (!isVisibleAction(findFocus())) {\n"
-                + "            (allowRetry ? retryView : allowShowAnyway ? showAnywayView : cancelView)\n"
-                + "                    .requestFocus();"));
-        assertFalse(method.contains("renderSteps();\n        retryView.requestFocus();"));
-    }
-
     @Test public void retryIsConsumedBeforeStartingAnotherDecoderGeneration()
             throws IOException {
         String text = source();
-        String constructor = text.substring(text.indexOf("retryView = action("),
-                text.indexOf("configureForPlaynite(false)"));
         String retry = text.substring(text.indexOf("private void requestRetryOnce()"),
                 text.indexOf("public void showNeutralWarmUpAppearance()"));
-        String showError = text.substring(text.indexOf("public void showError(String title,"),
-                text.indexOf("public void showLauncherInteraction"));
-
-        assertTrue(constructor.contains("retryView.setOnClickListener(view -> requestRetryOnce())"));
-        assertTrue(retry.contains("!retryView.isEnabled()"));
-        assertTrue(retry.contains("retryView.setEnabled(false)"));
-        assertTrue(retry.indexOf("retryView.setEnabled(false)")
-                < retry.indexOf("actions.onRetry()"));
-        assertTrue(showError.contains("retryView.setEnabled(true)"));
+        assertTrue(text.contains("retryView.setOnClickListener(view -> requestRetryOnce())"));
+        SourceText.assertOrdered(retry, "!model.takeRetry()", "render();", "actions.onRetry()");
 
         String game = gameSource();
         String gameRetry = game.substring(
@@ -168,7 +132,7 @@ public class ConsoleStreamLoadingViewContractTest {
 
     @Test public void staleFadeCompletionIsRejectedAfterRecovery() throws IOException {
         String text = source();
-        String reveal = text.substring(text.indexOf("public void revealStream(Runnable"),
+        String reveal = text.substring(text.indexOf("public void revealStream(String fence, Runnable"),
                 text.indexOf("public void showOpaque()"));
         String opaque = text.substring(text.indexOf("public void showOpaque()"),
                 text.indexOf("public void stopAndHide()"));
@@ -176,6 +140,12 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(reveal.contains("generation != revealGeneration"));
         assertTrue(opaque.contains("revealGeneration++"));
         assertTrue(opaque.contains("!revealRequested && getAlpha() == 1f"));
+        // A new presentation counts its time from its own start.
+        assertTrue(opaque.contains("model.restartClock(SystemClock.uptimeMillis());"));
+        // A cancelled reveal never blocks a later one ("Reveal now") until showOpaque.
+        SourceText.assertOrdered(reveal,
+                "if (!LaunchTransitionController.coverAllowsEffect(outcome)) {",
+                "revealRequested = false;", "return;", "afterReveal.run()");
     }
 
     @Test public void gamepadHatMotionNavigatesActionsOncePerDirection() throws IOException {
@@ -189,95 +159,20 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(method.contains("handleControllerKey(new KeyEvent"));
     }
 
-    @Test public void retainedIdentityCanReplaceArtworkAndClearToNeutral()
-            throws IOException {
-        String text = source();
-        String artwork = text.substring(text.indexOf("public void setSplashArtwork("),
-                text.indexOf("private Bitmap decodeSplashArtwork("));
-        String splashPresentation = text.substring(text.indexOf("private void showSplashArtworkPresentation("),
-                text.indexOf("private void applySplashArtwork("));
-        String apply = text.substring(text.indexOf("private void applySplashArtwork("),
-                text.indexOf("private void showSplashMessageImmediately("));
-        String title = text.substring(text.indexOf("public void setTitle("),
-                text.indexOf("private Bitmap decodeSplashArtwork("));
-
-        assertTrue(artwork.contains("Bitmap bitmap = decodeSplashArtwork(path)"));
-        assertTrue(artwork.contains("if (sameArtwork && hasSplashArtwork())"));
-        assertTrue(artwork.contains("if (!sameArtwork) hideSplashArtwork()"));
-        assertTrue(splashPresentation.contains("defaultBackdrop.setVisibility(GONE)"));
-        assertTrue(splashPresentation.contains("defaultShade.setVisibility(GONE)"));
-        assertTrue(splashPresentation.contains("defaultContent.setVisibility(GONE)"));
-        assertTrue(text.contains("splashArtworkView.setImageDrawable(null)"));
-        assertTrue(text.contains("splashArtworkView.setVisibility(GONE)"));
-        assertTrue(text.contains("setBackgroundColor(Color.BLACK)"));
-        assertTrue(apply.contains("splashArtworkView.setVisibility(VISIBLE)"));
-        assertTrue(apply.contains("splashArtworkView.setImageBitmap(bitmap)"));
-        assertTrue(apply.contains("artwork.setScaleType(ImageView.ScaleType.CENTER_CROP)"));
-        assertTrue(apply.contains("Math.round(screenWidth / 3.1f)"));
-        assertTrue(apply.contains("Gravity.CENTER"));
-        assertTrue(title.contains("messageView.setText(title.trim())"));
-    }
-
-    @Test public void neutralWarmUpGateStaysOpaqueAndCanRestoreTransitionUi()
-            throws IOException {
-        String text = source();
-        String neutral = text.substring(text.indexOf(
-                        "public void showNeutralWarmUpAppearance()"),
-                text.indexOf("public void showFullTransitionAppearance()"));
-        String full = text.substring(text.indexOf(
-                        "public void showFullTransitionAppearance()"),
-                text.indexOf("public void setSplashArtwork("));
-
-        assertTrue(neutral.contains("defaultBackdrop.setVisibility(GONE)"));
-        assertTrue(neutral.contains("defaultShade.setVisibility(GONE)"));
-        assertTrue(neutral.contains("defaultContent.setVisibility(GONE)"));
-        assertFalse(neutral.contains("setAlpha("));
-        assertFalse(neutral.contains("ConsoleStreamLoadingView.this.setVisibility"));
-        assertTrue(full.contains("showDefaultTransitionPresentation()"));
-        assertTrue(full.contains("showSplashArtworkPresentation(false)"));
-        assertTrue(text.contains("defaultBackdrop.setVisibility(VISIBLE)"));
-        assertTrue(text.contains("defaultShade.setVisibility(VISIBLE)"));
-        assertTrue(text.contains("defaultContent.setVisibility(VISIBLE)"));
-    }
-
     @Test public void coverTakenOverFromAnotherWindowStartsAsThatOneLooks() throws IOException {
         String text = source();
-        String constructor = text.substring(text.indexOf(
-                        "public ConsoleStreamLoadingView(Context context, String title,"),
-                text.indexOf("public void setActions("));
-        String apply = text.substring(text.indexOf("private void applySplashArtwork("),
-                text.indexOf("private void showSplashMessageImmediately()"));
-        String decode = text.substring(text.indexOf("private Bitmap decodeSplashArtwork("),
-                text.indexOf("public void configureForPlaynite("));
-
-        // The message shown by the other window stays; no new one is drawn at once.
-        assertTrue(constructor.contains(
+        // The message shown by the other window stays; its cached artwork is there at once.
+        assertTrue(text.contains(
                 "handedOver = initialMessage != null && !initialMessage.trim().isEmpty();"));
-        assertTrue(constructor.contains("messageView = text(handedOver ? initialMessage"));
-        assertTrue(constructor.contains("if (handedOver) {\n"
-                + "            lastMessageIndex = Arrays.asList(messages).indexOf(initialMessage);\n"
-                + "            if (!reducedMotion) handler.postDelayed(rotateMessage,"
-                + " MESSAGE_INTERVAL_MS);\n"
-                + "            requestDefaultActionFocus();\n"
-                + "        } else {\n"
-                + "            scheduleLoadingMessage(false);"));
-        assertTrue(apply.contains("if (!handedOver) showSplashMessageImmediately();"));
-        // Its artwork is the bitmap already decoded and is there in the first frame.
-        assertTrue(apply.contains("artwork.setAlpha(handedOver ? 1f : 0f);"));
-        assertTrue(apply.contains("if (!handedOver) {\n"
-                + "            artwork.animate().alpha(1f)"));
+        assertTrue(text.contains("currentMessage = handedOver ? initialMessage"));
+        String show = text.substring(text.indexOf("private void showArtwork("),
+                text.indexOf("private static int progressForStage("));
+        assertTrue(show.contains("if (handedOver || !isAttachedToWindow() || reducedMotion"));
+        // Full-bleed artwork under one shade: never a dimmed band behind the text.
+        assertTrue(text.contains("addView(artworkView, match());"));
+        assertFalse(text.contains("/ 3.1f"));
         assertFalse(text.contains("recycle()"));
-        assertTrue(decode.contains(
-                "if (decodedSplash != null && path.equals(decodedSplashPath)) return decodedSplash;"));
-        // Once attached it is an ordinary cover again.
-        assertTrue(constructor.contains("protected void onAttachedToWindow() {\n"
-                + "        super.onAttachedToWindow();"));
-        assertTrue(constructor.contains("handedOver = false;"));
-        // The default backdrop does not depend on when the view was built.
-        assertFalse(text.contains("SystemClock"));
-
-        String game = gameSource();
-        assertTrue(game.contains(
+        assertTrue(gameSource().contains(
                 "getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),\n"));
     }
 

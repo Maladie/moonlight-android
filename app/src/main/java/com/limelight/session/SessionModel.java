@@ -107,8 +107,8 @@ public final class SessionModel {
         public final String newGameName;
         public final String streamTargetName;
         public final String artworkPath;
-        /** The launch transition the switch started on; carried for its controller. */
-        public final String transitionId;
+        /** The model's preparing operation the switch started on (0 outside PREPARING). */
+        public final long preparingOperation;
         public final boolean preparing;
         /** The orchestration request that asked for the switch (SessionOrchestrator). */
         public final long orchestrationId;
@@ -120,7 +120,7 @@ public final class SessionModel {
                       String executionProfileId, String targetProfileId,
                       boolean targetIsChild,
                       int appId, String oldGameId, String newGameId, String newGameName,
-                      String streamTargetName, String artworkPath, String transitionId,
+                      String streamTargetName, String artworkPath, long preparingOperation,
                       boolean preparing, long orchestrationId, long operationId,
                       BooleanSupplier cancelled) {
             this.streamSessionId = normalize(streamSessionId);
@@ -135,7 +135,7 @@ public final class SessionModel {
             this.newGameName = normalize(newGameName);
             this.streamTargetName = normalize(streamTargetName);
             this.artworkPath = normalize(artworkPath);
-            this.transitionId = normalize(transitionId);
+            this.preparingOperation = preparingOperation;
             this.preparing = preparing;
             this.orchestrationId = orchestrationId;
             this.operationId = operationId;
@@ -218,8 +218,11 @@ public final class SessionModel {
         public final String executionProfileId;
         public final int appId;
         public final String playniteGameId;
-        public final String transitionId;
-        public final long attempt;
+        /**
+         * The model operation that entered PREPARING for this stream; kept until the stream's
+         * session changes, so a Home frame or switch result of an older one is rejected.
+         */
+        public final long preparingOperation;
         public final long controlGeneration;
         /** The bound owner's transport generation, carried from {@code StreamRuntime}. */
         public final long transportGeneration;
@@ -235,13 +238,9 @@ public final class SessionModel {
         // Model-internal bindings: visible to the model's readers, not to listeners.
         final Controller controller;
         final Controller switchOwner;
-        final String switchSessionId;
         final long switchOperation;
-        // The warm-up identity the switch started on; read only by the S09 Home relay reader.
-        final String switchTransitionId;
-        final long switchAttempt;
-        final String acceptedHomeTransitionId;
-        final long acceptedHomeAttempt;
+        /** The preparing operation whose Home frame the owner accepted (0: none). */
+        final long acceptedHomeOperation;
         final long sequence;
 
         Snapshot(SessionModel m, Records records, long sequence) {
@@ -252,8 +251,7 @@ public final class SessionModel {
             this.executionProfileId = m.executionProfileId;
             this.appId = m.appId;
             this.playniteGameId = m.playniteGameId;
-            this.transitionId = m.transitionId;
-            this.attempt = m.attempt;
+            this.preparingOperation = m.preparingOperation;
             this.controlGeneration = m.controlGeneration;
             this.transportGeneration = m.transportGeneration;
             this.presentationOperation = m.presentationOperation;
@@ -261,12 +259,8 @@ public final class SessionModel {
             this.projections = m.frozenProjections;
             this.controller = m.controller;
             this.switchOwner = m.switchOwner;
-            this.switchSessionId = m.switchSessionId;
             this.switchOperation = m.switchOperation;
-            this.switchTransitionId = m.switchTransitionId;
-            this.switchAttempt = m.switchAttempt;
-            this.acceptedHomeTransitionId = m.acceptedHomeTransitionId;
-            this.acceptedHomeAttempt = m.acceptedHomeAttempt;
+            this.acceptedHomeOperation = m.acceptedHomeOperation;
             this.sequence = sequence;
         }
 
@@ -295,7 +289,7 @@ public final class SessionModel {
                     && hostId.equals(other.hostId) && profileId.equals(other.profileId)
                     && executionProfileId.equals(other.executionProfileId)
                     && appId == other.appId && playniteGameId.equals(other.playniteGameId)
-                    && transitionId.equals(other.transitionId) && attempt == other.attempt
+                    && preparingOperation == other.preparingOperation
                     && controlGeneration == other.controlGeneration
                     && transportGeneration == other.transportGeneration
                     && records == other.records && projections == other.projections;
@@ -384,18 +378,15 @@ public final class SessionModel {
     String executionProfileId = GatewayConnection.DEFAULT_PROFILE_ID;
     int appId;
     String playniteGameId = "";
-    String transitionId = "";
-    long attempt;
+    long preparingOperation;
     long controlGeneration;
     long transportGeneration;
+    /** Seeded from the boot clock: an operation restored from before process death never recurs. */
     private long nextOperationId;
-    private long homeFrameClaim;
-    String acceptedHomeTransitionId = "";
-    long acceptedHomeAttempt;
+    /** With {@link #preparingOperation}, the Home-frame claim in flight. */
+    private boolean homeFrameSubmitting;
+    long acceptedHomeOperation;
     Controller switchOwner;
-    String switchSessionId = "";
-    String switchTransitionId = "";
-    long switchAttempt;
     long switchOperation;
     private long parkOperation;
     private long reauthorizationOperation;
@@ -443,19 +434,21 @@ public final class SessionModel {
      * @param onMainThread true while the caller runs on the main thread (await guard)
      * @param clock monotonic milliseconds of the host projections
      * @param diagnostics writer of the projections' diagnostic records
+     * @param operationSeed the last operation ID before this process: the boot clock
      */
     public SessionModel(Executor modelThread, Executor mainThread, BooleanSupplier onMainThread,
                         LongSupplier clock, SessionStateResolver.DiagnosticSink diagnostics,
                         SharedPreferences resume, SharedPreferences suspended,
-                        SharedPreferences sleep) {
+                        SharedPreferences sleep, long operationSeed) {
         this(modelThread, mainThread, onMainThread, clock, diagnostics,
-                new Stores(resume, suspended, sleep));
+                new Stores(resume, suspended, sleep), operationSeed);
     }
 
     private SessionModel(Executor modelThread, Executor mainThread, BooleanSupplier onMainThread,
                          LongSupplier clock, SessionStateResolver.DiagnosticSink diagnostics,
-                         Stores stores) {
+                         Stores stores, long operationSeed) {
         this.modelThread = modelThread;
+        this.nextOperationId = operationSeed;
         this.mainThread = mainThread;
         this.onMainThread = onMainThread;
         this.clock = clock;
@@ -479,7 +472,8 @@ public final class SessionModel {
                 android.os.SystemClock::uptimeMillis, MoonWakerDiagnostics::record,
                 new Stores(SessionResumeManager.prefs(application),
                         SuspendedSessionStore.prefs(application),
-                        HostSleepStateStore.prefs(application)));
+                        HostSleepStateStore.prefs(application)),
+                android.os.SystemClock.elapsedRealtimeNanos());
     }
 
     /** The model of this process (owned by the Application). */
@@ -657,7 +651,7 @@ public final class SessionModel {
         Snapshot s = published;
         return expected != null && s.state == expected.state
                 && s.streamSessionId.equals(expected.streamSessionId)
-                && s.transitionId.equals(expected.transitionId) && s.attempt == expected.attempt
+                && s.preparingOperation == expected.preparingOperation
                 && s.executionProfileId.equals(expected.executionProfileId)
                 && s.playniteGameId.equalsIgnoreCase(expected.playniteGameId)
                 && canSwitchGame(s, expected.hostId, expected.profileId, expected.appId);
@@ -690,14 +684,14 @@ public final class SessionModel {
 
     public boolean isPreparing(Controller owner, String expectedStreamSessionId,
                                String expectedHostId, int expectedAppId,
-                               String expectedTransitionId, long expectedAttempt) {
+                               long expectedPreparingOperation) {
         return matchesPreparing(published, owner, expectedStreamSessionId, expectedHostId,
-                expectedAppId, expectedTransitionId, expectedAttempt);
+                expectedAppId, expectedPreparingOperation);
     }
 
     public boolean isPreparingHomeFrameAccepted(
             String expectedStreamSessionId, String expectedHostId, int expectedAppId,
-            String expectedGameId, String expectedTransitionId, long expectedAttempt) {
+            String expectedGameId, long expectedPreparingOperation) {
         Snapshot s = published;
         return (s.state == State.PREPARING || s.state == State.HOME_LIVE
                 || s.state == State.PARKED_LIVE)
@@ -705,21 +699,23 @@ public final class SessionModel {
                 && s.hostId.equalsIgnoreCase(normalize(expectedHostId))
                 && s.appId == expectedAppId
                 && s.playniteGameId.equalsIgnoreCase(normalize(expectedGameId))
-                && s.acceptedHomeTransitionId.equals(normalize(expectedTransitionId))
-                && s.acceptedHomeAttempt == expectedAttempt;
+                && expectedPreparingOperation > 0L
+                && s.preparingOperation == expectedPreparingOperation
+                && s.acceptedHomeOperation == expectedPreparingOperation;
     }
 
+    /** A switch holds the stream that preparing operation {@code expected} entered. */
     public boolean isPreparingSwitchOwned(
             String expectedStreamSessionId, String expectedHostId, int expectedAppId,
-            String expectedTransitionId, long expectedAttempt) {
+            long expectedPreparingOperation) {
         Snapshot s = published;
         return (s.state == State.PREPARING || s.state == State.HOME_LIVE)
                 && s.switchOwner != null
-                && s.switchSessionId.equals(normalize(expectedStreamSessionId))
+                && s.streamSessionId.equals(normalize(expectedStreamSessionId))
                 && s.hostId.equalsIgnoreCase(normalize(expectedHostId))
                 && s.appId == expectedAppId
-                && s.switchTransitionId.equals(normalize(expectedTransitionId))
-                && s.switchAttempt == expectedAttempt;
+                && expectedPreparingOperation > 0L
+                && s.preparingOperation == expectedPreparingOperation;
     }
 
     public boolean ownsLiveOrParkedSession(Controller expectedOwner,
@@ -888,26 +884,23 @@ public final class SessionModel {
         executionProfileId = origin(owner, profileId);
         appId = retainedAppId;
         playniteGameId = retainedPlayniteGameId == null ? "" : retainedPlayniteGameId;
-        transitionId = "";
-        attempt = 0L;
+        preparingOperation = 0L;
         clearHomeFrame();
         setState(State.HOME_LIVE);
     }
 
-    boolean beginPreparing(Controller owner, String preparingStreamSessionId,
-                           String preparingHostId, String preparingProfileId,
-                           int preparingAppId, String preparingPlayniteGameId,
-                           String preparingTransitionId, long preparingAttempt) {
+    /** Returns the preparing operation this owner's stream holds now; 0 when refused. */
+    long beginPreparing(Controller owner, String preparingStreamSessionId,
+                        String preparingHostId, String preparingProfileId,
+                        int preparingAppId, String preparingPlayniteGameId) {
         String sessionId = normalize(preparingStreamSessionId);
         String host = normalize(preparingHostId);
         String profile = GatewayConnection.normalizeProfileId(preparingProfileId);
-        String transition = normalize(preparingTransitionId);
-        if (owner == null || sessionId.isEmpty() || host.isEmpty()
-                || preparingAppId <= 0 || transition.isEmpty() || preparingAttempt <= 0L) {
-            return false;
+        if (owner == null || sessionId.isEmpty() || host.isEmpty() || preparingAppId <= 0) {
+            return 0L;
         }
         if (profileId.equals(profile) && matchesPreparing(owner, sessionId, host,
-                preparingAppId, transition, preparingAttempt)) return true;
+                preparingAppId, preparingOperation)) return preparingOperation;
         // The marker is resume metadata: its stream identity must match, its game does not. The
         // host's current observation names the game, and replaces the marker's below. An actor
         // using another profile's Windows session (a child on a parent's) never inherits a game
@@ -924,9 +917,8 @@ public final class SessionModel {
             MoonWakerDiagnostics.record("WARN", "android.retained-stream",
                     "preparing.refused", "state", state.name(),
                     "stream_session_id", sessionId, "host_id", host, "profile_id", profile,
-                    "app_id", preparingAppId, "transition_id", transition,
-                    "attempt", preparingAttempt);
-            return false;
+                    "app_id", preparingAppId);
+            return 0L;
         }
         // A reconnect is a new transport: its generation fences the lost one's late events.
         transportGeneration = generation(owner);
@@ -938,8 +930,7 @@ public final class SessionModel {
         executionProfileId = origin(owner, profileId);
         appId = preparingAppId;
         playniteGameId = normalize(preparingPlayniteGameId);
-        transitionId = transition;
-        attempt = preparingAttempt;
+        preparingOperation = ++nextOperationId;
         clearHomeFrame();
         releaseSwitch();
         setState(State.PREPARING);
@@ -947,37 +938,34 @@ public final class SessionModel {
                 "preparing.entered", "state", "PREPARING",
                 "stream_session_id", streamSessionId, "host_id", hostId,
                 "profile_id", profileId, "app_id", appId,
-                "game_id", playniteGameId, "transition_id", transitionId,
-                "attempt", attempt);
-        return true;
+                "game_id", playniteGameId, "preparing_operation", preparingOperation);
+        return preparingOperation;
     }
 
+    /** The stream stays live; its preparing operation stays its Home frame's identity. */
     boolean completePreparing(Controller owner, String expectedStreamSessionId,
                               String expectedHostId, int expectedAppId,
-                              String expectedTransitionId, long expectedAttempt) {
+                              long expectedPreparingOperation) {
         if (!matchesPreparing(owner, expectedStreamSessionId, expectedHostId,
-                expectedAppId, expectedTransitionId, expectedAttempt)) return false;
+                expectedAppId, expectedPreparingOperation)) return false;
         setState(State.HOME_LIVE);
         MoonWakerDiagnostics.record("INFO", "android.retained-stream",
                 "preparing.completed", "from", "PREPARING", "to", "HOME_LIVE",
                 "stream_session_id", streamSessionId, "host_id", hostId,
                 "profile_id", profileId, "app_id", appId,
-                "game_id", playniteGameId, "transition_id", transitionId,
-                "attempt", attempt);
-        transitionId = "";
-        attempt = 0L;
+                "game_id", playniteGameId, "preparing_operation", preparingOperation);
         return true;
     }
 
     boolean cancelPreparing(Controller owner, String expectedStreamSessionId,
                             String expectedHostId, int expectedAppId,
-                            String expectedTransitionId, long expectedAttempt) {
+                            long expectedPreparingOperation) {
         if (!matchesPreparing(owner, expectedStreamSessionId, expectedHostId,
-                expectedAppId, expectedTransitionId, expectedAttempt)) return false;
+                expectedAppId, expectedPreparingOperation)) return false;
         Object[] fields = {"from", "PREPARING", "to", "NONE",
                 "stream_session_id", streamSessionId, "host_id", hostId,
                 "profile_id", profileId, "app_id", appId, "game_id", playniteGameId,
-                "transition_id", transitionId, "attempt", attempt};
+                "preparing_operation", preparingOperation};
         clear();
         MoonWakerDiagnostics.record("INFO", "android.retained-stream",
                 "preparing.cancelled", fields);
@@ -994,55 +982,54 @@ public final class SessionModel {
         effect(() -> reply.accept(ownerAnswer(() -> owner.cancelPreparingTransport(expected))));
     }
 
-    /** Claims the preparing Home frame, asks the owner, and commits on the result event. */
+    /**
+     * Claims the Home frame of the preparing operation {@code expected} names: one claim per
+     * operation, asked of the owner, committed on the result event of that same operation.
+     */
     void preparingHomeFrameSubmitted(Snapshot expected, Reply<Boolean> reply) {
-        if (!matchesPreparingSnapshot(expected) || homeFrameClaim != 0L
-                || (acceptedHomeTransitionId.equals(expected.transitionId)
-                && acceptedHomeAttempt == expected.attempt) || controller == null) {
+        if (!matchesPreparingSnapshot(expected) || homeFrameSubmitting
+                || acceptedHomeOperation == preparingOperation || controller == null) {
             reply.accept(false);
             return;
         }
         Controller owner = controller;
-        long claim = ++nextOperationId;
-        homeFrameClaim = claim;
+        long operation = preparingOperation;
+        homeFrameSubmitting = true;
         effect(() -> {
             boolean accepted = ownerAnswer(() -> owner.preparingHomeFrameSubmitted(expected));
-            dispatchFromEffect(new SessionEvent.HomeFrameResult(claim, owner, expected, accepted),
-                    reply);
+            dispatchFromEffect(new SessionEvent.HomeFrameResult(operation, owner, expected,
+                    accepted), reply);
         });
     }
 
-    void homeFrameResult(long claim, Controller owner, Snapshot expected, boolean accepted,
+    /** A result of an older preparing operation leaves the current one's claim alone. */
+    void homeFrameResult(long operation, Controller owner, Snapshot expected, boolean accepted,
                          Reply<Boolean> reply) {
-        boolean committed = false;
-        if (homeFrameClaim == claim) {
-            if (accepted && controller == owner && matchesClaimedHomeFrame(expected)) {
-                acceptedHomeTransitionId = expected.transitionId;
-                acceptedHomeAttempt = expected.attempt;
-                committed = true;
-                MoonWakerDiagnostics.record("INFO", "android.retained-stream",
-                        "preparing.home_frame_accepted", "state", state.name(),
-                        "stream_session_id", expected.streamSessionId,
-                        "host_id", expected.hostId, "profile_id", expected.profileId,
-                        "app_id", expected.appId, "game_id", expected.playniteGameId,
-                        "transition_id", expected.transitionId, "attempt", expected.attempt);
-            }
-            homeFrameClaim = 0L;
+        if (operation != preparingOperation || !homeFrameSubmitting) {
+            reply.accept(false);
+            return;
+        }
+        homeFrameSubmitting = false;
+        boolean committed = accepted && controller == owner && matchesClaimedHomeFrame(expected);
+        if (committed) {
+            acceptedHomeOperation = operation;
+            MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                    "preparing.home_frame_accepted", "state", state.name(),
+                    "stream_session_id", expected.streamSessionId,
+                    "host_id", expected.hostId, "profile_id", expected.profileId,
+                    "app_id", expected.appId, "game_id", expected.playniteGameId,
+                    "preparing_operation", operation);
         }
         reply.accept(committed);
     }
 
     boolean markPreparingReconnectRequired(Controller owner, String expectedStreamSessionId,
                                            String expectedHostId, int expectedAppId,
-                                           String expectedTransitionId, long expectedAttempt) {
+                                           long expectedPreparingOperation) {
         if (!matchesPreparing(owner, expectedStreamSessionId, expectedHostId,
-                expectedAppId, expectedTransitionId, expectedAttempt)) return false;
-        controller = null;
-        releaseSwitch();
+                expectedAppId, expectedPreparingOperation)) return false;
         setState(State.RECONNECT_REQUIRED);
-        transitionId = "";
-        attempt = 0L;
-        clearHomeFrame();
+        dropTransport();
         return true;
     }
 
@@ -1211,7 +1198,7 @@ public final class SessionModel {
         if (state == State.PREPARING) {
             if (owner != null && controller == owner) {
                 markPreparingReconnectRequired(owner, streamSessionId, hostId, appId,
-                        transitionId, attempt);
+                        preparingOperation);
             }
             return;
         }
@@ -1221,8 +1208,7 @@ public final class SessionModel {
     void markReconnectRequired(String expectedStreamSessionId) {
         if (state == State.PREPARING || !matches(streamSessionId, expectedStreamSessionId)) return;
         if (state != State.TERMINATING) setState(State.RECONNECT_REQUIRED);
-        controller = null;
-        releaseSwitch();
+        dropTransport();
     }
 
     boolean markTerminating(String expectedStreamSessionId, String terminatingHostId,
@@ -1241,8 +1227,7 @@ public final class SessionModel {
         hostId = terminatingHostId == null ? "" : terminatingHostId;
         appId = terminatingAppId;
         playniteGameId = terminatingGameId == null ? "" : terminatingGameId;
-        transitionId = "";
-        attempt = 0L;
+        preparingOperation = 0L;
         setState(State.TERMINATING);
         if (terminationOperation == null) {
             terminationOperation = new TerminationOperation(++nextOperationId,
@@ -1275,8 +1260,7 @@ public final class SessionModel {
                 || !executionProfileId.equals(expected.executionProfileId)
                 || appId != expected.appId
                 || !playniteGameId.equalsIgnoreCase(expected.playniteGameId)
-                || !transitionId.equals(expected.transitionId)
-                || attempt != expected.attempt
+                || preparingOperation != expected.preparingOperation
                 || controller != expected.controller
                 || transportGeneration != expected.transportGeneration) return null;
         return beginDirectTermination(expected.streamSessionId, expected.hostId,
@@ -1302,8 +1286,7 @@ public final class SessionModel {
         Controller previousOwner = controller;
         controller = null;
         releaseSwitch();
-        transitionId = "";
-        attempt = 0L;
+        preparingOperation = 0L;
         setState(State.TERMINATING);
         terminationOperation = new TerminationOperation(++nextOperationId,
                 expected, true, State.PREPARING, previousOwner, null);
@@ -1343,12 +1326,9 @@ public final class SessionModel {
         SwitchRequest request = new SwitchRequest(streamSessionId, hostId, profileId,
                 executionProfileId, targetProfileId, targetIsChild, appId,
                 playniteGameId, newGameId, newGameName, streamTargetName,
-                artworkPath, transitionId, state == State.PREPARING,
-                orchestrationId, operation, cancelled);
+                artworkPath, state == State.PREPARING ? preparingOperation : 0L,
+                state == State.PREPARING, orchestrationId, operation, cancelled);
         switchOwner = owner;
-        switchSessionId = streamSessionId;
-        switchTransitionId = transitionId;
-        switchAttempt = attempt;
         switchOperation = operation;
         reply.accept(SwitchResult.STARTED);
         // A synchronous owner completion is posted back as an event, never run inline.
@@ -1371,28 +1351,20 @@ public final class SessionModel {
      * preparation, a lost transport, a cancel) is stale by its operation id.
      */
     boolean updatePreparingSwitch(Controller expectedOwner, SwitchRequest request,
-                                  String expectedGameId, String newGameId,
-                                  String newTransitionId) {
-        String nextTransition = normalize(newTransitionId);
-        if (request == null || !request.preparing || nextTransition.isEmpty()
+                                  String expectedGameId, String newGameId) {
+        if (request == null || !request.preparing
                 || state != State.PREPARING || controller != expectedOwner
                 || switchOwner != expectedOwner || switchOperation != request.operationId
                 || !playniteGameId.equalsIgnoreCase(normalize(expectedGameId))) {
             return false;
         }
-        String currentTransition = transitionId;
+        String previousGame = playniteGameId;
+        // The preparing operation stays: its accepted Home frame stays recognized.
         playniteGameId = normalize(newGameId);
-        // The accepted Home frame belongs to this exact attempt; carry its proof forward with
-        // the replacement transition so a recreated presentation still recognizes it.
-        if (acceptedHomeAttempt == attempt
-                && acceptedHomeTransitionId.equals(currentTransition)) {
-            acceptedHomeTransitionId = nextTransition;
-        }
-        transitionId = nextTransition;
         Object[] fields = {"state", "PREPARING", "stream_session_id", streamSessionId,
                 "host_id", hostId, "profile_id", profileId, "app_id", appId,
-                "game_id", playniteGameId, "from", currentTransition,
-                "transition_id", transitionId, "attempt", attempt,
+                "game_id", playniteGameId, "from_game_id", previousGame,
+                "preparing_operation", preparingOperation,
                 "orchestration_id", request.orchestrationId};
         MoonWakerDiagnostics.record("INFO", "android.retained-stream",
                 "preparing.target_committed", request.orchestrationId > 0L ? fields
@@ -1421,15 +1393,13 @@ public final class SessionModel {
                 || (!playniteGameId.equalsIgnoreCase(normalize(expectedOldGameId))
                 && !playniteGameId.equalsIgnoreCase(normalize(newGameId)))) return false;
         playniteGameId = normalize(newGameId);
-        if (request.orchestrationId > 0L && acceptedHomeAttempt > 0L
-                && !acceptedHomeTransitionId.isEmpty()) {
+        if (request.orchestrationId > 0L && acceptedHomeOperation > 0L) {
             MoonWakerDiagnostics.record("INFO", "android.retained-stream",
                     "home.target_committed", "state", state.name(),
                     "stream_session_id", streamSessionId, "host_id", hostId,
                     "profile_id", profileId, "app_id", appId,
                     "game_id", playniteGameId,
-                    "source_transition_id", acceptedHomeTransitionId,
-                    "source_attempt", acceptedHomeAttempt,
+                    "source_preparing_operation", acceptedHomeOperation,
                     "orchestration_id", request.orchestrationId);
         }
         return true;
@@ -1442,8 +1412,7 @@ public final class SessionModel {
                 || appId != expectedAppId
                 || !hostId.equalsIgnoreCase(normalize(expectedHostId))) return false;
         setState(State.RECONNECT_REQUIRED);
-        controller = null;
-        releaseSwitch();
+        dropTransport();
         return true;
     }
 
@@ -1553,6 +1522,7 @@ public final class SessionModel {
                 setState(operation.previousState);
                 controller = operation.previousOwner;
             }
+            if (!success) terminationFailed();
         }
         if (terminationOperation == operation) terminationOperation = null;
         for (TerminationCallback waiting : operation.completions) {
@@ -1580,6 +1550,7 @@ public final class SessionModel {
             setState(operation.previousState);
             controller = operation.previousOwner;
         }
+        if (!success) terminationFailed();
         for (TerminationCallback completion : operation.completions) {
             if (success && gameLeft) gameLeftOnHost(completion);
             else complete(completion, success);
@@ -1749,6 +1720,13 @@ public final class SessionModel {
         long token = owner.beginLocalClose(clock.getAsLong(), endsGame);
         owner.current(current(), clock.getAsLong());
         return token;
+    }
+
+    /** The host did not confirm the end of a stream this client stopped; see the event. */
+    void terminationUnconfirmed(String host, String actor, String execution) {
+        ProjectionOwner owner = startProjection(host, actor, execution);
+        owner.terminationUnconfirmed();
+        owner.current(current(), clock.getAsLong());
     }
 
     /** A close of a forgotten host ends nothing: its projection is gone with it. */
@@ -1944,16 +1922,20 @@ public final class SessionModel {
 
     private void releaseSwitch() {
         switchOwner = null;
-        switchSessionId = "";
-        switchTransitionId = "";
-        switchAttempt = 0L;
         switchOperation = 0L;
     }
 
+    /** The lost transport takes its owner, switch, preparing operation and Home frame. */
+    private void dropTransport() {
+        controller = null;
+        releaseSwitch();
+        preparingOperation = 0L;
+        clearHomeFrame();
+    }
+
     private void clearHomeFrame() {
-        homeFrameClaim = 0L;
-        acceptedHomeTransitionId = "";
-        acceptedHomeAttempt = 0L;
+        homeFrameSubmitting = false;
+        acceptedHomeOperation = 0L;
     }
 
     private void clear() {
@@ -1966,8 +1948,7 @@ public final class SessionModel {
         executionProfileId = GatewayConnection.DEFAULT_PROFILE_ID;
         appId = 0;
         playniteGameId = "";
-        transitionId = "";
-        attempt = 0L;
+        preparingOperation = 0L;
         controlGeneration = 0L;
         transportGeneration = 0L;
         parkOperation = 0L;
@@ -1985,35 +1966,29 @@ public final class SessionModel {
         if (owner != null && owner.isRetainedTransportLive()) return owner;
         if (state == State.HOME_LIVE || state == State.PARKED_LIVE) {
             setState(State.RECONNECT_REQUIRED);
-            controller = null;
-            releaseSwitch();
+            dropTransport();
         }
         return null;
     }
 
     private boolean matchesPreparing(Controller expectedOwner, String expectedStreamSessionId,
                                      String expectedHostId, int expectedAppId,
-                                     String expectedTransitionId, long expectedAttempt) {
-        return state == State.PREPARING
-                && controller == expectedOwner
-                && matches(streamSessionId, expectedStreamSessionId)
-                && hostId.equalsIgnoreCase(normalize(expectedHostId))
-                && appId == expectedAppId
-                && transitionId.equals(normalize(expectedTransitionId))
-                && attempt == expectedAttempt;
+                                     long expectedPreparingOperation) {
+        return matchesPreparing(current(), expectedOwner, expectedStreamSessionId,
+                expectedHostId, expectedAppId, expectedPreparingOperation);
     }
 
     private static boolean matchesPreparing(Snapshot s, Controller expectedOwner,
                                             String expectedStreamSessionId,
                                             String expectedHostId, int expectedAppId,
-                                            String expectedTransitionId, long expectedAttempt) {
+                                            long expectedPreparingOperation) {
         return s.state == State.PREPARING
                 && s.controller == expectedOwner
                 && matches(s.streamSessionId, expectedStreamSessionId)
                 && s.hostId.equalsIgnoreCase(normalize(expectedHostId))
                 && s.appId == expectedAppId
-                && s.transitionId.equals(normalize(expectedTransitionId))
-                && s.attempt == expectedAttempt;
+                && expectedPreparingOperation > 0L
+                && s.preparingOperation == expectedPreparingOperation;
     }
 
     private boolean matchesPreparingSnapshot(Snapshot expected) {
@@ -2023,19 +1998,19 @@ public final class SessionModel {
                 && profileId.equals(expected.profileId)
                 && appId == expected.appId
                 && playniteGameId.equalsIgnoreCase(expected.playniteGameId)
-                && transitionId.equals(expected.transitionId)
-                && attempt == expected.attempt;
+                && preparingOperation == expected.preparingOperation;
     }
 
+    /** The claimed operation is still this stream's, preparing or completed meanwhile. */
     private boolean matchesClaimedHomeFrame(Snapshot expected) {
-        if (matchesPreparingSnapshot(expected)) return true;
-        return (state == State.HOME_LIVE || state == State.PARKED_LIVE)
+        return (state == State.PREPARING || state == State.HOME_LIVE
+                || state == State.PARKED_LIVE)
                 && streamSessionId.equals(expected.streamSessionId)
                 && hostId.equalsIgnoreCase(expected.hostId)
                 && profileId.equals(expected.profileId)
                 && appId == expected.appId
                 && playniteGameId.equalsIgnoreCase(expected.playniteGameId)
-                && transitionId.isEmpty() && attempt == 0L;
+                && preparingOperation == expected.preparingOperation;
     }
 
     private static String origin(Controller owner, String actor) {
@@ -2046,6 +2021,17 @@ public final class SessionModel {
     private static boolean matches(String current, String expectedStreamSessionId) {
         String expected = normalize(expectedStreamSessionId);
         return !expected.isEmpty() && expected.equals(current);
+    }
+
+    /** The terminating session's close failed: its projections drop a Play queued behind it. */
+    private void terminationFailed() {
+        for (ProjectionOwner owner : projections.values()) {
+            if (!owner.hostId().equals(terminatingHost)
+                    || !owner.executionProfileId().equals(terminatingExecution)) continue;
+            owner.closeFailed();
+            crossedBoundary.add(owner);
+            projectionsChanged = true;
+        }
     }
 
     private void setState(State next) {
@@ -2075,7 +2061,7 @@ public final class SessionModel {
                 "from", previous.name(), "to", next.name(), "state", next.name(),
                 "stream_session_id", streamSessionId, "host_id", hostId,
                 "profile_id", profileId, "app_id", appId, "game_id", playniteGameId,
-                "transition_id", transitionId, "attempt", attempt);
+                "preparing_operation", preparingOperation);
     }
 
     static String normalize(String value) {

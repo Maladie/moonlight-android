@@ -255,11 +255,11 @@ public class SessionModelTest {
     @Test public void exactSwitchSnapshotRejectsStaleTokenAndDeadOwner() {
         FakeController owner = new FakeController();
         owner.live = false;
-        m.beginPreparing(owner, SESSION_A, "host", 7, "", "a", 1);
+        m.beginPreparing(owner, SESSION_A, "host", 7, "");
         SessionModel.Snapshot preparing = m.snapshot();
         assertTrue(m.canSwitchGame(preparing));
         m.clear();
-        m.beginPreparing(owner, SESSION_A, "host", 7, "", "b", 2);
+        m.beginPreparing(owner, SESSION_A, "host", 7, "");
         assertFalse(m.canSwitchGame(preparing));
         m.clear();
         m.enterHome(owner, SESSION_A, "host", 7, "");
@@ -279,8 +279,7 @@ public class SessionModelTest {
             FakeController owner = new FakeController();
             String profile = "profile-a";
             assertTrue(m.beginPreparing(
-                    owner, SESSION_A, "host", profile, 7, gameId,
-                    "transition-a", 1L));
+                    owner, SESSION_A, "host", profile, 7, gameId) > 0L);
             SessionModel.Snapshot preparing =
                     m.snapshot();
             assertTrue(m.canSwitchGame(preparing));
@@ -350,8 +349,7 @@ public class SessionModelTest {
 
     @Test public void externalPreparingCancelCapturesTheExactOwnerAndToken() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-a", 11L));
+        assertTrue(m.beginPreparing(owner, SESSION_A, "host", 7, "") > 0L);
         SessionModel.Snapshot expected =
                 m.snapshot();
 
@@ -364,76 +362,103 @@ public class SessionModelTest {
 
     @Test public void submittedHomeFrameReachesOnlyTheExactPreparingOwner() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
+        assertTrue(operation > 0L);
         SessionModel.Snapshot expected =
                 m.snapshot();
+        assertEquals(operation, expected.preparingOperation);
 
         assertTrue(m.preparingHomeFrameSubmitted(expected));
         assertEquals(1, owner.submittedPreparingFrames);
         assertFalse(m.preparingHomeFrameSubmitted(expected));
         assertEquals(1, owner.submittedPreparingFrames);
         assertTrue(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "game", "transition-a", 11L));
+                SESSION_A, "host", 7, "game", operation));
         assertFalse(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "game", "transition-a", 12L));
+                SESSION_A, "host", 7, "game", operation + 1L));
         assertTrue(m.completePreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 11L));
+                owner, SESSION_A, "host", 7, operation));
         assertTrue(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "game", "transition-a", 11L));
+                SESSION_A, "host", 7, "game", operation));
         m.enterHome(
                 owner, SESSION_A, "host", 7, "game");
         assertFalse(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "game", "transition-a", 11L));
+                SESSION_A, "host", 7, "game", operation));
     }
 
-    @Test public void completedPreparingStateDuringFrameCallbackCommitsExactAttempt() {
+    /** Review S09 C5: a lost transport takes its preparing operation and accepted Home frame. */
+    @Test public void lostTransportClearsThePreparingOperationAndItsHomeFrame() {
+        for (int path = 0; path < 3; path++) {
+            SessionModelDriver d = new SessionModelDriver();
+            FakeController owner = new FakeController();
+            long operation = d.beginPreparing(owner, SESSION_A, "host", 7, "");
+            assertTrue(d.preparingHomeFrameSubmitted(d.snapshot()));
+            assertTrue(d.completePreparing(owner, SESSION_A, "host", 7, operation));
+            assertEquals(operation, d.snapshot().acceptedHomeOperation);
+            if (path == 0) {
+                d.markReconnectRequired(SESSION_A);
+            } else if (path == 1) {
+                assertTrue(d.markTransportUnsafe(owner, SESSION_A, "host", 7));
+            } else {
+                owner.live = false;
+                d.call(new SessionEvent.ProbeTransport());
+            }
+            SessionModel.Snapshot lost = d.snapshot();
+            assertEquals("path " + path, SessionModel.State.RECONNECT_REQUIRED, lost.state);
+            assertEquals("path " + path, 0L, lost.preparingOperation);
+            assertEquals("path " + path, 0L, lost.acceptedHomeOperation);
+            assertFalse(d.isPreparingHomeFrameAccepted(SESSION_A, "host", 7, "", operation));
+        }
+    }
+
+    /** Review S09 C5: a Home extra restored after process death never names a new operation. */
+    @Test public void operationsContinueAfterTheSeedOfTheNewProcess() {
+        long seed = 1_000_000L;
+        SessionModel restarted = new SessionModel(Runnable::run, Runnable::run, () -> false,
+                () -> 0L, (level, component, event, fields) -> true, new MemoryPreferences(),
+                new MemoryPreferences(), new MemoryPreferences(), seed);
+        long[] operation = {0L};
+        restarted.dispatch(new SessionEvent.PreparingBegun(new FakeController(), SESSION_A,
+                "host", GatewayConnection.DEFAULT_PROFILE_ID, 7, ""), value -> operation[0] = value);
+        assertTrue(operation[0] > seed);
+    }
+
+    @Test public void completedPreparingStateDuringFrameCallbackCommitsExactOperation() {
         FakeController owner = new FakeController() {
             @Override public boolean preparingHomeFrameSubmitted(
                     SessionModel.Snapshot preparing) {
                 assertTrue(m.completePreparing(
-                        this, SESSION_A, "host", 7, "transition-a", 11L));
+                        this, SESSION_A, "host", 7, preparing.preparingOperation));
                 return true;
             }
         };
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
         SessionModel.Snapshot expected =
                 m.snapshot();
 
         assertTrue(m.preparingHomeFrameSubmitted(expected));
         assertEquals(SessionModel.State.HOME_LIVE,
                 m.state());
-        SessionModel.Snapshot completed =
-                m.snapshot();
-        assertEquals("", completed.transitionId);
-        assertEquals(0L, completed.attempt);
+        assertEquals(operation, m.snapshot().preparingOperation);
         assertTrue(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "game", "transition-a", 11L));
+                SESSION_A, "host", 7, "game", operation));
     }
 
-    @Test public void staleHomeFrameCannotCommitAfterSameOwnerStartsNewAttempt() {
+    /** S09 C4: the Home frame of an older preparing operation never commits. */
+    @Test public void staleHomeFrameCannotCommitAfterSameOwnerStartsNewOperation() {
+        long[] replacement = {0L};
         FakeController owner = new FakeController() {
             @Override public boolean preparingHomeFrameSubmitted(
                     SessionModel.Snapshot preparing) {
-                if (preparing.attempt == 12L) {
-                    assertEquals("transition-b", preparing.transitionId);
-                    return true;
-                }
-                assertEquals(11L, preparing.attempt);
+                if (preparing.preparingOperation == replacement[0]) return true;
                 assertTrue(m.cancelPreparing(
-                        this, SESSION_A, "host", 7, "transition-a", 11L));
-                assertTrue(m.beginPreparing(
-                        this, SESSION_A, "host", 7, "game", "transition-b", 12L));
-                SessionModel.Snapshot replacement =
-                        m.snapshot();
-                assertTrue(m.preparingHomeFrameSubmitted(
-                        replacement));
+                        this, SESSION_A, "host", 7, preparing.preparingOperation));
+                replacement[0] = m.beginPreparing(this, SESSION_A, "host", 7, "game");
+                assertTrue(m.preparingHomeFrameSubmitted(m.snapshot()));
                 return true;
             }
         };
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        long first = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
         SessionModel.Snapshot stale =
                 m.snapshot();
 
@@ -441,12 +466,108 @@ public class SessionModelTest {
         SessionModel.Snapshot current =
                 m.snapshot();
         assertEquals(SessionModel.State.PREPARING, current.state);
-        assertEquals("transition-b", current.transitionId);
-        assertEquals(12L, current.attempt);
+        assertTrue(replacement[0] > first);
+        assertEquals(replacement[0], current.preparingOperation);
         assertFalse(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "game", "transition-a", 11L));
+                SESSION_A, "host", 7, "game", first));
         assertTrue(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "game", "transition-b", 12L));
+                SESSION_A, "host", 7, "game", replacement[0]));
+    }
+
+    /** S09 C4: a Home recreated with an older operation's snapshot never reaches the owner. */
+    @Test public void homeFrameOfAnOlderPreparingOperationIsRejected() {
+        FakeController owner = new FakeController();
+        long first = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
+        SessionModel.Snapshot stale = m.snapshot();
+        assertTrue(m.cancelPreparing(owner, SESSION_A, "host", 7, first));
+        long second = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
+        assertTrue(second > first);
+
+        assertFalse(m.preparingHomeFrameSubmitted(stale));
+        assertEquals(0, owner.submittedPreparingFrames);
+        assertFalse(m.isPreparingHomeFrameAccepted(SESSION_A, "host", 7, "game", first));
+        assertFalse(m.isPreparingHomeFrameAccepted(SESSION_A, "host", 7, "game", second));
+        // The current operation's own Home frame is still accepted once.
+        assertTrue(m.preparingHomeFrameSubmitted(m.snapshot()));
+        assertTrue(m.isPreparingHomeFrameAccepted(SESSION_A, "host", 7, "game", second));
+    }
+
+    /** S09 C4: a switch result of an older preparing operation changes nothing newer. */
+    @Test public void switchResultOfAnOlderPreparingOperationIsRejected() {
+        FakeController owner = new FakeController();
+        AtomicReference<SessionModel.SwitchOutcome> outcome = new AtomicReference<>();
+        long first = m.beginPreparing(owner, SESSION_A, "host", 7, "old");
+        assertEquals(SessionModel.SwitchResult.STARTED, m.switchGame("host", 7, "new", "New",
+                "MoonWaker Stream", "", () -> false, (result, error) -> outcome.set(result)));
+        SessionModel.SwitchRequest stale = owner.switchRequest;
+        assertEquals(first, stale.preparingOperation);
+        assertTrue(m.cancelPreparing(owner, SESSION_A, "host", 7, first));
+        long second = m.beginPreparing(owner, SESSION_A, "host", 7, "old");
+
+        owner.switchCompletion.complete(SessionModel.SwitchOutcome.REUSED, "");
+        m.drain();
+
+        assertNull(outcome.get());
+        assertFalse(m.isPreparingSwitchOwned(SESSION_A, "host", 7, first));
+        assertFalse(m.updatePreparingSwitch(owner, stale, "old", "new"));
+        assertFalse(m.finishSwitch(stale, owner));
+        assertTrue(m.isPreparing(owner, SESSION_A, "host", 7, second));
+        assertEquals("old", m.snapshot().playniteGameId);
+        assertTrue(m.canSwitchGame("host", 7));
+        // The new operation's own switch is its own: the older operation never owns it.
+        assertEquals(SessionModel.SwitchResult.STARTED, m.switchGame("host", 7, "new", "New",
+                "MoonWaker Stream", "", () -> false, null));
+        assertTrue(m.isPreparingSwitchOwned(SESSION_A, "host", 7, second));
+        assertFalse(m.isPreparingSwitchOwned(SESSION_A, "host", 7, first));
+    }
+
+    /** S09 C4: a reconnect is a new preparation: a new operation; the lost one's proof is gone. */
+    @Test public void reconnectGetsANewPreparingOperation() {
+        FakeController lost = new FakeController();
+        long first = m.beginPreparing(lost, SESSION_A, "host", 7, "game");
+        assertTrue(m.preparingHomeFrameSubmitted(m.snapshot()));
+        SessionModel.Snapshot beforeLoss = m.snapshot();
+        assertTrue(m.markPreparingReconnectRequired(lost, SESSION_A, "host", 7, first));
+
+        FakeController reconnect = new FakeController();
+        long second = m.beginPreparing(reconnect, SESSION_A, "host", 7, "game");
+
+        assertTrue(second > first);
+        assertEquals(second, m.snapshot().preparingOperation);
+        assertFalse(m.isPreparingHomeFrameAccepted(SESSION_A, "host", 7, "game", first));
+        assertFalse(m.preparingHomeFrameSubmitted(beforeLoss));
+        assertFalse(m.completePreparing(reconnect, SESSION_A, "host", 7, first));
+        assertTrue(m.completePreparing(reconnect, SESSION_A, "host", 7, second));
+    }
+
+    /**
+     * S09 C4: Back on the Home while its frame is still being claimed cancels the preparing
+     * transport (CancelPreparingTransport); the late Home-frame result is then rejected.
+     */
+    @Test public void backDuringTheHomeFrameCancelsPreparing() {
+        FakeController owner = new FakeController() {
+            @Override public boolean preparingHomeFrameSubmitted(
+                    SessionModel.Snapshot preparing) {
+                super.preparingHomeFrameSubmitted(preparing);
+                assertTrue(m.cancelPreparing(preparing));
+                return true;
+            }
+
+            @Override public boolean cancelPreparingTransport(
+                    SessionModel.Snapshot preparing) {
+                super.cancelPreparingTransport(preparing);
+                return m.cancelPreparing(
+                        this, SESSION_A, "host", 7, preparing.preparingOperation);
+            }
+        };
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
+
+        assertFalse(m.preparingHomeFrameSubmitted(m.snapshot()));
+
+        assertEquals(1, owner.preparingCancels);
+        assertEquals(operation, owner.preparingCancel.preparingOperation);
+        assertEquals(SessionModel.State.NONE, m.state());
+        assertFalse(m.isPreparingHomeFrameAccepted(SESSION_A, "host", 7, "game", operation));
     }
 
     @Test public void cancelledFrameClaimCannotBecomeAccepted() {
@@ -454,12 +575,11 @@ public class SessionModelTest {
             @Override public boolean preparingHomeFrameSubmitted(
                     SessionModel.Snapshot preparing) {
                 assertTrue(m.cancelPreparing(
-                        this, SESSION_A, "host", 7, "transition-a", 11L));
+                        this, SESSION_A, "host", 7, preparing.preparingOperation));
                 return true;
             }
         };
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
         SessionModel.Snapshot expected =
                 m.snapshot();
 
@@ -467,20 +587,18 @@ public class SessionModelTest {
         assertEquals(SessionModel.State.NONE,
                 m.state());
         assertFalse(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "game", "transition-a", 11L));
+                SESSION_A, "host", 7, "game", operation));
     }
 
     @Test public void staleExternalCancelCannotReachANewerOwner() {
         FakeController oldOwner = new FakeController();
-        assertTrue(m.beginPreparing(
-                oldOwner, SESSION_A, "host", 7, "", "transition-a", 11L));
+        long old = m.beginPreparing(oldOwner, SESSION_A, "host", 7, "");
         SessionModel.Snapshot stale =
                 m.snapshot();
         assertTrue(m.cancelPreparing(
-                oldOwner, SESSION_A, "host", 7, "transition-a", 11L));
+                oldOwner, SESSION_A, "host", 7, old));
         FakeController newOwner = new FakeController();
-        assertTrue(m.beginPreparing(
-                newOwner, "session-b", "host", 7, "", "transition-b", 12L));
+        assertTrue(m.beginPreparing(newOwner, "session-b", "host", 7, "") > 0L);
 
         assertFalse(m.cancelPreparing(stale));
         assertEquals(0, newOwner.preparingCancels);
@@ -550,7 +668,7 @@ public class SessionModelTest {
     @Test public void hardResetClearsEvenPreparingStateOnlyForTheExactHost() {
         FakeController controller = new FakeController();
         m.beginPreparing(
-                controller, SESSION_A, "host", 7, "game", "transition", 1L);
+                controller, SESSION_A, "host", 7, "game");
 
         assertFalse(m.hardResetIfHostMatches("other"));
         assertEquals(SessionModel.State.PREPARING,
@@ -623,14 +741,13 @@ public class SessionModelTest {
         FakeController owner = new FakeController();
         FakeController staleOwner = new FakeController();
 
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "game", "transition-a", 1L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
         SessionModel.Snapshot snapshot =
                 m.snapshot();
         assertEquals(SessionModel.State.PREPARING, snapshot.state);
         assertEquals("game", snapshot.playniteGameId);
-        assertEquals("transition-a", snapshot.transitionId);
-        assertEquals(1L, snapshot.attempt);
+        assertTrue(operation > 0L);
+        assertEquals(operation, snapshot.preparingOperation);
         assertFalse(m.canResumeInstantly());
         assertTrue(m.parkForBackground(SESSION_A));
         assertFalse(m.clearIfMatches(SESSION_A));
@@ -638,47 +755,41 @@ public class SessionModelTest {
                 m.terminate(SESSION_A, null));
 
         assertFalse(m.completePreparing(
-                staleOwner, SESSION_A, "host", 7, "transition-a", 1L));
+                staleOwner, SESSION_A, "host", 7, operation));
         assertFalse(m.completePreparing(
-                owner, "stale-session", "host", 7, "transition-a", 1L));
+                owner, "stale-session", "host", 7, operation));
         assertFalse(m.completePreparing(
-                owner, SESSION_A, "stale-host", 7, "transition-a", 1L));
+                owner, SESSION_A, "stale-host", 7, operation));
         assertFalse(m.completePreparing(
-                owner, SESSION_A, "host", 8, "transition-a", 1L));
+                owner, SESSION_A, "host", 8, operation));
         assertFalse(m.completePreparing(
-                owner, SESSION_A, "host", 7, "stale-transition", 1L));
-        assertFalse(m.completePreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 2L));
+                owner, SESSION_A, "host", 7, operation + 1L));
         assertTrue(m.completePreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 1L));
+                owner, SESSION_A, "host", 7, operation));
         assertEquals(SessionModel.State.HOME_LIVE,
                 m.state());
-        assertEquals("", m.snapshot().transitionId);
-        assertEquals(0L, m.snapshot().attempt);
         assertTrue(m.canResumeInstantly());
     }
 
-    @Test public void preparingCancelOnlyClearsTheExactAttempt() {
+    @Test public void preparingCancelOnlyClearsTheExactOperation() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        long first = m.beginPreparing(owner, SESSION_A, "host", 7, "");
 
         assertFalse(m.cancelPreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 2L));
+                owner, SESSION_A, "host", 7, first + 1L));
         assertTrue(m.cancelPreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 1L));
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+                owner, SESSION_A, "host", 7, first));
+        long second = m.beginPreparing(owner, SESSION_A, "host", 7, "");
+        assertTrue(second > first);
         assertFalse(m.cancelPreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 1L));
+                owner, SESSION_A, "host", 7, first));
         assertTrue(m.isPreparing(
-                owner, SESSION_A, "host", 7, "transition-b", 2L));
+                owner, SESSION_A, "host", 7, second));
     }
 
     @Test public void preparingParkDelegatesTheExactTokenWithoutChangingState() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "game", "transition-a", 1L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "game");
 
         assertTrue(m.parkForBackground(SESSION_A));
 
@@ -688,28 +799,25 @@ public class SessionModelTest {
         assertEquals("host", owner.preparingPark.hostId);
         assertEquals(7, owner.preparingPark.appId);
         assertEquals("game", owner.preparingPark.playniteGameId);
-        assertEquals("transition-a", owner.preparingPark.transitionId);
-        assertEquals(1L, owner.preparingPark.attempt);
+        assertEquals(operation, owner.preparingPark.preparingOperation);
     }
 
     @Test public void preparingReconnectRequiresTheFullTokenAndRejectsLateCompletion() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "");
 
         assertFalse(m.markPreparingReconnectRequired(
-                owner, SESSION_A, "host", 7, "transition-a", 2L));
+                owner, SESSION_A, "host", 7, operation + 1L));
         assertTrue(m.markPreparingReconnectRequired(
-                owner, SESSION_A, "host", 7, "transition-a", 1L));
+                owner, SESSION_A, "host", 7, operation));
 
         SessionModel.Snapshot snapshot =
                 m.snapshot();
         assertEquals(SessionModel.State.RECONNECT_REQUIRED,
                 snapshot.state);
-        assertEquals("", snapshot.transitionId);
-        assertEquals(0L, snapshot.attempt);
+        assertEquals(0L, snapshot.preparingOperation);
         assertFalse(m.completePreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 1L));
+                owner, SESSION_A, "host", 7, operation));
     }
 
     /**
@@ -723,7 +831,7 @@ public class SessionModelTest {
             model.enterHome(owner, SESSION_A, "host", 7, "game-a");
             model.markReconnectRequired(SESSION_A);
 
-            assertTrue(model.beginPreparing(owner, SESSION_A, "host", 7, current, "t", 1L));
+            assertTrue(model.beginPreparing(owner, SESSION_A, "host", 7, current) > 0L);
             SessionModel.Snapshot snapshot = model.snapshot();
             assertEquals(SessionModel.State.PREPARING, snapshot.state);
             assertEquals(current, snapshot.playniteGameId);
@@ -742,8 +850,8 @@ public class SessionModelTest {
             model.enterHome(owner, SESSION_A, "host", 7, "game-a");
             model.markReconnectRequired(SESSION_A);
 
-            assertFalse(model.beginPreparing(owner, other[0], other[1], other[2],
-                    Integer.parseInt(other[3]), "game-a", "t", 1L));
+            assertEquals(0L, model.beginPreparing(owner, other[0], other[1], other[2],
+                    Integer.parseInt(other[3]), "game-a"));
             assertEquals(SessionModel.State.RECONNECT_REQUIRED, model.snapshot().state);
             assertEquals("game-a", model.snapshot().playniteGameId);
         }
@@ -760,7 +868,7 @@ public class SessionModelTest {
 
             boolean own = actor.equals("parent");
             assertEquals(own, model.beginPreparing(owner, SESSION_A, "host", actor, 7,
-                    "game-b", "t", 1L));
+                    "game-b") > 0L);
             assertEquals(own ? SessionModel.State.PREPARING
                     : SessionModel.State.RECONNECT_REQUIRED, model.snapshot().state);
             assertEquals(own ? "game-b" : "", model.snapshot().playniteGameId);
@@ -822,43 +930,40 @@ public class SessionModelTest {
 
     @Test public void stalePreparingParkCannotMutateAReplacementAttempt() {
         FakeController replacement = new FakeController();
+        long[] replaced = {0L};
         FakeController owner = new FakeController() {
             @Override public boolean parkPreparingTransport(
                     SessionModel.Snapshot preparing) {
                 assertTrue(m.cancelPreparing(
-                        this, SESSION_A, "host", 7, "transition-a", 1L));
-                assertTrue(m.beginPreparing(
-                        replacement, "session-b", "host", 7, "",
-                        "transition-b", 2L));
+                        this, SESSION_A, "host", 7, preparing.preparingOperation));
+                replaced[0] = m.beginPreparing(replacement, "session-b", "host", 7, "");
                 return true;
             }
         };
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        assertTrue(m.beginPreparing(owner, SESSION_A, "host", 7, "") > 0L);
 
         assertTrue(m.parkForBackground(SESSION_A));
 
         assertTrue(m.isPreparing(
-                replacement, "session-b", "host", 7, "transition-b", 2L));
+                replacement, "session-b", "host", 7, replaced[0]));
     }
 
     @Test public void preparingSwitchCarriesItsTokenWithoutRequiringLiveTransport() {
         FakeController owner = new FakeController();
         owner.live = false;
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "old");
 
         assertTrue(m.canSwitchGame("host", 7));
         assertFalse(m.isPreparingSwitchOwned(
-                SESSION_A, "host", 7, "transition-a", 3L));
+                SESSION_A, "host", 7, operation));
         assertEquals(SessionModel.SwitchResult.STARTED,
                 m.switchGame(
                         "host", 7, "new", "New", "MoonWaker Stream", "",
                         () -> false, null));
         assertTrue(m.isPreparingSwitchOwned(
-                SESSION_A, "host", 7, "transition-a", 3L));
+                SESSION_A, "host", 7, operation));
         assertFalse(m.isPreparingSwitchOwned(
-                SESSION_A, "host", 7, "transition-a", 4L));
+                SESSION_A, "host", 7, operation + 1L));
         assertEquals(SessionModel.SwitchResult.NOT_ELIGIBLE,
                 m.switchGame(
                         "host", 7, "new", "New", "MoonWaker Stream", "",
@@ -866,17 +971,17 @@ public class SessionModelTest {
         assertEquals(1, owner.switches);
         assertTrue(owner.switchRequest.preparing);
         assertEquals("old", owner.switchRequest.oldGameId);
-        assertEquals("transition-a", owner.switchRequest.transitionId);
+        assertEquals(operation, owner.switchRequest.preparingOperation);
         assertTrue(owner.switchRequest.operationId > 0L);
         owner.switchCompletion.complete(
                 SessionModel.SwitchOutcome.REUSED, "");
         m.drain();
         assertTrue(m.isPreparingSwitchOwned(
-                SESSION_A, "host", 7, "transition-a", 3L));
+                SESSION_A, "host", 7, operation));
         assertFalse(m.finishSwitch(owner.switchRequest, new FakeController()));
         assertTrue(m.finishSwitch(owner.switchRequest, owner));
         assertFalse(m.isPreparingSwitchOwned(
-                SESSION_A, "host", 7, "transition-a", 3L));
+                SESSION_A, "host", 7, operation));
     }
 
     @Test public void preMutationSwitchFenceRequiresExactOwnerTransportAndOperation() {
@@ -909,44 +1014,40 @@ public class SessionModelTest {
         FakeController owner = new FakeController();
         AtomicReference<SessionModel.SwitchOutcome> outcome =
                 new AtomicReference<>();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        long first = m.beginPreparing(owner, SESSION_A, "host", 7, "");
         assertEquals(SessionModel.SwitchResult.STARTED,
                 m.switchGame(
                         "host", 7, "new", "New", "MoonWaker Stream", "",
                         () -> false, (result, error) -> outcome.set(result)));
         SessionModel.SwitchCallback stale = owner.switchCompletion;
         assertTrue(m.cancelPreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 1L));
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+                owner, SESSION_A, "host", 7, first));
+        long second = m.beginPreparing(owner, SESSION_A, "host", 7, "");
 
         stale.complete(SessionModel.SwitchOutcome.FAILED, "stale");
 
         assertTrue(m.isPreparing(
-                owner, SESSION_A, "host", 7, "transition-b", 2L));
+                owner, SESSION_A, "host", 7, second));
         assertTrue(m.canSwitchGame("host", 7));
         assertNull(outcome.get());
     }
 
     @Test public void completedPreparingSwitchUsesTheExistingHomeFinish() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "");
         assertEquals(SessionModel.SwitchResult.STARTED,
                 m.switchGame(
                         "host", 7, "new", "New", "MoonWaker Stream", "",
                         () -> false, null));
         assertTrue(m.completePreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 1L));
+                owner, SESSION_A, "host", 7, operation));
 
         assertTrue(m.finishSwitch(owner.switchRequest, owner));
     }
 
     @Test public void reusedPreparingSwitchReleasesItsCapturedLockBeforeConnection() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertTrue(m.beginPreparing(owner, SESSION_A, "host", 7, "old") > 0L);
         assertEquals(SessionModel.SwitchResult.STARTED,
                 m.switchGame(
                         "host", 7, "same", "Same", "MoonWaker Stream", "",
@@ -967,17 +1068,15 @@ public class SessionModelTest {
 
     @Test public void stalePreparingFinishCannotReleaseAReplacementSwitch() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        long first = m.beginPreparing(owner, SESSION_A, "host", 7, "");
         assertEquals(SessionModel.SwitchResult.STARTED,
                 m.switchGame(
                         "host", 7, "old", "Old", "MoonWaker Stream", "",
                         () -> false, null));
         SessionModel.SwitchRequest stale = owner.switchRequest;
         assertTrue(m.cancelPreparing(
-                owner, SESSION_A, "host", 7, "transition-a", 1L));
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+                owner, SESSION_A, "host", 7, first));
+        assertTrue(m.beginPreparing(owner, SESSION_A, "host", 7, "") > first);
         assertEquals(SessionModel.SwitchResult.STARTED,
                 m.switchGame(
                         "host", 7, "new", "New", "MoonWaker Stream", "",
@@ -1019,10 +1118,9 @@ public class SessionModelTest {
         SessionModel.Snapshot beforeLoss = m.snapshot();
         m.markReconnectRequired(SESSION_A);
         FakeController reconnect = new FakeController();
-        assertTrue(m.beginPreparing(
-                reconnect, SESSION_A, "host", 7, "game", "transition-reconnect", 1L));
+        long operation = m.beginPreparing(reconnect, SESSION_A, "host", 7, "game");
         assertTrue(m.completePreparing(
-                reconnect, SESSION_A, "host", 7, "transition-reconnect", 1L));
+                reconnect, SESSION_A, "host", 7, operation));
         assertEquals(reconnect.transportGeneration(), m.snapshot().transportGeneration);
 
         assertNull(m.beginDirectTermination(beforeLoss));
@@ -1033,8 +1131,7 @@ public class SessionModelTest {
     @Test public void preparingSwitchUpdateRequiresTheFullCapturedToken() {
         FakeController owner = new FakeController();
         FakeController staleOwner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "old");
         assertEquals(SessionModel.SwitchResult.STARTED,
                 m.switchGame(
                         "host", 7, "new", "New", "MoonWaker Stream", "",
@@ -1042,33 +1139,30 @@ public class SessionModelTest {
         SessionModel.SwitchRequest request = owner.switchRequest;
 
         assertFalse(m.updatePreparingSwitch(
-                staleOwner, request, "old", "", "transition-b"));
+                staleOwner, request, "old", ""));
         assertFalse(m.updatePreparingSwitch(
-                owner, request, "other", "", "transition-b"));
+                owner, request, "other", ""));
         assertTrue(m.updatePreparingSwitch(
-                owner, request, "old", "", "transition-b"));
+                owner, request, "old", ""));
 
         SessionModel.Snapshot updated =
                 m.snapshot();
         assertEquals(SessionModel.State.PREPARING, updated.state);
         assertEquals("", updated.playniteGameId);
-        assertEquals("transition-b", updated.transitionId);
-        assertEquals(3L, updated.attempt);
+        assertEquals(operation, updated.preparingOperation);
         assertTrue(m.cancelPreparing(
-                owner, SESSION_A, "host", 7, "transition-b", 3L));
-        assertTrue(m.beginPreparing(
-                staleOwner, SESSION_A, "host", 7, "", "transition-c", 4L));
+                owner, SESSION_A, "host", 7, operation));
+        long replacement = m.beginPreparing(staleOwner, SESSION_A, "host", 7, "");
         // The released switch's late update cannot retarget the replacement preparation.
         assertFalse(m.updatePreparingSwitch(
-                owner, request, "", "new", "transition-d"));
+                owner, request, "", "new"));
         assertTrue(m.isPreparing(
-                staleOwner, SESSION_A, "host", 7, "transition-c", 4L));
+                staleOwner, SESSION_A, "host", 7, replacement));
     }
 
-    @Test public void preparingSwitchCarriesTheAcceptedHomeFrameToItsReplacementTransition() {
+    @Test public void preparingSwitchKeepsTheAcceptedHomeFrameOfItsOperation() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "old");
         assertTrue(m.preparingHomeFrameSubmitted(
                 m.snapshot()));
         SessionModel.Snapshot ownerIdentity =
@@ -1081,18 +1175,17 @@ public class SessionModelTest {
         SessionModel.SwitchRequest request = owner.switchRequest;
         assertEquals(19L, request.orchestrationId);
 
+        assertEquals(operation, request.preparingOperation);
         assertTrue(m.updatePreparingSwitch(
-                owner, request, "old", "old", "transition-b"));
+                owner, request, "old", "old"));
 
-        assertTrue("the same attempt keeps its accepted Home proof",
+        assertTrue("the same operation keeps its accepted Home proof",
                 m.isPreparingHomeFrameAccepted(
-                        SESSION_A, "host", 7, "old", "transition-b", 3L));
-        assertFalse(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "old", "transition-a", 3L));
-        assertFalse("a different attempt never inherits it",
+                        SESSION_A, "host", 7, "old", operation));
+        assertFalse("a different operation never inherits it",
                 m.isPreparingHomeFrameAccepted(
-                        SESSION_A, "host", 7, "old", "transition-b", 4L));
-        assertFalse("a second Home frame is not accepted for the same attempt",
+                        SESSION_A, "host", 7, "old", operation + 1L));
+        assertFalse("a second Home frame is not accepted for the same operation",
                 m.preparingHomeFrameSubmitted(
                         m.snapshot()));
     }
@@ -1100,17 +1193,17 @@ public class SessionModelTest {
     @Test public void staleOwnerCannotMoveTheAcceptedHomeFrame() {
         FakeController owner = new FakeController();
         FakeController stale = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        long operation = m.beginPreparing(owner, SESSION_A, "host", 7, "old");
         assertTrue(m.preparingHomeFrameSubmitted(
                 m.snapshot()));
         m.switchGame(
                 "host", 7, "old", "Old", "MoonWaker Stream", "", () -> false, null);
 
         assertFalse(m.updatePreparingSwitch(
-                stale, owner.switchRequest, "old", "old", "transition-b"));
+                stale, owner.switchRequest, "old", "new"));
+        assertEquals("old", m.snapshot().playniteGameId);
         assertTrue(m.isPreparingHomeFrameAccepted(
-                SESSION_A, "host", 7, "old", "transition-a", 3L));
+                SESSION_A, "host", 7, "old", operation));
     }
 
     @Test public void repeatedTerminationDoesNotStartASecondRequest() {
@@ -1719,8 +1812,7 @@ public class SessionModelTest {
 
     @Test public void exactPreparingOwnerCanBeginTerminalChildCleanup() {
         FakeController owner = new FakeController();
-        assertTrue(m.beginPreparing(
-                owner, SESSION_A, "host", 7, "game", "transition", 1L));
+        assertTrue(m.beginPreparing(owner, SESSION_A, "host", 7, "game") > 0L);
 
         SessionModel.DirectTermination token =
                 m.beginDirectTermination(

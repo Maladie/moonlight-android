@@ -1,7 +1,6 @@
 package com.limelight.console;
 
 import android.content.Intent;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.KeyEvent;
@@ -9,9 +8,12 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewTreeObserver;
 
+import com.limelight.console.transition.LaunchTransitionController;
+import com.limelight.console.transition.PresentationBarrier;
 import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.session.SessionEvent;
 import com.limelight.session.SessionModel;
+import com.limelight.ui.ViewFrameSource;
 
 /** Translucent dashboard placed over Game so its stream surface remains alive. */
 public final class StreamHomeActivity extends ConsoleActivity {
@@ -21,6 +23,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
     private boolean preparingRelayOwned;
     private boolean preparingHomeFrameSubmitting;
     private SessionModel.Snapshot preparingSnapshot;
+    private ViewFrameSource homeFrames;
     /** The presentation epoch while this Home was the visible presenter. */
     private long presentedOperation;
 
@@ -34,8 +37,8 @@ public final class StreamHomeActivity extends ConsoleActivity {
                 preparingRelayOwned);
         initialCarouselFramePending = exactRetainedSnapshot() != null;
         super.onCreate(state);
-        long attempt = getIntent().getLongExtra(EXTRA_WARM_UP_ATTEMPT, 0L);
-        if (attempt > 0L && (preparingHomeFrameAccepted || preparingRelayOwned)) {
+        long operation = preparingOperation();
+        if (operation > 0L && (preparingHomeFrameAccepted || preparingRelayOwned)) {
             initialCarouselFramePending = false;
             preparingHomeFramePending = false;
             completeInitialCarouselFrame();
@@ -43,7 +46,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
             return;
         }
 
-        if (attempt > 0L && preparingSnapshot == null) {
+        if (operation > 0L && preparingSnapshot == null) {
             SessionModel.State current = SessionModel.of(this).state();
             if (current == SessionModel.State.NONE || current == SessionModel.State.PREPARING) {
                 initialCarouselFramePending = false;
@@ -53,10 +56,9 @@ public final class StreamHomeActivity extends ConsoleActivity {
         }
         if (!initialCarouselFramePending) return;
         View content = findViewById(android.R.id.content);
-        Runnable submitted = this::onInitialCarouselFrameSubmitted;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            content.getViewTreeObserver().registerFrameCommitCallback(submitted);
-        }
+        homeFrames = new ViewFrameSource(content);
+        homeFrames.await(homeFrameFence(), PresentationBarrier.HOME_DEADLINE_MS,
+                this::onInitialCarouselFrameSettled);
         content.getViewTreeObserver().addOnPreDrawListener(
                 new ViewTreeObserver.OnPreDrawListener() {
                     private long heldSince;
@@ -71,10 +73,6 @@ public final class StreamHomeActivity extends ConsoleActivity {
                         }
                         if (content.getViewTreeObserver().isAlive()) {
                             content.getViewTreeObserver().removeOnPreDrawListener(this);
-                        }
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                            content.postOnAnimation(
-                                    () -> content.postOnAnimation(submitted));
                         }
                         return true;
                     }
@@ -132,8 +130,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
                         StreamConfiguration.INVALID_APP_ID),
                 normalize(getIntent().getStringExtra(
                         EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID)),
-                normalize(getIntent().getStringExtra(EXTRA_WARM_UP_TRANSITION_ID)),
-                getIntent().getLongExtra(EXTRA_WARM_UP_ATTEMPT, 0L));
+                preparingOperation());
     }
 
     private boolean hasOwnedPreparingRelay() {
@@ -142,8 +139,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
                 normalize(getIntent().getStringExtra(EXTRA_RETAINED_STREAM_HOST_ID)),
                 getIntent().getIntExtra(EXTRA_RETAINED_STREAM_APP_ID,
                         StreamConfiguration.INVALID_APP_ID),
-                normalize(getIntent().getStringExtra(EXTRA_WARM_UP_TRANSITION_ID)),
-                getIntent().getLongExtra(EXTRA_WARM_UP_ATTEMPT, 0L));
+                preparingOperation());
     }
 
     private boolean hasCompletedPreparingRelay() {
@@ -166,23 +162,19 @@ public final class StreamHomeActivity extends ConsoleActivity {
     private SessionModel.Snapshot exactPreparingSnapshot() {
         SessionModel.Snapshot current = SessionModel.of(this).snapshot();
         if (current.state != SessionModel.State.PREPARING) return null;
-        long attempt = getIntent().getLongExtra(EXTRA_WARM_UP_ATTEMPT, 0L);
         String sessionId = normalize(getIntent().getStringExtra(
                 EXTRA_RETAINED_STREAM_SESSION_ID));
         String hostId = normalize(getIntent().getStringExtra(
                 EXTRA_RETAINED_STREAM_HOST_ID));
         String gameId = normalize(getIntent().getStringExtra(
                 EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID));
-        String transitionId = normalize(getIntent().getStringExtra(
-                EXTRA_WARM_UP_TRANSITION_ID));
         int appId = getIntent().getIntExtra(
                 EXTRA_RETAINED_STREAM_APP_ID, StreamConfiguration.INVALID_APP_ID);
         if (!sessionId.equals(current.streamSessionId)
                 || !hostId.equalsIgnoreCase(current.hostId)
                 || appId != current.appId
                 || !gameId.equalsIgnoreCase(current.playniteGameId)
-                || !transitionId.equals(current.transitionId)
-                || attempt != current.attempt) {
+                || preparingOperation() != current.preparingOperation) {
             return null;
         }
         return current;
@@ -209,7 +201,26 @@ public final class StreamHomeActivity extends ConsoleActivity {
                 && gameId.equalsIgnoreCase(current.playniteGameId) ? current : null;
     }
 
-    private void onInitialCarouselFrameSubmitted() {
+    /** The model's preparing operation this Home opened over (0: none). */
+    private long preparingOperation() {
+        return getIntent().getLongExtra(EXTRA_PREPARING_OPERATION, 0L);
+    }
+
+    /** The Home-frame identity of this Home's wait. */
+    private String homeFrameFence() {
+        return "home:" + preparingOperation();
+    }
+
+    /**
+     * The Home's first frame settled. A frame that never came (UNAVAILABLE) is accepted like a
+     * submitted one: the cover is cosmetic and the warm-up must not wait forever. A cancelled
+     * wait ends the preparing transport.
+     */
+    private void onInitialCarouselFrameSettled(PresentationBarrier.Outcome outcome) {
+        if (!LaunchTransitionController.coverAllowsEffect(outcome)) {
+            abandonInitialCarouselFrame();
+            return;
+        }
         if (!initialCarouselFramePending || isFinishing() || isDestroyed()
                 || preparingHomeFrameSubmitting) return;
         if (preparingHomeFramePending) {
@@ -261,13 +272,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
             super.onBackPressed();
             return;
         }
-        initialCarouselFramePending = false;
-        if (preparingHomeFramePending) {
-            SessionModel.of(this).post(
-                    new SessionEvent.CancelPreparingTransport(preparingSnapshot));
-        }
-        preparingHomeFramePending = false;
-        finish();
+        cancelInitialCarouselFrame();
     }
 
     @Override
@@ -299,6 +304,18 @@ public final class StreamHomeActivity extends ConsoleActivity {
 
     private void cancelUnsubmittedPreparingFrame() {
         if (!initialCarouselFramePending || isChangingConfigurations()) return;
+        cancelInitialCarouselFrame();
+    }
+
+    /** The user left before the Home's first frame settled: the wait ends cancelled. */
+    private void cancelInitialCarouselFrame() {
+        if (homeFrames != null) homeFrames.cancel(homeFrameFence());
+        // A frame already submitted to the model has no wait left to cancel.
+        abandonInitialCarouselFrame();
+    }
+
+    private void abandonInitialCarouselFrame() {
+        if (!initialCarouselFramePending) return;
         initialCarouselFramePending = false;
         if (preparingHomeFramePending) {
             SessionModel.of(this).post(

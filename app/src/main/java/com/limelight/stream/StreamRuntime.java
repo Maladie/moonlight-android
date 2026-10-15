@@ -633,7 +633,7 @@ public final class StreamRuntime implements NvConnectionListener,
                 || (retained.state == SessionModel.State.PREPARING
                 && model.isPreparingHomeFrameAccepted(
                 retained.streamSessionId, retained.hostId, retained.appId,
-                retained.playniteGameId, retained.transitionId, retained.attempt)));
+                retained.playniteGameId, retained.preparingOperation)));
         synchronized (this) {
             return retainedState && !stopRequested
                     && (state == State.CONNECTING || state == State.CONNECTED)

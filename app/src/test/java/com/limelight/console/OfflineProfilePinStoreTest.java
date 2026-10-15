@@ -126,8 +126,6 @@ public class OfflineProfilePinStoreTest {
         unavailable.rememberVerified("host", connection, PIN);
         assertEquals(OfflineProfilePinStore.Status.MISSING,
                 unavailable.check("host", connection, PIN).status);
-        assertFalse(OfflineProfilePinStore.supportsOfflineValidation(22));
-        assertTrue(OfflineProfilePinStore.supportsOfflineValidation(23));
     }
 
     private static OfflineProfilePinStore store(MemoryPreferences memory, SecretKey key) {

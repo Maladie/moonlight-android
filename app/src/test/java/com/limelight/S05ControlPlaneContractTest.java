@@ -119,7 +119,12 @@ public class S05ControlPlaneContractTest {
                 "private void applyImmediateTerminalPrivacy(");
         assertTrue(privacy.contains("controllerHandler.setInputSuppressed(true)"));
         assertTrue(privacy.contains("if (overlayMenuView != null)"));
-        assertTrue(privacy.contains("if (consoleLoadingView != null)"));
+        // The cover is the controller's closing one; full quit never waits for a frame.
+        assertTrue(privacy.contains("transitionController.closingStream(transitionSpec.id)"));
+        assertFalse(privacy.contains("showOpaque"));
+        assertFalse(privacy.contains("awaitCover("));
+        assertFalse(terminate.contains("awaitCover("));
+
         assertTrue(terminate.contains("wholeSessionTermination.run("));
         assertTrue(terminate.contains("stopConnectionResult("));
         assertTrue(terminate.contains("HostSessionTermination.run("));

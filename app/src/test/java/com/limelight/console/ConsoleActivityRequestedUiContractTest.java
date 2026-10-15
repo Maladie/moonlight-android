@@ -426,25 +426,21 @@ public class ConsoleActivityRequestedUiContractTest {
                 "Czy wiesz, że naukowa nazwa świnki morskiej to Cavia Porcellus?"));
     }
 
-    @Test public void dashboardAndLoadingCurtainUseDifferentArtworkPresentation()
-            throws IOException {
+    /** TV 2026-10-15: with the launch queue a closing stream never greys the game tiles. */
+    @Test public void closingSessionLeavesEveryGameTileLit() throws IOException {
         String source = consoleActivitySource();
-        String ui = source.substring(source.indexOf("private FrameLayout buildUi()"),
-                source.indexOf("private void deferSecondaryLayersAfterFirstLayout("));
-        String loading = source.substring(source.indexOf(
-                        "private String cachedLoadingArtworkPath("),
-                source.indexOf("private ArtworkResult fetchPlayniteArtwork("));
-
-        assertTrue(ui.contains("artworkBackdrop = new ImageView(this)"));
-        assertTrue(ui.contains("artworkBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP)"));
-        assertTrue(ui.contains("artworkBackdropNext = new ImageView(this)"));
-        assertTrue(ui.contains("artworkBackdropNext.setScaleType(ImageView.ScaleType.CENTER_CROP)"));
-        assertTrue(loading.contains("PlayniteArtworkSpec.forLoadingCurtain(item.game)"));
-        assertFalse(loading.contains("item.game.coverKey"));
-        assertFalse(loading.contains("\"cover\""));
-        assertTrue(loading.contains("bounds.outWidth > bounds.outHeight"));
-        assertTrue(source("src/main/java/com/limelight/console/PlayniteArtworkCache.java")
-                .contains("\"hero\".equals(kind)"));
+        String binding = source.substring(source.indexOf("private void bindPlayniteCard("),
+                source.indexOf("private void stylePlayniteStateEmphasis("));
+        assertFalse(binding.contains("closingStatus("));
+        assertFalse(binding.contains("closingBlocks("));
+        assertFalse(binding.contains("isSessionClosing("));
+        assertTrue(binding.contains("boolean childGameBlocked = childPolicy.blocked;"));
+        assertTrue(binding.contains("return childBlocked ? Math.min(alpha, .46f) : alpha;"));
+        // The closing tile and the queued one still say what they are.
+        assertTrue(source.contains(
+                "if (isQueuedPlayniteItem(hostUuid, item)) return getString(R.string.console_queued);"));
+        assertTrue(source.contains(
+                "if (snapshot.endingGame) return getString(R.string.playnite_ending_game);"));
     }
 
     @Test public void sourceMovesBesideCarouselTitleAndOntoGridArtwork() throws IOException {

@@ -79,6 +79,18 @@ public final class PlayniteTargetResolver {
         return "Desktop".equals(appName) ? desktopLabel : appName;
     }
 
+    /**
+     * The cover title of a game's transition: its library name, never the name of the stream
+     * target it runs through. Empty when the game's own name is unknown.
+     */
+    public static String gameCoverTitle(String gameName, String streamTargetName) {
+        String name = gameName == null ? "" : gameName.trim();
+        boolean streamName = normalize(name).equals(normalize(MOONWAKER_STREAM_NAME))
+                || (streamTargetName != null
+                && normalize(name).equals(normalize(streamTargetName)));
+        return streamName ? "" : name;
+    }
+
     static NvApp resolveLegacyProviderStream(List<NvApp> apps) {
         return preferredEquivalent(exactName(apps, "Desktop"));
     }

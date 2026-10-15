@@ -440,6 +440,11 @@
     <string name="console_app_quick_suffix"> · Quick Launch</string>
     <string name="console_play">PLAY  ›</string>
     <string name="console_resume">RESUME</string>
+    <string name="console_queued">Queued</string>
+    <string name="console_queued_waiting_close">Waiting for %1$s to close…</string>
+    <string name="console_queued_waiting_session">Waiting for the session to close…</string>
+    <string name="console_queue_dropped_unconfirmed">%1$s did not start: the PC did not confirm the previous game closed.</string>
+    <string name="console_queue_dropped_close_failed">%1$s did not start: closing the previous game failed.</string>
     <string name="console_quick_resume">Resume session</string>
     <string name="console_resume_session">Resume</string>
     <string name="console_quick_resume_app">Resume session (%1$s)</string>
@@ -728,7 +733,6 @@
     <string name="console_pin_failed">Could not verify the PIN.</string>
     <string name="console_pin_checking">Checking PIN…</string>
     <string name="console_pin_offline_connect_once">Turn on the PC and verify the PIN on this TV once to prepare offline wake.</string>
-    <string name="console_pin_offline_unsupported">Offline PIN wake is unavailable on this Android version. Connect to the PC to continue.</string>
     <string name="console_pin_offline_waking">Waking the PC…</string>
     <string name="console_pin_offline_waiting">Waiting for the PC to start…</string>
     <string name="console_pin_offline_unavailable">The PC could not be reached after waking.</string>
@@ -1162,7 +1166,6 @@
     <string name="transition_checking_game_launch_service">Checking the game launch service</string>
     <string name="transition_waiting_fullscreen">Playnite is running — waiting for its window</string>
     <string name="transition_starting_game">Starting the game…</string>
-    <string name="transition_verifying_readiness">Waiting for the game window</string>
     <string name="transition_game_running_waiting_window">Game started — waiting for the game window</string>
     <string name="transition_start_taking_longer">Starting is taking longer than usual</string>
     <string name="transition_game_exited_during_start">The game closed while starting</string>
@@ -1184,8 +1187,6 @@
     <string name="transition_game_failed">Game did not become ready</string>
     <string name="transition_waiting_playnite_return">Waiting for Playnite to return</string>
     <string name="transition_closing_session">Closing session</string>
-    <string name="transition_game_ended">Game ended</string>
-    <string name="transition_returning_library">Returning to the library…</string>
     <string name="console_previous_session_close_failed">The previous host session could not be closed. Try again after it disappears from the active session indicator.</string>
     <string name="control_stream_conflict">Another stream session is already running on the host. Close it on the host or end that session, then try again.</string>
     <string name="control_previous_game_unconfirmed">The host has not confirmed that the previous game has ended. Wait a moment and try again.</string>
@@ -1207,7 +1208,9 @@
     <string name="console_terminate_session_failed">The host did not close the session. Try again.</string>
     <string name="console_terminate_session_game_unverified">The game on the host could not be verified. Try again.</string>
     <string name="console_terminate_session_game_left">Stream closed. The game could not be verified and may still be running on the host.</string>
-    <string name="transition_host_session_left_open">The host session could not be closed — the game and stream may still be running on the host.</string>
+    <string name="console_status_termination_unconfirmed">TV disconnected; the computer did not confirm the session ended</string>
+    <string name="console_check_again">Check again</string>
+    <string name="console_checking_session">Checking the session…</string>
     <string name="session_closed_on_host">The session ended on the host.</string>
     <string name="console_terminate_session_other_stream">The host is running a stream MoonWaker does not own. Close it on the host.</string>
     <string name="console_close_session">Close session</string>
@@ -1254,10 +1257,13 @@
     <string name="transition_stream_display_not_configured">The streamed display is not configured on the host</string>
     <string name="transition_target_wrong_display">The game window is outside the streamed display. The picture stays hidden.</string>
     <string name="console_provider_stop_waiting_for_process">The game is still starting and has no process that can be closed yet. Wait a moment and try again.</string>
-    <string name="transition_step_pending">○  %1$s — pending</string>
-    <string name="transition_step_active">●  %1$s — active</string>
-    <string name="transition_step_complete">✓  %1$s — complete</string>
-    <string name="transition_step_error">!  %1$s — error</string>
+    <string name="transition_kicker_starting">Starting</string>
+    <string name="transition_kicker_running">Game running</string>
+    <string name="transition_kicker_switching">Switching</string>
+    <string name="transition_kicker_closing">Closing</string>
+    <string name="transition_kicker_failed">Didn’t work</string>
+    <string name="transition_switch_from">from %1$s</string>
+    <string name="transition_back_key_hint">Back</string>
     <string name="transition_waiting_gateway">Waiting for host readiness confirmation…</string>
     <string name="transition_window_stabilizing">Target window is stabilizing…</string>
     <string name="transition_cancel_details">The start was cancelled. Returning safely to the dashboard.</string>

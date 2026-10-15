@@ -4,7 +4,6 @@ import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -344,7 +343,7 @@ public class ConsoleChildProfileUiContractTest {
     }
 
     private static String source(String path) throws Exception {
-        return SourceText.read(Paths.get(path));
+        return SourceText.module(path);
     }
 
     private static String between(String source, String start, String end) {

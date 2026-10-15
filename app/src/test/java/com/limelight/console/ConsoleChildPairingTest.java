@@ -4,7 +4,6 @@ import com.limelight.SourceText;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.nio.file.Paths;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
@@ -17,8 +16,7 @@ public class ConsoleChildPairingTest {
 
     @Test public void authenticatedRepairUsesPinnedHttpsWhileLegacyUnpairStaysPendingOnly()
             throws IOException {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/nvstream/http/NvHTTP.java"));
+        String source = SourceText.main("nvstream/http/NvHTTP.java");
         String authenticated = between(source, "public boolean unpairAuthenticated()",
                 "public InputStream getBoxArt");
         String legacy = between(source, "public void unpair()",
@@ -31,8 +29,7 @@ public class ConsoleChildPairingTest {
     }
 
     @Test public void childPairingFailureOffersExplicitHostRepair() throws IOException {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String failure = between(source, "private String childLaunchFailureMessage(",
                 "private void refreshWarmUpObservation(");
         String pairHost = between(source, "private void pairHost(ComputerDetails host)",
@@ -66,8 +63,7 @@ public class ConsoleChildPairingTest {
     }
 
     @Test public void freshSelectedChildProfileRefreshStartsIdentityBinding() throws IOException {
-        String source = SourceText.read(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java"));
+        String source = SourceText.main("console/ConsoleActivity.java");
         String refresh = between(source, "private void refreshHostProfiles(",
                 "private void refreshVisibleHostProfiles(");
 
