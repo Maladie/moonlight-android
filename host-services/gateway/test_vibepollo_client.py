@@ -44,9 +44,8 @@ def probe(outcome="ok"):
 def fresh_sources(**changes):
     sources = {
         "session": {"appRunning": False, "activeSessions": 0},
-        "rtsp": {"sessions": []}, "webrtc": {"sessions": []},
         "apps": {"current_app": "", "apps": [{"uuid": "a", "id": "7", "name": "Stream"}]},
-        "clients": {"named_certs": [{"uuid": "c1", "name": "TV"}]},
+        "clients": {"named_certs": [{"uuid": "c1", "name": "TV", "connected": False}]},
     }
     sources.update(changes)
     return sources
@@ -55,54 +54,40 @@ def fresh_sources(**changes):
 class ControlSnapshotTest(unittest.TestCase):
     def test_fresh_sources_are_authoritative_and_keep_collections(self):
         snapshot = build_control_snapshot(fresh_sources(
-            apps={"current_app": "a", "apps": {"uuid": "a", "id": "7", "name": "Stream"}},
+            apps={"current_app": "a", "apps": [{"uuid": "a", "id": "7", "name": "Stream"}]},
             session={"appRunning": True, "activeSessions": 1},
-            rtsp={"sessions": {"uuid": "c1", "width": 1920}}), probe())
+            clients={"named_certs": [{"uuid": "c1", "name": "TV", "connected": True}]}),
+            probe())
         self.assertTrue(snapshot["control_fresh"])
         self.assertEqual([], snapshot["control_unavailable_sources"])
         self.assertEqual([{"uuid": "a", "app_id": 7, "name": "Stream", "running": True,
                            "playnite": False}], snapshot["apps"])
-        self.assertTrue(snapshot["clients"][0]["connected"])
+        self.assertEqual([{"uuid": "c1", "name": "TV", "connected": True}],
+                         snapshot["clients"])
         self.assertEqual({"active": True, "count": 1, "app_running": True},
                          {key: snapshot["session"][key]
                           for key in ("active", "count", "app_running")})
 
     def test_missing_source_is_named_never_an_empty_collection(self):
-        for source in ("rtsp", "webrtc", "apps", "clients"):
+        for source in ("session", "apps", "clients"):
             with self.subTest(source=source):
                 snapshot = build_control_snapshot(fresh_sources(**{source: None}), probe())
                 self.assertFalse(snapshot["control_fresh"])
-                self.assertIn(source, snapshot["control_unavailable_sources"])
+                self.assertEqual([source], snapshot["control_unavailable_sources"])
 
-    def test_null_rtsp_sessions_and_unknown_current_app_are_not_evidence(self):
-        snapshot = build_control_snapshot(fresh_sources(rtsp={"sessions": None}), probe())
-        self.assertIn("rtsp", snapshot["control_unavailable_sources"])
-        self.assertEqual("schema_invalid", snapshot["control_source_probe"]["rtsp"]["outcome"])
+    def test_non_list_collections_and_unknown_current_app_are_not_evidence(self):
+        for source, value in (("session", {"appRunning": True, "activeSessions": None}),
+                              ("clients", {"named_certs": {"uuid": "c1"}}),
+                              ("clients", {"named_certs": [{"uuid": "c1", "name": "TV"}]}),
+                              ("apps", {"current_app": "", "apps": {"uuid": "a"}})):
+            with self.subTest(source=source, value=value):
+                snapshot = build_control_snapshot(fresh_sources(**{source: value}), probe())
+                self.assertEqual([source], snapshot["control_unavailable_sources"])
+                self.assertEqual("schema_invalid",
+                                 snapshot["control_source_probe"][source]["outcome"])
         snapshot = build_control_snapshot(fresh_sources(
             apps={"current_app": "missing", "apps": [{"uuid": "a", "name": "Stream"}]}), probe())
         self.assertEqual(["apps"], snapshot["control_unavailable_sources"])
-
-    def test_complete_sources_replace_unavailable_session_status(self):
-        snapshot = build_control_snapshot(fresh_sources(
-            session=None, rtsp={"sessions": [{"uuid": "c1"}]},
-            apps={"current_app": "a", "apps": [{"uuid": "a", "id": "7", "name": "S"}]}),
-            probe())
-        self.assertTrue(snapshot["control_fresh"])
-        self.assertEqual("derived", snapshot["session"]["source"])
-        self.assertEqual((True, 1, True), (snapshot["session"]["active"],
-                                           snapshot["session"]["count"],
-                                           snapshot["session"]["app_running"]))
-        # An incomplete fallback stays unavailable.
-        snapshot = build_control_snapshot(fresh_sources(session=None, webrtc=None), probe())
-        self.assertEqual(["webrtc", "session"], snapshot["control_unavailable_sources"])
-
-    def test_session_status_count_without_transport_detail_is_an_active_stream(self):
-        snapshot = build_control_snapshot(fresh_sources(
-            session={"appRunning": True, "activeSessions": 1},
-            apps={"current_app": "a", "apps": [{"uuid": "a", "id": "7", "name": "S"}]}),
-            probe())
-        self.assertEqual((True, 1), (snapshot["session"]["active"], snapshot["session"]["count"]))
-        self.assertTrue(snapshot["session"]["stream"]["telemetry_limited"])
 
 
 class SettingsTest(unittest.TestCase):
@@ -248,7 +233,7 @@ class PairTest(StubbedApiTest):
             if self.pin_attempts < 3:
                 return {"status": False}
             self.clients.append({"uuid": "new", "name": "tv", "perm": 0,
-                                 "allow_client_commands": False, "do": {"cmd": "x"}})
+                                 "allow_client_commands": False, "do": [{"cmd": "x"}]})
             return {"status": True}
         if path == "/api/clients/update":
             if self.persist:
