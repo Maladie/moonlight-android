@@ -2304,7 +2304,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             selectedGameDescription = text("", 14, 0xFFD2D9E2, false);
             selectedGameDescription.setShadowLayer(dp(2), 0, dp(1), 0xE0000000);
             selectedGameDescription.setLineSpacing(0, 1.25f);
-            selectedGameDescription.setMaxLines(4);
+            selectedGameDescription.setMaxLines(7);
             selectedGameDescription.setEllipsize(TextUtils.TruncateAt.END);
             selectedGameDescription.setVisibility(
                     showCarouselGameDescription ? View.VISIBLE : View.GONE);
@@ -2326,7 +2326,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             LinearLayout.LayoutParams metadataParams = new LinearLayout.LayoutParams(
                     portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT : dp(484),
-                    dp(showCarouselGameDescription ? 140 : 36));
+                    dp(showCarouselGameDescription ? 196 : 36));
             if (!portraitLayout) metadataParams.leftMargin = -dp(54);
             metadataParams.topMargin = dp(4);
             homeContent.addView(selectedGameMetadata, metadataParams);
@@ -11579,6 +11579,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             ConsoleUiFeedback.makeText(this, R.string.error_pc_offline, Toast.LENGTH_SHORT).show();
             return;
         }
+        // The tile already shows the child's block (hours, limit): a popup, never a cover.
+        ChildEligibilityProjection childPolicy = childEligibilityProjection(
+                hostUuid, selectedProfileId(hostUuid));
+        if (childPolicy.blocked) {
+            ConsoleUiFeedback.makeText(this, childLaunchFailureMessage(childPolicy.reason),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
         GameOperationsController.Presentation operation =
                 gameOperationsController.presentation(hostUuid, item.game);
         if (operation.attentionRequired) {
@@ -15081,7 +15089,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (selectedGameMetadata != null) {
             ViewGroup.LayoutParams params = selectedGameMetadata.getLayoutParams();
             if (params != null) {
-                params.height = dp(showCarouselGameDescription ? 140 : 36);
+                params.height = dp(showCarouselGameDescription ? 196 : 36);
                 selectedGameMetadata.setLayoutParams(params);
             }
         }

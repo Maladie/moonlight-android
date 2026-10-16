@@ -53,6 +53,9 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(text.contains("lineView.setLines(LINE_COUNT);"));
         assertTrue(text.contains("lineView.setEllipsize(TextUtils.TruncateAt.END);"));
         assertFalse(text.contains("lineView.setSingleLine("));
+        // TV 2026-10-16: a tall compound-drawable dot grew the area and sat below the text.
+        assertTrue(text.contains("new BulletSpan("));
+        assertFalse(text.contains("lineView.setCompoundDrawables"));
         // TV 2026-10-15: the standard backdrop never shows for a frame before the artwork.
         assertTrue(text.contains("neutral || art || artwork.pending() ? GONE : VISIBLE"));
         assertFalse(text.contains("append('\\n')"));

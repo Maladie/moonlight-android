@@ -34,6 +34,8 @@ import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.preferences.CustomCommandsActivity;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
+import com.limelight.ui.ControllerGlyphs;
+import com.limelight.ui.overlay.OverlayMenuView;
 
 import java.io.OutputStream;
 import java.text.NumberFormat;
@@ -447,10 +449,31 @@ final class ConsoleStreamSettings {
                 percentStepper(panel, R.string.console_discord_volume,
                         DiscordAudioDownlink.GAIN_PREF, DiscordAudioDownlink.DEFAULT_GAIN, 50,
                         200, 5),
-                list(panel, R.string.console_discord_mute_shortcut, "discord_mute_shortcut", "x",
-                        R.array.discord_shortcut_names, R.array.discord_shortcut_values),
-                list(panel, R.string.console_discord_leave_shortcut, "discord_leave_shortcut", "y",
-                        R.array.discord_shortcut_names, R.array.discord_shortcut_values)};
+                discordShortcut(panel, R.string.console_discord_mute_shortcut,
+                        "discord_mute_shortcut", "x"),
+                discordShortcut(panel, R.string.console_discord_leave_shortcut,
+                        "discord_leave_shortcut", "y")};
+    }
+
+    /** A Guide chord drawn as the overlay draws it: "Guide +" and the button's glyph. */
+    private LinearLayout discordShortcut(ConsolePanel panel, int label, String key,
+                                         String fallback) {
+        String[] values = activity.getResources().getStringArray(
+                R.array.discord_shortcut_values);
+        boolean playStation = ControllerGlyphs.hasPlayStationController();
+        CharSequence[] names = new CharSequence[values.length];
+        for (int index = 0; index < values.length; index++) {
+            ControllerGlyphs.Button glyph = OverlayMenuView.discordShortcutGlyph(values[index]);
+            names[index] = glyph == null ? s(R.string.discord_shortcut_none)
+                    : ControllerGlyphs.chord(activity, s(R.string.discord_shortcut_guide),
+                    playStation, glyph);
+        }
+        int current = Arrays.asList(values).indexOf(prefs.getString(key, fallback));
+        LinearLayout row = panel.value(s(label), names[Math.max(0, current)]);
+        row.setOnClickListener(view -> screen.showChoices(s(label), "", names,
+                Arrays.asList(values).indexOf(prefs.getString(key, fallback)),
+                index -> prefs.edit().putString(key, values[index]).apply()));
+        return row;
     }
 
     /** Writes the diagnostics export chosen in the system document picker. */

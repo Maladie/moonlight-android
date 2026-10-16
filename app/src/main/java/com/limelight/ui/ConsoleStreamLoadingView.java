@@ -14,13 +14,14 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
 import android.text.TextUtils;
+import android.text.Spanned;
+import android.text.style.BulletSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.util.AttributeSet;
@@ -794,17 +795,17 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     private void applyLine() {
-        lineView.setText(lineTarget);
+        // The notice's dot is a bullet span: centred on the first line, wrapped lines hang
+        // after it, and the area keeps its LINE_COUNT height (a tall compound drawable grew it).
+        SpannableStringBuilder text = new SpannableStringBuilder(lineTarget);
+        if (lineIsNotice) {
+            text.setSpan(new BulletSpan(dp(7), WARN, dp(3)), 0, text.length(),
+                    Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+        }
+        lineView.setText(text);
         // Both read from the couch: the notice in full ink, the message a step softer.
         lineView.setTextColor(lineIsNotice ? INK : INK_SOFT);
         lineView.setTypeface(Typeface.DEFAULT, lineIsNotice ? Typeface.NORMAL : Typeface.ITALIC);
-        // The dot sits at the first line, not the middle of the area.
-        int firstLine = lineView.getLineHeight();
-        int top = (firstLine - dp(6)) / 2;
-        lineView.setCompoundDrawablesRelativeWithIntrinsicBounds(lineIsNotice
-                ? new InsetDrawable(dot(WARN), 0, top, 0, lineView.getLineHeight() * LINE_COUNT
-                        - top - dp(6)) : null, null, null, null);
-        lineView.setCompoundDrawablePadding(dp(7));
     }
 
     /** A changed stage cross-fades (out, then in) instead of swapping. */
@@ -955,13 +956,6 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
                 new int[]{ON_INK, INK});
     }
 
-    private GradientDrawable dot(int color) {
-        GradientDrawable dot = new GradientDrawable();
-        dot.setShape(GradientDrawable.OVAL);
-        dot.setColor(color);
-        dot.setSize(dp(6), dp(6));
-        return dot;
-    }
 
     /** The visible actions in display order. */
     private List<View> visibleActions() {

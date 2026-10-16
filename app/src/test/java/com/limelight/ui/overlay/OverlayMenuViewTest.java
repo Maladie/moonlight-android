@@ -66,11 +66,6 @@ public class OverlayMenuViewTest {
                 "if (overlayMode == OverlayMode.COMMUNITY)");
         assertFalse(dispatch.contains("keyCode == discordShortcutKeyCode(discordMuteShortcut)"));
 
-        String arrays = readProjectFile("src/main/res/values/arrays.xml",
-                "src/main/res/values/arrays.xml");
-        assertTrue(arrays.contains("@string/discord_shortcut_guide_x"));
-        assertTrue(arrays.contains("@string/discord_shortcut_guide_r3"));
-
         OverlayMenuView.GuideShortcutLatch leave =
                 new OverlayMenuView.GuideShortcutLatch();
         leave.handle(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BUTTON_MODE, 0,

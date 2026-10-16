@@ -3,6 +3,9 @@ package com.limelight.ui;
 import android.view.InputDevice;
 import android.content.Context;
 import android.graphics.Typeface;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.TypefaceSpan;
 
 import java.util.Locale;
 
@@ -80,6 +83,18 @@ public final class ControllerGlyphs {
             }
         }
         throw new IllegalArgumentException("Unsupported controller button " + button);
+    }
+
+    /** {@code format} ("Guide + %1$s") with the button drawn as its controller glyph. */
+    public static SpannableString chord(Context context, String format, boolean playStation,
+                                        Button button) {
+        String glyph = text(playStation, button);
+        String text = String.format(format, glyph);
+        int start = text.lastIndexOf(glyph);
+        SpannableString value = new SpannableString(text);
+        value.setSpan(new TypefaceSpan(typeface(context)), start, start + glyph.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return value;
     }
 
     private static boolean isGamepad(InputDevice device) {

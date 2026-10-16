@@ -2449,9 +2449,9 @@ public class OverlayMenuView extends LinearLayout {
             button.clearShortcut();
             return;
         }
-        button.setGuideChordShortcut(getContext().getString(R.string.discord_shortcut_guide),
-                ControllerGlyphs.typeface(getContext()),
-                ControllerGlyphs.text(playStationButtons, glyph));
+        button.setGuideChordShortcut(ControllerGlyphs.chord(getContext(),
+                getContext().getString(R.string.discord_shortcut_guide), playStationButtons,
+                glyph));
     }
 
     private static String normalizeDiscordShortcut(String value) {
@@ -2462,7 +2462,7 @@ public class OverlayMenuView extends LinearLayout {
         return "none";
     }
 
-    static ControllerGlyphs.Button discordShortcutGlyph(String value) {
+    public static ControllerGlyphs.Button discordShortcutGlyph(String value) {
         switch (normalizeDiscordShortcut(value)) {
             case "x": return ControllerGlyphs.Button.WEST;
             case "y": return ControllerGlyphs.Button.NORTH;

@@ -424,9 +424,9 @@ public class ConsoleActivityRequestedUiContractTest {
 
         assertTrue(metadata.contains(
                 "portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT : dp(484)"));
-        assertTrue(metadata.contains("selectedGameDescription.setMaxLines(4)"));
+        assertTrue(metadata.contains("selectedGameDescription.setMaxLines(7)"));
         assertTrue(metadata.contains(
-                "dp(showCarouselGameDescription ? 140 : 36)"));
+                "dp(showCarouselGameDescription ? 196 : 36)"));
     }
 
     @Test public void guineaPigFactExistsInEnglishAndPolishLoadingMessages() throws IOException {

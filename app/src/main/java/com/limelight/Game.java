@@ -6155,9 +6155,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             } else {
                 // Notice only; Cancel and an available manual reveal stay as they are.
                 consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot),
-                        snapshot.startTakingLonger
-                                ? getString(R.string.transition_start_taking_longer) : "",
-                        snapshot.updateProgress);
+                        transitionNotice(snapshot), snapshot.updateProgress);
                 consoleLoadingView.setManualRevealAvailable(
                         !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             }
@@ -6382,6 +6380,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         pendingAutomaticReveal = null;
     }
 
+    /**
+     * The card's wrapping notice: "taking longer" and the host's reason while it waits for the
+     * game's window (a sentence, too long for the single-line stage).
+     */
+    private String transitionNotice(LaunchTransitionSnapshot snapshot) {
+        String longer = snapshot.startTakingLonger
+                ? getString(R.string.transition_start_taking_longer) : "";
+        boolean waitingWindow = snapshot.state == LaunchTransitionState.GAME_PROCESS_RUNNING
+                || snapshot.state == LaunchTransitionState.GAME_WINDOW_STABILIZING
+                || snapshot.state == LaunchTransitionState.PLAYNITE_FULLSCREEN_STARTING;
+        if (!waitingWindow || snapshot.detail.isEmpty()) return longer;
+        return longer.isEmpty() ? snapshot.detail : longer + ". " + snapshot.detail;
+    }
+
     private String transitionStatus(LaunchTransitionSnapshot snapshot) {
         switch (snapshot.state) {
             case PREPARING_SESSION:
@@ -6396,8 +6408,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             case PLAYNITE_PROCESS_RUNNING:
                 return getString(R.string.transition_waiting_fullscreen);
             case PLAYNITE_FULLSCREEN_STARTING:
-                return snapshot.detail.isEmpty()
-                        ? getString(R.string.transition_waiting_fullscreen) : snapshot.detail;
+                return getString(R.string.transition_waiting_fullscreen);
             case GAME_UPDATING:
                 if (snapshot.updatePatching) {
                     return snapshot.updateProgress < 0
@@ -6413,13 +6424,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             case GAME_STARTING:
                 return getString(R.string.transition_starting_game);
             case GAME_PROCESS_RUNNING:
-                return snapshot.detail.isEmpty()
-                        ? getString(R.string.transition_game_running_waiting_window)
-                        : snapshot.detail;
             case GAME_WINDOW_STABILIZING:
-                return snapshot.detail.isEmpty()
-                        ? getString(R.string.transition_game_running_waiting_window)
-                        : snapshot.detail;
+                return getString(R.string.transition_game_running_waiting_window);
             case HOST_SESSION_LOCKED:
                 return getString(R.string.transition_host_session_locked);
             case LAUNCHER_INTERACTION_REQUIRED:

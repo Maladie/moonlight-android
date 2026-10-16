@@ -176,15 +176,6 @@
         <item>lb_rb</item>
     </string-array>
 
-    <string-array name="discord_shortcut_names">
-        <item>@string/discord_shortcut_none</item>
-        <item>@string/discord_shortcut_guide_x</item>
-        <item>@string/discord_shortcut_guide_y</item>
-        <item>@string/discord_shortcut_guide_l1</item>
-        <item>@string/discord_shortcut_guide_r1</item>
-        <item>@string/discord_shortcut_guide_l3</item>
-        <item>@string/discord_shortcut_guide_r3</item>
-    </string-array>
     <string-array name="discord_shortcut_values" translatable="false">
         <item>none</item><item>x</item><item>y</item><item>l1</item><item>r1</item><item>l3</item><item>r3</item>
     </string-array>

@@ -1499,14 +1499,17 @@ public class GameTransitionCancelContractTest {
     @Test public void lockedWindowsSessionReasonIsShownOnTheOverlay() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         String game = SourceText.read(source);
+        // The reason is a sentence: the wrapping notice, never the single-line stage.
+        String notice = game.substring(game.indexOf("private String transitionNotice("),
+                game.indexOf("private String transitionStatus("));
+        assertTrue(notice.contains("LaunchTransitionState.GAME_WINDOW_STABILIZING"));
+        assertTrue(notice.contains("snapshot.detail"));
         String status = game.substring(game.indexOf("private String transitionStatus("),
                 game.indexOf("private static String playniteInstallNotificationKey("));
-
         int stabilizing = status.indexOf("case GAME_WINDOW_STABILIZING:");
-        String branch = status.substring(stabilizing,
-                status.indexOf("case LAUNCHER_INTERACTION_REQUIRED:", stabilizing));
-        assertTrue(branch.contains("snapshot.detail.isEmpty()"));
-        assertTrue(branch.contains(": snapshot.detail"));
+        assertFalse(status.substring(stabilizing,
+                status.indexOf("case LAUNCHER_INTERACTION_REQUIRED:", stabilizing))
+                .contains("snapshot.detail"));
     }
 
     @Test public void retryCompletionCannotOutrunCancelOrAnotherGeneration() {

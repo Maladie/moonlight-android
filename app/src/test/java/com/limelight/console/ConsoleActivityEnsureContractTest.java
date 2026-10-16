@@ -514,6 +514,10 @@ public class ConsoleActivityEnsureContractTest {
                 "completion.accept(projected != null && sameRenderScope)"));
         assertTrue(activation.contains(
                 "playPlayniteGame(host, PlayniteTargetResolver.resolveNeutralStream(apps), item.game);"));
+        // A child's blocked tile answers with a popup before any cover or start.
+        SourceText.assertOrdered(activation, "if (childPolicy.blocked) {",
+                "ConsoleUiFeedback.makeText(this, childLaunchFailureMessage(childPolicy.reason),",
+                "playPlayniteGame(");
         assertTrue(orchestration.contains(
                 "LaunchTransitionType transitionType = intent.transitionType(type);"));
         assertFalse(actions.contains("playnite_choose_launch_method"));

@@ -133,14 +133,11 @@ public class OverlayMenuButton extends LinearLayout {
         showShortcut();
     }
 
-    /** A Guide chord: the "Guide + %s" text with the button drawn as its controller glyph. */
-    public void setGuideChordShortcut(String chordFormat, Typeface glyphTypeface, String glyph) {
-        String text = String.format(chordFormat, glyph);
-        int start = text.lastIndexOf(glyph);
-        SpannableString value = new SpannableString(text);
+    /** A Guide chord ({@link com.limelight.ui.ControllerGlyphs#chord}); its text before the glyph is smaller. */
+    public void setGuideChordShortcut(SpannableString value) {
+        TypefaceSpan[] glyph = value.getSpans(0, value.length(), TypefaceSpan.class);
+        int start = glyph.length == 0 ? value.length() : value.getSpanStart(glyph[0]);
         value.setSpan(new AbsoluteSizeSpan(TEXT_SIZE_SP, true), 0, start,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        value.setSpan(new TypefaceSpan(glyphTypeface), start, start + glyph.length(),
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         shortcutView.setTypeface(Typeface.DEFAULT);
         shortcutView.setText(value);

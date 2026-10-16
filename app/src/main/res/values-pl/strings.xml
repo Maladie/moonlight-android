@@ -271,12 +271,6 @@
     <string name="overlay_discord_unavailable">Sterowanie Discordem jest niedostępne</string>
     <string name="discord_shortcut_none">Brak</string>
     <string name="discord_shortcut_guide">Guide + %1$s</string>
-    <string name="discord_shortcut_guide_x">Guide + X / □</string>
-    <string name="discord_shortcut_guide_y">Guide + Y / △</string>
-    <string name="discord_shortcut_guide_l1">Guide + LB / L1</string>
-    <string name="discord_shortcut_guide_r1">Guide + RB / R1</string>
-    <string name="discord_shortcut_guide_l3">Guide + L3</string>
-    <string name="discord_shortcut_guide_r3">Guide + R3</string>
     <string name="title_custom_commands">Własne komendy</string>
     <string name="custom_commands_empty">Nie skonfigurowano własnych komend.\n\nNaciśnij przycisk +, aby dodać komendę.</string>
     <string name="custom_commands_add">Dodaj komendę</string>
