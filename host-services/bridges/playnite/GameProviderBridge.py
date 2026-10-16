@@ -2785,11 +2785,9 @@ class BridgeState:
         attention = bool(session and session.get("requires_attention"))
         kind = str((operation or {}).get("kind") or (session or {}).get("operation") or "install")
         active = bool(operation and operation.get("state") in ACTIVE_STATES)
-        if session and kind == "install":
-            # The launcher may keep Playnite's IsInstalling false while its own
-            # confirmation dialog is open. The Bridge session remains authoritative
-            # until Playnite reports completion or cancellation.
-            game["installing"] = True
+        # The Bridge session is the only owner of `installing`: catalog refreshes copy
+        # previous records and the cache outlives restarts, so a value they carry is stale.
+        game["installing"] = bool(session and kind == "install")
         game["uninstalling"] = bool(session and kind == "uninstall")
         game["operationState"] = str(operation.get("state") or "") if active else ""
         game["operationProgress"] = operation.get("progress") if active else None
@@ -3055,7 +3053,6 @@ class BridgeState:
                         self.operation_journal.update(
                             game_id, "completed" if name == "gameInstalled" else "cancelled")
                         if game is not None:
-                            game["installing"] = False
                             if name == "gameInstalled":
                                 game["installed"] = True
                             self._apply_installation_fields_locked(game_id, game)
@@ -3158,8 +3155,6 @@ class BridgeState:
                         self.installations.pop(game_id, None)
                         current = self.library.get(game_id)
                         if current is not None:
-                            current["installing"] = False
-                            current["uninstalling"] = False
                             self._apply_installation_fields_locked(game_id, current)
                             self._save_library_cache_locked()
                         return result
@@ -3529,7 +3524,6 @@ class BridgeState:
                 "primary_attempted": False, "primary_started": False,
                 "recovery_pending": False,
             }
-            game["installing"] = True
             self.external_uninstalled_overrides.discard(normalized)
             self._apply_installation_fields_locked(normalized, game)
             title = str(game.get("name") or "")
@@ -3554,7 +3548,6 @@ class BridgeState:
                 self.operation_journal.update(normalized, "failed", detail="dispatch_failed")
                 current = self.library.get(normalized)
                 if current is not None:
-                    current["installing"] = False
                     self.installations.pop(normalized, None)
                     self._apply_installation_fields_locked(normalized, current)
                     self._save_library_cache_locked()
@@ -3727,8 +3720,6 @@ class BridgeState:
                 launcher=str(sample.get("launcher") or {
                     "epic": "legendary.exe", "steam": "steam.exe"}.get(provider, "")))
             self.installations.pop(game_id, None)
-            game["installing"] = False
-            game["uninstalling"] = False
             self.external_installed_overrides.pop(game_id, None)
             self.external_uninstalled_overrides.discard(game_id)
             self._apply_installation_fields_locked(game_id, game)
@@ -3887,8 +3878,6 @@ class BridgeState:
                         return True
                     self.installations.pop(game_id, None)
                     self.operation_journal.update(game_id, "cancelled")
-                    game["installing"] = False
-                    game["uninstalling"] = False
                     self._apply_installation_fields_locked(game_id, game)
                     self._save_library_cache_locked()
                     self._publish_locked("game-installation-cancelled", {
