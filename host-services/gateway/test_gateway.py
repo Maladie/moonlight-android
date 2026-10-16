@@ -20,6 +20,24 @@ from provider_target_fixture import target_aware
 from wakeplay_gateway import (
     GatewayDiagnostics, GatewayHandler, GatewayState, diagnostic_route, sha256_text,
 )
+from control_snapshot_fixture import route_vibepollo_through_proxy
+from vibepollo_client import VibepolloError
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
+SESSION = "01234567-89ab-cdef-0123-456789abcdef"
+
+
+def activate_pairing(state: GatewayState, code: str = "123456", lifetime: int = 600) -> None:
+    """Activate a code the way Host Control does: its SHA-256 in pairing-code.json."""
+    state.pairing_control_path.write_text(json.dumps({
+        "code_sha256": sha256_text(code), "expires_at": int(time.time()) + lifetime,
+    }), encoding="utf-8")
+
+
+def paired_state(config_path: Path) -> GatewayState:
+    state = GatewayState(config_path)
+    activate_pairing(state)
+    return state
 
 
 class GatewayStateTest(unittest.TestCase):
@@ -27,8 +45,14 @@ class GatewayStateTest(unittest.TestCase):
         self.test_directory = tempfile.TemporaryDirectory()
         self.config_path = Path(self.test_directory.name) / "gateway-test-runtime.json"
         self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
             "certificate": "cert.pem",
             "private_key": "key.pem",
+            "profiles": {"default": {
+                "id": "default", "name": "Default", "enabled": True,
+                "discord_bridge": "http://127.0.0.1:8765",
+                "game_provider_bridge": "http://127.0.0.1:8780",
+            }},
             "clients": [],
         }), encoding="utf-8")
 
@@ -43,6 +67,7 @@ class GatewayStateTest(unittest.TestCase):
         handler.headers["Authorization"] = f"Bearer {token}"
         if profile_id is not None:
             handler.headers["X-WakePlay-Profile"] = profile_id
+            handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = SESSION
         handler.server = SimpleNamespace(state=state)
         handler.client_address = ("192.0.2.1", 12345)
         responses = []
@@ -81,7 +106,7 @@ class GatewayStateTest(unittest.TestCase):
                     "protected": ["use_profile"], "open": ["use_profile"]},
             }],
         }), encoding="utf-8")
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         return state, state.client_for_token("pin-token")
 
     def test_profile_pin_summary_exposes_only_requirement(self):
@@ -110,7 +135,7 @@ class GatewayStateTest(unittest.TestCase):
             self.assertFalse(wakeplay_gateway.verify_profile_pin("1357", verifier))
         self.assertEqual(2, compare.call_count)
 
-        status, result = state.verify_pin(client, "protected", "2468")
+        status, result = state.verify_pin(client, "protected", "2468", SESSION)
         self.assertEqual(200, status)
         self.assertTrue(result["unlocked"])
 
@@ -122,12 +147,12 @@ class GatewayStateTest(unittest.TestCase):
             "pin_verifier": state.config["profiles"]["protected"]["pin_verifier"],
         }
         with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
-            self.assertEqual(403, state.verify_pin(client, "protected", "1357")[0])
-            self.assertEqual(429, state.verify_pin(client, "protected", "1357")[0])
-            self.assertEqual(403, state.verify_pin(other, "protected", "1357")[0])
-            self.assertEqual(403, state.verify_pin(client, "second", "1357")[0])
+            self.assertEqual(403, state.verify_pin(client, "protected", "1357", SESSION)[0])
+            self.assertEqual(429, state.verify_pin(client, "protected", "1357", SESSION)[0])
+            self.assertEqual(403, state.verify_pin(other, "protected", "1357", SESSION)[0])
+            self.assertEqual(403, state.verify_pin(client, "second", "1357", SESSION)[0])
         with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=101.0):
-            status, result = state.verify_pin(client, "protected", "1357")
+            status, result = state.verify_pin(client, "protected", "1357", SESSION)
             self.assertEqual(403, status)
             self.assertEqual(2, result["retry_after_seconds"])
 
@@ -158,27 +183,12 @@ class GatewayStateTest(unittest.TestCase):
             handler.do_GET()
             self.assertEqual(200, responses[0][0])
 
-        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=401.0):
-            handler, responses = self.request_handler(
-                state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
-            handler.do_GET()
-            self.assertEqual(403, responses[0][0])
-
-    def test_legacy_unlock_lease_expires_after_five_minutes(self):
-        state, client = self.pin_state()
-        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
-            status, result = state.verify_pin(client, "protected", "2468")
-        self.assertEqual(200, status)
-        self.assertEqual(300, result["expires_in_seconds"])
-        self.assertEqual(400.0, state.pin_unlock_leases[("client-1", "protected")][0])
-
-        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=399.0):
-            state.require_profile_unlock(client, "protected")
-        self.assertEqual(400.0, state.pin_unlock_leases[("client-1", "protected")][0])
-
-        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=400.0):
-            with self.assertRaises(PermissionError):
-                state.require_profile_unlock(client, "protected")
+        handler, responses = self.request_handler(
+            state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
+        handler.headers.replace_header(wakeplay_gateway.PROFILE_SESSION_HEADER,
+                                       "fedcba98-7654-3210-fedc-ba9876543210")
+        handler.do_GET()
+        self.assertEqual(403, responses[0][0])
 
     def test_profile_session_unlock_survives_idle_and_replaces_prior_session(self):
         state, client = self.pin_state()
@@ -238,6 +248,7 @@ class GatewayStateTest(unittest.TestCase):
         with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
             handler, responses = self.request_handler(
                 state, "/api/v1/profiles/pin/verify", "pin-token", "protected")
+            del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.read_json = lambda: {"pin": "2468"}
             handler.do_POST()
@@ -248,6 +259,7 @@ class GatewayStateTest(unittest.TestCase):
                     (session_a, 200), (session_b, 403), (None, 403)):
                 handler, responses = self.request_handler(
                     state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
+                del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
                 if session_id is not None:
                     handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_id
                 handler.do_GET()
@@ -255,12 +267,14 @@ class GatewayStateTest(unittest.TestCase):
 
             handler, responses = self.request_handler(
                 state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
+            del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(200, responses[0][0])
 
             handler, responses = self.request_handler(
                 state, "/api/v1/session/observation?request_ordinal=1", "other-token", "protected")
+            del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(403, responses[0][0])
@@ -268,6 +282,7 @@ class GatewayStateTest(unittest.TestCase):
             handler, responses = self.request_handler(
                 state, "/api/v1/session/observation?request_ordinal=1",
                 "pin-token", "protected-other")
+            del handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER]
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(403, responses[0][0])
@@ -291,12 +306,27 @@ class GatewayStateTest(unittest.TestCase):
         self.assertIsNotNone(files)
         self.assertIn('"MoonWakerMicrophoneWorker.exe"', files.group(1))
 
-    def test_gateway_installer_packages_discord_audio_worker(self):
+    def test_gateway_installer_mirrors_optional_discord_audio_worker(self):
+        # Only a -WithDiscord package carries the worker; the installation mirrors it.
         installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
             encoding="utf-8-sig")
         files = re.search(r"\$files\s*=\s*@\((.*?)\)", installer, re.DOTALL)
         self.assertIsNotNone(files)
-        self.assertIn('"MoonWakerDiscordAudioWorker.exe"', files.group(1))
+        self.assertNotIn("MoonWakerDiscordAudioWorker.exe", files.group(1))
+        self.assertIn('$discordWorker = "MoonWakerDiscordAudioWorker.exe"', installer)
+        self.assertIn("$installedWorker = Join-Path $InstallDirectory $discordWorker", installer)
+        self.assertIn("Remove-Item -LiteralPath $installedWorker", installer)
+
+    def test_capabilities_report_discord_unavailable_without_discord_installed(self):
+        state = GatewayState(self.config_path)
+        state.config["profiles"]["default"]["discord_bridge"] = ""
+        state.vibepollo.api_online = lambda: False
+        state.microphone_status = lambda: {"available": False, "reason": "worker_missing"}
+        capabilities = state.capabilities()["capabilities"]
+        self.assertFalse(capabilities["discord"]["available"])
+        self.assertEqual({"available": False, "reason": "worker_missing"},
+                         {key: capabilities["discord_audio"][key]
+                          for key in ("available", "reason")})
 
     def test_gateway_installer_packages_control_policy(self):
         installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
@@ -307,7 +337,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertIn('"child_terminal_operation.py"', files.group(1))
 
     def test_pair_stores_only_token_hash(self):
-        state = GatewayState(self.config_path, "123456")
+        state = paired_state(self.config_path)
         result = state.pair("192.0.2.1", "123456", "Living room TV")
 
         stored = json.loads(self.config_path.read_text(encoding="utf-8"))["clients"][0]
@@ -320,8 +350,21 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(["default"], [profile["id"] for profile in result["profiles"]])
         self.assertIsNotNone(state.client_for_token(result["token"]))
 
+    def test_pair_strips_control_bidi_and_separator_characters_from_name(self):
+        state = paired_state(self.config_path)
+        state.pair("192.0.2.1", "123456", "Salon\n‮VT  ​\x7f TV" + "x" * 100)
+
+        name = json.loads(self.config_path.read_text(encoding="utf-8"))["clients"][0]["name"]
+        self.assertEqual(80, len(name))
+        self.assertTrue(name.startswith("SalonVT TV"))
+
+    def test_child_draft_rejects_bidi_and_separator_characters_in_name(self):
+        for name in ("Ania‮", "An ia", "An ia", "A​nia", "An\x85ia"):
+            with self.assertRaisesRegex(ValueError, "name or avatar"):
+                GatewayState._child_profile_draft({"name": name, "enabled": True, "schedule": {}})
+
     def test_default_profile_alias_selects_only_granted_profile(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"] = {
             "basia": {"id": "basia", "name": "Basia", "enabled": True},
         }
@@ -330,7 +373,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("basia", state.authorize_profile(client, "default"))
 
     def test_pair_merges_into_current_registry_without_losing_profile_edits(self):
-        state = GatewayState(self.config_path, "123456")
+        state = paired_state(self.config_path)
         externally_edited = json.loads(self.config_path.read_text(encoding="utf-8"))
         externally_edited["profiles"]["added"] = {
             "id": "added", "name": "Added", "enabled": True,
@@ -351,116 +394,6 @@ class GatewayStateTest(unittest.TestCase):
                          [profile["id"] for profile in result["profiles"]])
         self.assertIsNotNone(state.client_for_token(result["token"]))
 
-    def test_legacy_schema_migrates_profiles_and_clients_without_remote_grants(self):
-        token_hash = sha256_text("legacy-token")
-        self.config_path.write_text(json.dumps({
-            "certificate": "cert.pem",
-            "private_key": "key.pem",
-            "profiles": {
-                "basia": {
-                    "name": "Basia",
-                    "owner": "HOST\\Basia",
-                    "profile_root": "C:\\MoonWaker\\Basia",
-                    "discord_bridge": "http://127.0.0.1:8865",
-                    "vibepollo_bridge": "http://127.0.0.1:8875",
-                    "playnite_bridge": "http://127.0.0.1:8880",
-                    "integration_token": "preserved-token",
-                    "remote_sign_in_enabled": True,
-                },
-                "manual": {
-                    "name": "Manual",
-                    "owner": "HOST\\Missing",
-                    "remote_sign_in_enabled": True,
-                },
-                "disabled": {
-                    "name": "Disabled",
-                    "enabled": False,
-                },
-            },
-            "clients": [{
-                "id": "legacy-client",
-                "name": "TV",
-                "token_sha256": token_hash,
-                "paired_at": 123,
-                "profile_grants": {
-                    "basia": ["use_profile", "remote_sign_in"],
-                },
-            }],
-        }), encoding="utf-8")
-        self.config_path.with_suffix(self.config_path.suffix + ".lock").write_bytes(b"0")
-
-        with mock.patch.object(
-                wakeplay_gateway, "resolve_windows_account_sid",
-                side_effect=lambda name: (
-                    "S-1-5-21-1-2-3-1001" if name == "HOST\\Basia" else "")):
-            state = GatewayState(self.config_path, None)
-
-        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
-                         saved["schema_version"])
-        basia = saved["profiles"]["basia"]
-        self.assertEqual("basia", basia["id"])
-        self.assertEqual("Basia", basia["display_name"])
-        self.assertEqual("S-1-5-21-1-2-3-1001", basia["windows_account_sid"])
-        self.assertEqual(basia["windows_account_sid"], basia["owner_sid"])
-        self.assertEqual("HOST\\Basia", basia["windows_account_name"])
-        self.assertEqual("C:\\MoonWaker\\Basia", basia["profile_root"])
-        self.assertEqual("http://127.0.0.1:8880", basia["game_provider_bridge"])
-        self.assertEqual("preserved-token", basia["integration_token"])
-        self.assertFalse(basia["remote_sign_in_enabled"])
-        manual = saved["profiles"]["manual"]
-        self.assertEqual("action_required", manual["account_mapping_status"])
-        self.assertFalse(manual["remote_sign_in_enabled"])
-        self.assertIn("manual", saved["profiles"])
-        client = saved["clients"][0]
-        self.assertEqual(token_hash, client["token_sha256"])
-        self.assertEqual(
-            {"basia": ["use_profile"], "default": ["use_profile"],
-             "disabled": ["use_profile"],
-             "manual": ["use_profile"]},
-            client["profile_grants"])
-        for permissions in client["profile_grants"].values():
-            self.assertNotIn("remote_sign_in", permissions)
-        with self.assertRaises(PermissionError):
-            state.authorize_profile(client, "basia", "remote_sign_in")
-
-    def test_schema2_to3_preserves_standard_identity_and_grants(self):
-        verifier = {
-            "version": 1, "algorithm": "pbkdf2-sha256", "iterations": 100_000,
-            "salt": "MDEyMzQ1Njc4OWFiY2RlZg==", "digest": "preserved-digest",
-        }
-        self.config_path.write_text(json.dumps({
-            "schema_version": 2,
-            "certificate": "cert.pem", "private_key": "key.pem",
-            "profiles": {"basia": {
-                "id": "basia", "name": "Basia", "display_name": "Basia",
-                "enabled": True, "owner_sid": "S-1-5-21-1-2-3-1001",
-                "windows_account_sid": "S-1-5-21-1-2-3-1001",
-                "owner": "HOST\\Basia", "windows_account_name": "HOST\\Basia",
-                "profile_root": "C:\\MoonWaker\\basia", "pin_verifier": verifier,
-                "remote_sign_in_enabled": True,
-            }},
-            "clients": [{
-                "id": "client-1", "token_sha256": sha256_text("schema2-token"),
-                "profile_grants": {"basia": ["use_profile", "remote_sign_in"]},
-            }],
-        }), encoding="utf-8")
-        with mock.patch.object(
-                wakeplay_gateway, "resolve_windows_account_sid",
-                side_effect=AssertionError("schema2 migration resolved a SID")) as resolver:
-            state = GatewayState(self.config_path, None)
-        resolver.assert_not_called()
-        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(3, saved["schema_version"])
-        self.assertNotIn("default", saved["profiles"])
-        profile = saved["profiles"]["basia"]
-        self.assertEqual("S-1-5-21-1-2-3-1001", profile["windows_account_sid"])
-        self.assertEqual("C:\\MoonWaker\\basia", profile["profile_root"])
-        self.assertEqual(verifier, profile["pin_verifier"])
-        self.assertEqual({"basia": ["use_profile", "remote_sign_in"]},
-                         saved["clients"][0]["profile_grants"])
-        self.assertEqual("basia", state.config["profiles"]["basia"]["id"])
-
     def test_current_schema_missing_or_malformed_grants_fail_closed(self):
         self.config_path.write_text(json.dumps({
             "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
@@ -474,25 +407,10 @@ class GatewayStateTest(unittest.TestCase):
             ],
         }), encoding="utf-8")
 
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
 
         self.assertEqual({}, state.config["clients"][0]["profile_grants"])
         self.assertEqual({}, state.config["clients"][1]["profile_grants"])
-
-    def test_current_schema_does_not_resurrect_removed_compatibility_profile(self):
-        self.config_path.write_text(json.dumps({
-            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
-            "certificate": "cert.pem",
-            "private_key": "key.pem",
-            "profiles": {},
-            "clients": [],
-        }), encoding="utf-8")
-
-        state = GatewayState(self.config_path, None)
-
-        self.assertEqual({}, state.config["profiles"])
-        self.assertEqual({}, json.loads(
-            self.config_path.read_text(encoding="utf-8"))["profiles"])
 
     def test_tombstoned_profile_stays_disabled_and_cannot_be_used_or_regranted(self):
         token = "existing-client-token"
@@ -504,7 +422,6 @@ class GatewayStateTest(unittest.TestCase):
             "private_key": "key.pem",
             "profiles": {"pending": {
                 "id": "pending", "name": "Pending", "enabled": True,
-                "owner_sid": "S-1-5-21-1-2-3-1001",
                 "windows_account_sid": "S-1-5-21-1-2-3-1001",
                 "remote_sign_in_enabled": True,
                 "deletion_tombstone": tombstone,
@@ -517,7 +434,7 @@ class GatewayStateTest(unittest.TestCase):
             }],
         }), encoding="utf-8")
 
-        state = GatewayState(self.config_path, "123456")
+        state = paired_state(self.config_path)
         pending = state.config["profiles"]["pending"]
         self.assertFalse(pending["enabled"])
         self.assertFalse(pending["remote_sign_in_enabled"])
@@ -550,13 +467,13 @@ class GatewayStateTest(unittest.TestCase):
                          "profile_grants": {}}],
         }), encoding="utf-8")
 
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
 
         self.assertEqual(123, state.config["clients"][0]["last_seen_at"])
 
     @unittest.skipUnless(os.name == "nt", "Windows delete-sharing semantics")
     def test_registry_replace_waits_out_a_brief_reader_without_delete_sharing(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         registry = json.loads(self.config_path.read_text(encoding="utf-8"))
         registry["certificate"] = "rotated.pem"
         reader = self.config_path.open("rb")  # Python opens without FILE_SHARE_DELETE
@@ -571,7 +488,7 @@ class GatewayStateTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows delete-sharing semantics")
     def test_registry_replace_held_past_the_bound_keeps_the_original(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         original = self.config_path.read_text(encoding="utf-8")
         registry = json.loads(original)
         registry["certificate"] = "lost.pem"
@@ -584,7 +501,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertFalse(self.config_path.with_suffix(self.config_path.suffix + ".tmp").exists())
 
     def test_registry_replace_does_not_retry_other_errors(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         registry = json.loads(self.config_path.read_text(encoding="utf-8"))
 
         with mock.patch.object(wakeplay_gateway.os, "replace",
@@ -594,7 +511,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(1, replace.call_count)
 
-    def test_migration_never_replaces_registry_changed_while_starting(self):
+    def test_startup_never_replaces_registry_changed_while_starting(self):
         replacement = {
             "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
             "certificate": "replacement-cert.pem",
@@ -609,15 +526,15 @@ class GatewayStateTest(unittest.TestCase):
             yield
 
         with mock.patch.object(GatewayState, "registry_update_lock", concurrent_edit):
-            with self.assertRaisesRegex(RuntimeError, "changed during migration"):
-                GatewayState(self.config_path, None)
+            with self.assertRaisesRegex(RuntimeError, "changed during startup"):
+                GatewayState(self.config_path)
 
         self.assertEqual(
             "replacement-cert.pem",
             json.loads(self.config_path.read_text(encoding="utf-8"))["certificate"])
 
     def test_live_gateway_refuses_to_mutate_newer_registry_schema(self):
-        state = GatewayState(self.config_path, "123456")
+        state = paired_state(self.config_path)
         newer = json.loads(self.config_path.read_text(encoding="utf-8"))
         newer["schema_version"] = wakeplay_gateway.GATEWAY_SCHEMA_VERSION + 1
         self.config_path.write_text(json.dumps(newer), encoding="utf-8")
@@ -642,7 +559,7 @@ class GatewayStateTest(unittest.TestCase):
                 "profile_grants": {"default": ["use_profile", "remote_sign_in"]},
             }],
         }), encoding="utf-8")
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         self.assertIsNotNone(state.client_for_token(token))
 
         edited = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -656,7 +573,7 @@ class GatewayStateTest(unittest.TestCase):
             state.authorize_profile(client, "default", "remote_sign_in")
 
     def test_client_last_seen_write_is_throttled(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         token = "known-token"
         state.config["clients"].append({
             "id": "client-1",
@@ -687,16 +604,16 @@ class GatewayStateTest(unittest.TestCase):
             self.config_path.with_name("client-activity.json").read_text(encoding="utf-8"))
         self.assertEqual(1300, activity["clients"]["client-1"])
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         self.assertEqual(1300, restarted.config["clients"][0]["last_seen_at"])
 
     def test_invalid_pairing_code_is_rejected(self):
-        state = GatewayState(self.config_path, "123456")
+        state = paired_state(self.config_path)
         with self.assertRaises(PermissionError):
             state.pair("192.0.2.1", "000000", "TV")
 
     def test_pair_issues_short_lived_stream_pair_ticket(self):
-        state = GatewayState(self.config_path, "123456")
+        state = paired_state(self.config_path)
         result = state.pair("192.0.2.1", "123456", "TV")
 
         self.assertTrue(result["stream_pair_ticket"])
@@ -705,13 +622,13 @@ class GatewayStateTest(unittest.TestCase):
                          self.config_path.read_text(encoding="utf-8"))
 
     def test_stream_pair_ticket_is_bound_to_gateway_client_and_consumed(self):
-        state = GatewayState(self.config_path, "123456")
+        state = paired_state(self.config_path)
         pairing = state.pair("192.0.2.1", "123456", "TV")
         client = state.client_for_token(pairing["token"])
         calls = []
-        state.proxy_json = lambda name, path, body, timeout=8.0: (
-            calls.append((name, path, body, timeout)) or
-            (True, {"client_uuid": "paired-client", "permissions": 0x07001F00}))
+        state.vibepollo.pair = lambda pin, name: (
+            calls.append((pin, name)) or
+            {"ok": True, "client_uuid": "paired-client", "permissions": 0x07001F00})
 
         status, result = state.vibepollo_pair_client(
             "192.0.2.1", client, pairing["stream_pair_ticket"],
@@ -719,31 +636,33 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual(("vibepollo", "/pair",
-                          {"pin": "1234", "name": "MoonWaker TV"}, 50.0), calls[0])
+        self.assertEqual([("1234", "MoonWaker TV")], calls)
         with self.assertRaises(PermissionError):
             state.vibepollo_pair_client(
                 "192.0.2.1", client, pairing["stream_pair_ticket"],
                 {"pin": "1234", "name": "MoonWaker TV"})
 
-    def test_stream_pair_failure_preserves_bridge_detail_and_stage(self):
-        state = GatewayState(self.config_path, "123456")
+    def test_stream_pair_failure_preserves_vibepollo_detail_and_stage(self):
+        state = paired_state(self.config_path)
         pairing = state.pair("192.0.2.1", "123456", "TV")
         client = state.client_for_token(pairing["token"])
-        state.proxy_json = lambda *args, **kwargs: (
-            False, {"error": "Vibepollo has no pending pairing session"})
+
+        def failing_pair(_pin, _name):
+            raise VibepolloError("Vibepollo has no pending pairing session")
+
+        state.vibepollo.pair = failing_pair
 
         status, result = state.vibepollo_pair_client(
             "192.0.2.1", client, pairing["stream_pair_ticket"],
             {"pin": "1234", "name": "MoonWaker TV"})
 
         self.assertEqual(502, status)
-        self.assertEqual("vibepollo_bridge", result["stage"])
+        self.assertEqual("vibepollo", result["stage"])
         self.assertEqual("vibepollo_pairing_failed", result["reason"])
         self.assertIn("Vibepollo has no pending pairing session", result["error"])
 
     def test_stream_pair_ticket_rejects_another_address(self):
-        state = GatewayState(self.config_path, "123456")
+        state = paired_state(self.config_path)
         pairing = state.pair("192.0.2.1", "123456", "TV")
         client = state.client_for_token(pairing["token"])
         with self.assertRaises(PermissionError):
@@ -751,8 +670,73 @@ class GatewayStateTest(unittest.TestCase):
                 "192.0.2.2", client, pairing["stream_pair_ticket"],
                 {"pin": "1234", "name": "MoonWaker TV"})
 
+    def test_gateway_status_without_a_stream_record_has_no_session(self):
+        state = GatewayState(self.config_path)
+        checks = []
+        state.vibepollo.api_online = lambda: checks.append(1) or True
+        replaced = []
+
+        def replace(source, destination, **kwargs):
+            # Written beside the target and complete before it replaces it.
+            self.assertEqual(destination.parent, source.parent)
+            self.assertIn("vibepollo_api_online", source.read_text(encoding="utf-8"))
+            replaced.append(destination)
+            wakeplay_gateway.os.replace(source, destination)
+
+        with mock.patch.object(wakeplay_gateway, "replace_registry_file", replace):
+            state.publish_gateway_status()
+            state.publish_gateway_status()
+
+        published = json.loads(state.gateway_status_path.read_text(encoding="utf-8"))
+        self.assertEqual("gateway-status.json", state.gateway_status_path.name)
+        self.assertEqual(state.gateway_runtime_path.parent, state.gateway_status_path.parent)
+        self.assertEqual({"vibepollo_api_online", "vibepollo_checked_at", "updated_at"},
+                         set(published))
+        self.assertTrue(published["vibepollo_api_online"])
+        self.assertAlmostEqual(time.time(), published["vibepollo_checked_at"], delta=5)
+        # One Vibepollo check per period, and an unchanged status is not rewritten.
+        self.assertEqual(([1], [state.gateway_status_path]), (checks, replaced))
+        self.assertEqual([state.gateway_status_path.name],
+                         [path.name for path in state.gateway_status_path.parent.glob(
+                             "gateway-status*")])
+
+    def test_gateway_status_publishes_the_stream_record_without_secrets(self):
+        state = GatewayState(self.config_path)
+        state.vibepollo.api_online = lambda: False
+        state.config["profiles"]["default"]["display_name"] = "Mariusz"
+        state.config["clients"].append({
+            "id": "client-7f3a", "name": "Salon TV", "token_sha256": "a" * 64,
+            "vibepollo_client_uuids": {"default": "uuid-secret"}, "profile_grants": {}})
+        stream = {
+            "client_id": "client-7f3a", "actor_profile_id": "default",
+            "execution_profile_id": "default", "vibepollo_client_uuid": "uuid-secret",
+            "stream_session_id": "stream-session-secret", "sunshine_app_id": 7,
+            "generation": 3, "actor_lease_epoch": 2, "child_session_id": "",
+            "provider_game_id": "steam:1091500", "process_token": "process-token-secret",
+            "process_id": 4242, "stream_started_unix_ms": 1_760_000_000_000}
+        state.control_state["stream"] = stream
+        state.publish_gateway_status()
+
+        text = state.gateway_status_path.read_text(encoding="utf-8")
+        published = json.loads(text)
+        self.assertFalse(published["vibepollo_api_online"])
+        self.assertEqual({
+            "actor_profile_id": "default", "actor_profile_name": "Mariusz",
+            "execution_profile_id": "default", "execution_profile_name": "Mariusz",
+            "client_name": "Salon TV", "game_id": "steam:1091500",
+            "stream_started_unix_ms": 1_760_000_000_000}, published["session"])
+        for secret in ("a" * 64, "client-7f3a", "uuid-secret", "stream-session-secret",
+                       "process-token-secret", "4242", "token"):
+            self.assertNotIn(secret, text)
+
+        # The record ends: the session field goes at the next publication.
+        state.control_state["stream"] = None
+        state.publish_gateway_status()
+        self.assertNotIn("session", json.loads(
+            state.gateway_status_path.read_text(encoding="utf-8")))
+
     def test_runtime_report_identifies_the_running_gateway_build(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.write_runtime_info()
 
         runtime = json.loads(state.gateway_runtime_path.read_text(encoding="utf-8"))
@@ -761,24 +745,132 @@ class GatewayStateTest(unittest.TestCase):
         self.assertIn("source_sha256", runtime)
 
     def test_running_gateway_accepts_locally_activated_pairing_code(self):
-        state = GatewayState(self.config_path, None)
-        state.pairing_control_path.write_text(json.dumps({
-            "code_sha256": sha256_text("654321"),
-            "expires_at": int(__import__("time").time()) + 600,
-        }), encoding="utf-8")
+        state = GatewayState(self.config_path)
+        self.assertFalse(state.pairing_active())
+        activate_pairing(state, "654321")
 
         self.assertTrue(state.pairing_active())
         result = state.pair("192.0.2.1", "654321", "TV")
         self.assertIsNotNone(state.client_for_token(result["token"]))
 
+    def test_emptied_pairing_file_cancels_the_code(self):
+        # Host Control's "Anuluj" empties the file in place; the file is the only source.
+        for cancelled in ("{}", "", '{"expires_at": 9999999999}'):
+            state = paired_state(self.config_path)
+            self.assertTrue(state.pairing_active())
+            state.pairing_control_path.write_text(cancelled, encoding="utf-8")
+            self.assertFalse(state.pairing_active())
+            with self.assertRaisesRegex(PermissionError, "not active"):
+                state.pair("192.0.2.1", "123456", "TV")
+        state.pairing_control_path.unlink()
+        with self.assertRaisesRegex(PermissionError, "not active"):
+            state.pair("192.0.2.1", "123456", "TV")
+
+    def test_pairing_code_expires_and_rejects_a_longer_lifetime(self):
+        state = GatewayState(self.config_path)
+        for lifetime in (-1, 0, 601):
+            activate_pairing(state, lifetime=lifetime)
+            with self.assertRaisesRegex(PermissionError, "not active"):
+                state.pair("192.0.2.1", "123456", "TV")
+        self.assertEqual([], json.loads(self.config_path.read_text(encoding="utf-8"))["clients"])
+
+    def test_pairing_rate_limit_is_per_address(self):
+        state = paired_state(self.config_path)
+        for _ in range(5):
+            with self.assertRaisesRegex(PermissionError, "Invalid"):
+                state.pair("192.0.2.1", "000000", "TV")
+        self.assertEqual(5, len(state.failed_pair_attempts["192.0.2.1"]))
+        with self.assertRaisesRegex(PermissionError, "Too many"):
+            state.pair("192.0.2.1", "123456", "TV")
+        self.assertIsNotNone(state.client_for_token(
+            state.pair("192.0.2.2", "123456", "TV")["token"]))
+
+    def test_pairing_code_uses_constant_time_comparison(self):
+        state = paired_state(self.config_path)
+        with mock.patch.object(wakeplay_gateway.secrets, "compare_digest",
+                               wraps=wakeplay_gateway.secrets.compare_digest) as compare:
+            state.pair("192.0.2.1", "123456", "TV")
+        compare.assert_any_call(sha256_text("123456"), sha256_text("123456"))
+
+    def test_pairing_file_is_bounded_and_needs_a_lowercase_sha256(self):
+        state = GatewayState(self.config_path)
+        valid = json.dumps({"code_sha256": sha256_text("123456"),
+                            "expires_at": int(time.time()) + 600})
+        limit = wakeplay_gateway.PAIRING_CONTROL_MAX_BYTES
+        for size, active in ((limit, True), (limit + 1, False)):
+            state.pairing_control_path.write_bytes(valid.encode().ljust(size))
+            self.assertEqual(active, state.pairing_active(), size)
+        digest = sha256_text("123456")
+        for bad in (digest.upper(), digest[:-1], digest + "0", digest + "\n", "z" * 64):
+            state.pairing_control_path.write_text(json.dumps(
+                {"code_sha256": bad, "expires_at": int(time.time()) + 600}), encoding="utf-8")
+            self.assertFalse(state.pairing_active(), bad)
+
+    def test_pairing_code_pairs_one_tv(self):
+        state = paired_state(self.config_path)
+        state.pair("192.0.2.1", "123456", "TV")
+        self.assertEqual("{}", state.pairing_control_path.read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(PermissionError, "not active"):
+            state.pair("192.0.2.2", "123456", "Second TV")
+        state.pairing_control_path.unlink()
+        state.consume_pairing_code()
+        self.assertFalse(state.pairing_control_path.exists())
+
+    def test_unconsumable_pairing_code_keeps_the_pairing(self):
+        state = paired_state(self.config_path)
+        real_open = Path.open
+
+        def read_only(path, mode="r", *args, **kwargs):
+            if mode == "r+b":
+                raise PermissionError("denied")
+            return real_open(path, mode, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", read_only), \
+                mock.patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
+            result = state.pair("192.0.2.1", "123456", "TV")
+        self.assertIsNotNone(state.client_for_token(result["token"]))
+        self.assertIn("pairing-code-not-consumed", [call.args[0] for call in record.call_args_list])
+
+    def test_vibepollo_repair_keeps_the_android_shape(self):
+        state = GatewayState(self.config_path)
+        # Without a token the machine's Vibepollo is unavailable, never a crash.
+        state.vibepollo = wakeplay_gateway.VibepolloClient(
+            Path(self.test_directory.name) / "vibepollo-api.json",
+            Path(self.test_directory.name) / "exports")
+        status, result = state.vibepollo_status()
+        self.assertEqual((503, False), (int(status), result["ok"]))
+        self.assertFalse(state.vibepollo.api_online())
+
+        class Configured:
+            def configured(self):
+                return True
+
+            def repair_status(self):
+                return {"host": {"online": True, "version": "1.18.4", "platform": "windows"},
+                        "bridge": {"online": True, "api_error": "", "uptime_seconds": 1,
+                                   "base_url": "https://127.0.0.1:47990"}}
+
+            def action(self, name):
+                raise VibepolloError("HTTP 503: busy", kind="http", status=503)
+
+        state.vibepollo = Configured()
+        status, result = state.vibepollo_status()
+        self.assertEqual(200, int(status))
+        self.assertEqual((True, True, "1.18.4", ""),
+                         (result["ok"], result["host"]["online"], result["host"]["version"],
+                          result["bridge"]["api_error"]))
+        status, result = state.vibepollo_action("restart")
+        self.assertEqual((502, False, 503), (int(status), result["ok"], result["result"]["status"]))
+        self.assertEqual(404, int(state.vibepollo_action("delete-everything")[0]))
+
     def test_bridge_url_must_remain_on_loopback(self):
-        state = GatewayState(self.config_path, None)
-        state.config["profiles"]["default"]["vibepollo_bridge"] = "http://192.0.2.2:8775"
+        state = GatewayState(self.config_path)
+        state.config["profiles"]["default"]["discord_bridge"] = "http://192.0.2.2:8765"
         with self.assertRaises(ValueError):
-            state.bridge_url("vibepollo", "/health")
+            state.bridge_url("discord", "/health")
 
     def test_microphone_probe_is_fail_closed_and_uses_worker_probe(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         self.assertFalse(state.probe_microphone())
         self.assertEqual(
             {"available": False, "reason": "worker_missing"},
@@ -798,7 +890,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual([str(worker), "--probe"], run.call_args.args[0])
 
     def test_microphone_capability_exposes_only_safe_status(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         with mock.patch.object(state, "proxy", return_value=(False, {})), \
                 mock.patch.object(state, "microphone_status", return_value={
                     "available": False,
@@ -813,7 +905,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertNotIn("path", microphone)
 
     def test_discord_audio_status_uses_private_target_and_exposes_safe_reason(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         worker = self.config_path.with_name("discord-audio-worker.exe")
         worker.write_bytes(b"test")
         self.addCleanup(lambda: worker.unlink(missing_ok=True))
@@ -1074,7 +1166,7 @@ class GatewayStateTest(unittest.TestCase):
         process.wait.assert_called_once_with(timeout=2.0)
 
     def test_sleep_host_schedules_native_action_without_waiting(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         scheduled = []
         state._schedule_system_sleep = lambda: scheduled.append(True)
 
@@ -1089,7 +1181,7 @@ class GatewayStateTest(unittest.TestCase):
             self.assertEqual([], scheduled)
 
     def test_suspend_session_validates_and_delays_sleep_for_stream_shutdown(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         scheduled = []
         state._schedule_system_sleep = lambda delay=0.75, force=False: scheduled.append((delay, force))
         suspend_id = "4f31dce8-8743-4a18-aed4-0abf09e589d1"
@@ -1112,7 +1204,7 @@ class GatewayStateTest(unittest.TestCase):
             self.assertEqual([], scheduled)
 
     def test_suspend_session_rejects_missing_sunshine_application(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         if os.name != "nt":
             self.skipTest("Windows-only validation path")
         state._schedule_system_sleep = lambda delay=0.75, force=False: self.fail("must not sleep")
@@ -1126,7 +1218,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertFalse(result["ok"])
 
     def test_suspend_session_rejects_mismatched_suspend_id(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         status, result = state.suspend_session({
             "suspend_id": "request-a", "sunshine_app_id": 42
         }, "request-b")
@@ -1135,7 +1227,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertFalse(result["ok"])
 
     def test_suspend_idempotency_reuses_typed_acceptance(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         calls = []
         operation = lambda: (calls.append(True) or (202, {
             "accepted": True, "suspend_id": "request-a"
@@ -1147,12 +1239,11 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual([True], calls)
     def test_profile_selects_its_own_loopback_bridges(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://localhost:8875",
-            "playnite_bridge": "http://127.0.0.1:8880",
+            "game_provider_bridge": "http://127.0.0.1:8880",
         }
 
         self.assertEqual("basia", state.select_profile("basia"))
@@ -1173,20 +1264,20 @@ class GatewayStateTest(unittest.TestCase):
             return False, {"error": "fixture_offline"}
 
         state.proxy = proxy
+        # The machine's Vibepollo is no profile Bridge.
+        state.vibepollo = mock.Mock(**{"api_online.return_value": False})
         self.assertEqual("basia", state.capabilities()["gateway"]["integration_profile_id"])
         self.assertEqual([
-            "http://localhost:8875/health",
             "http://127.0.0.1:8865/health",
             "http://127.0.0.1:8880/observation",
         ], probed)
 
     def test_authenticated_profile_use_is_persisted_for_host_control(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://127.0.0.1:8875",
-            "playnite_bridge": "http://127.0.0.1:8880",
+            "game_provider_bridge": "http://127.0.0.1:8880",
         }
 
         state.select_profile("basia", record_use=True)
@@ -1203,12 +1294,11 @@ class GatewayStateTest(unittest.TestCase):
                                "runtime-status.json")
 
     def test_rejected_runtime_status_replace_does_not_deny_authorized_request(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://127.0.0.1:8875",
-            "playnite_bridge": "http://127.0.0.1:8880",
+            "game_provider_bridge": "http://127.0.0.1:8880",
         }
         state.request_context.request_id = "request-7"
         recorder = mock.Mock()
@@ -1262,19 +1352,18 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(403, responses[0][0])
 
     def test_unknown_or_invalid_profile_is_rejected(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         with self.assertRaises(ValueError):
             state.select_profile("missing")
         with self.assertRaises(ValueError):
             state.select_profile("../default")
 
     def test_profile_listing_is_filtered_to_client_use_grants(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {
             "name": "Basia",
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://127.0.0.1:8875",
             "game_provider_bridge": "http://127.0.0.1:8880",
         }
         token = "filtered-token"
@@ -1299,7 +1388,7 @@ class GatewayStateTest(unittest.TestCase):
             profile["id"] for profile in responses[0][1]["profiles"]])
 
     def test_manual_unauthorized_profile_header_is_forbidden(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {
             "name": "Basia", "enabled": True,
         }
@@ -1320,7 +1409,7 @@ class GatewayStateTest(unittest.TestCase):
         state.playnite_observation.assert_not_called()
 
     def test_authorized_profile_header_reaches_profile_route(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {
             "name": "Basia", "enabled": True,
         }
@@ -1364,7 +1453,7 @@ class GatewayStateTest(unittest.TestCase):
             }],
         }), encoding="utf-8")
 
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         self.assertTrue(all(profile["enabled"] is False
                             for profile in state.config["profiles"].values()))
 
@@ -1396,7 +1485,7 @@ class GatewayStateTest(unittest.TestCase):
         state.playnite_observation.assert_not_called()
 
     def test_host_wide_sleep_does_not_select_arbitrary_profile(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {"name": "Basia", "enabled": True}
         token = "host-token"
         state.config["clients"].append({
@@ -1419,7 +1508,7 @@ class GatewayStateTest(unittest.TestCase):
         state.sleep_host.assert_called_once_with()
 
     def test_profile_deletion_removes_all_client_grants(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {"name": "Basia"}
         state.config["clients"] = [
             {"profile_grants": {
@@ -1439,12 +1528,11 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual({}, saved["clients"][1]["profile_grants"])
 
     def test_profile_summary_reports_health_without_bridge_addresses(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.config["profiles"]["basia"] = {
             "name": "Basia",
             "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
-            "vibepollo_bridge": "http://127.0.0.1:8875",
         }
         state.discord_status = lambda: {
             "bridge_online": True,
@@ -1459,7 +1547,7 @@ class GatewayStateTest(unittest.TestCase):
             calls.append((name, path, profile_id))
             if name == "game_provider" and path == "/observation":
                 return True, {"provider": {"connector_evidence": "VERIFIED"}}
-            return True, {"installed": (profile_id or state.profile_id) == "basia"}
+            return True, {}
 
         state.proxy = proxy
 
@@ -1475,14 +1563,12 @@ class GatewayStateTest(unittest.TestCase):
         basia = next(item for item in summary["profiles"] if item["id"] == "basia")
         self.assertEqual("Basia", basia["name"])
         self.assertTrue(basia["discord_rpc_connected"])
-        self.assertTrue(basia["virtualhere_available"])
         self.assertNotIn("discord_bridge", basia)
-        self.assertNotIn("vibepollo_bridge", basia)
         self.assertFalse(any(name == "game_provider" and path == "/health"
                              for name, path, _profile_id in calls))
 
     def test_idempotent_action_runs_once(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         calls = []
 
         def operation():
@@ -1495,7 +1581,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(1, len(calls))
 
     def test_parallel_idempotent_retries_join_the_inflight_operation(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         entered = threading.Event()
         release = threading.Event()
         calls = []
@@ -1525,7 +1611,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual([(200, {"ok": True})] * 2, results)
 
     def test_capabilities_read_the_provider_observation(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         calls = []
 
         def proxy(name, path, timeout=2.5, profile_id=None):
@@ -1543,7 +1629,7 @@ class GatewayStateTest(unittest.TestCase):
                              for name, path, _profile_id in calls))
 
     def test_discord_status_normalizes_bridge_health(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.proxy = lambda name, path, timeout=2.5: (True, {
             "message": "ok\tconnected=True\tauthenticated=True\tpipe=discord-ipc-0\terror="
         })
@@ -1556,13 +1642,13 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("discord-ipc-0", status["pipe"])
 
     def test_discord_channels_rejects_invalid_guild_id(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.discord_ready = lambda: (True, "")
         with self.assertRaises(ValueError):
             state.discord_channels("../../shutdown")
 
     def test_discord_ready_preserves_bridge_profile_conflict(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         conflict = (
             "Discord RPC is owned by another Windows profile. Fully exit Discord "
             "in the other profile, then start it in this Bridge profile."
@@ -1577,7 +1663,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(conflict, error)
 
     def test_discord_join_uses_allowlisted_encoded_query(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.discord_ready = lambda: (True, "")
         state.proxy = lambda name, path, timeout=2.5: (requests.append((name, path)) is None, {"message": "ok"})
@@ -1599,7 +1685,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(["Games / voice"], query["channel_name"])
 
     def test_discord_home_returns_conflict_before_calling_rpc(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.discord_ready = lambda: (False, "Discord client is not running in the Bridge user session.")
         state.proxy = lambda *args, **kwargs: self.fail("RPC proxy must not run while Discord is unavailable")
 
@@ -1610,7 +1696,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertIn("not running", result["error"])
 
     def test_start_discord_is_a_separate_allowlisted_action(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy = lambda name, path, timeout=2.5: (requests.append((name, path)) is None, {"message": "ok"})
 
@@ -1620,28 +1706,8 @@ class GatewayStateTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(("discord", "/start-discord"), requests[0])
 
-    def test_virtualhere_action_encodes_allowlisted_device_address(self):
-        state = GatewayState(self.config_path, None)
-        requests = []
-        state.proxy = lambda name, path, timeout=2.5: (requests.append((name, path)) is None, {"message": "ok"})
-
-        status, result = state.virtualhere_action("use", {"address": "gaming-pc.114"})
-
-        self.assertEqual(200, status)
-        self.assertTrue(result["ok"])
-        self.assertEqual("discord", requests[0][0])
-        parsed = urllib.parse.urlsplit(requests[0][1])
-        self.assertEqual("/virtualhere-action", parsed.path)
-        self.assertEqual(["use"], urllib.parse.parse_qs(parsed.query)["action"])
-        self.assertEqual(["gaming-pc.114"], urllib.parse.parse_qs(parsed.query)["address"])
-
-    def test_virtualhere_action_rejects_untrusted_address(self):
-        state = GatewayState(self.config_path, None)
-        with self.assertRaises(ValueError):
-            state.virtualhere_action("stop", {"address": "../../shutdown"})
-
     def test_discord_participant_volume_is_strictly_allowlisted(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.discord_ready = lambda: (True, "")
         state.proxy = lambda name, path, timeout=2.5: (requests.append(path) is None, {"message": "ok"})
@@ -1666,7 +1732,7 @@ class GatewayStateTest(unittest.TestCase):
             urllib.parse.urlsplit(requests[-1]).query)["value"])
 
     def test_audio_device_selection_is_allowlisted_and_encoded(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.discord_ready = lambda: (True, "")
         state.proxy = lambda name, path, timeout=2.5: (requests.append(path) is None, {"message": "ok"})
@@ -1687,7 +1753,7 @@ class GatewayStateTest(unittest.TestCase):
                 "scope": "system", "kind": "output", "device_id": "../../shutdown"})
 
     def test_playnite_library_is_paged_and_allowlisted(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy = lambda name, path, timeout=2.5: (
             requests.append((name, path)) is None,
@@ -1710,7 +1776,7 @@ class GatewayStateTest(unittest.TestCase):
             state.playnite_library("", 500)
 
     def test_playnite_artwork_uses_allowlisted_game_and_kind(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_bytes = lambda name, path, timeout=8.0: (
             requests.append((name, path)) or (200, b"image", "image/png"))
@@ -1729,7 +1795,7 @@ class GatewayStateTest(unittest.TestCase):
             state.playnite_artwork("840317c9-b9a4-4f72-be8e-807414e36a9b", "file")
 
     def test_playnite_start_accepts_only_a_guid_and_uses_profile_bridge(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((name, path, body, timeout)) is None, {"accepted": True})
@@ -1747,7 +1813,7 @@ class GatewayStateTest(unittest.TestCase):
             state.playnite_action("game/start", {"game_id": "../../cmd.exe"})
 
     def test_playnite_install_is_forwarded_without_waiting_for_completion(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((name, path, body, timeout)) is None, {"accepted": True})
@@ -1763,7 +1829,7 @@ class GatewayStateTest(unittest.TestCase):
         }, 15.0), requests[0])
 
     def test_playnite_terminal_operation_failure_is_not_successful_gateway_response(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.proxy_json = lambda _name, _path, _body, timeout=8.0: (True, {
             "accepted": False, "requires_attention": False,
             "operation_state": "failed",
@@ -1782,7 +1848,7 @@ class GatewayStateTest(unittest.TestCase):
                 self.assertFalse(result["result"]["requires_attention"])
 
     def test_rejected_start_is_normalized_to_outer_failure(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.proxy_json = lambda _name, _path, _body, timeout=8.0: (True, {
             "accepted": False, "reason": "playnite_busy"})
 
@@ -1796,7 +1862,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("playnite_busy", result["result"]["reason"])
 
     def test_provider_neutral_actions_accept_strict_record_ids(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((name, path, body)) is None, {"accepted": True})
@@ -1812,7 +1878,7 @@ class GatewayStateTest(unittest.TestCase):
                          [request[2]["game_id"] for request in requests])
 
     def test_playnite_installation_focus_is_scoped_to_the_requested_game(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((name, path, body, timeout)) is None, {"focused": True})
@@ -1828,7 +1894,7 @@ class GatewayStateTest(unittest.TestCase):
         }, 6.0), requests[0])
 
     def test_playnite_installation_verification_is_forwarded(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((name, path, body, timeout)) is None,
@@ -1845,7 +1911,7 @@ class GatewayStateTest(unittest.TestCase):
         }, 8.0), requests[0])
 
     def test_playnite_library_refresh_is_forwarded_as_non_blocking_action(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((name, path, body, timeout)) is None,
@@ -1859,7 +1925,7 @@ class GatewayStateTest(unittest.TestCase):
             ("game_provider", "/library/refresh", {}, 5.0), requests[0])
 
     def test_legacy_playnite_stop_is_not_publicly_routed(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((path, body, timeout)) is None, {"accepted": True})
@@ -1871,7 +1937,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual([], requests)
 
     def test_session_hard_reset_is_explicit_and_closes_provider_before_stream(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0, **kwargs: (
             requests.append((name, path, body, timeout, kwargs)) is None,
@@ -1906,7 +1972,7 @@ class GatewayStateTest(unittest.TestCase):
             state.hard_reset_session({})
 
     def test_session_hard_reset_invalidates_uncertain_barrier_even_if_effect_is_unconfirmed(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.control_state.update({
             "generation": 7,
             "actor_lease_epoch": 11,
@@ -1939,7 +2005,7 @@ class GatewayStateTest(unittest.TestCase):
                          state.control_state["completed"]["control-stuck"]["reason"])
 
     def test_session_hard_reset_rejects_close_ack_while_stream_remains_active(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.proxy_json = lambda *_args, **_kwargs: (
             True, {"accepted": True, "stopped_count": 1})
 
@@ -1969,7 +2035,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("hard_reset_cleanup_unconfirmed", result["reason"])
 
     def test_session_hard_reset_waits_for_physical_idle_after_close_ack(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.proxy_json = lambda *_args, **_kwargs: (
             True, {"accepted": True, "stopped_count": 1})
         snapshots = [
@@ -2000,7 +2066,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertTrue(result["session_close_requested"])
 
     def test_session_hard_reset_targets_stream_owner_not_request_profile(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.request_context.execution_profile_id = "parent-y"
         state.control_state["stream"] = {
             "execution_profile_id": "parent-x",
@@ -2022,11 +2088,12 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("parent-x", calls[0][3]["profile_id"])
         self.assertEqual("parent-x",
                          calls[0][2]["control_operation"]["execution_profile_id"])
+        # The streamer is the machine's; only provider calls name a profile.
         self.assertTrue(all(call[-1]["profile_id"] == "parent-x"
-                            for call in calls[1:]))
+                            for call in calls[1:] if call[0] != "vibepollo"))
 
     def test_session_hard_reset_targets_child_owned_active_without_stream(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.control_state["active"] = {
             "operation_id": "child-start",
             "state": "uncertain",
@@ -2038,7 +2105,7 @@ class GatewayStateTest(unittest.TestCase):
             profiles.append(kwargs["profile_id"]) is None,
             {"accepted": True, "stopped_count": 0})
         state.proxy = lambda _name, path, **kwargs: (
-            profiles.append(kwargs["profile_id"]) is None,
+            profiles.append(kwargs.get("profile_id")) is None,
             {**control_evidence(), "clients": [], "apps": []}
             if path == "/snapshot?force=1" else {"ok": True})
 
@@ -2046,10 +2113,10 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["accepted"])
-        self.assertEqual(["parent-x", "parent-x", "parent-x"], profiles)
+        self.assertEqual(["parent-x"], [value for value in profiles if value is not None])
 
     def test_session_hard_reset_rejects_conflicting_owner_profiles_before_clear(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         stream = {"execution_profile_id": "parent-x",
                   "stream_session_id": "stream-x"}
         active = {"operation_id": "other", "state": "uncertain",
@@ -2069,7 +2136,7 @@ class GatewayStateTest(unittest.TestCase):
         state.proxy.assert_not_called()
 
     def test_child_hard_reset_accepts_same_tv_and_execution_owner_only(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.control_state["stream"] = {
             "client_id": "tv-1",
             "actor_profile_id": "kid",
@@ -2092,7 +2159,7 @@ class GatewayStateTest(unittest.TestCase):
         for client_id, execution_id in (("tv-2", "parent-x"),
                                         ("tv-1", "parent-y")):
             with self.subTest(client_id=client_id, execution_id=execution_id):
-                state = GatewayState(self.config_path, None)
+                state = GatewayState(self.config_path)
                 stream = {
                     "client_id": "tv-1",
                     "actor_profile_id": "kid",
@@ -2113,7 +2180,7 @@ class GatewayStateTest(unittest.TestCase):
                 state.proxy.assert_not_called()
 
     def test_session_hard_reset_fences_state_before_calling_upstreams(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.control_state.update({
             "generation": 3,
             "actor_lease_epoch": 5,
@@ -2147,7 +2214,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual((4, 6), (generation, epoch))
 
     def test_provider_neutral_stop_requires_verified_route(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((path, body)) is None, {"accepted": True})
@@ -2161,7 +2228,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual([], requests)
 
     def test_legacy_stop_cannot_reach_provider_rejection_path(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.proxy_json = lambda _name, _path, _body, timeout=8.0: (True, {
             "accepted": False, "reason": "another_game_running"})
 
@@ -2173,7 +2240,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("Unknown Playnite action.", result["error"])
 
     def test_verified_stop_has_named_route_required_token_and_no_legacy_fallback(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         state.proxy_json = mock.Mock(return_value=(True, {
             "accepted": True, "stopped_game_id": "epic:Cowbird", "stopped_current": False}))
         payload = {"game_id": "epic:Cowbird", "expected_process_token": "a" * 64}
@@ -2195,7 +2262,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("/game/stop-verified", state.proxy_json.call_args.args[1])
 
     def test_playnite_focus_is_narrow_and_bodyless(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
             requests.append((name, path, body, timeout)) is None, {"focused": True})
@@ -2207,7 +2274,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(("game_provider", "/game/focus", {}, 6.0), requests[0])
 
     def test_playnite_events_sequence_is_allowlisted(self):
-        state = GatewayState(self.config_path, None)
+        state = GatewayState(self.config_path)
         requests = []
         state.proxy = lambda name, path, timeout=2.5: (
             requests.append((name, path, timeout)) is None,
@@ -2455,9 +2522,13 @@ class GatewayDiagnosticsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "gateway.json"
             config_path.write_text(json.dumps({
+                "schema_version": 3,
                 "certificate": "cert.pem", "private_key": "key.pem", "clients": [],
+                "profiles": {"default": {
+                    "id": "default", "enabled": True,
+                    "game_provider_bridge": "http://127.0.0.1:8780"}},
             }), encoding="utf-8")
-            state = GatewayState(config_path, None)
+            state = GatewayState(config_path)
             captured = []
 
             class Response:
@@ -2587,7 +2658,7 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         }), encoding="utf-8")
         self.broker = self.FakeBroker()
         self.state = GatewayState(
-            self.config_path, None, broker_client=self.broker)
+            self.config_path, broker_client=self.broker)
         self.client = self.state.config["clients"][0]
 
     def tearDown(self):
@@ -2749,7 +2820,7 @@ class LoginBrokerGatewayTest(unittest.TestCase):
             "use_profile", "manage_children"]
         session_id = "01234567-89ab-cdef-0123-456789abcdef"
         self.assertEqual(200, self.state.verify_pin(
-            self.client, "living-room", "2468")[0])
+            self.client, "living-room", "2468", session_id)[0])
         with self.assertRaises(PermissionError):
             self.state.require_child_management(
                 self.client, "living-room", session_id, "play-lease")
@@ -2774,14 +2845,14 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         child["allowed_game_keys"] = ["steam:123"]
         self.state.save()
         with self.assertRaises(ValueError):
-            GatewayState(self.config_path, None, broker_client=self.broker)
+            GatewayState(self.config_path, broker_client=self.broker)
         child["allowed_game_keys"] = ["other-parent/steam:123"]
         self.state.save()
         with self.assertRaises(ValueError):
-            GatewayState(self.config_path, None, broker_client=self.broker)
+            GatewayState(self.config_path, broker_client=self.broker)
         child["allowed_game_keys"] = ["living-room/steam:123"]
         self.state.save()
-        restarted = GatewayState(self.config_path, None, broker_client=self.broker)
+        restarted = GatewayState(self.config_path, broker_client=self.broker)
         self.assertEqual(["living-room/steam:123"],
                          restarted.config["profiles"]["kid"]["allowed_game_keys"])
 
@@ -3075,8 +3146,8 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
                 "parent": {
                     "id": "parent", "kind": "standard", "name": "Parent",
                     "enabled": True, "windows_account_sid": sid,
-                    "owner_sid": sid, "windows_account_name": "PC\\Parent",
-                    "owner": "PC\\Parent", "account_mapping_status": "resolved",
+                    "windows_account_name": "PC\\Parent",
+                    "account_mapping_status": "resolved",
                 },
                 "kid": {
                     "id": "kid", "kind": "child", "name": "Kid",
@@ -3093,7 +3164,7 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
                     "parent": "01234567-89ab-cdef-0123-456789abcdef"},
             }],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.client = self.state.client_for_token("child-token")
         self.clock = [10.0, datetime(2026, 1, 3, 12, 0, tzinfo=timezone.utc)]
         self.state.child_time_clock = lambda: (self.clock[0], self.clock[1])

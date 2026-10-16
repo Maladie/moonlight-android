@@ -1,21 +1,53 @@
 # Wake & Play Host Gateway
 
 Gateway exposes a small authenticated HTTPS API to Wake & Play while keeping
-Discord, Vibepollo and the Game Provider Bridge bound to `127.0.0.1`.
+Discord and the Game Provider Bridge bound to `127.0.0.1`. It talks to the
+computer's Vibepollo itself (`vibepollo_client.py`): one token in
+`vibepollo-api.json`, the HTTPS certificate pinned to the one in Vibepollo's
+configuration directory, and the `MoonWaker Stream` application ensured at start
+and rechecked every five minutes; a foreign application holding its name or UUID
+is never overwritten.
 
-For a complete installation use `../install/Install-WakePlayHost.ps1`. For
-development, run `Start-WakePlayGateway.ps1` and enter its six-digit code under
-Wake & Play's host integrations panel within ten minutes.
+For a complete installation use `../install/Install-WakePlayHost.ps1`; pair a TV with
+the code Host Control shows.
 
 The installer registers `MoonWakerGateway` as an automatic Windows service, so
-the HTTPS API is available before anyone signs in. It requires a system-wide
-Python installation under Program Files. Interactive Bridges still start at
-user logon because Discord RPC and user credentials are bound to that session.
+the HTTPS API is available before anyone signs in. The service host
+(`MoonWakerGatewayService.exe`) runs `wakeplay_gateway.py` with a system-wide Python
+installation under Program Files and restarts it after an exit; it is the Gateway's only
+launch path. Interactive Bridges still start at user logon (Host Control's tray) because
+Discord RPC and user credentials are bound to that session.
 
 The first start generates `gateway.json`, a private TLS key and a certificate.
 They are ignored by Git. Paired client tokens are stored only as SHA-256 hashes,
 and Wake & Play pins the certificate received during pairing. The private-LAN
 firewall rule must never be exposed to the Internet.
+
+## Local state files
+
+The Gateway has no loopback-only route; Host Control on this computer talks to it through
+files beside `gateway.json`. Files the Gateway writes are replaced atomically (written to
+`*.tmp`, then renamed) and inherit the directory ACL, which lets local users read them.
+None holds a token, a token digest, a client ID or a process identity.
+
+- `gateway-runtime.json` - the running process: version, build, `pid`, `started_at`,
+  `source_sha256`.
+- `gateway-status.json` - rewritten when it changes, checked every second, and at least
+  every 5 s (each Vibepollo check):
+  `{"vibepollo_api_online": bool, "vibepollo_checked_at": Unix s, "updated_at": Unix s,
+  "session": {...}}`. `vibepollo_api_online` is the Vibepollo client's `api_online`
+  (a call in the last 30 s, or one `GET /api/metadata`). `session` is present only while
+  the Gateway holds a stream record: `actor_profile_id`, `actor_profile_name`,
+  `execution_profile_id`, `execution_profile_name`, `client_name` (the paired TV's name),
+  `game_id` (the provider game, `""` for a stream without one) and
+  `stream_started_unix_ms` (host clock; the start `/session/observation` reports). The
+  Gateway knows no game names. A reader treats a file older than 30 s as unknown.
+- `pairing-code.json` - written in place by Host Control (local users may modify it):
+  `{"code_sha256", "expires_at"}`, at most 10 minutes ahead. It is the only source of the
+  pairing code and is read on every pairing attempt, so emptying it (`{}`) cancels the
+  code at once; the Gateway keeps nothing of it in memory.
+- `host-close-request.json` / `host-close-result.json` - closing the session from Host
+  Control (`TRANSITION_CONTRACT.md`).
 
 ## Profiles
 
@@ -28,13 +60,12 @@ URLs are rejected.
 A Discord Bridge must run in the same interactive Windows session as its
 Discord client because named-pipe RPC and DPAPI credentials are user-bound.
 Discord itself can only own one machine-global RPC endpoint at a time, so fully
-exit it in the previous profile before switching. Vibepollo also needs a
-per-profile Bridge when its credentials or runtime state differ.
+exit it in the previous profile before switching. Vibepollo is one per computer
+and is shared by every profile.
 
 The profile registry uses stable IDs and authoritative Windows account SIDs.
-Paired clients store `profile_grants` separately for every profile. Legacy
-clients migrate with `use_profile` for retained profiles and without
-`remote_sign_in`; upgrades never turn remote sign-in on automatically.
+Paired clients store `profile_grants` separately for every profile; a client without
+them has no profile.
 An optional four-digit MoonWaker app PIN is stored only as a versioned salted
 verifier. Profile listings expose only `pin_required`. Protected profile routes
 require an in-memory unlock lease. Android sends a fresh UUID in
@@ -42,8 +73,8 @@ require an in-memory unlock lease. Android sends a fresh UUID in
 paired client, profile, verifier and UUID and survives screensaver idle time.
 The UUID is never persisted. A new UUID must verify again, a new verification
 replaces the prior session for that client/profile, and profile grant,
-verifier, or Gateway restart invalidates the authorization. Clients that omit
-the header retain the fixed five-minute lease for compatibility.
+verifier, or Gateway restart invalidates the authorization. A request without
+the header unlocks nothing.
 
 ## API v1
 
@@ -61,9 +92,9 @@ the header retain the fixed five-minute lease for compatibility.
   `X-Microphone-Session-Id`.
 - `GET /api/v1/profiles` - lists safe profile names and Bridge health summaries.
 - `POST /api/v1/profiles/pin/verify` - verifies the selected profile's four-digit
-  app PIN for a paired client with `use_profile`; when
-  `X-MoonWaker-Profile-Session` is present, success creates a process-scoped
-  in-memory unlock lease, otherwise it creates a fixed five-minute lease.
+  app PIN for a paired client with `use_profile` and
+  `X-MoonWaker-Profile-Session` (required); success creates a process-scoped
+  in-memory unlock lease.
   Failures use a per-client/profile cooldown.
 - `POST /api/v1/system/session/ensure` - returns `ready` for an already-active
   selected profile, or starts a bounded remote Windows sign-in attempt when the
@@ -98,8 +129,6 @@ the header retain the fixed five-minute lease for compatibility.
 - `POST /api/v1/discord/{connect|join|leave|mute|deafen}` - Discord action.
 - `POST /api/v1/discord/{user-volume|user-mute}` - participant control.
 - `POST /api/v1/discord/audio/{select|volume|mute}` - audio control.
-- `GET /api/v1/virtualhere/state` - VirtualHere state and shared devices.
-- `POST /api/v1/virtualhere/{use|stop|auto|restart}` - VirtualHere action.
 - `POST /api/v1/system/sleep` - schedule Windows sleep after the authenticated response is sent.
 - `GET /api/v1/session/observation` - the selected profile's versioned, correlated game/session observation.
 - `GET /api/v1/library?cursor=...&limit=...` - paged provider-neutral library and library descriptors.
@@ -114,7 +143,7 @@ reveal remains a separate explicit user action.
 
 All endpoints except `hello` and `pair` require `Authorization: Bearer ...`.
 Mutating actions also require a unique `X-Request-Id`. Discord snowflakes,
-participant volume, audio device IDs and VirtualHere addresses are validated;
+participant volume and audio device IDs are validated;
 Gateway never exposes a general-purpose Bridge proxy.
 
 `capabilities.remote_windows_sign_in` is available only when the Login Broker

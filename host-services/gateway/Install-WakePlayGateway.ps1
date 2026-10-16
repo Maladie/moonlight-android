@@ -2,7 +2,6 @@
 #requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-    [ValidateNotNullOrEmpty()][string]$InstallDirectory = "C:\Tools\WakePlayGateway",
     [ValidateRange(1, 65535)][int]$Port = 8785,
     [switch]$SkipFirewall,
     [switch]$SkipStart
@@ -17,23 +16,16 @@ $files = @(
     "control_operation_policy.py",
     "child_terminal_operation.py",
     "provider_control_operation.py",
+    "vibepollo_client.py",
     "MoonWakerGatewayService.exe",
     "MoonWakerMicrophoneWorker.exe",
-    "MoonWakerDiscordAudioWorker.exe",
-    "Start-WakePlayGateway.ps1",
-    "MoonWakerGatewaySupervisor.ps1",
-    "Start-MoonWakerGateway.ps1",
-    "Stop-MoonWakerGateway.ps1",
-    "Stop-MoonWakerGatewayWorkers.ps1",
     "Uninstall-MoonWakerGatewayService.ps1",
     "gateway.example.json",
     "README.md"
 )
 
-$InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
-if ($InstallDirectory -eq [IO.Path]::GetPathRoot($InstallDirectory)) {
-    throw "Choose a dedicated Gateway installation directory."
-}
+$InstallDirectory = Join-Path ([Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::ProgramFiles)) "MoonWaker\gateway"
 
 function Get-MachinePythonExecutable {
     $candidates = @()
@@ -71,6 +63,8 @@ if ($null -ne $existingService -and
     $existingService.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
     Stop-Service -Name $serviceName -Force
 }
+# The stopped service ends Python, not the audio workers it started: they hold their files.
+& (Join-Path $sourceDirectory "Stop-MoonWakerGatewayWorkers.ps1") -GatewayDirectory $InstallDirectory
 
 New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
 foreach ($name in $files) {
@@ -80,14 +74,23 @@ foreach ($name in $files) {
     }
     Copy-Item -LiteralPath $source -Destination (Join-Path $InstallDirectory $name) -Force
 }
+# Optional: only a package built with -WithDiscord carries the Discord audio worker.
+$discordWorker = "MoonWakerDiscordAudioWorker.exe"
+if (Test-Path -LiteralPath (Join-Path $sourceDirectory $discordWorker) -PathType Leaf) {
+    Copy-Item -LiteralPath (Join-Path $sourceDirectory $discordWorker) `
+        -Destination (Join-Path $InstallDirectory $discordWorker) -Force
+} else {
+    $installedWorker = Join-Path $InstallDirectory $discordWorker
+    if (Test-Path -LiteralPath $installedWorker) {
+        Remove-Item -LiteralPath $installedWorker -Force -ErrorAction Stop
+    }
+}
 
 $configPath = Join-Path $InstallDirectory "gateway.json"
 if (-not (Test-Path -LiteralPath $configPath)) {
     $config = Get-Content -LiteralPath (Join-Path $InstallDirectory "gateway.example.json") -Raw |
         ConvertFrom-Json
     $config.listen_port = $Port
-    # Profiles belong to Host Control. A new machine starts with none.
-    $config.profiles = [pscustomobject]@{}
     $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding UTF8
 }
 try {
@@ -102,11 +105,6 @@ $lockPath = "$configPath.lock"
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
     [IO.File]::WriteAllBytes($lockPath, [byte[]]@(0))
 }
-
-# A pre-service Gateway from a legacy installation can otherwise keep the LAN
-# port while Host Control writes pairing state to this installation.
-& (Join-Path $InstallDirectory "Stop-MoonWakerGateway.ps1") `
-    -GatewayDirectory $InstallDirectory
 
 $certificate = Join-Path $InstallDirectory "gateway-cert.pem"
 $privateKey = Join-Path $InstallDirectory "gateway-key.pem"
@@ -208,8 +206,6 @@ $icacls = Join-Path ([Environment]::SystemDirectory) "icacls.exe"
 $pythonDirectory = Split-Path -Parent $python
 & $icacls $pythonDirectory /grant:r "*${serviceSid}:(OI)(CI)(RX)" /T /C | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Unable to grant the Gateway service read access to Python." }
-& $icacls $InstallDirectory /remove:g "*S-1-5-11" /T /C | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Unable to remove the legacy Gateway write ACL." }
 & $icacls $InstallDirectory /inheritance:r /grant:r `
     "*${serviceSid}:(OI)(CI)(M)" "*S-1-5-18:(OI)(CI)(F)" `
     "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-32-545:(OI)(CI)(RX)" | Out-Null
@@ -235,9 +231,40 @@ if ($LASTEXITCODE -ne 0) { throw "Unable to configure the host close request ACL
 & $icacls $privateKey /inheritance:r /grant:r `
     "*${serviceSid}:(R)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Unable to secure the Gateway private key." }
+# The computer's one Vibepollo token. Only the elevated Host Configurator writes it, in place,
+# so this ACL stays; the Gateway service only reads it. A reinstall keeps the token.
+$vibepolloSettings = Join-Path $InstallDirectory "vibepollo-api.json"
+if (-not (Test-Path -LiteralPath $vibepolloSettings -PathType Leaf)) {
+    [IO.File]::WriteAllText($vibepolloSettings, "{}", [Text.UTF8Encoding]::new($false))
+}
+& $icacls $vibepolloSettings /inheritance:r /grant:r `
+    "*${serviceSid}:(R)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Unable to secure the Vibepollo token file." }
+# The Gateway pins Vibepollo's certificate and proves paired Moonlight identities from its
+# state file. The Host Configurator grants the service read access to exactly the files
+# Vibepollo's sunshine.conf names, plus traverse (never listing: the credentials directory
+# holds Vibepollo's private key) - the same grant every Vibepollo token save repeats.
+$configurator = Join-Path (Split-Path -Parent $sourceDirectory) "control\MoonWakerHostConfigurator.exe"
+$consoleEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+try {
+    # Capturing the output makes PowerShell wait for this GUI-subsystem executable.
+    $vibepolloAccess = @(& $configurator --mode vibepollo-access)
+} finally { [Console]::OutputEncoding = $consoleEncoding }
+switch ($LASTEXITCODE) {
+    0 {
+        foreach ($path in $vibepolloAccess) {
+            Write-Warning "Vibepollo file is missing, so the Gateway cannot read it: $path. Once Vibepollo has created it, save the Vibepollo token again in Host Control."
+        }
+    }
+    2 {
+        Write-Warning "The Gateway cannot reach Vibepollo yet: $($vibepolloAccess -join ' ') Install or repair Vibepollo, then save the Vibepollo token in Host Control."
+    }
+    default { throw "Unable to grant the Gateway read access to Vibepollo's files: $($vibepolloAccess -join ' ')" }
+}
 
-# Host Control's existing Start/Stop/Restart buttons control only this service.
-# Interactive-user rights do not grant writes to Gateway configuration or keys.
+# Interactive users may start, stop and query only this service: Host Control's "Napraw"
+# restarts it without elevation. These rights grant no writes to Gateway configuration or keys.
 & $sc sdset $serviceName `
     "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPLOCRRC;;;IU)" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Unable to configure Gateway service controls." }
@@ -257,9 +284,7 @@ if (-not $SkipFirewall) {
 $pairingCode = $null
 $processId = $null
 $startupErrorPath = Join-Path $InstallDirectory "gateway-startup-error.txt"
-Remove-Item -LiteralPath (Join-Path $InstallDirectory "gateway-manually-stopped"),
-    (Join-Path $InstallDirectory "gateway-supervisor-stop"), $startupErrorPath `
-    -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $startupErrorPath -Force -ErrorAction SilentlyContinue
 if (-not $SkipStart) {
     $pairingCode = [string](Get-Random -Minimum 100000 -Maximum 999999)
     $sha = [Security.Cryptography.SHA256]::Create()

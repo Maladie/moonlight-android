@@ -11,6 +11,9 @@ from unittest import mock
 
 import wakeplay_gateway
 from wakeplay_gateway import GatewayState, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 class ChildSharingGatewayTest(unittest.TestCase):
@@ -31,7 +34,6 @@ class ChildSharingGatewayTest(unittest.TestCase):
                     "windows_account_name": "TESTPC\\Player",
                     "account_mapping_status": "resolved",
                     "game_provider_bridge": "http://127.0.0.1:8780",
-                    "playnite_bridge": "http://127.0.0.1:8780",
                 },
                 "kid": {
                     "id": "kid",
@@ -63,7 +65,7 @@ class ChildSharingGatewayTest(unittest.TestCase):
                 },
             }],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.client = self.state.config["clients"][0]
         self.state.config["profiles"]["parent"]["pin_verifier"] = self.pin_verifier()
         self.session_id = "01234567-89ab-cdef-0123-456789abcdef"

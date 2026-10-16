@@ -11,6 +11,9 @@ from unittest import mock
 
 import wakeplay_gateway
 from wakeplay_gateway import GatewayHandler, GatewayState, LoginBrokerClient, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 class FakeChildWriter:
@@ -63,7 +66,7 @@ class ChildManagementGatewayTest(unittest.TestCase):
             }],
         }), encoding="utf-8")
         self.state = GatewayState(
-            self.config_path, None, broker_client=self.writer)
+            self.config_path, broker_client=self.writer)
         self.state.child_profiles_api_enabled = True
         self.client = self.state.config["clients"][0]
         status, result = self.state.begin_child_management(

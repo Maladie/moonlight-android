@@ -3,7 +3,9 @@
 param(
     [string] $OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) "dist"),
     [string] $CredentialProviderBinary = "",
-    [string] $LegendaryBinary = ""
+    [string] $LegendaryBinary = "",
+    # Discord is optional: only this build carries its Bridge and audio worker.
+    [switch] $WithDiscord
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,7 +56,6 @@ try {
         "host-services/control" `
         "host-services/gateway" `
         "host-services/install" `
-        "host-services/profile-agent" `
         "host-services/updater" `
         "host-services/windows-login" `
         "host-services/version.json"
@@ -65,16 +66,25 @@ try {
     # first commit that contains them.
     $tracked = @($tracked) + @(
         "host-services/bridges/playnite/GameProviderBridge.py",
+        "host-services/bridges/playnite/AgentGuard.py",
         "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1",
         "host-services/install/Prepare-MoonWakerHost.ps1",
         "host-services/control/MoonWakerHostConfigurator.cs",
-        "host-services/control/ChildProfileForms.cs",
+        "host-services/control/HostControlBackend.cs",
+        "host-services/control/HostControlWindow.cs",
+        "host-services/control/HostControlUi.cs",
+        "host-services/control/Test-MoonWakerHostControlUi.cs",
+        "host-services/control/ConfiguratorChanges.cs",
+        "host-services/control/HostChanges.cs",
+        "host-services/control/Test-MoonWakerHostConfiguratorChanges.cs",
         "host-services/control/MoonWakerHostConfigurator.manifest",
         "host-services/control/Test-MoonWakerHostConfigurator.ps1",
         "host-services/gateway/Build-MoonWakerGatewayService.ps1",
         "host-services/gateway/control_operation_policy.py",
         "host-services/gateway/child_terminal_operation.py",
         "host-services/gateway/provider_control_operation.py",
+        "host-services/gateway/vibepollo_client.py",
+        "host-services/control/vibepollo-token-scopes.json",
         "host-services/bridges/playnite/ControlEffectFence.py",
         "host-services/gateway/MoonWakerGatewayService.cs",
         "host-services/gateway/MoonWakerGatewayService.manifest",
@@ -97,17 +107,16 @@ try {
             "host-services/" + $_.FullName.Substring($hostServicesRoot.Length + 1).Replace("\", "/")
         }
     $tracked = @($tracked) + @($windowsLogin) | Sort-Object -Unique
+    if (-not $WithDiscord) {
+        $tracked = @($tracked | Where-Object { $_ -notlike "host-services/bridges/discord/*" })
+    }
     foreach ($relative in $tracked) {
-        if ($relative -eq "host-services/install/Install-MoonWakerHostBundle.ps1") {
-            continue
-        }
         if ($relative -match "(^|/)(dist|__pycache__)(/|$)" -or
                 $relative -match "\.pyc$") {
             continue
         }
         $source = Join-Path $repoRoot ($relative -replace "/", "\")
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            if ($relative -eq "host-services/bridges/playnite/PlayniteBridge.py") { continue }
             throw "Required host payload file is missing: $relative"
         }
         $destination = Join-Path $payloadRoot ($relative -replace "/", "\")
@@ -123,9 +132,11 @@ try {
     & (Join-Path $payloadHostServices `
         "bridges\microphone\Build-MoonWakerMicrophoneWorker.ps1") `
         -OutputDirectory $payloadGateway | Out-Null
-    & (Join-Path $payloadHostServices `
-        "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
-        -OutputDirectory $payloadGateway | Out-Null
+    if ($WithDiscord) {
+        & (Join-Path $payloadHostServices `
+            "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
+            -OutputDirectory $payloadGateway | Out-Null
+    }
     & (Join-Path $payloadHostServices "gateway\Build-MoonWakerGatewayService.ps1") `
         -OutputDirectory $payloadGateway | Out-Null
 

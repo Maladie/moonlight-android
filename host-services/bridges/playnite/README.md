@@ -5,11 +5,13 @@ Epic/Legendary and Playnite providers. It also uses the existing `launcher`
 role exposed by the installed Sunshine Playnite Connector for Playnite IPC and
 never automates the Playnite UI with keystrokes.
 
-New profiles install the service in `game-provider` and register the Gateway key
-`game_provider_bridge`. The old `playnite` directory, `playnite_bridge` key,
-legacy API paths and `Start/Stop-PlayniteBridge.ps1` names remain compatibility
-aliases for one migration cycle. They all start or address
-`GameProviderBridge.py`.
+It is the profile's **Agent**: Host Control's tray runs it from the installation
+(`bridge-source\playnite`) with `--config <install>\profiles\<id>\game-provider\config.json`;
+that profile directory holds only its configuration, caches, journal, logs and DPAPI
+secrets. The Gateway key is `game_provider_bridge`. `AgentGuard.py` makes the Agent
+exit with code 78 when its profile authority is lost (including a child profile), with
+code 74 when the registry stays unreadable, with code 75 when another Agent already
+serves its port, and with code 70 when its HTTP loop or state lock hangs; see `host-services/README.md` ("Profile processes").
 
 The Bridge exposes one provider-neutral library, current-game state, readiness
 and lifecycle events to the authenticated host Gateway. Steam, Epic/Legendary
@@ -28,7 +30,7 @@ including after a retained game switch or reconnect.
 
 Steam ownership comes from `IPlayerService/GetOwnedGames`; the active SteamID is
 read from the trusted local `loginusers.vdf`. Configure the Web API key for the
-profile with Host Control action `ConfigureSteamWebApi`. The key is stored with
+profile in Host Control (**Połącz Steam**). The key is stored with
 the current Windows user's DPAPI protection and is never returned by health or
 Gateway responses. Local `appmanifest_*.acf` files remain the sole authority for
 Steam installation state and install directories. Epic ownership and install
@@ -71,8 +73,9 @@ visible foreground window on the configured streamed display and three
 consecutive samples with identical geometry. Set `streamed_display` to the
 profile's Win32 display name (for example `\\.\DISPLAY15`). An empty or
 mismatched value deliberately keeps the privacy gate closed. During an active
-session the Bridge also reads its profile's loopback Vibepollo active-display
-diagnostics and picks the display that exactly one active display marked
+session the Bridge also enumerates the session's active displays itself
+(`StreamDisplayResolver`, Win32 `EnumDisplayMonitors`) and picks the display that
+exactly one active display marked
 `stream_virtual_display` (a Vibepollo virtual display adapter), however many
 physical displays remain active. When no active display is marked virtual and
 exactly one display is active, that display is the streamed display. Any other
@@ -82,9 +85,12 @@ value, for example when Vibepollo creates its virtual display dynamically.
 
 The current Sunshine connector already supports the launcher handshake,
 `launch` commands and game start/stop status. The next integration step extends
-that connector with `Install-WakePlayConnectorPatch.ps1`. The patch is
-idempotent, validates exact structural anchors and creates a
-`.wakeplay-backup` before changing the installed module. It reuses the
+that connector with `PatchPlayniteConnector.py`, which Host Control's **Połącz Playnite**
+runs (check, then `--apply`) with the installation's Python. The patch has one
+version (`WAKEPLAY-CONSOLE-BRIDGE-V17`) applied to the unmodified connector: it is
+idempotent, validates exact structural anchors and creates a `.wakeplay-backup` before
+changing the installed module. A connector carrying an older MoonWaker patch lacks the
+anchors and is reported as unsupported; reinstall the connector, then connect again. It reuses the
 connector's existing metadata functions to mirror library snapshots only to the
 requesting Bridge. It also adds Playnite's `StartedProcessId` to lifecycle
 status so the Bridge never accepts an unrelated foreground window. Restart

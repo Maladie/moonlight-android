@@ -2,7 +2,7 @@
 
 ## Current transport
 
-`GET /api/v1/playnite/events` is an authenticated long-poll channel. The Android
+`GET /api/v1/game/events` is an authenticated long-poll channel. The Android
 client sends `after=<sequence>` and `transition_id=<id>`. Gateway validates and
 echoes `transition_id`; the client rejects a mismatched echo and the transition
 controller rejects callbacks for an inactive transition or host.
@@ -228,7 +228,9 @@ time session is active. Any other mismatch keeps the record and the former answe
 
 Host Control (tray menu, `Ctrl+Alt+Shift+End`, its secure-desktop pipe) ends the session of
 its Windows account through the Gateway, never through a Bridge. The only local channel is
-a file beside `gateway.json`; the Gateway has no loopback-only route and no pipe.
+a file beside `gateway.json`; the Gateway has no loopback-only route and no pipe. What Host
+Control shows of the running session comes from `gateway-status.json` (README, "Local state
+files"): display facts of the stream record, never a handle the close request refers to.
 
 - `host-close-request.json` is created by the installer. Local accounts and the Gateway
   service may read and overwrite it in place (`(R,W)`), not delete or replace it: an account
@@ -348,8 +350,8 @@ client refuses to start a stream without the capability it knows.
 
 Per-game streamer applications are gone from the contract: `vibepollo/apps/ensure`,
 `vibepollo/apps/status`, the `vibepollo_apps` capability entry and the library field
-`vibepollo_state` no longer exist, and the Vibepollo Bridge keeps only the neutral
+`vibepollo_state` no longer exist, and the Gateway keeps only the neutral
 `MoonWaker Stream` application. Per-game applications an older host created stay in the
-streamer's configuration: nothing deletes them, and the Bridge token's scope grants no
+streamer's configuration: nothing deletes them, and the Vibepollo token's scope grants no
 `DELETE`. Nothing in the control-operation contract changed, so the
 capability and the protocol version stay.

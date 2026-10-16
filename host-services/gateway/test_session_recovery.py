@@ -13,6 +13,9 @@ import test_child_time_control as child_fixture
 from test_child_time_control import VIBE_UUID
 from test_child_library_integration import BridgeFixture, BridgeState
 from wakeplay_gateway import GatewayState
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(GatewayState)
 
 
 class SessionRecoveryTest(unittest.TestCase):
@@ -410,7 +413,7 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertNotEqual(200, status)
         uncertain = dict(self.gateway.control_state["active"])
         self.assertEqual("uncertain", uncertain["state"])
-        self.gateway = GatewayState(self.fixture.config_path, None)
+        self.gateway = GatewayState(self.fixture.config_path)
         self.gateway.config["clients"][0]["profile_grants"]["parent"] = ["use_profile"]
         self.client = self.gateway.config["clients"][0]
         self.wire(self.gateway)

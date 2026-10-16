@@ -14,6 +14,10 @@ from unittest import mock
 
 import wakeplay_gateway
 from wakeplay_gateway import GatewayState, LoginBrokerClient, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy
+from vibepollo_client import IdentityError
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 class FakeBroker:
@@ -93,7 +97,7 @@ class ChildProfilesGatewayTest(unittest.TestCase):
             }],
         }), encoding="utf-8")
         self.state = GatewayState(
-            self.config_path, None, broker_client=self.broker)
+            self.config_path, broker_client=self.broker)
         self.client = self.state.config["clients"][0]
 
     def tearDown(self):
@@ -113,8 +117,9 @@ class ChildProfilesGatewayTest(unittest.TestCase):
         }
 
     def test_pairing_creates_grants_only_for_standard_profiles(self):
-        self.state.pairing_code_hash = sha256_text("123456")
-        self.state.pairing_expires_at = time.monotonic() + 60
+        self.state.pairing_control_path.write_text(json.dumps({
+            "code_sha256": sha256_text("123456"), "expires_at": int(time.time()) + 60,
+        }), encoding="utf-8")
 
         result = self.state.pair("192.0.2.1", "123456", "Child test TV")
 
@@ -157,8 +162,7 @@ class ChildProfilesGatewayTest(unittest.TestCase):
 
     def test_identity_bind_fills_parent_mapping_and_is_one_use(self):
         challenge = self._identity_challenge()
-        self.state.proxy_json = mock.Mock(return_value=(True, {
-            "ok": True, "client_uuid": "paired-client-uuid"}))
+        self.state.vibepollo.verify_identity = mock.Mock(return_value="paired-client-uuid")
         result_status, result = self.state.vibepollo_identity_bind(
             "192.0.2.1", self.client, {
                 "challenge_id": challenge["challenge_id"],
@@ -186,8 +190,7 @@ class ChildProfilesGatewayTest(unittest.TestCase):
             "living-room": "old-uuid"}
         self.config_path.write_text(json.dumps(registry), encoding="utf-8")
         self.state.config = registry
-        self.state.proxy_json = mock.Mock(return_value=(True, {
-            "ok": True, "client_uuid": "new-uuid"}))
+        self.state.vibepollo.verify_identity = mock.Mock(return_value="new-uuid")
         status, result = self.state.vibepollo_identity_bind(
             "192.0.2.1", self.client, {
                 "challenge_id": challenge["challenge_id"],
@@ -225,8 +228,7 @@ class ChildProfilesGatewayTest(unittest.TestCase):
         self.assertEqual(201, responses[-1][0])
         challenge = responses[-1][1]
 
-        self.state.proxy_json = mock.Mock(return_value=(True, {
-            "ok": True, "client_uuid": "http-paired-client"}))
+        self.state.vibepollo.verify_identity = mock.Mock(return_value="http-paired-client")
         handler.path = wakeplay_gateway.API_PREFIX + "/vibepollo/identity/bind"
         handler.headers["X-Request-Id"] = "http-identity-bind"
         bind_body = json.dumps({
@@ -283,10 +285,10 @@ class ChildProfilesGatewayTest(unittest.TestCase):
                 self.assertIn(expected, str(result.get("error") or result.get("reason")))
                 self.client["profile_grants"]["kid"] = ["use_profile"]
 
-    def test_identity_bind_keeps_bridge_outage_retryable(self):
+    def test_identity_bind_keeps_vibepollo_outage_retryable(self):
         challenge = self._identity_challenge()
-        self.state.proxy_json = mock.Mock(return_value=(False, {
-            "error": "Connection refused"}))
+        self.state.vibepollo.verify_identity = mock.Mock(
+            side_effect=IdentityError("identity_binding_unavailable"))
         status, result = self.state.vibepollo_identity_bind(
             "192.0.2.1", self.client, {
                 "challenge_id": challenge["challenge_id"],
@@ -340,7 +342,6 @@ class ChildProfilesGatewayTest(unittest.TestCase):
         other_parent.update({
             "id": "other-parent", "name": "Other parent",
             "windows_account_sid": "S-1-5-21-1-2-3-1002",
-            "owner_sid": "S-1-5-21-1-2-3-1002",
         })
         self.state.config["profiles"]["other-parent"] = other_parent
         self.client["profile_grants"]["living-room"] = [

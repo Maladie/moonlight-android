@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authenticated HTTPS facade for Discord, Vibepollo, audio and VirtualHere controls."""
+"""Authenticated HTTPS facade for Discord, Vibepollo and audio controls."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 import uuid
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from http import HTTPStatus
@@ -37,6 +38,7 @@ from typing import Any, Callable
 from control_operation_policy import ControlOperationPolicy
 from child_terminal_operation import ChildTerminalOperation
 from provider_control_operation import ProviderControlOperation, StreamerControlOperation
+from vibepollo_client import IdentityError, STREAM_APP_UUID, VibepolloClient, VibepolloError
 
 try:
     from zoneinfo import ZoneInfo
@@ -46,6 +48,7 @@ except ImportError:  # pragma: no cover - Python 3.8 fallback
 
 API_PREFIX = "/api/v1"
 PAIRING_LIFETIME_SECONDS = 10 * 60
+PAIRING_CONTROL_MAX_BYTES = 1024
 STREAM_PAIR_TICKET_LIFETIME_SECONDS = 60
 VIBEPOOLLO_IDENTITY_CHALLENGE_LIFETIME_SECONDS = 60
 VIBEPOOLLO_IDENTITY_CHALLENGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
@@ -85,6 +88,10 @@ CHILD_TIME_FAILURE_TOLERANCE_SECONDS = 300.0
 CHILD_TIME_HOUSEKEEPING_INTERVAL_SECONDS = 5.0
 # Host Control's local close request: one file stat per poll, on the housekeeping thread.
 HOST_CLOSE_POLL_SECONDS = 1.0
+# gateway-status.json: the session is published within this period, Vibepollo is checked
+# (and the file rewritten) every VIBEPOLLO_STATUS_SECONDS.
+GATEWAY_STATUS_POLL_SECONDS = 1.0
+VIBEPOLLO_STATUS_SECONDS = 5.0
 HOST_CLOSE_REQUEST_LIFETIME_SECONDS = 60
 HOST_CLOSE_REQUEST_MAX_BYTES = 1024
 HOST_CLOSE_REQUEST_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -97,8 +104,6 @@ HOST_OPERATION_ID_PREFIXES = ("host-close:", "host-idle:", "child-terminal:",
 # owner's choice; a paused session with a running game is never closed by it.
 HOST_IDLE_STREAM_CLOSE_SECONDS = 600.0
 HOST_IDLE_PROBE_SECONDS = 30.0
-# The Vibepollo Bridge's reserved UUID of the "MoonWaker Stream" application.
-MOONWAKER_STREAM_APP_UUID = "6d6f6f6e-7761-4b65-9273-747265616d00"
 # How long after its holder last acted the host leaves a client start permit alone before it
 # may end it on streamer proof that nothing was started. A holder that reported its own
 # effect as failed is done, so only a launch whose response it lost may still be settling in
@@ -112,14 +117,12 @@ CONTROL_START_PROOF_RESERVE_SECONDS = 10.0
 CONTROL_ABANDON_RETRY_SECONDS = 1.0
 CHILD_TIME_USAGE_FILE = "child-time-usage.json"
 CLIENT_LAST_SEEN_WRITE_SECONDS = 5 * 60
-PIN_UNLOCK_LEASE_SECONDS = 5 * 60
 PIN_FAILURE_WINDOW_SECONDS = 5 * 60
 PIN_MAX_COOLDOWN_SECONDS = 30
 PROFILE_PERMISSIONS = {"use_profile", "remote_sign_in", "manage_children"}
 MANAGE_CHILDREN_PERMISSION = "manage_children"
 PROFILE_SESSION_HEADER = "X-MoonWaker-Profile-Session"
 DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
-VIRTUALHERE_ADDRESS_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 AUDIO_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:{}-]{1,220}$")
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 WINDOWS_SID_PATTERN = re.compile(r"^S-\d-\d+(?:-\d+)+$", re.IGNORECASE)
@@ -232,51 +235,6 @@ def verify_profile_pin(pin: str, verifier: Any) -> bool:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def resolve_windows_account_sid(account_name: str) -> str:
-    """Resolve a Windows account name without invoking a shell."""
-    if os.name != "nt" or not account_name.strip():
-        return ""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        lookup = advapi32.LookupAccountNameW
-        lookup.argtypes = [
-            wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPVOID,
-            wintypes.LPDWORD, wintypes.LPWSTR, wintypes.LPDWORD,
-            wintypes.LPDWORD,
-        ]
-        lookup.restype = wintypes.BOOL
-        sid_size = wintypes.DWORD()
-        domain_size = wintypes.DWORD()
-        sid_type = wintypes.DWORD()
-        lookup(None, account_name, None, ctypes.byref(sid_size), None,
-               ctypes.byref(domain_size), ctypes.byref(sid_type))
-        if ctypes.get_last_error() != 122 or sid_size.value <= 0:
-            return ""
-        sid = ctypes.create_string_buffer(sid_size.value)
-        domain = ctypes.create_unicode_buffer(max(1, domain_size.value))
-        if not lookup(None, account_name, sid, ctypes.byref(sid_size), domain,
-                      ctypes.byref(domain_size), ctypes.byref(sid_type)):
-            return ""
-        sid_text = wintypes.LPWSTR()
-        convert = advapi32.ConvertSidToStringSidW
-        convert.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
-        convert.restype = wintypes.BOOL
-        if not convert(sid, ctypes.byref(sid_text)):
-            return ""
-        try:
-            return str(sid_text.value or "")
-        finally:
-            kernel32.LocalFree.argtypes = [wintypes.LPVOID]
-            kernel32.LocalFree.restype = wintypes.LPVOID
-            kernel32.LocalFree(ctypes.cast(sid_text, wintypes.LPVOID))
-    except (AttributeError, OSError, TypeError, ValueError):
-        return ""
 
 
 class LoginBrokerClient:
@@ -762,8 +720,15 @@ def replace_registry_file(source: Path, destination: Path,
         time.sleep(delay_seconds)
 
 
+# A TV-supplied name as Host Control shows it: no control, format (bidi) or line/paragraph
+# separator characters, at most 80 characters.
+def shown_name(value: str) -> str:
+    return "".join(character for character in str(value)
+                   if unicodedata.category(character) not in ("Cc", "Cf", "Zl", "Zp")).strip()[:80]
+
+
 class GatewayState:
-    def __init__(self, config_path: Path, pairing_code: str | None,
+    def __init__(self, config_path: Path,
                  registry_lock_path: Path | None = None,
                  broker_client: LoginBrokerClient | None = None) -> None:
         self.config_path = config_path.resolve()
@@ -779,40 +744,18 @@ class GatewayState:
         before_migration = json.dumps(
             self.config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         try:
-            schema_version = int(self.config.get("schema_version", 1))
-        except (TypeError, ValueError):
+            schema_version = int(self.config["schema_version"])
+        except (KeyError, TypeError, ValueError):
             raise ValueError("Invalid Gateway configuration schema version.") from None
         if schema_version > GATEWAY_SCHEMA_VERSION:
             raise ValueError("Gateway configuration was written by a newer version.")
-        # Schema 1 is the only compatibility migration.  Schema 2 already
-        # has explicit grants and account mapping; 2 -> 3 only adds the
-        # child-profile DTO/version and must not recreate defaults or resolve
-        # a new SID.
-        legacy_schema = schema_version < 2
         self.config.setdefault("listen_host", "0.0.0.0")
         self.config.setdefault("listen_port", 8785)
-        self.config.setdefault("discord_bridge", "http://127.0.0.1:8765")
-        self.config.setdefault("vibepollo_bridge", "http://127.0.0.1:8775")
-        provider_bridge = str(self.config.get("game_provider_bridge") or
-                              self.config.get("playnite_bridge") or
-                              "http://127.0.0.1:8780")
-        self.config.setdefault("game_provider_bridge", provider_bridge)
-        self.config.setdefault("playnite_bridge", provider_bridge)
         self.config.setdefault("microphone_worker", "MoonWakerMicrophoneWorker.exe")
         self.config.setdefault("discord_audio_worker", "MoonWakerDiscordAudioWorker.exe")
         self.config.setdefault("profiles", {})
         if not isinstance(self.config["profiles"], dict):
             raise ValueError("Gateway profiles must be an object.")
-        # Create the compatibility record only while migrating a schema-1
-        # registry.  A schema-2 administrator may deliberately remove it;
-        # restarting the Gateway must not silently resurrect that profile.
-        if legacy_schema:
-            self.config["profiles"].setdefault("default", {
-                "discord_bridge": self.config["discord_bridge"],
-                "vibepollo_bridge": self.config["vibepollo_bridge"],
-                "game_provider_bridge": self.config["game_provider_bridge"],
-                "playnite_bridge": self.config["playnite_bridge"],
-            })
         for profile_id, profile in self.config["profiles"].items():
             if not isinstance(profile, dict):
                 raise ValueError(f"Gateway profile {profile_id!r} must be an object.")
@@ -821,7 +764,7 @@ class GatewayState:
             ).strip()[:80] or str(profile_id)
             kind = str(profile.get("kind") or STANDARD_PROFILE_KIND).strip().lower()
             if kind == CHILD_PROFILE_KIND:
-                if not legacy_schema and not isinstance(profile.get("enabled"), bool):
+                if not isinstance(profile.get("enabled"), bool):
                     raise ValueError(f"Gateway child profile {profile_id!r} has invalid enabled state.")
                 profile["id"] = str(profile_id)
                 profile["kind"] = CHILD_PROFILE_KIND
@@ -829,10 +772,8 @@ class GatewayState:
                 profile["display_name"] = display_name
                 profile["parent_profile_id"] = str(
                     profile.get("parent_profile_id") or "").strip()
-                profile["enabled"] = (
-                    (profile.get("enabled") is True or
-                     (legacy_schema and "enabled" not in profile)) and
-                    not profile_deletion_pending(profile))
+                profile["enabled"] = (profile["enabled"] and
+                                      not profile_deletion_pending(profile))
                 allowed_game_keys = profile.get("allowed_game_keys", [])
                 if not isinstance(allowed_game_keys, list):
                     raise ValueError(f"Gateway child profile {profile_id!r} has invalid game policy.")
@@ -851,42 +792,22 @@ class GatewayState:
                 continue
             if kind != STANDARD_PROFILE_KIND:
                 raise ValueError(f"Gateway profile {profile_id!r} has an invalid kind.")
-            endpoint = str(profile.get("game_provider_bridge") or
-                           profile.get("playnite_bridge") or provider_bridge)
-            account_name = str(
-                profile.get("windows_account_name") or profile.get("owner") or ""
-            ).strip()
-            sid_candidates = (
-                str(profile.get("windows_account_sid") or "").strip(),
-                str(profile.get("owner_sid") or "").strip(),
-            )
-            account_sid = next((candidate for candidate in sid_candidates
-                                if WINDOWS_SID_PATTERN.fullmatch(candidate)), "")
-            if not account_sid:
-                account_sid = resolve_windows_account_sid(account_name) \
-                    if legacy_schema else ""
+            account_name = str(profile.get("windows_account_name") or "").strip()
+            account_sid = str(profile.get("windows_account_sid") or "").strip()
             mapping_resolved = bool(WINDOWS_SID_PATTERN.fullmatch(account_sid))
+            if not mapping_resolved:
+                account_sid = ""
             profile["id"] = str(profile_id)
             profile["name"] = display_name
             profile["display_name"] = display_name
-            profile["owner_sid"] = account_sid
             profile["windows_account_sid"] = account_sid
-            profile["owner"] = account_name
             profile["windows_account_name"] = account_name
-            profile["enabled"] = (
-                (profile.get("enabled") is True or
-                 (legacy_schema and "enabled" not in profile)) and
-                not profile_deletion_pending(profile)
-            )
+            profile["enabled"] = (profile.get("enabled") is True and
+                                  not profile_deletion_pending(profile))
             profile["profile_root"] = str(profile.get("profile_root") or "")
-            profile.setdefault("discord_bridge", self.config["discord_bridge"])
-            profile.setdefault("vibepollo_bridge", self.config["vibepollo_bridge"])
-            profile.setdefault("game_provider_bridge", endpoint)
-            profile.setdefault("playnite_bridge", endpoint)
             profile["remote_sign_in_enabled"] = (
                 bool(profile.get("remote_sign_in_enabled", False)) and
-                mapping_resolved and not legacy_schema and
-                not profile_deletion_pending(profile))
+                mapping_resolved and not profile_deletion_pending(profile))
             profile["account_mapping_status"] = (
                 "resolved" if mapping_resolved else "action_required")
             profile["kind"] = STANDARD_PROFILE_KIND
@@ -904,18 +825,11 @@ class GatewayState:
                 client_activity = activity_document["clients"]
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             pass
-        existing_profiles = {str(profile_id) for profile_id in self.config["profiles"]}
         for client in self.config["clients"]:
             if not isinstance(client, dict):
                 raise ValueError("Gateway client records must be objects.")
-            grants = ({profile_id: ["use_profile"]
-                       for profile_id in sorted(existing_profiles)
-                       if self._is_standard_profile(
-                           self.config["profiles"].get(profile_id))}
-                      if legacy_schema else client.get("profile_grants"))
-            if grants is None:
-                grants = {}
-            elif not isinstance(grants, dict):
+            grants = client.get("profile_grants")
+            if not isinstance(grants, dict):
                 grants = {}
             normalized_grants = {}
             for profile_id, permissions in grants.items():
@@ -943,10 +857,11 @@ class GatewayState:
                 int(client.get("last_seen_at") or client.get("paired_at") or 0),
                 activity_seen)
         self.config["schema_version"] = GATEWAY_SCHEMA_VERSION
-        self.pairing_code_hash = sha256_text(pairing_code) if pairing_code else None
-        self.pairing_expires_at = time.monotonic() + PAIRING_LIFETIME_SECONDS if pairing_code else 0.0
         self.pairing_control_path = self.config_path.with_name("pairing-code.json")
         self.host_close_request_path = self.config_path.with_name("host-close-request.json")
+        # This computer's Vibepollo, with its one token beside gateway.json.
+        self.vibepollo = VibepolloClient(self.config_path.with_name("vibepollo-api.json"),
+                                         self.config_path.with_name("exports"))
         self.host_close_result_path = self.config_path.with_name("host-close-result.json")
         self.host_close_pending: dict[str, Any] | None = None
         # ponytail: in memory only. A request lives 60 s and its file is emptied when taken, so
@@ -968,11 +883,10 @@ class GatewayState:
         self.network_downloads: set[tuple[str, str]] = set()
         self.pin_failures: dict[tuple[str, str], list[float]] = {}
         self.pin_blocked_until: dict[tuple[str, str], float] = {}
-        # The lease key is always (client_id, profile_id). Its session ID is
-        # transient process authorization: None means a legacy five-minute
-        # lease, while a UUID means the matching process session has no wall-
-        # clock expiry. A new verification replaces the prior lease.
-        self.pin_unlock_leases: dict[tuple[str, str], tuple[float | None, str, str | None]] = {}
+        # The lease key is always (client_id, profile_id): (verifier fingerprint, profile
+        # session ID). The session is transient process authorization without a wall-clock
+        # expiry. A new verification replaces the prior lease.
+        self.pin_unlock_leases: dict[tuple[str, str], tuple[str, str]] = {}
         self.child_management_sessions: dict[
             tuple[str, str, str], tuple[float, str, str]] = {}
         # CP-04 management endpoints stay fail-closed until the complete
@@ -1059,6 +973,10 @@ class GatewayState:
             self._control_save_locked()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
         self.gateway_runtime_path = self.config_path.with_name("gateway-runtime.json")
+        self.gateway_status_path = self.config_path.with_name("gateway-status.json")
+        self.gateway_status_written: dict[str, Any] | None = None
+        self.gateway_status_vibepollo = (False, 0)
+        self.gateway_status_next_check = 0.0
         self.started_at = int(time.time())
         self.version_info = self._load_version_info()
         self.last_runtime_profile = ""
@@ -1135,9 +1053,9 @@ class GatewayState:
             # A child is an actor only.  Any executable identity or secret is
             # rejected instead of being silently treated as a parent.
             forbidden = {
-                "windows_account_sid", "owner_sid", "windows_account_name", "owner",
-                "profile_root", "discord_bridge", "vibepollo_bridge",
-                "game_provider_bridge", "playnite_bridge", "integration_token",
+                "windows_account_sid", "windows_account_name",
+                "profile_root", "discord_bridge",
+                "game_provider_bridge", "integration_token",
                 "pin_verifier", "account_mapping_status", "reservation_nonce",
                 "remote_sign_in_enabled",
                 "ratings", "minimum_age", "age_rating", "pegi", "esrb",
@@ -1429,6 +1347,72 @@ class GatewayState:
                              encoding="utf-8")
         os.replace(temporary, self.gateway_runtime_path)
 
+    def gateway_status(self) -> dict[str, Any]:
+        """What Host Control shows of this Gateway: whether Vibepollo's API answers and the
+        stream record, if any. Display facts only: no client, token or process identity."""
+        now = time.monotonic()
+        if now >= self.gateway_status_next_check:
+            # api_online answers from a call in the last 30 s, or makes one cheap request.
+            self.gateway_status_next_check = now + VIBEPOLLO_STATUS_SECONDS
+            self.gateway_status_vibepollo = (bool(self.vibepollo.api_online()), int(time.time()))
+        online, checked_at = self.gateway_status_vibepollo
+        status: dict[str, Any] = {"vibepollo_api_online": online,
+                                  "vibepollo_checked_at": checked_at}
+        with self.lock:
+            stream = self.control_state.get("stream")
+            if not isinstance(stream, dict):
+                return status
+            profiles = self.config.get("profiles", {})
+
+            def name(profile_id: str) -> str:
+                profile = profiles.get(profile_id)
+                if not isinstance(profile, dict):
+                    return profile_id
+                return str(profile.get("display_name") or profile.get("name") or profile_id)[:80]
+
+            client_id = str(stream.get("client_id") or "")
+            client = next((item for item in self.config.get("clients", [])
+                           if isinstance(item, dict) and str(item.get("id") or "") == client_id),
+                          {})
+            actor = str(stream.get("actor_profile_id") or "")
+            execution = str(stream.get("execution_profile_id") or "")
+            session = {
+                "actor_profile_id": actor, "actor_profile_name": name(actor),
+                "execution_profile_id": execution, "execution_profile_name": name(execution),
+                "client_name": str(client.get("name") or "")[:80],
+                "game_id": str(stream.get("provider_game_id") or ""),
+                "stream_started_unix_ms": int(stream.get("stream_started_unix_ms") or 0),
+            }
+        status["session"] = session
+        return status
+
+    def publish_gateway_status(self) -> None:
+        """Replace gateway-status.json when what it says changed. The directory ACL lets local
+        accounts read it, as gateway-runtime.json."""
+        status = self.gateway_status()
+        if status == self.gateway_status_written:
+            return
+        temporary = self.gateway_status_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps({**status, "updated_at": int(time.time())},
+                                        ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # Host Control reads with delete sharing; antivirus may still hold it a moment.
+        replace_registry_file(temporary, self.gateway_status_path, attempts=10, delay_seconds=0.05)
+        self.gateway_status_written = status
+
+    def keep_gateway_status(self, stop: threading.Event) -> None:
+        """Its own thread: a slow Vibepollo check never delays the housekeeping polls."""
+        failed = False
+        while True:
+            try:
+                self.publish_gateway_status()
+                failed = False
+            except Exception as error:  # the publisher must outlive one failed write
+                if not failed:
+                    DIAGNOSTICS.record("gateway-status-write-failed", level="WARN", error=error)
+                failed = True
+            if stop.wait(GATEWAY_STATUS_POLL_SECONDS):
+                return
+
     def path_from_config(self, key: str) -> Path:
         value = Path(str(self.config[key]))
         return value if value.is_absolute() else (self.base_dir / value).resolve()
@@ -1439,7 +1423,7 @@ class GatewayState:
                     self.config_path.read_text(encoding="utf-8-sig") !=
                     expected_registry_text):
                 raise RuntimeError(
-                    "Gateway configuration changed during migration; restart the Gateway.")
+                    "Gateway configuration changed during startup; restart the Gateway.")
             self.replace_registry(self.config)
 
     @contextlib.contextmanager
@@ -1571,25 +1555,38 @@ class GatewayState:
                     return client
         return None
 
-    def refresh_pairing_control(self) -> None:
-        """Loads a short-lived code activated by the local pairing helper."""
+    def pairing_code_hash(self) -> str | None:
+        """The SHA-256 of the code Host Control activated, read from pairing-code.json on every
+        use: the file is the only source, so emptying it cancels the code at once."""
         try:
-            control = json.loads(self.pairing_control_path.read_text(encoding="utf-8-sig"))
-            expires_at = int(control.get("expires_at", 0))
-            digest = str(control.get("code_sha256", ""))
-            remaining = expires_at - int(time.time())
-            if remaining <= 0 or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                return
-            with self.lock:
-                self.pairing_code_hash = digest
-                self.pairing_expires_at = time.monotonic() + min(
-                    remaining, PAIRING_LIFETIME_SECONDS)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return
+            with self.pairing_control_path.open("rb") as stream:
+                raw = stream.read(PAIRING_CONTROL_MAX_BYTES + 1)
+            if len(raw) > PAIRING_CONTROL_MAX_BYTES:
+                return None
+            control = json.loads(raw.decode("utf-8-sig"))
+            expires_at = control.get("expires_at")
+            digest = control.get("code_sha256")
+        except (OSError, ValueError, AttributeError, RecursionError):
+            return None
+        if isinstance(expires_at, bool) or not isinstance(expires_at, int) \
+                or not 0 < expires_at - time.time() <= PAIRING_LIFETIME_SECONDS \
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return None
+        return digest
+
+    def consume_pairing_code(self) -> None:
+        """A code pairs one TV. Empty the file in place, as Host Control's "Anuluj" does: it
+        keeps its ACL and is never created here. The pairing already succeeded, so a failed
+        write is only logged."""
+        try:
+            with self.pairing_control_path.open("r+b") as stream:
+                stream.truncate(0)
+                stream.write(b"{}")
+        except OSError as error:
+            DIAGNOSTICS.record("pairing-code-not-consumed", level="WARN", error=error)
 
     def pairing_active(self) -> bool:
-        self.refresh_pairing_control()
-        return self.pairing_code_hash is not None and time.monotonic() <= self.pairing_expires_at
+        return self.pairing_code_hash() is not None
 
     def pairing_allowed(self, address: str) -> bool:
         now = time.monotonic()
@@ -1599,13 +1596,13 @@ class GatewayState:
             return len(recent) < 5
 
     def pair(self, address: str, code: str, client_name: str) -> dict[str, Any]:
-        self.refresh_pairing_control()
+        expected = self.pairing_code_hash()
         now = time.monotonic()
-        if not self.pairing_code_hash or now > self.pairing_expires_at:
-            raise PermissionError("Pairing is not active. Restart the gateway with a new pairing code.")
+        if expected is None:
+            raise PermissionError("Pairing is not active. Create a new pairing code in Host Control.")
         if not self.pairing_allowed(address):
             raise PermissionError("Too many pairing attempts. Try again in one minute.")
-        if not secrets.compare_digest(self.pairing_code_hash, sha256_text(code)):
+        if not secrets.compare_digest(expected, sha256_text(code)):
             with self.lock:
                 self.failed_pair_attempts.setdefault(address, []).append(now)
             raise PermissionError("Invalid pairing code.")
@@ -1614,11 +1611,15 @@ class GatewayState:
         client_id = secrets.token_hex(12)
         paired_at = int(time.time())
         with self.lock:
+            # Re-read under the lock: a concurrent pair() may already have consumed the code.
+            if self.pairing_code_hash() != expected:
+                raise PermissionError(
+                    "Pairing is not active. Create a new pairing code in Host Control.")
             with self.registry_update_lock():
                 current = self.current_registry()
                 record = {
                     "id": client_id,
-                    "name": client_name[:80] or "Android TV",
+                    "name": shown_name(client_name) or "Android TV",
                     "token_sha256": sha256_text(token),
                     "paired_at": paired_at,
                     "last_seen_at": paired_at,
@@ -1633,6 +1634,7 @@ class GatewayState:
                 current["clients"].append(record)
                 self.replace_registry(current)
                 self.config = current
+            self.consume_pairing_code()
         profiles = []
         for profile_id in record["profile_grants"]:
             profile = current["profiles"][profile_id]
@@ -1782,34 +1784,10 @@ class GatewayState:
                     "reason": "identity_proof_invalid"}
             record["used"] = True
             challenge = str(record.get("challenge") or "")
-        ok, result = self.proxy_json(
-            "vibepollo", "/identity/verify", {
-                "challenge": challenge,
-                "certificate_sha256": fingerprint,
-                "signature": signature_text,
-            }, timeout=12.0, profile_id=execution_profile_id)
-        if (not ok or not isinstance(result, dict) or
-                result.get("ok") is not True):
-            explicit_reason = str(result.get("reason") or "") \
-                if isinstance(result, dict) else ""
-            error_text = str(result.get("error") or "") \
-                if isinstance(result, dict) else ""
-            try:
-                upstream_status = int(result.get("status", 0) or 0) \
-                    if isinstance(result, dict) else 0
-            except (TypeError, ValueError):
-                upstream_status = 0
-            allowed = {"pairing_required", "identity_ambiguous",
-                       "identity_proof_invalid", "identity_binding_unsupported"}
-            if explicit_reason in allowed:
-                reason = explicit_reason
-            elif upstream_status == 404 or \
-                    "unknown endpoint" in error_text.casefold():
-                reason = "identity_binding_unsupported"
-            elif error_text == "identity_binding_unsupported":
-                reason = error_text
-            else:
-                reason = "identity_binding_unavailable"
+        try:
+            client_uuid = self.vibepollo.verify_identity(challenge, fingerprint, signature)
+        except IdentityError as error:
+            reason = error.reason
             if reason in {"pairing_required", "identity_ambiguous"}:
                 status = HTTPStatus.CONFLICT
             elif reason == "identity_binding_unavailable":
@@ -1817,7 +1795,6 @@ class GatewayState:
             else:
                 status = HTTPStatus.BAD_GATEWAY
             return status, {"ok": False, "error": reason, "reason": reason}
-        client_uuid = str(result.get("client_uuid") or "").strip()
         if not CHILD_VIBEPOOLLO_UUID_PATTERN.fullmatch(client_uuid):
             return HTTPStatus.BAD_GATEWAY, {
                 "ok": False, "error": "identity_binding_unsupported",
@@ -1853,8 +1830,10 @@ class GatewayState:
                     str(grant.get("address", "")) != address):
                 raise PermissionError("The stream pairing ticket belongs to another client.")
             grant["in_use"] = True
-        ok, result = self.proxy_json(
-            "vibepollo", "/pair", {"pin": pin, "name": name}, timeout=50.0)
+        try:
+            ok, result = True, self.vibepollo.pair(pin, name)
+        except VibepolloError as error:
+            ok, result = False, {"error": str(error)}
         with self.lock:
             current = self.stream_pair_tickets.get(digest)
             if ok:
@@ -1864,15 +1843,10 @@ class GatewayState:
         if not ok:
             return HTTPStatus.BAD_GATEWAY, {
                 "ok": False,
-                "stage": "vibepollo_bridge",
+                "stage": "vibepollo",
                 "reason": "vibepollo_pairing_failed",
-                "error": "Vibepollo Bridge pairing failed: " + self.upstream_error(
-                    result, "The bridge did not return an error description."),
-            }
-        if not isinstance(result, dict):
-            return HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "Vibepollo returned an invalid pairing response.",
+                "error": "Vibepollo pairing failed: " + self.upstream_error(
+                    result, "Vibepollo did not return an error description."),
             }
         client_uuid = str(result.get("client_uuid", "")).strip()
         if not CHILD_VIBEPOOLLO_UUID_PATTERN.fullmatch(client_uuid):
@@ -2091,8 +2065,10 @@ class GatewayState:
             return HTTPStatus.OK, {"ok": True}, self.pin_verifier_fingerprint(profile)
 
     def verify_pin(self, client: dict[str, Any], profile_id: str,
-                   pin: str, session_id: str | None = None) -> tuple[int, dict[str, Any]]:
+                   pin: str, session_id: str | None) -> tuple[int, dict[str, Any]]:
         session_id = normalize_profile_session_id(session_id)
+        if session_id is None:
+            raise ValueError(f"A valid {PROFILE_SESSION_HEADER} header is required.")
         profile = self.config.get("profiles", {}).get(profile_id)
         if not isinstance(profile, dict) or not profile_pin_required(profile):
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "pin_not_required"}
@@ -2100,19 +2076,9 @@ class GatewayState:
         if status != HTTPStatus.OK:
             return status, result
         key = (self.pin_client_key(client), profile_id)
-        now = time.monotonic()
         with self.lock:
-            self.pin_unlock_leases[key] = (
-                None if session_id is not None else now + PIN_UNLOCK_LEASE_SECONDS,
-                fingerprint,
-                session_id,
-            )
-        result = {"ok": True, "unlocked": True}
-        if session_id is None:
-            result["expires_in_seconds"] = PIN_UNLOCK_LEASE_SECONDS
-        else:
-            result["session_scoped"] = True
-        return HTTPStatus.OK, result
+            self.pin_unlock_leases[key] = (fingerprint, session_id)
+        return HTTPStatus.OK, {"ok": True, "unlocked": True, "session_scoped": True}
 
     def require_profile_unlock(self, client: dict[str, Any], profile_id: str,
                                session_id: str | None = None) -> None:
@@ -2120,26 +2086,17 @@ class GatewayState:
         profile = self.config.get("profiles", {}).get(profile_id)
         if not isinstance(profile, dict) or not profile_pin_required(profile):
             return
-        client_id = self.pin_client_key(client)
-        key = (client_id, profile_id)
-        now = time.monotonic()
+        key = (self.pin_client_key(client), profile_id)
         with self.lock:
             lease = self.pin_unlock_leases.get(key)
             fingerprint_matches = (lease is not None and secrets.compare_digest(
-                lease[1], self.pin_verifier_fingerprint(profile)))
-            session_lease = (session_id is not None and lease is not None and
-                             lease[0] is None and lease[2] == session_id)
-            legacy_lease = (session_id is None and lease is not None and
-                            lease[0] is not None and lease[0] > now and
-                            lease[2] is None)
-            if fingerprint_matches and (session_lease or legacy_lease):
+                lease[0], self.pin_verifier_fingerprint(profile)))
+            if fingerprint_matches and session_id is not None and lease[1] == session_id:
                 return
             # A stale or different process must not be able to invalidate the
-            # currently authorized process. Verifier changes and expiry do
-            # invalidate the stored lease; session mismatches only deny access.
-            if (lease is not None and
-                    (not fingerprint_matches or
-                     (lease[0] is not None and lease[0] <= now))):
+            # currently authorized process. A verifier change invalidates the
+            # stored lease; session mismatches only deny access.
+            if lease is not None and not fingerprint_matches:
                 self.pin_unlock_leases.pop(key, None)
         raise PermissionError("Profile app PIN verification required.")
 
@@ -2206,8 +2163,6 @@ class GatewayState:
         selected = str(profile_id or "").strip()
         if not PROFILE_ID_PATTERN.fullmatch(selected):
             raise ValueError("Invalid integration profile ID.")
-        if selected == "default":
-            raise ValueError("The compatibility default profile cannot be deleted.")
         with self.lock:
             with self.registry_update_lock():
                 current = self.current_registry()
@@ -2277,12 +2232,6 @@ class GatewayState:
         key = "game_provider_bridge" if name in {"game_provider", "playnite"} \
             else f"{name}_bridge"
         base = str(profile.get(key, "")).rstrip("/")
-        if not base and key == "game_provider_bridge":
-            base = str(profile.get("playnite_bridge", "")).rstrip("/")
-        if not base and selected_profile_id == "default":
-            base = str(self.config.get(key) or (
-                self.config.get("playnite_bridge")
-                if key == "game_provider_bridge" else "")).rstrip("/")
         if not base.startswith("http://127.0.0.1:") and not base.startswith("http://localhost:"):
             raise ValueError(f"{name} bridge must remain on loopback")
         return base + path
@@ -2381,17 +2330,14 @@ class GatewayState:
                 "gateway": {"online": True, "api_version": 1},
                 "capabilities": protocol_capabilities,
             }
-        vibepollo_ok, vibepollo = self.proxy("vibepollo", "/health", timeout=1.0)
+        vibepollo_ok = self.vibepollo.api_online()
+        vibepollo = {"ok": vibepollo_ok, "api_online": vibepollo_ok}
         discord_ok, discord = self.proxy("discord", "/health", timeout=1.0)
         playnite_ok, playnite = self.proxy(
             "game_provider", "/observation", timeout=1.0,
             profile_id=self.execution_profile_id)
         microphone = self.microphone_status()
         discord_audio = self.discord_audio_status()
-        virtualhere_ok, virtualhere = (False, {"error": "Discord Bridge is offline."})
-        if discord_ok:
-            virtualhere_ok, virtualhere = self.proxy(
-                "discord", "/virtualhere-state", timeout=1.5)
         remote_windows_sign_in = self.remote_windows_sign_in_capability()
         return {
             "gateway": {
@@ -2406,10 +2352,6 @@ class GatewayState:
                 "game_provider": {"available": playnite_ok, "observation": playnite},
                 "playnite": {"available": playnite_ok, "observation": playnite},
                 "discord": {"available": discord_ok, "health": discord},
-                "virtualhere": {
-                    "available": virtualhere_ok and bool(virtualhere.get("installed", False)),
-                    "health": virtualhere,
-                },
                 "host_sleep": {"available": os.name == "nt"},
                 "session_suspend": {"available": os.name == "nt"},
                 "remote_windows_sign_in": remote_windows_sign_in,
@@ -2966,7 +2908,7 @@ class GatewayState:
         streamer_trace: dict[str, Any] = {}
         try:
             session_ok = StreamerControlOperation.force_close(
-                self.proxy, reset_profile_id, trace=streamer_trace)
+                self.vibepollo, trace=streamer_trace)
         except Exception as error:
             session_ok = False
             streamer_trace["close_http_ok"] = 0
@@ -3222,7 +3164,7 @@ class GatewayState:
                 ).strip()[:80] or str(profile_id)
                 display_name = re.sub(r"[\x00-\x1f\x7f]", " ", display_name).strip()
                 discord = self.discord_status()
-                vibepollo_online, _ = self.proxy("vibepollo", "/health", timeout=1.0)
+                vibepollo_online = self.vibepollo.api_online()
                 playnite_online, playnite_observation = self.proxy(
                     "game_provider", "/observation", timeout=1.0,
                     profile_id=str(profile_id))
@@ -3230,12 +3172,6 @@ class GatewayState:
                     if isinstance(playnite_observation, dict) else None
                 playnite_connector = playnite_online and isinstance(provider, dict) \
                     and provider.get("connector_evidence") == "VERIFIED"
-                virtualhere_online = False
-                if discord["bridge_online"]:
-                    virtualhere_ok, virtualhere = self.proxy(
-                        "discord", "/virtualhere-state", timeout=1.5)
-                    virtualhere_online = virtualhere_ok and bool(
-                        virtualhere.get("installed", False))
                 if not suggested_profile_id and discord["rpc_connected"]:
                     suggested_profile_id = str(profile_id)
                 if not available_profile_id and (
@@ -3273,7 +3209,6 @@ class GatewayState:
                     "game_provider_bridge_online": playnite_online,
                     "playnite_bridge_online": playnite_online,
                     "playnite_connector_connected": playnite_connector,
-                    "virtualhere_available": virtualhere_online,
                 })
         finally:
             original_config = self.config.get("profiles", {}).get(original_profile)
@@ -3356,22 +3291,15 @@ class GatewayState:
         vibepollo_online = False
         playnite_online = False
         playnite_connector = False
-        virtualhere_online = False
         if parent_available:
-            vibepollo_online, _ = self.proxy(
-                "vibepollo", "/health", timeout=1.0, profile_id=parent_id)
+            vibepollo_online = self.vibepollo.api_online()
             playnite_online, playnite_observation = self.proxy(
                 "game_provider", "/observation", timeout=1.0,
-                profile_id=parent_id)
-            virtualhere_ok, virtualhere = self.proxy(
-                "discord", "/virtualhere-state", timeout=1.5,
                 profile_id=parent_id)
             provider = playnite_observation.get("provider") \
                 if isinstance(playnite_observation, dict) else None
             playnite_connector = playnite_online and isinstance(provider, dict) \
                 and provider.get("connector_evidence") == "VERIFIED"
-            virtualhere_online = virtualhere_ok and isinstance(
-                virtualhere, dict) and bool(virtualhere.get("installed", False))
         reason = str(policy.get("reason") or "none")
         if not actor.get("enabled") or profile_deletion_pending(actor):
             reason = "child_profile_unavailable"
@@ -3427,7 +3355,6 @@ class GatewayState:
             "vibepollo_bridge_online": bool(vibepollo_online),
             "playnite_bridge_online": bool(playnite_online),
             "playnite_connector_connected": bool(playnite_connector),
-            "virtualhere_available": virtualhere_online,
         }
 
     @staticmethod
@@ -3620,55 +3547,24 @@ class GatewayState:
             "error": "" if ok else self.upstream_error(result, "Discord action failed."),
         }
 
-    def virtualhere_state(self, force: bool = False) -> tuple[int, Any]:
-        suffix = "?force=true" if force else ""
-        ok, result = self.proxy("discord", "/virtualhere-state" + suffix, timeout=8.0)
-        return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
-            "ok": ok,
-            "virtualhere": result if ok and isinstance(result, dict) else {},
-            "error": "" if ok else self.upstream_error(result, "Unable to load VirtualHere state."),
-        }
-
-    def virtualhere_action(self, action: str, body: dict[str, Any]) -> tuple[int, Any]:
-        if action == "restart":
-            path = "/repair-virtualhere"
-            timeout = 12.0
-        elif action in {"use", "stop", "auto"}:
-            address = str(body.get("address", "")).strip()
-            if not VIRTUALHERE_ADDRESS_PATTERN.fullmatch(address):
-                raise ValueError("Invalid VirtualHere device address.")
-            path = "/virtualhere-action?" + urllib.parse.urlencode({
-                "action": action,
-                "address": address,
-            })
-            timeout = 10.0
-        else:
-            return HTTPStatus.NOT_FOUND, {"error": "Unknown VirtualHere action."}
-        ok, result = self.proxy("discord", path, timeout=timeout)
-        return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
-            "ok": ok,
-            "action": action,
-            "result": result,
-            "error": "" if ok else self.upstream_error(result, "VirtualHere action failed."),
-        }
-
     def vibepollo_status(self) -> tuple[int, Any]:
-        health_ok, health = self.proxy("vibepollo", "/health")
-        if not health_ok:
-            return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "health": health}
-        snapshot_ok, snapshot = self.proxy("vibepollo", "/snapshot")
+        if not self.vibepollo.configured():
+            return HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False, "health": {"ok": False, "error": "vibepollo_not_configured"}}
+        status = self.vibepollo.repair_status()
         return HTTPStatus.OK, {
             "ok": True,
-            "health": health,
-            "host": snapshot.get("host", {}) if snapshot_ok and isinstance(snapshot, dict) else {},
-            "bridge": snapshot.get("bridge", {}) if snapshot_ok and isinstance(snapshot, dict) else {},
+            "health": {"ok": True, "api_online": status["host"]["online"]},
+            **status,
         }
 
     def vibepollo_action(self, action: str) -> tuple[int, Any]:
-        allowed = {"restart", "reset-display", "export-logs"}
-        if action not in allowed:
+        if action not in {"restart", "reset-display", "export-logs"}:
             return HTTPStatus.NOT_FOUND, {"error": "Unknown Vibepollo action."}
-        ok, result = self.proxy("vibepollo", f"/action/{action}", timeout=20.0 if action == "export-logs" else 5.0)
+        try:
+            ok, result = True, self.vibepollo.action(action)
+        except VibepolloError as error:
+            ok, result = False, {"error": str(error), "status": error.status}
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {"ok": ok, "action": action, "result": result}
 
     @staticmethod
@@ -3985,7 +3881,7 @@ class GatewayState:
         name = str(value.get("name") or "").strip()
         avatar_id = str(value.get("avatar_id") or "").strip()
         controls = set(chr(code) for code in range(0, 32)) | {chr(127)}
-        if (not name or len(name) > 80 or any(character in controls for character in name) or
+        if (not name or len(name) > 80 or shown_name(name) != name or
                 len(avatar_id) > 128 or any(character in controls for character in avatar_id)):
             raise ValueError("Child profile name or avatar is invalid.")
         enabled = value.get("enabled")
@@ -5386,11 +5282,7 @@ class GatewayState:
     def _control_start_effect(self, operation: dict[str, Any]) -> str:
         """What the streamer authoritatively reports of a start (network read); see
         ControlOperationPolicy.streamer_start_effect."""
-        try:
-            ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
-                                      profile_id=operation["execution_profile_id"])
-        except (OSError, TypeError, ValueError):
-            return "unknown"
+        ok, snapshot = self.vibepollo.control_snapshot()
         return ControlOperationPolicy.streamer_start_effect(snapshot, operation) \
             if ok else "unknown"
 
@@ -5726,8 +5618,7 @@ class GatewayState:
         it idle and the provider is idle too ({}), or is left only with a launch that has no
         game process, which the ended stream abandons ({"abandoned_start_game_id": ...})."""
         try:
-            ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
-                                      profile_id=stream["execution_profile_id"])
+            ok, snapshot = self.vibepollo.control_snapshot()
             if not ok or not ControlOperationPolicy.streamer_idle(snapshot):
                 return None
             current = self._child_time_current_game(stream["execution_profile_id"], stream)
@@ -5820,11 +5711,7 @@ class GatewayState:
 
     def _control_stream_transport_gone(self, stream: dict[str, Any]) -> bool:
         """The streamer authoritatively reports no live transport (network read)."""
-        try:
-            ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
-                                      profile_id=stream["execution_profile_id"])
-        except OSError:
-            return False
+        ok, snapshot = self.vibepollo.control_snapshot()
         return ok and ControlOperationPolicy.streamer_transport_gone(snapshot)
 
     def _control_reconcile_idle_apply_locked(
@@ -6370,8 +6257,7 @@ class GatewayState:
             # The Gateway holds a child's terminal operation on its own record: a session
             # no client is attributed to must not keep an enforced limit's stream open.
             closed, close_reason = StreamerControlOperation.close(
-                self.proxy, str(session.get("execution_profile_id") or ""), stream,
-                trace=close_trace, host_held=True)
+                self.vibepollo, stream, trace=close_trace, host_held=True)
             DIAGNOSTICS.record(
                 "child-terminal-streamer-close", level="INFO" if closed else "WARN",
                 operation_id=operation_id, generation=permit["generation"],
@@ -7553,7 +7439,7 @@ class GatewayState:
                 # The streamer decision comes first: a stream the close would leave keeps
                 # its game too, so the answer is never "refused" over a stopped game.
                 stopped, reason = StreamerControlOperation.closable(
-                    self.proxy, profile_id, stream, trace, host_held=not idle_only)
+                    self.vibepollo, stream, trace, host_held=not idle_only)
             if stopped and game_id:
                 ok, result = self._child_time_control_call(stream, lambda:
                     self.provider_control_operation.execute(
@@ -7569,7 +7455,7 @@ class GatewayState:
                 # An automatic idle close keeps the strict rule: any streamer session, even
                 # one no client is attributed to yet, blocks it.
                 closed, reason = StreamerControlOperation.close(
-                    self.proxy, profile_id, stream, trace=trace, host_held=not idle_only)
+                    self.vibepollo, stream, trace=trace, host_held=not idle_only)
                 if not closed and game_id:
                     # A streamer change since the decision, or a close it ignored, leaves
                     # this state.
@@ -7598,18 +7484,14 @@ class GatewayState:
         return "completed", "stream_closed_game_unconfirmed" if game_unconfirmed \
             else "stream_and_game_closed" if game_id else "stream_closed"
 
-    def _host_close_own_streamer_app(self, profile_id: str) -> bool | None:
+    def _host_close_own_streamer_app(self) -> bool | None:
         """Whether the streamer authoritatively runs MoonWaker's own application and nothing
         else; None when its snapshot cannot tell."""
-        try:
-            ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
-                                      profile_id=profile_id)
-        except OSError:
-            return None
+        ok, snapshot = self.vibepollo.control_snapshot()
         if not ok or not ControlOperationPolicy.streamer_snapshot_authoritative(snapshot) \
                 or ControlOperationPolicy._snapshot_items(snapshot.get("apps")) is None:
             return None
-        return ControlOperationPolicy.streamer_runs_only(snapshot, MOONWAKER_STREAM_APP_UUID)
+        return ControlOperationPolicy.streamer_runs_only(snapshot, STREAM_APP_UUID)
 
     def _host_close_unmanaged(self, profile_id: str,
                               operation_id: str) -> tuple[str, str]:
@@ -7627,7 +7509,7 @@ class GatewayState:
         nothing = ("refused", "game_state_unverified") if unverified \
             else ("completed", "nothing_to_close")
         if not game_id:
-            own_app = self._host_close_own_streamer_app(profile_id)
+            own_app = self._host_close_own_streamer_app()
             if own_app is None:
                 return "refused", "streamer_snapshot_unavailable"
             if not own_app:
@@ -7660,7 +7542,7 @@ class GatewayState:
             # Decided before the game stops and read under the permit: no MoonWaker start
             # can change the streamer meanwhile. A streamer it cannot read is no decision:
             # the game is left as well.
-            own_app = self._host_close_own_streamer_app(profile_id)
+            own_app = self._host_close_own_streamer_app()
             if own_app is None:
                 failure = "streamer_snapshot_unavailable"
             elif game_id:
@@ -7671,7 +7553,7 @@ class GatewayState:
                 game_stopped = bool(ok) and isinstance(result, dict) \
                     and result.get("accepted") is True
             if own_app and (game_stopped or not game_id):
-                closed = StreamerControlOperation.force_close(self.proxy, profile_id)
+                closed = StreamerControlOperation.force_close(self.vibepollo)
         except Exception as error:
             failure = "host_close_failed"
             DIAGNOSTICS.record("host-close-failed", level="WARN", error=error,
@@ -7709,8 +7591,7 @@ class GatewayState:
         proves itself idle. False: a client is connected or a game runs. None: unknown."""
         profile_id = str(stream.get("execution_profile_id") or "")
         try:
-            ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
-                                      profile_id=profile_id)
+            ok, snapshot = self.vibepollo.control_snapshot()
             if not ok or not ControlOperationPolicy.streamer_snapshot_authoritative(snapshot):
                 return None
             if not ControlOperationPolicy.streamer_transport_gone(snapshot):
@@ -9026,11 +8907,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             child_reads = {
                 f"{API_PREFIX}/library": "library",
-                f"{API_PREFIX}/playnite/library/list": "library",
                 f"{API_PREFIX}/artwork": "artwork",
-                f"{API_PREFIX}/playnite/artwork": "artwork",
                 f"{API_PREFIX}/game/events": "events",
-                f"{API_PREFIX}/playnite/events": "events",
                 f"{API_PREFIX}/session/observation": "observation",
             }
             resource = child_reads.get(path)
@@ -9064,11 +8942,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     query.get("transition_id", [""])[0])
                 self.send_json(status, result)
                 return
-            if path == f"{API_PREFIX}/virtualhere/state":
-                status, result = self.state.virtualhere_state(
-                    query.get("force", [""])[0].lower() == "true")
-                self.send_json(status, result)
-                return
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})
             return
         self.authorize_profile(authenticated_client)
@@ -9094,30 +8967,23 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_json(status, result)
         elif path == f"{API_PREFIX}/discord/audio/stream":
             self.discord_audio_stream(self.state.profile_id)
-        elif path == f"{API_PREFIX}/virtualhere/state":
-            status, result = self.state.virtualhere_state(
-                query.get("force", [""])[0].lower() == "true")
-            self.send_json(status, result)
         elif path == f"{API_PREFIX}/session/observation":
             status, result = self.state.playnite_observation(
                 query.get("request_ordinal", ["0"])[0],
                 query.get("transition_id", [""])[0])
             self.send_json(status, result)
-        elif path in {f"{API_PREFIX}/library",
-                      f"{API_PREFIX}/playnite/library/list"}:
+        elif path == f"{API_PREFIX}/library":
             status, result = self.state.playnite_library(
                 query.get("cursor", [""])[0], query.get("limit", ["50"])[0])
             self.send_json(status, result)
-        elif path in {f"{API_PREFIX}/artwork",
-                      f"{API_PREFIX}/playnite/artwork"}:
+        elif path == f"{API_PREFIX}/artwork":
             status, body, content_type = self.state.playnite_artwork(
                 query.get("game_id", [""])[0], query.get("kind", ["cover"])[0])
             if status == HTTPStatus.OK:
                 self.send_binary(status, body, content_type)
             else:
                 self.send_json(status, {"error": "Game artwork is unavailable."})
-        elif path in {f"{API_PREFIX}/game/events",
-                      f"{API_PREFIX}/playnite/events"}:
+        elif path == f"{API_PREFIX}/game/events":
             status, result = self.state.playnite_events(
                 query.get("after", ["0"])[0],
                 query.get("transition_id", [""])[0])
@@ -9519,16 +9385,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.send_json(status, result)
                     return
                 child_action = path[len(API_PREFIX) + 1:]
-                if child_action.startswith("playnite/"):
-                    child_action = child_action[len("playnite/"):]
                 child_start = child_action in {
                     "game/start", "game/stop-verified", "game/focus", "game/install",
                     "game/uninstall", "game/install/focus", "game/install/verify",
                 }
-                child_refresh = path in {
-                    f"{API_PREFIX}/library/refresh",
-                    f"{API_PREFIX}/playnite/library/refresh",
-                }
+                child_refresh = path == f"{API_PREFIX}/library/refresh"
                 if child_start:
                     if not self._require_child_capability():
                         return
@@ -9574,21 +9435,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     status, result = self.state.vibepollo_pair_client(
                         self.client_address[0], authenticated_client,
                         str(body.pop("ticket", "")), body)
-                    self.send_json(status, result)
-                    return
-                virtualhere_prefix = f"{API_PREFIX}/virtualhere/"
-                if path.startswith(virtualhere_prefix):
-                    actor_id = self._authorize_public_child(
-                        authenticated_client, "use_profile")
-                    request_id = self.headers.get("X-Request-Id", "").strip()
-                    if not REQUEST_ID_PATTERN.fullmatch(request_id):
-                        raise ValueError("A valid X-Request-Id header is required.")
-                    body = self.read_json()
-                    action = path[len(virtualhere_prefix):]
-                    status, result = self.state.idempotent(
-                        f"child-virtualhere:{self.state.broker_client_id(authenticated_client)}:"
-                        f"{actor_id}:{request_id}",
-                        lambda: self.state.virtualhere_action(action, body))
                     self.send_json(status, result)
                     return
                 if not self._require_child_capability():
@@ -9667,30 +9513,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 status, result = self.state.idempotent(f"{profile_id}:{request_id}", operation)
                 self.send_json(status, result)
                 return
-            virtualhere_prefix = f"{API_PREFIX}/virtualhere/"
-            if path.startswith(virtualhere_prefix):
-                action = path[len(virtualhere_prefix):]
-                request_id = self.headers.get("X-Request-Id", "").strip()
-                if not request_id or len(request_id) > 128:
-                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": "A valid X-Request-Id header is required."})
-                    return
-                body = self.read_json()
-                status, result = self.state.idempotent(
-                    f"{profile_id}:{request_id}",
-                    lambda: self.state.virtualhere_action(action, body))
-                self.send_json(status, result)
-                return
-            playnite_prefix = f"{API_PREFIX}/playnite/"
-            provider_action = path in {
-                f"{API_PREFIX}/game/start", f"{API_PREFIX}/game/install",
-                f"{API_PREFIX}/game/uninstall",
-                f"{API_PREFIX}/game/stop-verified", f"{API_PREFIX}/game/focus",
-                f"{API_PREFIX}/game/install/focus",
-                f"{API_PREFIX}/game/install/verify",
-                f"{API_PREFIX}/library/refresh"}
-            if path.startswith(playnite_prefix) or provider_action:
-                action = path[len(playnite_prefix):] if path.startswith(playnite_prefix) \
-                    else path[len(API_PREFIX) + 1:]
+            provider_actions = {
+                f"{API_PREFIX}/game/start": "game/start",
+                f"{API_PREFIX}/game/install": "game/install",
+                f"{API_PREFIX}/game/uninstall": "game/uninstall",
+                f"{API_PREFIX}/game/stop-verified": "game/stop-verified",
+                f"{API_PREFIX}/game/focus": "game/focus",
+                f"{API_PREFIX}/game/install/focus": "game/install/focus",
+                f"{API_PREFIX}/game/install/verify": "game/install/verify",
+                f"{API_PREFIX}/library/refresh": "library/refresh",
+                f"{API_PREFIX}/playnite/show-fullscreen": "show-fullscreen",
+            }
+            action = provider_actions.get(path)
+            if action:
                 request_id = self.headers.get("X-Request-Id", "").strip()
                 if not request_id or len(request_id) > 128:
                     self.send_json(HTTPStatus.BAD_REQUEST, {
@@ -9749,12 +9584,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="gateway.json")
     parser.add_argument("--registry-lock")
-    parser.add_argument("--pairing-code", default=os.environ.get("WAKEPLAY_PAIRING_CODE"))
     args = parser.parse_args()
 
     config_path = Path(args.config)
     DIAGNOSTICS.start(config_path.resolve().parent / "logs")
-    state = GatewayState(config_path, args.pairing_code,
+    state = GatewayState(config_path,
                          Path(args.registry_lock) if args.registry_lock else None)
     server = GatewayServer((str(state.config["listen_host"]), int(state.config["listen_port"])), state)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -9763,13 +9597,19 @@ def main() -> None:
     server.socket = context.wrap_socket(server.socket, server_side=True)
     state.write_runtime_info()
     state.child_time_housekeeping_start()
+    stream_keeper_stop = threading.Event()
+    threading.Thread(target=state.vibepollo.keep_stream_target,
+                     args=(stream_keeper_stop, DIAGNOSTICS.record),
+                     name="MoonWaker-vibepollo-stream", daemon=True).start()
+    threading.Thread(target=state.keep_gateway_status, args=(stream_keeper_stop,),
+                     name="MoonWaker-gateway-status", daemon=True).start()
     print(f"Wake & Play Host Gateway listening on https://{state.config['listen_host']}:{state.config['listen_port']}", flush=True)
-    print("Pairing is active for 10 minutes." if args.pairing_code else "Pairing is disabled for this run.", flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass
     finally:
+        stream_keeper_stop.set()
         state.child_time_housekeeping_stop_now()
         state.child_time_shutdown()
         server.server_close()

@@ -11,6 +11,9 @@ import wakeplay_gateway
 from control_operation_policy import ControlOperationPolicy
 from provider_control_operation import StreamerControlOperation
 from wakeplay_gateway import GatewayState, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy, routed
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 VIBE_UUID = "01234567-89ab-cdef-0123-456789abcdef"
@@ -28,7 +31,7 @@ class ControlOperationTest(unittest.TestCase):
                          "profile_grants": {"parent": ["use_profile"]},
                          "vibepollo_client_uuids": {"parent": VIBE_UUID}}],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.state.proxy = lambda *_args, **_kwargs: (False, {"error": "fixture_offline"})
         self.client = self.state.client_for_token("token")
         self.authorize()
@@ -140,7 +143,7 @@ class ControlOperationTest(unittest.TestCase):
 
     def test_lost_response_survives_restart_and_reconciles_same_operation(self):
         _status, permit = self.acquire(self.request("op-lost"))
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         client = restarted.client_for_token("token")
         restarted.authorize_profile(client, "parent")
         status, blocked = restarted.control_operation_acquire(
@@ -478,7 +481,7 @@ class ControlOperationTest(unittest.TestCase):
             self.state.hard_reset_session({"force": True}, "tv", "parent")
         persisted = dict(self.state.control_state["active"])
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         self.assertEqual("uncertain", restarted.control_state["active"]["state"])
         restarted.proxy_json = lambda *_args, **_kwargs: (
             True, {"accepted": True, "stopped_count": 1})
@@ -545,7 +548,7 @@ class ControlOperationTest(unittest.TestCase):
         self.assertEqual(first, replay)
         self.assertEqual(1, len(calls))
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted_client = restarted.client_for_token("token")
         restarted.authorize_profile(restarted_client, "parent")
         restarted.proxy_json = lambda *_args, **_kwargs: self.fail(
@@ -606,7 +609,7 @@ class ControlOperationTest(unittest.TestCase):
             return True, {**control_evidence(), "clients": [], "apps": []}
 
         trace = {}
-        self.assertTrue(StreamerControlOperation.force_close(proxy, "parent", trace))
+        self.assertTrue(StreamerControlOperation.force_close(routed(proxy), trace))
         self.assertEqual(["/action/close-app", "/snapshot?force=1"], calls)
         self.assertEqual(0, trace["close_http_ok"])
         self.assertEqual(500, trace["close_http_status"])
@@ -648,7 +651,7 @@ class ControlOperationTest(unittest.TestCase):
                    side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
+            closed, reason = StreamerControlOperation.close(routed(proxy), stream, trace)
         self.assertFalse(closed)
         self.assertEqual("streamer_close_unconfirmed", reason)
         self.assertEqual(1, calls.count("/action/close-app"))
@@ -677,7 +680,7 @@ class ControlOperationTest(unittest.TestCase):
                    side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
+            closed, reason = StreamerControlOperation.close(routed(proxy), stream, trace)
         self.assertTrue(closed)
         self.assertEqual("streamer_idle_after_close", reason)
         self.assertEqual("idle_confirmed", trace["close_stage"])
@@ -702,7 +705,7 @@ class ControlOperationTest(unittest.TestCase):
                 def proxy(_name, path, **_kwargs):
                     calls.append(path)
                     return True, {**active, **changes, "private_payload": "Bearer secret"}
-                closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
+                closed, reason = StreamerControlOperation.close(routed(proxy), stream, trace)
                 self.assertEqual((False, "streamer_identity_unconfirmed"), (closed, reason))
                 self.assertEqual(["/snapshot?force=1"], calls)
                 self.assertEqual("identity_rejected", trace["close_stage"])
@@ -717,7 +720,7 @@ class ControlOperationTest(unittest.TestCase):
         with patch("provider_control_operation.time.monotonic", side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", {
+            closed, reason = StreamerControlOperation.close(routed(proxy), {
                 "sunshine_app_id": 7, "vibepollo_client_uuid": VIBE_UUID}, trace)
         self.assertEqual((False, "streamer_snapshot_unavailable"), (closed, reason))
         self.assertNotIn("/action/close-app", calls)
@@ -742,7 +745,7 @@ class ControlOperationTest(unittest.TestCase):
                             raise OSError("response lost")
                         return False, {"status": 500, "private_payload": "secret"}
                     return True, idle if closed_effect[0] else active
-                result = StreamerControlOperation.close(proxy, "parent", {
+                result = StreamerControlOperation.close(routed(proxy), {
                     "sunshine_app_id": 7, "vibepollo_client_uuid": VIBE_UUID}, trace)
                 self.assertEqual((True, "streamer_idle_after_close"), result)
                 self.assertEqual(["/snapshot?force=1", "/action/close-app",
@@ -773,7 +776,7 @@ class ControlOperationTest(unittest.TestCase):
                    side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", stream)
+            closed, reason = StreamerControlOperation.close(routed(proxy), stream)
 
         self.assertTrue(closed)
         self.assertEqual("streamer_idle_after_close", reason)
@@ -1454,7 +1457,7 @@ class ControlOperationTest(unittest.TestCase):
 
     def test_restarted_gateway_resolves_the_persisted_start_after_proof(self):
         self.acquire(self.request("before-restart"))
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         active = restarted.control_state["active"]
         self.assertEqual(("uncertain", "gateway_restarted_before_terminal_result"),
                          (active["state"], active["reason"]))
@@ -1595,7 +1598,7 @@ class ControlOperationTest(unittest.TestCase):
 
     def test_restarted_gateway_adopts_the_persisted_start_after_its_grace(self):
         _status, permit = self.acquire(self.request("before-restart"))
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         active = restarted.control_state["active"]
         self.assertEqual("gateway_restarted_before_terminal_result", active["reason"])
         self.state = restarted
@@ -2332,7 +2335,7 @@ class ControlOperationTest(unittest.TestCase):
             self.state.control_state["stream"]["generation"],
             self.state.control_state["stream"]["stream_started_unix_ms"]))
         # A Gateway restart keeps it with the stream record.
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         self.assertEqual(1_234, restarted.control_state["stream"]["stream_started_unix_ms"])
 
     def test_stream_start_time_ends_with_the_stream(self):
@@ -2627,7 +2630,7 @@ class ControlOperationTest(unittest.TestCase):
     def test_restarted_gateway_keeps_an_abandoned_start_without_grace(self):
         self.acquire(self.request("abandoned-before-restart"))
         self.assertEqual(409, self.abandon("abandoned-before-restart")[0])
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         active = restarted.control_state["active"]
         self.assertEqual(("uncertain", "start_abandoned"), (active["state"], active["reason"]))
         self.assertLessEqual(restarted._control_stale_start_locked()[2], 0)

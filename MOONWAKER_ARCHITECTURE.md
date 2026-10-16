@@ -12,7 +12,7 @@ MoonWaker is a console-oriented Android TV client built on Moonlight. It coordin
 - Vibepollo for stream host integration;
 - Playnite as the game library and lifecycle source;
 - MoonWaker Gateway as the authenticated client-facing host API;
-- per-profile host Bridges for Playnite, Vibepollo, and Discord;
+- per-profile host Bridges for Playnite and (optional, `-WithDiscord` builds only) Discord;
 - host-side control, installation, repair, and lifecycle tooling.
 
 The architecture should preserve Moonlight's streaming core and isolate MoonWaker-specific orchestration around it.
@@ -251,7 +251,6 @@ Only dependencies required for the requested action should block launch.
 Examples:
 
 - Discord failure must not block normal game launch.
-- VirtualHere failure must not block launch unless the selected play intent explicitly requires it.
 
 ### 3.7 `Game` / stream Activity
 
@@ -311,7 +310,6 @@ GatewayTransport   (single HTTPS/TLS implementation)
         +-- PlayniteGatewayClient
         +-- DiscordGatewayClient
         +-- VibepolloGatewayClient
-        +-- VirtualHereGatewayClient
 ```
 
 `GatewayTransport` owns HTTP/TLS/security behavior. Domain clients own endpoint paths, request bodies, domain DTO parsing, and domain-specific validation.
@@ -328,9 +326,11 @@ Migration is intentionally staged:
 Gateway remains the only LAN-facing host API.
 
 `MoonWakerGateway` is an automatic Windows service running under the restricted
-`NT SERVICE\MoonWakerGateway` virtual account. It supervises only the machine
-Gateway process and is available before interactive sign-in. It must not start
-profile Bridges in session 0.
+`NT SERVICE\MoonWakerGateway` virtual account. Its host,
+`MoonWakerGatewayService.exe`, supervises only the machine Gateway process (restart after
+an exit with a 2–16 s backoff, state in `gateway-service-state.json`) and is available
+before interactive sign-in. The service is the Gateway's only launch path: there is no
+PowerShell supervisor or start/stop script. It must not start profile Bridges in session 0.
 
 Keep:
 
@@ -343,6 +343,14 @@ Keep:
 - strict endpoint-specific validation.
 
 Do not expose a generic arbitrary Bridge proxy.
+
+The Gateway owns the machine's single Vibepollo connection in process
+(`vibepollo_client.py`): one token per computer in `gateway\vibepollo-api.json`
+(Administrators, SYSTEM, read for the service; written only by the elevated
+Configurator), the HTTPS certificate pinned to the one in Vibepollo's
+configuration directory, control snapshots, the `MoonWaker Stream` application,
+Moonlight pairing, identity proofs and repair actions. There is no Vibepollo
+Bridge.
 
 ### 5.2 Host profiles and paired-client grants
 
@@ -365,10 +373,10 @@ client and profile. Android supplies a transient process UUID through the shared
 Gateway transport in `X-MoonWaker-Profile-Session`. Successful verification creates
 one in-memory authorization per paired client/profile, bound to that UUID and
 the current verifier. An open application process keeps its authorization across
-screensaver idle time. A different or missing UUID cannot reuse it; a new PIN
-verification replaces it. Gateway restart, verifier changes, and existing grant
-checks revoke or reject access. Legacy clients without this header retain their
-fixed five-minute lease. Existing profile-scoped endpoints enforce this boundary;
+screensaver idle time. A different or missing UUID cannot reuse it, and a
+verification without the header is rejected; a new PIN verification replaces it.
+Gateway restart, verifier changes, and existing grant checks revoke or reject access.
+Existing profile-scoped endpoints enforce this boundary;
 no plaintext PIN, session UUID, or host unlock state is persisted on Android.
 
 Before waking an unreachable host, Android may check a device-local PIN verifier
@@ -389,18 +397,25 @@ loading. A protected selection is persisted only after Gateway verification,
 and a protected profile cannot remain the per-host automatic app profile.
 Selecting or refreshing an app profile has no Windows-session side effect.
 
-### 5.3 Profile Bridge supervisor
+### 5.3 Host Control tray hosts the profile Agent
 
-The Profile Bridge supervisor already owns:
+Host Control's tray, started at every sign-in by one machine `Run` entry, owns the
+per-user process lifecycle of the signed-in account's profile: the Agent
+(`GameProviderBridge.py` under `pythonw`) and the optional Discord Bridge (installed only
+from a `-WithDiscord` package, i.e. when `bridge-source\discord` exists), both run
+from the installation in a kill-on-close Job Object, restarted after an exit with a
+2–30 s backoff. Its status for Host Control comes from this host plus the
+children's `/health` and `/observation`; there is no state file and no process
+adoption by port or PID.
 
-- per-user process lifecycle;
-- Playnite/Vibepollo health checks;
-- restart behavior;
-- profile ownership;
-- runtime status;
-- process adoption.
+Profile authority has one owner, the Agent (`AgentGuard.py`): it exits with code 78
+when its registry entry is disabled, tombstoned, re-rooted, a child profile or bound to
+another SID, and the tray does not restart it until that entry changes; an unreadable
+registry (code 74) is only a backoff. A tray with an elevated token hosts nothing. Its watchdog ends a hung
+process (code 70) so the tray restarts it.
 
-Guardian should use host-side repair actions rather than reimplement process supervision on Android.
+Guardian should use host-side repair actions (Host Control's **Napraw**) rather than
+reimplement process supervision on Android.
 
 ### 5.4 Game Provider Bridge
 
@@ -460,10 +475,27 @@ registration, ACLs, the private-LAN firewall rule, and version-preserving
 upgrades. It never asks for a Windows account or password and never enables
 remote sign-in for a device.
 
-Host Control owns profile and device management. Its separate elevated
-Configurator enumerates local accounts, creates/edits/removes MoonWaker
-profiles, manages grants, and collects a password directly in the elevated
-window. Passwords are sent only over the local management pipe to
+Host Control owns profile and device management. Its editors (profiles, app
+PIN, remote sign-in, child profiles, device grants) run in the unelevated
+window and only build a change set; "Zapisz" (UAC) hands it to the elevated
+Configurator (`--apply --pipe <GUID> --client <SID>`) over a one-exchange named
+pipe that the helper creates for that SID alone (first instance, no remote
+clients, NETWORK denied) and that each side binds to the other's process id.
+The helper treats the set as untrusted: it parses it strictly, validates every
+change against the `gateway.json` revision (SHA-256) Host Control showed,
+shows it without secrets in its own window, and applies it under
+`gateway.json.lock` in one transaction that checks the revision again. It
+creates/edits/removes MoonWaker profiles (including each new profile's data
+directory and its ACL, in process) and grants, and collects the Windows
+password and Vibepollo's administrator login only in its own elevated window;
+the app PIN may travel in the change set. Host
+Control's own backend runs in the unelevated tray without PowerShell: its status
+only reads what the Gateway publishes and the loopback answers of the hosted
+processes, and the account's actions (pairing code, close session, Steam key and
+Discord secret under the account's DPAPI, Legendary, Playnite) use the existing
+file channels. Its one **Napraw** restarts the Gateway service (start/stop are
+granted to interactive users by the service DACL) and the account's hosted
+processes, only where they do not work. Passwords are sent only over the local management pipe to
 `MoonWakerLoginBroker`; they never pass through Gateway, Android, PowerShell
 arguments, environment variables, ordinary configuration, or logs.
 

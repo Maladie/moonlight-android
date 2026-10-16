@@ -4,6 +4,9 @@ import unittest
 from pathlib import Path
 
 import wakeplay_gateway
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 _MISSING = object()
@@ -21,9 +24,7 @@ class ChildCapabilityConfigTest(unittest.TestCase):
                     "kind": "standard",
                     "name": "Parent",
                     "enabled": True,
-                    "owner": "TESTPC\\Parent",
                     "windows_account_name": "TESTPC\\Parent",
-                    "owner_sid": "S-1-5-21-1-2-3-1001",
                     "windows_account_sid": "S-1-5-21-1-2-3-1001",
                 },
             },
@@ -32,7 +33,7 @@ class ChildCapabilityConfigTest(unittest.TestCase):
         if configured is not _MISSING:
             config["child_profiles_enabled"] = configured
         config_path.write_text(json.dumps(config), encoding="utf-8")
-        return temporary, wakeplay_gateway.GatewayState(config_path, None)
+        return temporary, wakeplay_gateway.GatewayState(config_path)
 
     def test_missing_and_false_keep_child_api_disabled(self):
         for configured in (_MISSING, False):
@@ -67,7 +68,7 @@ class ChildCapabilityConfigTest(unittest.TestCase):
             config["child_profiles_enabled"] = True
             config_path.write_text(json.dumps(config), encoding="utf-8")
             self.assertIs(state.child_profiles_api_enabled, False)
-            restarted = wakeplay_gateway.GatewayState(config_path, None)
+            restarted = wakeplay_gateway.GatewayState(config_path)
             self.assertIs(restarted.child_profiles_api_enabled, True)
         finally:
             temporary.cleanup()

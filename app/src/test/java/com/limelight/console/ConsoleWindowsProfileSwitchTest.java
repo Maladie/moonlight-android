@@ -157,7 +157,7 @@ public class ConsoleWindowsProfileSwitchTest {
     private static HostGatewayClient.IntegrationProfile profile(
             String id, String sessionState, boolean remoteSignIn) {
         return new HostGatewayClient.IntegrationProfile(id, id,
-                false, false, false, false, false, false, false,
+                false, false, false, false, false, false,
                 true, remoteSignIn, sessionState, "available");
     }
 

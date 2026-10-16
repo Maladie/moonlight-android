@@ -139,7 +139,7 @@ function Get-VersionFloor([Version]$Installed, [object]$State, [object]$HighWate
 }
 
 function Test-AllowedPayloadPath([string]$Path) {
-    return $Path -match '^(gateway/[A-Za-z0-9_.-]+\.py|bridges/(playnite/[A-Za-z0-9_.-]+\.py|vibepollo/[A-Za-z0-9_.-]+\.(ps1|psm1)|discord/[A-Za-z0-9_.-]+\.(ps1|psm1)))$'
+    return $Path -match '^(gateway/[A-Za-z0-9_.-]+\.py|bridges/(playnite/[A-Za-z0-9_.-]+\.py|discord/[A-Za-z0-9_.-]+\.(ps1|psm1)))$'
 }
 
 function Set-StateAtomic([hashtable]$Value) {
@@ -179,23 +179,84 @@ function Set-TransactionAtomic([hashtable]$Value) {
     } else { [IO.File]::Move($temporary, $transactionPath) }
 }
 
+# Gateway-owned processes stop with the runtime. Profile processes (Agent, Discord Bridge)
+# belong to each account's Host Control tray, which starts them again after they exit.
+$gatewayProcessPattern = '(wakeplay_gateway\.py|MoonWakerDiscordAudioWorker\.exe|MoonWakerMicrophoneWorker\.exe)'
+
+function Get-HostRootProcesses([string]$Pattern) {
+    $rootPattern = [regex]::Escape($HostRoot + '\')
+    return @(Get-CimInstance Win32_Process -Property ProcessId,CommandLine -ErrorAction Stop |
+        Where-Object { [string]$_.CommandLine -match $rootPattern -and [string]$_.CommandLine -match $Pattern })
+}
+
+function Get-GatewayPython {
+    $service = Get-CimInstance Win32_Service -Filter "Name='MoonWakerGateway'" -ErrorAction Stop
+    if ($null -eq $service) { return $null }
+    $argument = [regex]::Match([string]$service.PathName,
+        '(?:^|\s)--python\s+(?:"(?<quoted>[^"]+)"|(?<plain>\S+))(?=\s|$)')
+    if (-not $argument.Success) { return $null }
+    return [IO.Path]::GetFullPath($(if ($argument.Groups['quoted'].Success) {
+        $argument.Groups['quoted'].Value } else { $argument.Groups['plain'].Value }))
+}
+
+# Exactly the processes a Host Control tray of this installation starts (ProfileProcessHost):
+# its executable, command line shape and script, the profile data directory, and a parent that
+# is this installation's tray. Anything else is neither stopped nor counted.
+function Get-HostedProcesses {
+    $python = Get-GatewayPython
+    $shapes = @(
+        @{ component = "game-provider"
+            executable = $(if ($python) { Join-Path (Split-Path -Parent $python) "pythonw.exe" } else { "" })
+            script = Join-Path $HostRoot "bridge-source\playnite\GameProviderBridge.py"
+            pattern = '^"(?<executable>[^"]+)" "(?<script>[^"]+)" --config "(?<data>[^"]+)\\config\.json"$' },
+        @{ component = "discord"
+            executable = Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"
+            script = Join-Path $HostRoot "bridge-source\discord\DiscordBridge.ps1"
+            pattern = '^"(?<executable>[^"]+)" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "(?<script>[^"]+)" -ProfileDirectory "(?<data>[^"]+)"$' })
+    $tray = Join-Path $HostRoot "control\MoonWakerHostControl.exe"
+    $processes = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate -ErrorAction Stop)
+    $byId = @{}
+    foreach ($process in $processes) { $byId[[int]$process.ProcessId] = $process }
+    foreach ($process in $processes) {
+        $parent = $byId[[int]$process.ParentProcessId]
+        if ($null -eq $parent -or -not [string]::Equals([string]$parent.ExecutablePath, $tray,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            $parent.CreationDate -gt $process.CreationDate) { continue }
+        foreach ($shape in $shapes) {
+            $match = [regex]::Match([string]$process.CommandLine, $shape.pattern)
+            if (-not $match.Success) { continue }
+            $data = [regex]::Match($match.Groups['data'].Value, '^' +
+                [regex]::Escape($HostRoot + "\profiles\") + '(?<profile>[A-Za-z0-9._-]{1,64})\\' +
+                [regex]::Escape($shape.component) + '$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($data.Success -and $shape.executable -and
+                [string]::Equals([string]$process.ExecutablePath, $shape.executable,
+                    [StringComparison]::OrdinalIgnoreCase) -and
+                [string]::Equals($match.Groups['executable'].Value, $shape.executable,
+                    [StringComparison]::OrdinalIgnoreCase) -and
+                [string]::Equals($match.Groups['script'].Value, $shape.script,
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                [pscustomobject]@{ ProcessId = [int]$process.ProcessId
+                    Profile = $data.Groups['profile'].Value; Component = $shape.component }
+            }
+        }
+    }
+}
+
 function Get-RuntimePlan {
     $service = Get-Service -Name "MoonWakerGateway" -ErrorAction SilentlyContinue
-    $runningTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
-        $_.TaskName -match '^MoonWaker Profile Bridge \([A-Za-z0-9._-]{1,64}\)$'
-    } | Where-Object { $_.State -eq "Running" } | ForEach-Object { [string]$_.TaskName })
+    # Profiles whose hosted processes run now; their endpoints must be healthy afterwards.
+    $hosted = @(Get-HostedProcesses | ForEach-Object { $_.Profile + "/" + $_.Component } |
+        Sort-Object -Unique)
     return @{ gateway_was_running = [bool]($service -and
             $service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped)
-        tasks = $runningTasks }
+        hosted = $hosted }
 }
 
 function Start-Runtime([hashtable]$Plan) {
     if ([bool]$Plan.gateway_was_running) { Start-Service -Name "MoonWakerGateway" }
-    foreach ($taskName in @($Plan.tasks)) {
-        if ($taskName -notmatch '^MoonWaker Profile Bridge \([A-Za-z0-9._-]{1,64}\)$') {
-            throw "Invalid saved profile task name."
-        }
-        Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    # Ending the hosted processes makes every tray start them again on the activated code.
+    foreach ($process in (Get-HostedProcesses)) {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -218,20 +279,12 @@ function Stop-Runtime([hashtable]$Plan, [scriptblock]$AfterGatewayStop = {}) {
             [TimeSpan]::FromSeconds(15))
     } {
         & $AfterGatewayStop
-        foreach ($taskName in @($Plan.tasks)) {
-            Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
-        }
-        $known = '(wakeplay_gateway\.py|MoonWakerProfileBridge\.ps1|DiscordBridge\.ps1|VibepolloBridge\.ps1|GameProviderBridge\.py|PlayniteBridge\.py|MoonWakerDiscordAudioWorker\.exe|MoonWakerMicrophoneWorker\.exe)'
-        $rootPattern = [regex]::Escape($HostRoot + '\')
-        $processes = @(Get-CimInstance Win32_Process -Property ProcessId,CommandLine -ErrorAction Stop |
-            Where-Object { [string]$_.CommandLine -match $rootPattern -and [string]$_.CommandLine -match $known })
-        foreach ($process in $processes) {
+        foreach ($process in (Get-HostRootProcesses $gatewayProcessPattern)) {
             Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
         }
         $deadline = [DateTime]::UtcNow.AddSeconds(10)
         do {
-            $remaining = @(Get-CimInstance Win32_Process -Property ProcessId,CommandLine -ErrorAction Stop |
-                Where-Object { [string]$_.CommandLine -match $rootPattern -and [string]$_.CommandLine -match $known })
+            $remaining = @(Get-HostRootProcesses $gatewayProcessPattern)
             if ($remaining.Count -eq 0) { break }
             Start-Sleep -Milliseconds 250
         } while ([DateTime]::UtcNow -lt $deadline)
@@ -283,10 +336,15 @@ function Test-EndpointHealth([hashtable]$Endpoint) {
         if ($owners.Count -ne 1) { return $false }
         $ownerPid = [int]$owners[0]
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction Stop
-        $commandLine = [string]$process.CommandLine
-        if ($null -eq $process -or
-            $commandLine.IndexOf([string]$Endpoint.root, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-            $commandLine.IndexOf([string]$Endpoint.script, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        if ($null -eq $process) { return $false }
+        if ($Endpoint.component -eq "gateway") {
+            $commandLine = [string]$process.CommandLine
+            if ($commandLine.IndexOf([string]$Endpoint.root, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+                $commandLine.IndexOf([string]$Endpoint.script, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                return $false
+            }
+        } elseif (@(Get-HostedProcesses | Where-Object { $_.ProcessId -eq $ownerPid -and
+                $_.Profile -eq $Endpoint.profile -and $_.Component -eq $Endpoint.component }).Count -ne 1) {
             return $false
         }
         $uri = "$($Endpoint.scheme)://127.0.0.1:$($Endpoint.port)$($Endpoint.path)"
@@ -323,10 +381,6 @@ function Test-EndpointHealth([hashtable]$Endpoint) {
             return $body.ok -eq $true -and $body.component -eq "game-provider" -and
                 [int]$body.pid -eq $ownerPid -and [string]$body.profile_id -eq $Endpoint.profile
         }
-        if ($Endpoint.component -eq "vibepollo") {
-            $body = $content | ConvertFrom-Json
-            return $body.ok -eq $true -and [int]$body.port -eq [int]$Endpoint.port
-        }
         return [string]$content -match '^ok\tconnected=(True|False)\tauthenticated=(True|False)\tpipe='
     } catch { return $false }
 }
@@ -339,35 +393,23 @@ function Test-RuntimeHealthy([hashtable]$Plan) {
         $endpoints += @{ component = "gateway"; scheme = "https"; port = [int]$config.listen_port;
             path = "/api/v1/hello"; root = (Join-Path $HostRoot "gateway"); script = "wakeplay_gateway.py" }
     }
-    $activeProfileIds = @($Plan.tasks | ForEach-Object {
-        if ($_ -match '^MoonWaker Profile Bridge \(([A-Za-z0-9._-]{1,64})\)$') { $Matches[1] }
-    })
-    foreach ($profile in @($config.profiles.PSObject.Properties | Where-Object {
-            $_.Name -in $activeProfileIds })) {
-        foreach ($property in @("discord_bridge", "vibepollo_bridge", "game_provider_bridge", "playnite_bridge")) {
-            $endpoint = $profile.Value.PSObject.Properties[$property]
-            if ($null -eq $endpoint -or [string]::IsNullOrWhiteSpace([string]$endpoint.Value)) { continue }
-            $uri = $null
-            if (-not ([uri]::TryCreate([string]$endpoint.Value, [UriKind]::Absolute, [ref]$uri) -and
-                $uri.Host -in @("127.0.0.1", "localhost"))) { return $false }
-            $component = if ($property -in @("game_provider_bridge", "playnite_bridge")) {
-                "game-provider" } elseif ($property -eq "vibepollo_bridge") { "vibepollo" } else { "discord" }
-            $directory = if ($component -eq "game-provider") { "game-provider" } else { $component }
-            $script = if ($component -eq "game-provider") { "GameProviderBridge.py" } `
-                elseif ($component -eq "vibepollo") { "VibepolloBridge.ps1" } else { "DiscordBridge.ps1" }
-            $endpoints += @{ component = $component; scheme = "http"; port = $uri.Port;
-                path = "/health"; profile = $profile.Name;
-                root = (Join-Path (Join-Path $HostRoot "profiles\$($profile.Name)") $directory); script = $script }
-        }
+    foreach ($hosted in @($Plan.hosted)) {
+        $profileId, $directory = ([string]$hosted).Split("/")
+        $profile = $config.profiles.PSObject.Properties[$profileId]
+        if ($null -eq $profile) { continue }
+        $property = if ($directory -eq "game-provider") { "game_provider_bridge" } else { "discord_bridge" }
+        $endpoint = $profile.Value.PSObject.Properties[$property]
+        if ($null -eq $endpoint -or [string]::IsNullOrWhiteSpace([string]$endpoint.Value)) { continue }
+        $uri = $null
+        if (-not ([uri]::TryCreate([string]$endpoint.Value, [UriKind]::Absolute, [ref]$uri) -and
+            $uri.Host -in @("127.0.0.1", "localhost"))) { return $false }
+        # The listener must be this profile's process hosted by this installation's tray.
+        $endpoints += @{ component = $directory; scheme = "http"; port = $uri.Port;
+            path = "/health"; profile = $profileId }
     }
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         $allReady = $true
-        foreach ($taskName in @($Plan.tasks)) {
-            if ((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State -ne "Running") {
-                $allReady = $false
-            }
-        }
         foreach ($endpoint in $endpoints) { if (-not (Test-EndpointHealth $endpoint)) { $allReady = $false } }
         if ($allReady) { return $true }
         Start-Sleep -Milliseconds 250
@@ -426,8 +468,7 @@ if (Test-Path -LiteralPath $transactionPath -PathType Leaf) {
         [void]$pending.Add(@{ target = $target; backup = $backup; failed = $failed;
             root_acl = [string]$item.root_acl })
     }
-    $savedPlan = @{ gateway_was_running = [bool]$transaction.gateway_was_running;
-        tasks = @($transaction.tasks | ForEach-Object { [string]$_ }) }
+    $savedPlan = @{ gateway_was_running = [bool]$transaction.gateway_was_running; hosted = @() }
     $recoveryPlan = Get-RuntimePlan
     Invoke-TransactionRecovery $pending $savedPlan `
         { Stop-Runtime $recoveryPlan } { param($value) Start-Runtime $value } ([bool]$LeaveStopped)
@@ -452,7 +493,7 @@ $work = Join-Path $stateRoot ("work-" + [guid]::NewGuid().ToString("N"))
 $switches = [Collections.ArrayList]::new()
 $stages = @()
 $stageByTarget = @{}
-$plan = @{ gateway_was_running = $false; tasks = @() }
+$plan = @{ gateway_was_running = $false; hosted = @() }
 $runtimeStopped = $false
 $installedVersion = [Version](Get-Content -LiteralPath (Join-Path $HostRoot "version.json") -Raw |
     ConvertFrom-Json).version
@@ -523,22 +564,13 @@ try {
         }
     } finally { $archive.Dispose() }
 
+    # Code lives only in the installation (gateway, bridge-source); profiles hold data.
     $updates = @{}
-    $profilesRoot = Join-Path $HostRoot "profiles"
     foreach ($file in $files) {
         $path = [string]$file.Path
         $parts = $path.Split('/')
-        $targets = @()
-        if ($parts[0] -eq "gateway") { $targets = @((Join-Path $HostRoot "gateway")) }
-        else {
-            $sourceName = $parts[1]
-            $profileName = if ($sourceName -eq "playnite") { "game-provider" } else { $sourceName }
-            $targets = @((Join-Path (Join-Path $HostRoot "bridge-source") $sourceName))
-            if (Test-Path -LiteralPath $profilesRoot) {
-                $targets += @(Get-ChildItem -LiteralPath $profilesRoot -Directory | ForEach-Object {
-                    Join-Path $_.FullName $profileName } | Where-Object { Test-Path -LiteralPath $_ })
-            }
-        }
+        $targets = if ($parts[0] -eq "gateway") { @((Join-Path $HostRoot "gateway")) } else {
+            @((Join-Path (Join-Path $HostRoot "bridge-source") $parts[1])) }
         foreach ($target in $targets) {
             if (-not (Test-Path -LiteralPath $target -PathType Container)) {
                 throw "Required runtime target is missing: $target"
@@ -597,8 +629,7 @@ try {
         })
     }
     Set-TransactionAtomic @{ previous_version = [string]$currentVersion;
-        gateway_was_running = [bool]$plan.gateway_was_running; tasks = @($plan.tasks);
-        switches = @($switches) }
+        gateway_was_running = [bool]$plan.gateway_was_running; switches = @($switches) }
     foreach ($item in $switches) {
         [IO.Directory]::Move($item.target, $item.backup)
         Set-ExactTransactionAcl $item.backup
@@ -611,7 +642,7 @@ try {
         Restore-DirectoryAcl $item.target ([string]$item.root_acl)
     }
     # Revalidate the activated bytes after every rename and immediately before
-    # any service or scheduled task can execute them.
+    # the service or a tray-hosted process can execute them.
     foreach ($target in $updates.Keys) {
         Assert-PlainDirectory $target
         foreach ($update in $updates[$target]) {

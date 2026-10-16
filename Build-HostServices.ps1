@@ -4,7 +4,9 @@ param(
     [string]$OutputDirectory = "",
     [string]$CredentialProviderBinary = "",
     [string]$LegendaryBinary = "",
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    # Discord is optional: only this build carries its Bridge and audio worker.
+    [switch]$WithDiscord
 )
 
 Set-StrictMode -Version Latest
@@ -16,13 +18,16 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 if (-not (Test-Path -LiteralPath $hostServices)) {
     throw "host-services was not found next to this build script."
 }
+# The token the Host Configurator creates must cover every call the Gateway makes.
 $scopeDocument = Get-Content -LiteralPath (Join-Path $hostServices `
-    "bridges\vibepollo\moonwaker-token-scopes.example.json") -Raw | ConvertFrom-Json
-$appsScope = @($scopeDocument.scopes | Where-Object { $_.path -eq "/api/apps" }) |
-    Select-Object -First 1
-if ($null -eq $appsScope -or "GET" -notin @($appsScope.methods) -or
-    "POST" -notin @($appsScope.methods)) {
-    throw "Vibepollo token scope must allow GET and POST /api/apps."
+    "control\vibepollo-token-scopes.json") -Raw | ConvertFrom-Json
+foreach ($required in @("GET /api/apps", "POST /api/apps", "POST /api/pin",
+        "POST /api/clients/update", "GET /api/clients/list", "POST /api/apps/close")) {
+    $method, $path = $required -split " ", 2
+    if (-not @($scopeDocument.scopes | Where-Object {
+            $_.path -eq $path -and $method -in @($_.methods) })) {
+        throw "Vibepollo token scope must allow $required."
+    }
 }
 if (-not $SkipTests) {
     & python.exe -m unittest discover -s (Join-Path $hostServices "gateway") -p "test*.py"
@@ -39,17 +44,18 @@ $payloadRoot = Join-Path $temporary "payload\host-services"
 $zipPath = Join-Path $temporary "host-services.zip"
 New-Item -ItemType Directory -Path $payloadRoot, $OutputDirectory -Force | Out-Null
 try {
-    foreach ($directory in @("bridges", "gateway", "install", "profile-agent", "updater",
-            "windows-login")) {
+    foreach ($directory in @("bridges", "gateway", "install", "updater", "windows-login")) {
         Copy-Item -LiteralPath (Join-Path $hostServices $directory) `
             -Destination $payloadRoot -Recurse -Force
     }
-    Remove-Item -LiteralPath (Join-Path $payloadRoot `
-        "install\Install-MoonWakerHostBundle.ps1") -Force
     & (Join-Path $hostServices "bridges\microphone\Build-MoonWakerMicrophoneWorker.ps1") `
         -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
-    & (Join-Path $hostServices "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
-        -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
+    if ($WithDiscord) {
+        & (Join-Path $hostServices "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
+            -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
+    } else {
+        Remove-Item -LiteralPath (Join-Path $payloadRoot "bridges\discord") -Recurse -Force
+    }
     & (Join-Path $hostServices "gateway\Build-MoonWakerGatewayService.ps1") `
         -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
     & (Join-Path $hostServices "windows-login\login-broker\Build-MoonWakerLoginBroker.ps1") `
@@ -80,10 +86,11 @@ try {
     New-Item -ItemType Directory -Path $controlTarget -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $hostServices "installer\Install-LegendaryPayload.ps1") `
         -Destination $controlTarget -Force
-    foreach ($file in @("Build-MoonWakerHostControl.ps1", "Invoke-MoonWakerHostControl.ps1",
-        "MoonWakerHostControl.cs", "MoonWakerHostControl.manifest",
-        "MoonWakerHostConfigurator.cs", "ChildProfileForms.cs",
-        "MoonWakerHostConfigurator.manifest")) {
+    foreach ($file in @("Build-MoonWakerHostControl.ps1",
+        "MoonWakerHostControl.cs", "HostControlWindow.cs", "HostControlUi.cs",
+        "HostControlBackend.cs", "MoonWakerHostControl.manifest",
+        "MoonWakerHostConfigurator.cs", "ConfiguratorChanges.cs", "HostChanges.cs",
+        "MoonWakerHostConfigurator.manifest", "vibepollo-token-scopes.json")) {
         Copy-Item -LiteralPath (Join-Path $hostServices "control\$file") `
             -Destination $controlTarget -Force
     }
@@ -91,9 +98,8 @@ try {
         -OutputDirectory $controlTarget | Out-Host
 
     foreach ($required in @(
-            "version.json", "bridges", "gateway", "profile-agent", "control", "tools",
+            "version.json", "bridges", "gateway", "control", "tools",
             "updater", "windows-login",
-            "profile-agent\Stop-MoonWakerProfileBridge.ps1",
             "windows-login\credential-provider\Uninstall-MoonWakerCredentialProvider.ps1")) {
         if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $required))) {
             throw "Incomplete MoonWaker host payload. Missing: $required"

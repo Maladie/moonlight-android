@@ -1,11 +1,11 @@
 ﻿#requires -Version 5.1
+param([Parameter(Mandatory)][string]$ProfileDirectory)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ConfigPath = Join-Path $ScriptRoot "discord_bridge_config.json"
-$SecretPath = Join-Path $ScriptRoot "client_secret.dpapi"
-$TokenPath = Join-Path $ScriptRoot "oauth_token.dpapi"
+$ConfigPath = Join-Path $ProfileDirectory "discord_bridge_config.json"
+$SecretPath = Join-Path $ProfileDirectory "client_secret.dpapi"
+$TokenPath = Join-Path $ProfileDirectory "oauth_token.dpapi"
 
 Write-Host ""
 Write-Host "Discord RPC Bridge - konfiguracja" -ForegroundColor Cyan

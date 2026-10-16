@@ -11,6 +11,9 @@ from uuid import uuid4
 
 import wakeplay_gateway
 from wakeplay_gateway import GatewayState, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 TOKEN = "a" * 64
 VIBE_UUID = "01234567-89ab-cdef-0123-456789abcdef"
@@ -42,13 +45,12 @@ class ChildTimeControlTest(unittest.TestCase):
         self.config_path.write_text(json.dumps({
             "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
             "game_provider_bridge": "http://127.0.0.1:8780",
-            "vibepollo_bridge": "http://127.0.0.1:8775",
             "profiles": {
                 "parent": {
                     "id": "parent", "kind": "standard", "name": "Parent",
                     "enabled": True, "windows_account_sid": sid,
-                    "owner_sid": sid, "windows_account_name": "PARENT",
-                    "owner": "PARENT", "profile_root": "C:/Users/PARENT",
+                    "windows_account_name": "PARENT",
+                    "profile_root": "C:/Users/PARENT",
                 },
                 "kid": {
                     "id": "kid", "kind": "child", "name": "Kid",
@@ -64,7 +66,7 @@ class ChildTimeControlTest(unittest.TestCase):
                 "vibepollo_client_uuids": {"parent": VIBE_UUID},
             }],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.client = self.state.client_for_token("child-token")
         self.assertIsNotNone(self.client)
         self.clock = FakeClock(datetime(2026, 1, 3, 8, 0, tzinfo=timezone.utc))
@@ -385,7 +387,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("ended", body["state"])
         self.assertIsNone(self.state.control_state["stream"])
-        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        self.assertIn(("vibepollo", "/action/close-app", None), self.proxy_calls)
 
     def test_host_control_close_ends_the_child_session_game_and_stream(self):
         session_id = self.start_running()
@@ -414,7 +416,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(TOKEN, stops[0][2]["expected_process_token"])
         self.assertEqual("child-terminal:" + session_id,
                          stops[0][2]["control_operation"]["operation_id"])
-        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        self.assertIn(("vibepollo", "/action/close-app", None), self.proxy_calls)
         # The child's TV meets what it meets after any host-side end of its session.
         with self.assertRaisesRegex(PermissionError, "child_session_binding_mismatch"):
             self.state.child_time_session_heartbeat(self.client, "kid", session_id)
@@ -448,7 +450,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertFalse(self.streamer_active)
         self.assertEqual("", self.current["id"])
         self.assertIsNone(self.state.control_state["stream"])
-        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        self.assertIn(("vibepollo", "/action/close-app", None), self.proxy_calls)
 
     def assert_replacement_closes_stream_without_stopping_replacement(self, game_id):
         self.start_running()
@@ -603,7 +605,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(body["cleanup_required"])
         self.assertIsNone(self.state.control_state["stream"])
-        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        self.assertIn(("vibepollo", "/action/close-app", None), self.proxy_calls)
 
     def test_natural_expiry_failed_close_keeps_fences_and_logs_typed_reason_then_retries(self):
         session_id = self.start_running()
@@ -726,7 +728,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual("game_stopped", body["reason"])
         self.assertIsNotNone(self.state.control_state["stream"])
         self.assertEqual(generation, self.state.control_state["stream"]["generation"])
-        self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        self.assertNotIn(("vibepollo", "/action/close-app", None), self.proxy_calls)
 
     def test_verified_stop_allows_immediate_different_game_on_retained_stream(self):
         session_id = self.start_running()
@@ -773,7 +775,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(next_id, self.state.child_time_session["session_id"])
         self.assertEqual(before["stream_session_id"],
                          self.state.control_state["stream"]["stream_session_id"])
-        self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        self.assertNotIn(("vibepollo", "/action/close-app", None), self.proxy_calls)
 
     def test_restart_repairs_persisted_exact_verified_stop_receipt(self):
         self.start_running()
@@ -807,7 +809,7 @@ class ChildTimeControlTest(unittest.TestCase):
             self.state.child_time_usage["active_session"] = None
             self.state._control_save_locked()
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         retained = restarted.control_state["stream"]
         self.assertEqual(before["stream_session_id"], retained["stream_session_id"])
         self.assertEqual(before["generation"], retained["generation"])
@@ -902,7 +904,7 @@ class ChildTimeControlTest(unittest.TestCase):
                              call[2].get("action") == "end"
                              for call in self.bridge_calls))
         self.assertIsNotNone(self.state.control_state["stream"])
-        self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        self.assertNotIn(("vibepollo", "/action/close-app", None), self.proxy_calls)
 
     def test_game_stop_release_has_no_dependency_on_removed_bridge_route(self):
         session_id = self.start_running()
@@ -924,7 +926,7 @@ class ChildTimeControlTest(unittest.TestCase):
             self.client, "kid", session_id, "game_stopped")
         self.assertEqual(200, status, result)
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         self.assertIsNone(restarted.child_time_session)
         self.assertIsNone(restarted.control_state["active"])
         self.assertIsNotNone(restarted.control_state["stream"])
@@ -943,7 +945,7 @@ class ChildTimeControlTest(unittest.TestCase):
             self.client, "kid", session_id, "client_closed")
         self.assertEqual(409, status)
         permit = dict(self.state.control_state["active"])
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted.child_time_clock = self.clock
         restarted.proxy_json = self.state.proxy_json
         calls = []
@@ -968,7 +970,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual("succeeded", restarted.control_state["completed"][
             permit["operation_id"]]["state"])
         # A second restart loses only the response cache, not the terminal fact.
-        after_completion = GatewayState(self.config_path, None)
+        after_completion = GatewayState(self.config_path)
         status, replay = after_completion.child_time_session_status(
             self.client, "kid", session_id)
         self.assertEqual(200, status)
@@ -982,7 +984,7 @@ class ChildTimeControlTest(unittest.TestCase):
         status, _ = after_completion.child_time_session_start(
             self.client, "kid", "steam:123", next_session_id, "new-request")
         self.assertEqual(202, status)
-        new_generation = GatewayState(self.config_path, None)
+        new_generation = GatewayState(self.config_path)
         self.assertIsNotNone(new_generation.child_time_session)
         self.assertEqual(next_session_id,
                          new_generation.child_time_session["session_id"])
@@ -1008,7 +1010,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual("uncertain", active["state"])
         self.assertEqual("child-terminal:" + session_id, active["operation_id"])
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted.child_time_clock = self.clock
         restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
         restarted.child_terminal_operation.wait = self.clock.advance
@@ -1059,7 +1061,7 @@ class ChildTimeControlTest(unittest.TestCase):
             self.state.child_time_usage["active_session"] = None
             self.state._control_save_locked()
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted.child_time_clock = self.clock
         restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
         restarted.child_terminal_operation.wait = self.clock.advance
@@ -1116,7 +1118,7 @@ class ChildTimeControlTest(unittest.TestCase):
             self.state.child_time_usage["active_session"] = None
             self.state._control_save_locked()
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted.child_time_clock = self.clock
         restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
         restarted.child_terminal_operation.wait = self.clock.advance
@@ -1164,7 +1166,7 @@ class ChildTimeControlTest(unittest.TestCase):
             self.state.child_time_usage["active_session"] = None
             self.state._control_save_locked()
 
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted.child_time_clock = self.clock
         restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
         restarted.child_terminal_operation.wait = self.clock.advance
@@ -1229,7 +1231,7 @@ class ChildTimeControlTest(unittest.TestCase):
                 "running_games": [{"game_id": "steam:123", "process_id": 84,
                                     "process_token": "b" * 64}],
             }
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted.child_time_clock = self.clock
         restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
         restarted.child_terminal_operation.wait = self.clock.advance
@@ -2122,8 +2124,8 @@ class ChildTimeControlTest(unittest.TestCase):
         original_close = wakeplay_gateway.StreamerControlOperation.close
         attempts = []
 
-        def transient_close(proxy, profile_id, stream, trace=None, host_held=False):
-            del proxy, profile_id, stream, trace, host_held
+        def transient_close(streamer, stream, trace=None, host_held=False):
+            del streamer, stream, trace, host_held
             attempts.append(True)
             return (False, "streamer_close_unconfirmed") if len(attempts) == 1 \
                 else (True, "streamer_idle_after_close")
@@ -2186,7 +2188,7 @@ class ChildTimeControlTest(unittest.TestCase):
 
         self.assertTrue(body["cleanup_required"])
         self.assertIsNotNone(self.state.control_state["stream"])
-        self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+        self.assertNotIn(("vibepollo", "/action/close-app", None), self.proxy_calls)
 
     def test_daily_budget_uses_monotonic_time_and_pauses_do_not_tick(self):
         session_id = self.start_running()
@@ -2359,7 +2361,7 @@ class ChildTimeControlTest(unittest.TestCase):
         self.clock.advance(100)
         self.state.child_time_session_heartbeat(self.client, "kid", session_id)
         self.state.child_time_shutdown()
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         self.assertEqual(100,
                          restarted.child_time_usage["days"]["kid"]["2026-01-03"])
         self.assertEqual(session_id, restarted.child_time_session["session_id"])

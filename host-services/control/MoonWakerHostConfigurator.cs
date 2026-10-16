@@ -2,10 +2,8 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Drawing;
 using System.IO;
 using System.IO.Pipes;
-using System.Management;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
@@ -14,58 +12,61 @@ using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
-using System.Windows.Forms;
 using Microsoft.Win32;
+using MoonWaker.HostControl;
 
-[assembly: System.Reflection.AssemblyVersion("0.7.133.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.7.133.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.7.133+2026.10.13-child-close")]
+[assembly: System.Reflection.AssemblyVersion("0.7.135.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.7.135.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.7.135+2026.10.15-host-rebuild")]
+// WPF follows the per-monitor DPI of the manifest only for a .NET Framework 4.6.2+ target.
+[assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 
 namespace MoonWaker.HostConfigurator
 {
+    // The elevated helper. "--apply --pipe <GUID>": Host Control's change set over the change
+    // channel, confirmed in its own window (ConfiguratorChanges.cs). "--mode child-api": the
+    // Login Broker's child-profile requests. "--mode vibepollo-access": the installer's grant of
+    // Vibepollo's files to the Gateway service.
     internal static class Program
     {
         [STAThread]
         private static int Main(string[] args)
         {
-            string mode = Argument(args, "--mode") ?? "edit";
+            string mode = Argument(args, "--mode");
             if (String.Equals(mode, "child-api", StringComparison.OrdinalIgnoreCase))
                 return RunChildApi();
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            if (!IsAdministrator())
-            {
-                MessageBox.Show("Konfigurator wymaga uprawnień administratora.",
-                    "MoonWaker Host Configurator", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return 0;
-            }
+            if (String.Equals(mode, "vibepollo-access", StringComparison.OrdinalIgnoreCase))
+                return RunVibepolloAccess();
+            if (mode == null && args != null && args.Length == 5 && args[0] == "--apply")
+                return RunApply(Argument(args, "--pipe"), Argument(args, "--client"));
+            return 2;
+        }
 
-            string profileId = Argument(args, "--profile");
+        // Serves one change set for the Host Control that started this process through UAC:
+        // only the account it names may open the pipe, and the channel accepts only the process
+        // that started this one, running as that account (a false claim reaches nobody).
+        private static int RunApply(string pipe, string clientSid)
+        {
+            Guid id;
+            SecurityIdentifier client;
+            try { client = new SecurityIdentifier(clientSid ?? ""); }
+            catch (ArgumentException) { return 2; }
+            if (!Guid.TryParseExact(pipe ?? "", "D", out id) || !client.IsAccountSid() || !IsAdministrator()) return 2;
             try
             {
-                GatewayRegistryStore store = GatewayRegistryStore.ForInstalledHost();
-                Form form;
-                if (mode == "add") form = new AddProfileForm(store);
-                else
-                {
-                    if (!GatewayRegistryStore.IsValidProfileId(profileId))
-                        throw new InvalidOperationException("Wybierz prawidłowy profil MoonWaker.");
-                     if (mode == "edit") form = new EditProfileForm(store, profileId);
-                     else if (mode == "remote-sign-in") form = new RemoteSignInForm(store, profileId);
-                     else if (mode == "devices") form = new DeviceGrantsForm(store, profileId);
-                     else if (mode == "children") form = new ChildProfileManagerForm(store, profileId);
-                     else if (mode == "remove") form = new RemoveProfileForm(store, profileId);
-                    else throw new InvalidOperationException("Nieznany tryb konfiguratora.");
-                }
-                Application.Run(form);
-                if (mode == "add" && form.DialogResult == DialogResult.OK) return 10;
+                ChangeChannel.Serve(ChangeChannel.PipeName(id), client, ParentProcess.Id(),
+                    delegate(byte[] request, Func<bool> connected) {
+                    return ApplyRequest.Handle(request, delegate {
+                        return new ChangeApplier(GatewayRegistryStore.ForInstalledHost(), new ChangeEffects());
+                    }, delegate(ChangePlan plan) {
+                        try { plan.Requester = client.Translate(typeof(NTAccount)).Value; }
+                        catch (IdentityNotMappedException) { plan.Requester = client.Value; }
+                        return ConfirmWindow.Ask(plan);
+                    }, connected);
+                });
+                return 0;
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message, "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-            return 0;
+            catch (Exception) { return 1; }
         }
 
         private static int RunChildApi()
@@ -106,6 +107,25 @@ namespace MoonWaker.HostConfigurator
             return 0;
         }
 
+        // The installer's half of the Gateway's Vibepollo read access; every token save repeats
+        // it. Standard output lists missing files (exit 0), or why Vibepollo or its
+        // configuration cannot be used yet (exit 2), or why the grant failed (exit 1).
+        private static int RunVibepolloAccess()
+        {
+            List<string> lines = new List<string>();
+            int code = 0;
+            try
+            {
+                if (!IsAdministrator()) throw new UnauthorizedAccessException("administrator_required");
+                lines.AddRange(VibepolloMachineApi.GrantGatewayReadAccess());
+            }
+            catch (InvalidOperationException error) { lines.Add(error.Message); code = 2; }
+            catch (Exception error) { lines.Add(error.GetType().Name + ": " + error.Message); code = 1; }
+            using (StreamWriter output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)))
+                foreach (string line in lines) output.WriteLine(line);
+            return code;
+        }
+
         private static Dictionary<string, object> ChildApiFailure(string reason)
         {
             return new Dictionary<string, object> {
@@ -135,156 +155,10 @@ namespace MoonWaker.HostConfigurator
             return null;
         }
 
-        private static bool IsAdministrator()
+        internal static bool IsAdministrator()
         {
             WindowsIdentity identity = WindowsIdentity.GetCurrent();
             return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-        }
-    }
-
-    internal static class Ui
-    {
-        internal static readonly Color Background = Color.FromArgb(17, 20, 28);
-        internal static readonly Color Panel = Color.FromArgb(28, 33, 45);
-        internal static readonly Color Accent = Color.FromArgb(116, 100, 255);
-        internal static readonly Color Muted = Color.FromArgb(164, 171, 193);
-        internal static readonly Color Danger = Color.FromArgb(255, 170, 170);
-        internal static readonly Color Success = Color.FromArgb(129, 226, 169);
-
-        internal static void Prepare(Form form, string title, int width, int height)
-        {
-            form.Text = title;
-            form.ClientSize = new Size(width, height);
-            form.StartPosition = FormStartPosition.CenterScreen;
-            form.FormBorderStyle = FormBorderStyle.FixedDialog;
-            form.MaximizeBox = false;
-            form.MinimizeBox = false;
-            form.BackColor = Background;
-            form.ForeColor = Color.White;
-            form.Font = new Font("Segoe UI", 9.5F);
-            try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-        }
-
-        internal static Label Label(Control parent, string text, int x, int y, int width, int height,
-            float size, FontStyle style, Color color)
-        {
-            Label label = new Label();
-            label.Text = text;
-            label.SetBounds(x, y, width, height);
-            label.Font = new Font("Segoe UI", size, style);
-            label.ForeColor = color;
-            parent.Controls.Add(label);
-            return label;
-        }
-
-        internal static Button Button(Control parent, string text, int x, int y, int width,
-            EventHandler clicked, bool primary)
-        {
-            Button button = new Button();
-            button.Text = text;
-            button.SetBounds(x, y, width, 38);
-            button.FlatStyle = FlatStyle.Flat;
-            button.FlatAppearance.BorderColor = Color.FromArgb(77, 85, 109);
-            button.BackColor = primary ? Accent : Panel;
-            button.ForeColor = Color.White;
-            if (primary) button.FlatAppearance.BorderSize = 0;
-            button.Click += clicked;
-            parent.Controls.Add(button);
-            return button;
-        }
-
-        internal static TextBox TextBox(Control parent, int x, int y, int width)
-        {
-            TextBox value = new TextBox();
-            value.SetBounds(x, y, width, 30);
-            value.BackColor = Panel;
-            value.ForeColor = Color.White;
-            value.BorderStyle = BorderStyle.FixedSingle;
-            parent.Controls.Add(value);
-            return value;
-        }
-
-        internal static string BrokerStatePolish(string state)
-        {
-            if (state == "ready") return "gotowe";
-            if (state == "disabled") return "wyłączone";
-            if (state == "action_required") return "wymaga działania";
-            if (state == "unsupported") return "konto nieobsługiwane";
-            if (state == "broker_unavailable" || state == "unavailable") return "usługa niedostępna";
-            return "nieznany";
-        }
-    }
-
-    internal sealed class LocalAccount
-    {
-        internal string Name;
-        internal string QualifiedName;
-        internal string Sid;
-        public override string ToString() { return QualifiedName + "  —  " + Sid; }
-    }
-
-    internal static class LocalAccountEnumerator
-    {
-        private static readonly HashSet<string> SpecialNames = new HashSet<string>(
-            new string[] { "Administrator", "Guest", "DefaultAccount", "WDAGUtilityAccount",
-                "defaultuser0", "HomeGroupUser$" }, StringComparer.OrdinalIgnoreCase);
-
-        internal static List<LocalAccount> EnumerateSupported()
-        {
-            List<LocalAccount> result = new List<LocalAccount>();
-            string machine = Environment.MachineName;
-            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                "SELECT Name,Domain,SID,Disabled,LocalAccount FROM Win32_UserAccount " +
-                "WHERE LocalAccount=True AND Disabled=False"))
-            using (ManagementObjectCollection accounts = searcher.Get())
-            {
-                foreach (ManagementObject value in accounts)
-                {
-                    string name = Convert.ToString(value["Name"]);
-                    string domain = Convert.ToString(value["Domain"]);
-                    string sid = Convert.ToString(value["SID"]);
-                    if (String.IsNullOrWhiteSpace(name) || String.IsNullOrWhiteSpace(sid) ||
-                        !String.Equals(domain, machine, StringComparison.OrdinalIgnoreCase) ||
-                        SpecialNames.Contains(name) || name.EndsWith("$", StringComparison.Ordinal) ||
-                        !IsNormalLocalSid(sid) || IsCloudIdentity(sid)) continue;
-                    result.Add(new LocalAccount {
-                        Name = name, QualifiedName = machine + "\\" + name, Sid = sid
-                    });
-                }
-            }
-            result.Sort(delegate(LocalAccount left, LocalAccount right) {
-                return StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name);
-            });
-            return result;
-        }
-
-        private static bool IsNormalLocalSid(string sid)
-        {
-            if (!System.Text.RegularExpressions.Regex.IsMatch(sid,
-                "^S-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+$")) return false;
-            int separator = sid.LastIndexOf('-');
-            int rid;
-            return separator > 0 && Int32.TryParse(sid.Substring(separator + 1), out rid) && rid >= 1000;
-        }
-
-        private static bool IsCloudIdentity(string sid)
-        {
-            string path = @"SOFTWARE\Microsoft\IdentityStore\Cache\" + sid;
-            try
-            {
-                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(path, false))
-                {
-                    if (key == null) return false;
-                    string provider = Convert.ToString(key.GetValue("IdentityProvider", ""));
-                    if (String.IsNullOrWhiteSpace(provider))
-                        provider = Convert.ToString(key.GetValue("ProviderName", ""));
-                    return provider.IndexOf("Microsoft", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        provider.IndexOf("Azure", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        provider.IndexOf("Entra", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        provider.IndexOf("Cloud", StringComparison.OrdinalIgnoreCase) >= 0;
-                }
-            }
-            catch { return true; }
         }
     }
 
@@ -296,13 +170,11 @@ namespace MoonWaker.HostConfigurator
         internal string AvatarId;
         internal int PolicyRevision;
         internal List<string> AllowedGameKeys;
-        internal List<ChildDayDraft> Days;
         internal string DisplayName;
         internal string Sid;
         internal string AccountName;
         internal string Root;
         internal string DiscordEndpoint;
-        internal string VibepolloEndpoint;
         internal string GameProviderEndpoint;
         internal bool Enabled;
         internal bool AppPinRequired;
@@ -320,7 +192,6 @@ namespace MoonWaker.HostConfigurator
         }
 
         internal int DiscordPort { get { return GatewayRegistryStore.EndpointPort(DiscordEndpoint); } }
-        internal int VibepolloPort { get { return GatewayRegistryStore.EndpointPort(VibepolloEndpoint); } }
         internal int GameProviderPort { get { return GatewayRegistryStore.EndpointPort(GameProviderEndpoint); } }
     }
 
@@ -501,30 +372,47 @@ namespace MoonWaker.HostConfigurator
         // identity or profile data, and it intentionally does not cascade.
         internal void RemoveChildProfileLocal(string childProfileId)
         {
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                RemoveChildProfileLocalIn(document, childProfileId);
+                return true;
+            });
+        }
+
+        internal static void RemoveChildProfileLocalIn(Dictionary<string, object> document,
+            string childProfileId)
+        {
             if (!IsValidProfileId(childProfileId))
                 throw new InvalidOperationException("Wybierz prawidłowy profil dziecka.");
-            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
-            {
-                Dictionary<string, object> document = ReadDocument();
-                Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
-                object value;
-                Dictionary<string, object> child;
-                if (!profiles.TryGetValue(childProfileId, out value) ||
-                    (child = value as Dictionary<string, object>) == null ||
-                    !IsOwnedChild(child, Text(child, "parent_profile_id", "")))
-                    throw new InvalidOperationException("Profil dziecka nie istnieje.");
-                string parentProfileId = Text(child, "parent_profile_id", "");
-                profiles.Remove(childProfileId);
-                RemoveProfileGrants(document, childProfileId);
-                object parentValue;
-                Dictionary<string, object> parent;
-                if (profiles.TryGetValue(parentProfileId, out parentValue) &&
-                    (parent = parentValue as Dictionary<string, object>) != null &&
-                    String.Equals(Text(parent, "kind", "standard"), "standard",
-                        StringComparison.OrdinalIgnoreCase))
-                    parent[ChildParentPolicyRevisionField] = ChildPolicyRevision(parent) + 1;
-                WriteDocument(document);
-            }
+            Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
+            object value;
+            Dictionary<string, object> child;
+            if (!profiles.TryGetValue(childProfileId, out value) ||
+                (child = value as Dictionary<string, object>) == null ||
+                !IsOwnedChild(child, Text(child, "parent_profile_id", "")))
+                throw new InvalidOperationException("Profil dziecka nie istnieje.");
+            string parentProfileId = Text(child, "parent_profile_id", "");
+            profiles.Remove(childProfileId);
+            RemoveProfileGrants(document, childProfileId);
+            object parentValue;
+            Dictionary<string, object> parent;
+            if (profiles.TryGetValue(parentProfileId, out parentValue) &&
+                (parent = parentValue as Dictionary<string, object>) != null &&
+                String.Equals(Text(parent, "kind", "standard"), "standard",
+                    StringComparison.OrdinalIgnoreCase))
+                parent[ChildParentPolicyRevisionField] = ChildPolicyRevision(parent) + 1;
+        }
+
+        // The orphan or disabled-parent cleanup a live parent never takes: the parent is
+        // missing, not a standard profile, or disabled (also while its removal is pending).
+        internal static bool ChildNeedsLocalCleanup(Dictionary<string, object> document,
+            string parentProfileId)
+        {
+            object value;
+            Dictionary<string, object> parent;
+            return !Dictionary(document, "profiles", false).TryGetValue(parentProfileId, out value) ||
+                (parent = value as Dictionary<string, object>) == null ||
+                !String.Equals(Text(parent, "kind", "standard"), "standard", StringComparison.OrdinalIgnoreCase) ||
+                !BooleanValue(parent, "enabled");
         }
 
         internal ChildGameSharingSnapshot GetChildGameSharing(string parentProfileId,
@@ -699,10 +587,8 @@ namespace MoonWaker.HostConfigurator
                 if (Value(parent, "pin_verifier") == null)
                     throw new InvalidOperationException(
                         "Rodzic profilu dziecka musi mieć ustawiony PIN aplikacji.");
-                if (!IsSid(Text(parent, "windows_account_sid",
-                        Text(parent, "owner_sid", ""))) ||
-                    String.IsNullOrWhiteSpace(Text(parent, "windows_account_name",
-                        Text(parent, "owner", ""))) ||
+                if (!IsSid(Text(parent, "windows_account_sid", "")) ||
+                    String.IsNullOrWhiteSpace(Text(parent, "windows_account_name", "")) ||
                     !String.Equals(Text(parent, "account_mapping_status", ""),
                         "resolved", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException(
@@ -734,10 +620,22 @@ namespace MoonWaker.HostConfigurator
         internal Dictionary<string, object> ApplyChildProfileRequest(
             Dictionary<string, object> request)
         {
+            if (request != null && Text(request, "operation", "").Trim().ToLowerInvariant() == "sharing_set")
+                return ApplyChildGameSharingRequest(request);
+            Dictionary<string, object> result = null;
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                result = ApplyChildProfileRequestIn(document, request);
+                // A replayed request changes nothing.
+                return !Convert.ToBoolean(result["idempotent"]);
+            });
+            return result;
+        }
+
+        internal static Dictionary<string, object> ApplyChildProfileRequestIn(
+            Dictionary<string, object> document, Dictionary<string, object> request)
+        {
             if (request == null) throw new InvalidOperationException("Brak żądania profilu dziecka.");
             string operation = Text(request, "operation", "").Trim().ToLowerInvariant();
-            if (operation == "sharing_set")
-                return ApplyChildGameSharingRequest(request);
             if (operation != "create" && operation != "update" && operation != "delete")
                 throw new InvalidOperationException("Nieznana operacja profilu dziecka.");
             string parentProfileId = Text(request, "parent_profile_id", "").Trim();
@@ -773,120 +671,115 @@ namespace MoonWaker.HostConfigurator
             string fingerprint = ChildProfileFingerprint(operation, parentProfileId,
                 childProfileId, expectedRevision, draft, grantCurrentDevice, grantClientId);
 
-            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
+            Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
+            Dictionary<string, object> parent = Profile(document, parentProfileId);
+            EnsureChildPolicyParent(parent);
+            if (Value(parent, "pin_verifier") == null)
+                throw new InvalidOperationException(
+                    "Rodzic profilu dziecka musi mieć ustawiony PIN aplikacji.");
+            int currentRevision = ChildPolicyRevision(parent);
+            Dictionary<string, object> requests = ChildProfileRequests(parent, true);
+            object priorValue;
+            if (requests.TryGetValue(requestId, out priorValue))
             {
-                Dictionary<string, object> document = ReadDocument();
-                Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
-                Dictionary<string, object> parent = Profile(document, parentProfileId);
-                EnsureChildPolicyParent(parent);
-                if (Value(parent, "pin_verifier") == null)
-                    throw new InvalidOperationException(
-                        "Rodzic profilu dziecka musi mieć ustawiony PIN aplikacji.");
-                int currentRevision = ChildPolicyRevision(parent);
-                Dictionary<string, object> requests = ChildProfileRequests(parent, true);
-                object priorValue;
-                if (requests.TryGetValue(requestId, out priorValue))
-                {
-                    Dictionary<string, object> prior = priorValue as Dictionary<string, object>;
-                    if (prior == null || !String.Equals(Text(prior, "fingerprint", ""),
-                        fingerprint, StringComparison.Ordinal))
-                        throw new InvalidOperationException("request_id_reused");
-                    Dictionary<string, object> priorResult = Value(prior, "result") as
-                        Dictionary<string, object>;
-                    if (priorResult == null)
-                        throw new InvalidOperationException("Rejestr ma nieprawidłowy wynik żądania profilu dziecka.");
-                    Dictionary<string, object> replay =
-                        new Dictionary<string, object>(priorResult);
-                    replay["idempotent"] = true;
-                    return replay;
-                }
-                if (expectedRevision != currentRevision)
-                    throw new InvalidOperationException("child_policy_revision_stale");
+                Dictionary<string, object> prior = priorValue as Dictionary<string, object>;
+                if (prior == null || !String.Equals(Text(prior, "fingerprint", ""),
+                    fingerprint, StringComparison.Ordinal))
+                    throw new InvalidOperationException("request_id_reused");
+                Dictionary<string, object> priorResult = Value(prior, "result") as
+                    Dictionary<string, object>;
+                if (priorResult == null)
+                    throw new InvalidOperationException("Rejestr ma nieprawidłowy wynik żądania profilu dziecka.");
+                Dictionary<string, object> replay =
+                    new Dictionary<string, object>(priorResult);
+                replay["idempotent"] = true;
+                return replay;
+            }
+            if (expectedRevision != currentRevision)
+                throw new InvalidOperationException("child_policy_revision_stale");
 
-                Dictionary<string, object> result;
-                if (operation == "create")
+            Dictionary<string, object> result;
+            if (operation == "create")
+            {
+                string id;
+                do { id = NewProfileId(); } while (profiles.ContainsKey(id));
+                Dictionary<string, object> child = new Dictionary<string, object> {
+                    { "id", id }, { "kind", "child" },
+                    { "name", draft["name"] }, { "display_name", draft["name"] },
+                    { "avatar_id", draft["avatar_id"] },
+                    { "parent_profile_id", parentProfileId },
+                    { "enabled", draft["enabled"] }, { "policy_revision", 0 },
+                    { "allowed_game_keys", new object[0] },
+                    { "schedule", draft["schedule"] }
+                };
+                profiles[id] = child;
+                if (grantCurrentDevice)
+                    GrantChildUseProfile(document, grantClientId, id);
+                int revision = currentRevision + 1;
+                parent[ChildParentPolicyRevisionField] = revision;
+                result = ChildProfileMutationResult(parentProfileId, revision,
+                    ChildProfileDto(child), false, false);
+            }
+            else
+            {
+                object childValue;
+                Dictionary<string, object> child;
+                if (!profiles.TryGetValue(childProfileId, out childValue) ||
+                    (child = childValue as Dictionary<string, object>) == null ||
+                    !IsOwnedChild(child, parentProfileId))
+                    throw new InvalidOperationException("child_profile_not_owned");
+                if (operation == "delete")
                 {
-                    string id;
-                    do { id = NewProfileId(); } while (profiles.ContainsKey(id));
-                    Dictionary<string, object> child = new Dictionary<string, object> {
-                        { "id", id }, { "kind", "child" },
-                        { "name", draft["name"] }, { "display_name", draft["name"] },
-                        { "avatar_id", draft["avatar_id"] },
-                        { "parent_profile_id", parentProfileId },
-                        { "enabled", draft["enabled"] }, { "policy_revision", 0 },
-                        { "allowed_game_keys", new object[0] },
-                        { "schedule", draft["schedule"] }
-                    };
-                    profiles[id] = child;
-                    if (grantCurrentDevice)
-                        GrantChildUseProfile(document, grantClientId, id);
+                    profiles.Remove(childProfileId);
+                    RemoveProfileGrants(document, childProfileId);
                     int revision = currentRevision + 1;
                     parent[ChildParentPolicyRevisionField] = revision;
                     result = ChildProfileMutationResult(parentProfileId, revision,
-                        ChildProfileDto(child), false, false);
+                        null, false, true);
+                    result["child_profile_id"] = childProfileId;
+                    result["affected_child_profile_ids"] = new object[] { childProfileId };
                 }
                 else
                 {
-                    object childValue;
-                    Dictionary<string, object> child;
-                    if (!profiles.TryGetValue(childProfileId, out childValue) ||
-                        (child = childValue as Dictionary<string, object>) == null ||
-                        !IsOwnedChild(child, parentProfileId))
-                        throw new InvalidOperationException("child_profile_not_owned");
-                    if (operation == "delete")
+                    bool scheduleChanged = !String.Equals(ScheduleFingerprint(
+                            StoredChildSchedule(child)),
+                            ScheduleFingerprint((Dictionary<string, object>)draft["schedule"]),
+                            StringComparison.Ordinal);
+                    bool enabledChanged = !BooleanEquals(child, "enabled",
+                        (bool)draft["enabled"]);
+                    bool changed = !String.Equals(Text(child, "name",
+                            Text(child, "display_name", "")),
+                            Convert.ToString(draft["name"]), StringComparison.Ordinal) ||
+                        !String.Equals(Text(child, "display_name", ""),
+                            Convert.ToString(draft["name"]), StringComparison.Ordinal) ||
+                        !String.Equals(Text(child, "avatar_id", ""),
+                            Convert.ToString(draft["avatar_id"]), StringComparison.Ordinal) ||
+                        enabledChanged || scheduleChanged;
+                    bool policyChanged = enabledChanged ||
+                        ChildScheduleShrank(StoredChildSchedule(child),
+                            (Dictionary<string, object>)draft["schedule"]);
+                    if (changed)
                     {
-                        profiles.Remove(childProfileId);
-                        RemoveProfileGrants(document, childProfileId);
-                        int revision = currentRevision + 1;
-                        parent[ChildParentPolicyRevisionField] = revision;
-                        result = ChildProfileMutationResult(parentProfileId, revision,
-                            null, false, true);
-                        result["child_profile_id"] = childProfileId;
+                        child["name"] = draft["name"];
+                        child["display_name"] = draft["name"];
+                        child["avatar_id"] = draft["avatar_id"];
+                        child["enabled"] = draft["enabled"];
+                        child["schedule"] = draft["schedule"];
+                        child["policy_revision"] = ChildPolicyRevision(child) + 1;
+                        currentRevision++;
+                        parent[ChildParentPolicyRevisionField] = currentRevision;
+                    }
+                    result = ChildProfileMutationResult(parentProfileId, currentRevision,
+                        ChildProfileDto(child), false, policyChanged);
+                    if (policyChanged)
                         result["affected_child_profile_ids"] = new object[] { childProfileId };
-                    }
-                    else
-                    {
-                        bool scheduleChanged = !String.Equals(ScheduleFingerprint(
-                                StoredChildSchedule(child)),
-                                ScheduleFingerprint((Dictionary<string, object>)draft["schedule"]),
-                                StringComparison.Ordinal);
-                        bool enabledChanged = !BooleanEquals(child, "enabled",
-                            (bool)draft["enabled"]);
-                        bool changed = !String.Equals(Text(child, "name",
-                                Text(child, "display_name", "")),
-                                Convert.ToString(draft["name"]), StringComparison.Ordinal) ||
-                            !String.Equals(Text(child, "display_name", ""),
-                                Convert.ToString(draft["name"]), StringComparison.Ordinal) ||
-                            !String.Equals(Text(child, "avatar_id", ""),
-                                Convert.ToString(draft["avatar_id"]), StringComparison.Ordinal) ||
-                            enabledChanged || scheduleChanged;
-                        bool policyChanged = enabledChanged ||
-                            ChildScheduleShrank(StoredChildSchedule(child),
-                                (Dictionary<string, object>)draft["schedule"]);
-                        if (changed)
-                        {
-                            child["name"] = draft["name"];
-                            child["display_name"] = draft["name"];
-                            child["avatar_id"] = draft["avatar_id"];
-                            child["enabled"] = draft["enabled"];
-                            child["schedule"] = draft["schedule"];
-                            child["policy_revision"] = ChildPolicyRevision(child) + 1;
-                            currentRevision++;
-                            parent[ChildParentPolicyRevisionField] = currentRevision;
-                        }
-                        result = ChildProfileMutationResult(parentProfileId, currentRevision,
-                            ChildProfileDto(child), false, policyChanged);
-                        if (policyChanged)
-                            result["affected_child_profile_ids"] = new object[] { childProfileId };
-                    }
                 }
-                requests[requestId] = new Dictionary<string, object> {
-                    { "fingerprint", fingerprint }, { "result", result }
-                };
-                TrimChildProfileRequests(requests);
-                WriteDocument(document);
-                return result;
             }
+            requests[requestId] = new Dictionary<string, object> {
+                { "fingerprint", fingerprint }, { "result", result }
+            };
+            TrimChildProfileRequests(requests);
+            return result;
         }
 
         private Dictionary<string, object> ApplyChildGameSharingRequest(
@@ -987,16 +880,12 @@ namespace MoonWaker.HostConfigurator
                 profile["id"] = id;
                 profile["name"] = displayName.Trim();
                 profile["display_name"] = displayName.Trim();
-                profile["owner_sid"] = account.Sid;
                 profile["windows_account_sid"] = account.Sid;
-                profile["owner"] = account.QualifiedName;
                 profile["windows_account_name"] = account.QualifiedName;
                 profile["enabled"] = false;
                 profile["profile_root"] = root;
                 profile["discord_bridge"] = "http://127.0.0.1:" + ports[0];
-                profile["vibepollo_bridge"] = "http://127.0.0.1:" + ports[1];
-                profile["game_provider_bridge"] = "http://127.0.0.1:" + ports[2];
-                profile["playnite_bridge"] = "http://127.0.0.1:" + ports[2];
+                profile["game_provider_bridge"] = "http://127.0.0.1:" + ports[1];
                 profile["remote_sign_in_enabled"] = false;
                 profile["account_mapping_status"] = "resolved";
                 profile["reservation_nonce"] = Guid.NewGuid().ToString("N");
@@ -1008,8 +897,12 @@ namespace MoonWaker.HostConfigurator
 
         internal void FinalizeProfile(string id, string expectedSid)
         {
-            MutateProfile(id, expectedSid, delegate(Dictionary<string, object> document,
-                Dictionary<string, object> profile) { profile["enabled"] = true; });
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                MutateProfileIn(document, id, expectedSid, delegate(Dictionary<string, object> profile) {
+                    profile["enabled"] = true;
+                });
+                return true;
+            });
         }
 
         internal void ProvisionAndFinalize(ProfileRecord expected, Action provision)
@@ -1033,9 +926,17 @@ namespace MoonWaker.HostConfigurator
 
         internal void UpdateProfile(string id, string expectedSid, string displayName, bool enabled)
         {
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                EditProfileIn(document, id, expectedSid, displayName, enabled);
+                return true;
+            });
+        }
+
+        internal static void EditProfileIn(Dictionary<string, object> document, string id,
+            string expectedSid, string displayName, bool enabled)
+        {
             ValidateDisplayName(displayName);
-            MutateProfile(id, expectedSid, delegate(Dictionary<string, object> document,
-                Dictionary<string, object> profile) {
+            MutateProfileIn(document, id, expectedSid, delegate(Dictionary<string, object> profile) {
                 profile["name"] = displayName.Trim();
                 profile["display_name"] = displayName.Trim();
                 profile["enabled"] = enabled;
@@ -1045,14 +946,33 @@ namespace MoonWaker.HostConfigurator
         internal void SetAppPin(string id, string expectedSid, string pin)
         {
             Dictionary<string, object> verifier = CreateAppPinVerifier(pin);
-            MutateProfile(id, expectedSid, delegate(Dictionary<string, object> document,
-                Dictionary<string, object> profile) { profile["pin_verifier"] = verifier; });
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                SetPinVerifierIn(document, id, expectedSid, verifier);
+                return true;
+            });
+        }
+
+        internal static void SetPinVerifierIn(Dictionary<string, object> document, string id,
+            string expectedSid, Dictionary<string, object> verifier)
+        {
+            MutateProfileIn(document, id, expectedSid, delegate(Dictionary<string, object> profile) {
+                profile["pin_verifier"] = verifier;
+            });
         }
 
         internal void RemoveAppPin(string id, string expectedSid)
         {
-            MutateProfile(id, expectedSid, delegate(Dictionary<string, object> document,
-                Dictionary<string, object> profile) { profile.Remove("pin_verifier"); });
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                RemovePinIn(document, id, expectedSid);
+                return true;
+            });
+        }
+
+        internal static void RemovePinIn(Dictionary<string, object> document, string id, string expectedSid)
+        {
+            MutateProfileIn(document, id, expectedSid, delegate(Dictionary<string, object> profile) {
+                profile.Remove("pin_verifier");
+            });
         }
 
         internal static Dictionary<string, object> CreateAppPinVerifier(string pin)
@@ -1086,65 +1006,72 @@ namespace MoonWaker.HostConfigurator
 
         internal void SetRemoteSignInEnabled(string id, string expectedSid, bool enabled)
         {
-            MutateProfile(id, expectedSid, delegate(Dictionary<string, object> document,
-                Dictionary<string, object> profile) {
-                profile["remote_sign_in_enabled"] = enabled;
-                if (!enabled) RemoveRemoteSignInGrants(document, id);
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                MutateProfileIn(document, id, expectedSid, delegate(Dictionary<string, object> profile) {
+                    profile["remote_sign_in_enabled"] = enabled;
+                    if (!enabled) RemoveRemoteSignInGrants(document, id);
+                });
+                return true;
             });
         }
 
         internal void UpdateGrants(string id, string expectedSid,
             Dictionary<string, DeviceGrant> requested)
         {
-            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                UpdateGrantsIn(document, id, expectedSid, requested);
+                return true;
+            });
+        }
+
+        // Clients are those of the document: the helper's Prepare refuses a TV that is not paired.
+        internal static void UpdateGrantsIn(Dictionary<string, object> document, string id,
+            string expectedSid, Dictionary<string, DeviceGrant> requested)
+        {
+            Dictionary<string, object> profile = Profile(document, id);
+            bool child = IsChildProfile(profile);
+            Dictionary<string, object> policyParent = profile;
+            if (child)
             {
-                Dictionary<string, object> document = ReadDocument();
-                Dictionary<string, object> profile = Profile(document, id);
-                bool child = IsChildProfile(profile);
-                Dictionary<string, object> policyParent = profile;
-                if (child)
-                {
-                    policyParent = EnsureChildGrantParent(document, profile, true);
-                    EnsureNotTombstoned(profile);
-                    EnsureSid(policyParent, expectedSid);
-                }
+                policyParent = EnsureChildGrantParent(document, profile, true);
+                EnsureNotTombstoned(profile);
+                EnsureSid(policyParent, expectedSid);
+            }
+            else
+            {
+                EnsureStandardProfile(profile);
+                EnsureSid(profile, expectedSid);
+                EnsureNotTombstoned(profile);
+            }
+            bool remoteEnabled = BooleanValue(policyParent, "remote_sign_in_enabled");
+            foreach (Dictionary<string, object> client in Clients(document))
+            {
+                string clientId = Text(client, "id", "");
+                DeviceGrant grant;
+                if (String.IsNullOrWhiteSpace(clientId) || !requested.TryGetValue(clientId, out grant))
+                    continue;
+                if (grant.RemoteSignIn && (!grant.UseProfile || !remoteEnabled))
+                    throw new InvalidOperationException(
+                        "Zdalny dostęp wymaga zwykłego dostępu i gotowych danych logowania profilu.");
+                if (grant.ManageChildren && !grant.UseProfile)
+                    throw new InvalidOperationException(
+                        "Zarządzanie dziećmi wymaga zwykłego dostępu do profilu rodzica.");
+                if (child && grant.ManageChildren)
+                    throw new InvalidOperationException(
+                        "Profil dziecka nie może zarządzać profilami dzieci.");
+                if (!child && grant.ManageChildren &&
+                    Value(profile, "pin_verifier") == null)
+                    throw new InvalidOperationException(
+                        "Zarządzanie dziećmi wymaga ustawionego PIN-u aplikacji rodzica.");
+                Dictionary<string, object> grants = Dictionary(client, "profile_grants", true);
+                if (!grant.UseProfile) grants.Remove(id);
                 else
                 {
-                    EnsureStandardProfile(profile);
-                    EnsureSid(profile, expectedSid);
-                    EnsureNotTombstoned(profile);
+                    List<object> permissions = new List<object> { "use_profile" };
+                    if (grant.RemoteSignIn) permissions.Add("remote_sign_in");
+                    if (grant.ManageChildren) permissions.Add("manage_children");
+                    grants[id] = permissions.ToArray();
                 }
-                bool remoteEnabled = BooleanValue(policyParent, "remote_sign_in_enabled");
-                foreach (Dictionary<string, object> client in Clients(document))
-                {
-                    string clientId = Text(client, "id", "");
-                    DeviceGrant grant;
-                    if (String.IsNullOrWhiteSpace(clientId) || !requested.TryGetValue(clientId, out grant))
-                        continue;
-                    if (grant.RemoteSignIn && (!grant.UseProfile || !remoteEnabled))
-                        throw new InvalidOperationException(
-                            "Zdalny dostęp wymaga zwykłego dostępu i gotowych danych logowania profilu.");
-                    if (grant.ManageChildren && !grant.UseProfile)
-                        throw new InvalidOperationException(
-                            "Zarządzanie dziećmi wymaga zwykłego dostępu do profilu rodzica.");
-                    if (child && grant.ManageChildren)
-                        throw new InvalidOperationException(
-                            "Profil dziecka nie może zarządzać profilami dzieci.");
-                    if (!child && grant.ManageChildren &&
-                        Value(profile, "pin_verifier") == null)
-                        throw new InvalidOperationException(
-                            "Zarządzanie dziećmi wymaga ustawionego PIN-u aplikacji rodzica.");
-                    Dictionary<string, object> grants = Dictionary(client, "profile_grants", true);
-                    if (!grant.UseProfile) grants.Remove(id);
-                    else
-                    {
-                        List<object> permissions = new List<object> { "use_profile" };
-                        if (grant.RemoteSignIn) permissions.Add("remote_sign_in");
-                        if (grant.ManageChildren) permissions.Add("manage_children");
-                        grants[id] = permissions.ToArray();
-                    }
-                }
-                WriteDocument(document);
             }
         }
 
@@ -1185,28 +1112,31 @@ namespace MoonWaker.HostConfigurator
 
         internal void RemoveClient(string clientId)
         {
+            Transaction(null, delegate(Dictionary<string, object> document) {
+                RemoveClientIn(document, clientId);
+                return true;
+            });
+        }
+
+        internal static void RemoveClientIn(Dictionary<string, object> document, string clientId)
+        {
             if (String.IsNullOrWhiteSpace(clientId))
                 throw new InvalidOperationException("Wybierz prawidłowe urządzenie.");
-            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
+            IList clients = Value(document, "clients") as IList;
+            bool removed = false;
+            for (int index = clients.Count - 1; index >= 0; index--)
             {
-                Dictionary<string, object> document = ReadDocument();
-                IList clients = Value(document, "clients") as IList;
-                bool removed = false;
-                for (int index = clients.Count - 1; index >= 0; index--)
+                Dictionary<string, object> client = clients[index]
+                    as Dictionary<string, object>;
+                if (client != null && String.Equals(Text(client, "id", ""),
+                    clientId, StringComparison.Ordinal))
                 {
-                    Dictionary<string, object> client = clients[index]
-                        as Dictionary<string, object>;
-                    if (client != null && String.Equals(Text(client, "id", ""),
-                        clientId, StringComparison.Ordinal))
-                    {
-                        clients.RemoveAt(index);
-                        removed = true;
-                    }
+                    clients.RemoveAt(index);
+                    removed = true;
                 }
-                if (!removed) throw new InvalidOperationException(
-                    "Urządzenie nie jest już sparowane. Odśwież listę.");
-                WriteDocument(document);
             }
+            if (!removed) throw new InvalidOperationException(
+                "Urządzenie nie jest już sparowane. Odśwież listę.");
         }
 
         internal string PrepareRemoval(ProfileRecord expected)
@@ -1266,8 +1196,6 @@ namespace MoonWaker.HostConfigurator
                 EnsureRemovalIdentity(profile, expected);
                 EnsureDeletionTombstone(profile, expected);
                 string expectedRoot = Path.GetFullPath(Path.Combine(ProfilesRoot, expected.Id));
-                string actualRoot = String.IsNullOrWhiteSpace(expected.Root)
-                    ? expectedRoot : Path.GetFullPath(expected.Root);
                 if (!PathSafety.IsConclusiveAbsent(expectedRoot))
                     throw new InvalidOperationException(
                         "Katalog profilu nadal istnieje. Zamknij programy profilu i ponów usunięcie.");
@@ -1277,28 +1205,55 @@ namespace MoonWaker.HostConfigurator
             }
         }
 
-        private void MutateProfile(string id, string expectedSid,
-            Action<Dictionary<string, object>, Dictionary<string, object>> mutation)
+        // A standard profile of the expected account that is not being removed.
+        internal static void MutateProfileIn(Dictionary<string, object> document, string id,
+            string expectedSid, Action<Dictionary<string, object>> mutation)
+        {
+            Dictionary<string, object> profile = Profile(document, id);
+            EnsureStandardProfile(profile);
+            EnsureSid(profile, expectedSid);
+            EnsureNotTombstoned(profile);
+            mutation(profile);
+        }
+
+        // One locked read-modify-write of the registry. expectedRevision, unless null, is the
+        // revision the change was decided on (RegistryRevision); change returns whether to write.
+        internal void Transaction(string expectedRevision, Func<Dictionary<string, object>, bool> change)
         {
             using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
             {
-                Dictionary<string, object> document = ReadDocument();
-                Dictionary<string, object> profile = Profile(document, id);
-                EnsureStandardProfile(profile);
-                EnsureSid(profile, expectedSid);
-                EnsureNotTombstoned(profile);
-                mutation(document, profile);
-                WriteDocument(document);
+                Dictionary<string, object> document = ReadDocument(expectedRevision);
+                if (change(document)) WriteDocument(document);
             }
+        }
+
+        // The registry read under its lock, still at expectedRevision; nothing is written.
+        internal Dictionary<string, object> Snapshot(string expectedRevision)
+        {
+            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
+                return ReadDocument(expectedRevision);
         }
 
         private Dictionary<string, object> ReadDocument()
         {
+            return ReadDocument(null);
+        }
+
+        private Dictionary<string, object> ReadDocument(string expectedRevision)
+        {
             Dictionary<string, object> document;
+            byte[] content;
+            try { content = File.ReadAllBytes(ConfigPath); }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Rejestr profili Gateway jest uszkodzony.", ex);
+            }
+            if (expectedRevision != null && RegistryRevision.Of(content) != expectedRevision)
+                throw new StaleRegistryException();
             try
             {
                 document = json.Deserialize<Dictionary<string, object>>(
-                    File.ReadAllText(ConfigPath, Encoding.UTF8));
+                    Encoding.UTF8.GetString(content).TrimStart('﻿'));
             }
             catch (Exception ex)
             {
@@ -1415,9 +1370,9 @@ namespace MoonWaker.HostConfigurator
                         throw new InvalidOperationException("Profil dziecka wskazuje profil bez konta Windows.");
                 }
                 foreach (string forbidden in new string[] {
-                    "windows_account_sid", "owner_sid", "windows_account_name", "owner",
-                    "profile_root", "discord_bridge", "vibepollo_bridge",
-                    "game_provider_bridge", "playnite_bridge", "integration_token",
+                    "windows_account_sid", "windows_account_name",
+                    "profile_root", "discord_bridge",
+                    "game_provider_bridge", "integration_token",
                     "pin_verifier", "account_mapping_status", "reservation_nonce",
                     "remote_sign_in_enabled",
                     "ratings", "minimum_age", "age_rating", "pegi", "esrb" })
@@ -1488,7 +1443,7 @@ namespace MoonWaker.HostConfigurator
             return result;
         }
 
-        private static Dictionary<string, object> Profile(Dictionary<string, object> document, string id)
+        internal static Dictionary<string, object> Profile(Dictionary<string, object> document, string id)
         {
             if (!IsValidProfileId(id)) throw new InvalidOperationException("Nieprawidłowy profil.");
             Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
@@ -1510,7 +1465,7 @@ namespace MoonWaker.HostConfigurator
                     parentProfileId, StringComparison.Ordinal);
         }
 
-        private static bool IsChildProfile(Dictionary<string, object> profile)
+        internal static bool IsChildProfile(Dictionary<string, object> profile)
         {
             return profile != null && String.Equals(Text(profile, "kind", "standard"),
                 "child", StringComparison.OrdinalIgnoreCase);
@@ -1536,17 +1491,15 @@ namespace MoonWaker.HostConfigurator
             if (!BooleanValue(parent, "enabled") ||
                 Value(parent, "deletion_tombstone") != null)
                 throw new InvalidOperationException("Rodzic profilu dziecka jest wyłączony.");
-            if (!IsSid(Text(parent, "windows_account_sid",
-                    Text(parent, "owner_sid", ""))) ||
-                String.IsNullOrWhiteSpace(Text(parent, "windows_account_name",
-                    Text(parent, "owner", ""))) ||
+            if (!IsSid(Text(parent, "windows_account_sid", "")) ||
+                String.IsNullOrWhiteSpace(Text(parent, "windows_account_name", "")) ||
                 !String.Equals(Text(parent, "account_mapping_status", ""),
                     "resolved", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException(
                     "Rodzic profilu dziecka musi mieć rozpoznane konto Windows.");
         }
 
-        private static int ChildPolicyRevision(Dictionary<string, object> profile)
+        internal static int ChildPolicyRevision(Dictionary<string, object> profile)
         {
             object value = Value(profile, ChildParentPolicyRevisionField);
             if (value == null && String.Equals(Text(profile, "kind", "standard"),
@@ -1660,7 +1613,7 @@ namespace MoonWaker.HostConfigurator
             return value is bool && (bool)value == expected;
         }
 
-        private static Dictionary<string, object> NormalizeChildDraft(
+        internal static Dictionary<string, object> NormalizeChildDraft(
             Dictionary<string, object> source)
         {
             if (source == null)
@@ -1911,10 +1864,9 @@ namespace MoonWaker.HostConfigurator
             }
         }
 
-        private static ProfileRecord ToProfile(string id, Dictionary<string, object> profile)
+        internal static ProfileRecord ToProfile(string id, Dictionary<string, object> profile)
         {
-            string provider = Text(profile, "game_provider_bridge",
-                Text(profile, "playnite_bridge", ""));
+            string provider = Text(profile, "game_provider_bridge", "");
             List<string> allowedGameKeys = new List<string>();
             IEnumerable allowed = Value(profile, "allowed_game_keys") as IEnumerable;
             if (allowed != null && !(allowed is string))
@@ -1930,11 +1882,10 @@ namespace MoonWaker.HostConfigurator
                 PolicyRevision = IntValue(profile, "policy_revision"),
                 AllowedGameKeys = allowedGameKeys,
                 DisplayName = Text(profile, "display_name", Text(profile, "name", id)),
-                Sid = Text(profile, "windows_account_sid", Text(profile, "owner_sid", "")),
-                AccountName = Text(profile, "windows_account_name", Text(profile, "owner", "")),
+                Sid = Text(profile, "windows_account_sid", ""),
+                AccountName = Text(profile, "windows_account_name", ""),
                 Root = Text(profile, "profile_root", ""),
                 DiscordEndpoint = Text(profile, "discord_bridge", ""),
-                VibepolloEndpoint = Text(profile, "vibepollo_bridge", ""),
                 GameProviderEndpoint = provider,
                 Enabled = BooleanValue(profile, "enabled"),
                 AppPinRequired = Value(profile, "pin_verifier") != null,
@@ -1942,32 +1893,8 @@ namespace MoonWaker.HostConfigurator
                 MappingStatus = Text(profile, "account_mapping_status", "action_required"),
                 DeletionNonce = tombstone == null ? "" : Text(tombstone, "nonce", ""),
                 DeletionGeneration = tombstone == null ? 0 : LongValue(tombstone, "generation"),
-                ReservationNonce = Text(profile, "reservation_nonce", ""),
-                Days = String.Equals(Text(profile, "kind", "standard"), "child",
-                    StringComparison.OrdinalIgnoreCase)
-                    ? ChildDays(StoredChildSchedule(profile))
-                    : new List<ChildDayDraft>()
+                ReservationNonce = Text(profile, "reservation_nonce", "")
             };
-        }
-
-        private static List<ChildDayDraft> ChildDays(Dictionary<string, object> schedule)
-        {
-            List<ChildDayDraft> result = new List<ChildDayDraft>();
-            Dictionary<string, object> weekdays = Value(schedule, "weekdays") as
-                Dictionary<string, object>;
-            foreach (string day in ChildWeekdays)
-            {
-                Dictionary<string, object> entry = weekdays == null ? null :
-                    Value(weekdays, day) as Dictionary<string, object>;
-                result.Add(new ChildDayDraft {
-                    Enabled = entry != null && BooleanValue(entry, "enabled"),
-                    StartMinute = OptionalNonNegativeInt(entry, "start_minute", 0),
-                    EndMinute = OptionalNonNegativeInt(entry, "end_minute", 1440),
-                    DailyLimitSeconds = OptionalNonNegativeInt(entry,
-                        "daily_limit_seconds", 0)
-                });
-            }
-            return result;
         }
 
         private static Dictionary<string, object> ChildProfileDto(
@@ -2010,7 +1937,7 @@ namespace MoonWaker.HostConfigurator
                     "Profil dziecka nie ma konta Windows ani katalogu wykonywania.");
         }
 
-        private static IEnumerable<Dictionary<string, object>> Clients(Dictionary<string, object> document)
+        internal static IEnumerable<Dictionary<string, object>> Clients(Dictionary<string, object> document)
         {
             IEnumerable values = Value(document, "clients") as IEnumerable;
             if (values == null) yield break;
@@ -2021,7 +1948,7 @@ namespace MoonWaker.HostConfigurator
             }
         }
 
-        private static HashSet<string> Permissions(Dictionary<string, object> client, string profileId)
+        internal static HashSet<string> Permissions(Dictionary<string, object> client, string profileId)
         {
             HashSet<string> result = new HashSet<string>(StringComparer.Ordinal);
             object grantsValue = Value(client, "profile_grants");
@@ -2074,14 +2001,13 @@ namespace MoonWaker.HostConfigurator
             }
         }
 
-        private static void EnsureSidUnused(Dictionary<string, object> profiles, string sid, string exceptId)
+        internal static void EnsureSidUnused(Dictionary<string, object> profiles, string sid, string exceptId)
         {
             foreach (KeyValuePair<string, object> item in profiles)
             {
                 if (String.Equals(item.Key, exceptId, StringComparison.Ordinal)) continue;
                 Dictionary<string, object> profile = item.Value as Dictionary<string, object>;
-                if (profile != null && SameSid(Text(profile, "windows_account_sid",
-                    Text(profile, "owner_sid", "")), sid))
+                if (profile != null && SameSid(Text(profile, "windows_account_sid", ""), sid))
                     throw new InvalidOperationException(
                         "To konto Windows ma już profil MoonWaker. Jedno konto może mieć tylko jeden profil.");
             }
@@ -2089,7 +2015,7 @@ namespace MoonWaker.HostConfigurator
 
         private static void EnsureSid(Dictionary<string, object> profile, string expectedSid)
         {
-            string current = Text(profile, "windows_account_sid", Text(profile, "owner_sid", ""));
+            string current = Text(profile, "windows_account_sid", "");
             if (!SameSid(current, expectedSid))
                 throw new InvalidOperationException(
                     "Mapowanie SID profilu zmieniło się. Usuń i utwórz profil ponownie.");
@@ -2099,8 +2025,8 @@ namespace MoonWaker.HostConfigurator
             ProfileRecord expected)
         {
             string id = Text(profile, "id", expected.Id);
-            string sid = Text(profile, "windows_account_sid", Text(profile, "owner_sid", ""));
-            string account = Text(profile, "windows_account_name", Text(profile, "owner", ""));
+            string sid = Text(profile, "windows_account_sid", "");
+            string account = Text(profile, "windows_account_name", "");
             string root = Text(profile, "profile_root", "");
             if (!String.Equals(id, expected.Id, StringComparison.Ordinal) ||
                 !String.Equals(sid, expected.Sid ?? "", StringComparison.OrdinalIgnoreCase) ||
@@ -2153,17 +2079,16 @@ namespace MoonWaker.HostConfigurator
             return IsSid(left) && String.Equals(left, right, StringComparison.OrdinalIgnoreCase);
         }
 
-        private static bool IsSid(string value)
+        internal static bool IsSid(string value)
         {
             return !String.IsNullOrWhiteSpace(value) &&
                 System.Text.RegularExpressions.Regex.IsMatch(value, "^S-[0-9]+(?:-[0-9]+){2,15}$");
         }
 
-        private static void ValidateDisplayName(string value)
+        internal static void ValidateDisplayName(string value)
         {
             string trimmed = value == null ? "" : value.Trim();
-            if (trimmed.Length == 0 || trimmed.Length > 80 ||
-                System.Text.RegularExpressions.Regex.IsMatch(trimmed, "[\\x00-\\x1f\\x7f]"))
+            if (trimmed.Length == 0 || trimmed.Length > 80 || DisplayText.HasHidden(trimmed))
                 throw new InvalidOperationException("Nazwa profilu musi mieć od 1 do 80 znaków drukowalnych.");
         }
 
@@ -2174,8 +2099,7 @@ namespace MoonWaker.HostConfigurator
             {
                 Dictionary<string, object> profile = value as Dictionary<string, object>;
                 if (profile == null) continue;
-                foreach (string name in new string[] { "discord_bridge", "vibepollo_bridge",
-                    "game_provider_bridge", "playnite_bridge" })
+                foreach (string name in new string[] { "discord_bridge", "game_provider_bridge" })
                 {
                     int port = EndpointPort(Text(profile, name, ""));
                     if (port > 0) result.Add(port);
@@ -2196,9 +2120,8 @@ namespace MoonWaker.HostConfigurator
         {
             for (int slot = 0; slot <= 50; slot++)
             {
-                int[] ports = new int[] { 8765 + (100 * slot), 8775 + (100 * slot),
-                    8780 + (100 * slot) };
-                if (!used.Contains(ports[0]) && !used.Contains(ports[1]) && !used.Contains(ports[2]))
+                int[] ports = new int[] { 8765 + (100 * slot), 8780 + (100 * slot) };
+                if (!used.Contains(ports[0]) && !used.Contains(ports[1]))
                     return ports;
             }
             throw new InvalidOperationException("Brak wolnego zestawu portów Bridge.");
@@ -2240,7 +2163,7 @@ namespace MoonWaker.HostConfigurator
             return result;
         }
 
-        private static string Text(Dictionary<string, object> source, string key, string fallback)
+        internal static string Text(Dictionary<string, object> source, string key, string fallback)
         {
             object value = Value(source, key);
             return value == null ? fallback : Convert.ToString(value);
@@ -2270,6 +2193,13 @@ namespace MoonWaker.HostConfigurator
             int parsed;
             return Int32.TryParse(Convert.ToString(value), out parsed) && parsed >= 0;
         }
+    }
+
+    // The registry changed after Host Control showed it: nothing was applied.
+    internal sealed class StaleRegistryException : InvalidOperationException
+    {
+        internal StaleRegistryException() : base(
+            "Ustawienia zmieniły się, odkąd Host Control je pokazał. Nic nie zapisano — sprawdź zmiany i zapisz ponownie.") { }
     }
 
     internal sealed class RegistryFileLock : IDisposable
@@ -2352,200 +2282,80 @@ namespace MoonWaker.HostConfigurator
 
     internal static class ProfileProvisioner
     {
+        // The data directory of a profile ReserveProfile has just registered (with its ports).
         internal static void Provision(GatewayRegistryStore store, ProfileRecord profile)
         {
-            string script = TrustedInstalledFile(store, "install", "Install-WakePlayProfile.ps1");
-            string hostControl = TrustedInstalledFile(store, "control", "MoonWakerHostControl.exe");
-            List<string> args = new List<string>();
-            args.Add("-NoProfile");
-            args.Add("-ExecutionPolicy");
-            args.Add("Bypass");
-            args.Add("-File");
-            args.Add(script);
-            args.Add("-ProfileId"); args.Add(profile.Id);
-            args.Add("-ProfileName"); args.Add(profile.DisplayName);
-            args.Add("-OwnerSid"); args.Add(profile.Sid);
-            args.Add("-OwnerName"); args.Add(profile.AccountName);
-            args.Add("-InstallRoot"); args.Add(store.ProfilesRoot);
-            args.Add("-GatewayConfigPath"); args.Add(store.ConfigPath);
-            args.Add("-GatewayDirectory"); args.Add(store.GatewayDirectory);
-            args.Add("-HostControlExecutable"); args.Add(hostControl);
-            args.Add("-DiscordPort"); args.Add(profile.DiscordPort.ToString());
-            args.Add("-VibepolloPort"); args.Add(profile.VibepolloPort.ToString());
-            args.Add("-GameProviderPort"); args.Add(profile.GameProviderPort.ToString());
-            args.Add("-SkipPlaynite");
-            args.Add("-SkipGatewayRegistration");
-            args.Add("-MachineProvisioning");
-            args.Add("-SkipStart");
-            Run(TrustedSystemExecutable("WindowsPowerShell", "v1.0", "powershell.exe"),
-                JoinArguments(args), 120000, false);
+            RequireSupportedAccount(profile.Sid, profile.AccountName);
+            new ProfileProvisioning {
+                ProfilesRoot = store.ProfilesRoot,
+                BridgeSource = TrustedInstalledDirectory(store, "bridge-source"),
+                ProfileId = profile.Id,
+                OwnerSid = profile.Sid,
+                DiscordPort = profile.DiscordPort,
+                GameProviderPort = profile.GameProviderPort
+            }.Run();
+        }
+
+        // The account was chosen from this list a moment ago; it must still be an enabled,
+        // supported local account with the same name.
+        private static void RequireSupportedAccount(string sid, string qualifiedName)
+        {
+            foreach (LocalAccount account in LocalAccountEnumerator.EnumerateSupported())
+                if (String.Equals(account.Sid, sid, StringComparison.OrdinalIgnoreCase) &&
+                    String.Equals(account.QualifiedName, qualifiedName, StringComparison.OrdinalIgnoreCase))
+                    return;
+            throw new InvalidOperationException(
+                "Wybrane konto Windows nie jest już włączonym, obsługiwanym kontem lokalnym albo zmieniło nazwę.");
         }
 
         internal static void RemoveArtifacts(GatewayRegistryStore store, ProfileRecord profile)
         {
+            RemoveArtifacts(store, profile, TimeSpan.FromSeconds(10));
+        }
+
+        // The tombstone PrepareRemoval wrote ends the profile's Agent (authority lost) and, with
+        // it, its Discord Bridge; the owner's tray kills them within a second or two. Until both
+        // stop answering on loopback and their files are released, deletion is retried.
+        internal static void RemoveArtifacts(GatewayRegistryStore store, ProfileRecord profile, TimeSpan wait)
+        {
             if (String.IsNullOrWhiteSpace(profile.DeletionNonce))
                 throw new InvalidOperationException("Brak trwałego znacznika usuwania profilu.");
-            string expected = Path.GetFullPath(Path.Combine(store.ProfilesRoot, profile.Id));
-            string actual = String.IsNullOrWhiteSpace(profile.Root)
-                ? expected : Path.GetFullPath(profile.Root);
-            string taskScheduler = TrustedSystemExecutable("schtasks.exe");
-            foreach (string taskName in new string[] {
-                "Wake & Play Discord Bridge (" + profile.Id + ")",
-                "Wake & Play Vibepollo Bridge (" + profile.Id + ")",
-                "Wake & Play Game Provider Bridge (" + profile.Id + ")",
-                "Wake & Play Playnite Bridge (" + profile.Id + ")",
-                "MoonWaker Profile Bridge (" + profile.Id + ")" })
-            {
-                if (TaskExists(taskScheduler, taskName))
-                    Run(taskScheduler, JoinArguments(new List<string> {
-                        "/Delete", "/TN", taskName, "/F" }), 15000, false);
-                if (TaskExists(taskScheduler, taskName))
-                    throw new InvalidOperationException(
-                        "Nie udało się potwierdzić usunięcia zadania startowego profilu.");
-            }
-            bool exactRoot = String.Equals(expected.TrimEnd('\\'), actual.TrimEnd('\\'),
-                StringComparison.OrdinalIgnoreCase);
-            if (!exactRoot) return;
+            if (RequiresOfflineCleanup(store, profile)) return;
+            string actual = Path.GetFullPath(profile.Root);
             if (File.Exists(actual))
                 throw new InvalidOperationException("Ścieżka danych profilu jest plikiem.");
-            if (Directory.Exists(actual)) Directory.Delete(actual, true);
-        }
-
-        private static RegistryKey OpenMachineRegistry(bool writable)
-        {
-            RegistryView view = Environment.Is64BitOperatingSystem
-                ? RegistryView.Registry64 : RegistryView.Registry32;
-            return RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
-        }
-
-        private static bool HasTrustedProfileRootProvenance(ProfileRecord profile, string root)
-        {
-            if (!HasValidSid(profile.Sid)) return false;
-            try
+            Stopwatch clock = Stopwatch.StartNew();
+            for (int delay = 100; ; delay = Math.Min(delay * 2, 1000))
             {
-                using (RegistryKey machine = OpenMachineRegistry(false))
-                using (RegistryKey parent = machine.OpenSubKey(
-                    @"SOFTWARE\MoonWaker\ProfileRootProvenance", false))
+                if (!LoopbackAnswers(profile.GameProviderPort) && !LoopbackAnswers(profile.DiscordPort))
                 {
-                    if (parent == null || !TrustedRegistryKey(parent)) return false;
-                    using (RegistryKey marker = parent.OpenSubKey(profile.Id, false))
+                    try
                     {
-                    if (marker == null || !TrustedRegistryKey(marker)) return false;
-                    RegistrySecurity security = marker.GetAccessControl(
-                        AccessControlSections.Access | AccessControlSections.Owner);
-                    string markerOwner = security.GetOwner(typeof(SecurityIdentifier)).Value;
-                    if (!security.AreAccessRulesProtected ||
-                        (markerOwner != "S-1-5-18" && markerOwner != "S-1-5-32-544")) return false;
-                    bool system = false, administrators = false;
-                    foreach (RegistryAccessRule rule in security.GetAccessRules(
-                        true, false, typeof(SecurityIdentifier)))
-                    {
-                        string sid = rule.IdentityReference.Value;
-                        if (rule.IsInherited || rule.AccessControlType != AccessControlType.Allow ||
-                            (rule.RegistryRights & RegistryRights.FullControl) != RegistryRights.FullControl ||
-                            (sid != "S-1-5-18" && sid != "S-1-5-32-544")) return false;
-                        if (sid == "S-1-5-18") system = true;
-                        if (sid == "S-1-5-32-544") administrators = true;
+                        if (Directory.Exists(actual)) Directory.Delete(actual, true);
+                        return;
                     }
-                    return system && administrators &&
-                        Convert.ToInt32(marker.GetValue("Version", 0)) == 1 &&
-                        String.Equals(Convert.ToString(marker.GetValue("ProfileId", "")),
-                            profile.Id, StringComparison.Ordinal) &&
-                        String.Equals(Convert.ToString(marker.GetValue("ProfileRoot", "")),
-                            Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase) &&
-                        String.Equals(Convert.ToString(marker.GetValue("OwnerSid", "")),
-                            profile.Sid, StringComparison.OrdinalIgnoreCase);
-                    }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
                 }
+                if (clock.Elapsed >= wait)
+                    throw new InvalidOperationException(
+                        "Procesy profilu nadal działają albo trzymają jego pliki, więc katalog danych nie " +
+                        "został usunięty. Profil pozostaje oznaczony do usunięcia — ponów usuwanie za chwilę.");
+                Thread.Sleep(delay);
             }
-            catch { return false; }
         }
 
-        private static bool TrustedRegistryKey(RegistryKey key)
+        private static bool LoopbackAnswers(int port)
         {
-            RegistrySecurity security = key.GetAccessControl(
-                AccessControlSections.Access | AccessControlSections.Owner);
-            string owner = security.GetOwner(typeof(SecurityIdentifier)).Value;
-            if (!security.AreAccessRulesProtected ||
-                (owner != "S-1-5-18" && owner != "S-1-5-32-544")) return false;
-            bool system = false, administrators = false;
-            foreach (RegistryAccessRule rule in security.GetAccessRules(
-                true, false, typeof(SecurityIdentifier)))
+            if (port == 0) return false;
+            using (System.Net.Sockets.TcpClient client = new System.Net.Sockets.TcpClient())
             {
-                string sid = rule.IdentityReference.Value;
-                if (rule.IsInherited || rule.AccessControlType != AccessControlType.Allow ||
-                    (sid != "S-1-5-18" && sid != "S-1-5-32-544") ||
-                    (rule.RegistryRights & RegistryRights.FullControl) != RegistryRights.FullControl)
-                    return false;
-                if (sid == "S-1-5-18") system = true;
-                if (sid == "S-1-5-32-544") administrators = true;
-            }
-            return system && administrators;
-        }
-
-        private static void RemoveProfileRootProvenance(ProfileRecord profile, string root)
-        {
-            if (!HasTrustedProfileRootProvenance(profile, root))
-                throw new InvalidOperationException(
-                    "Znacznik pochodzenia katalogu profilu zmienił się; profil pozostaje oznaczony do usunięcia.");
-            using (RegistryKey machine = OpenMachineRegistry(true))
-            using (RegistryKey parent = machine.OpenSubKey(
-                @"SOFTWARE\MoonWaker\ProfileRootProvenance", true))
-            {
-                if (parent == null) throw new InvalidOperationException(
-                    "Brak chronionego rejestru pochodzenia katalogów profili.");
-                parent.DeleteSubKey(profile.Id, false);
+                try { return client.ConnectAsync(System.Net.IPAddress.Loopback, port).Wait(250) && client.Connected; }
+                catch { return false; }
             }
         }
 
-        private static void RequireNoRunningOwnerProcesses(ProfileRecord profile, string profileRoot)
-        {
-            string rootPrefix = profileRoot.TrimEnd('\\') + "\\";
-            string[] markers = new string[] { "MoonWakerProfileBridge.ps1", "DiscordBridge.ps1",
-                "VibepolloBridge.ps1", "GameProviderBridge.py", "PlayniteBridge.py" };
-            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                "SELECT ProcessId,CommandLine FROM Win32_Process"))
-            using (ManagementObjectCollection processes = searcher.Get())
-            {
-                foreach (ManagementObject process in processes)
-                {
-                    string commandLine = Convert.ToString(process["CommandLine"]);
-                    int processId = Convert.ToInt32(process["ProcessId"]);
-                    if (processId <= 4) continue;
-                    bool matchesRoot = commandLine.IndexOf(rootPrefix,
-                        StringComparison.OrdinalIgnoreCase) >= 0;
-                    string escapedId = System.Text.RegularExpressions.Regex.Escape(profile.Id);
-                    bool matchesProfileId = System.Text.RegularExpressions.Regex.IsMatch(commandLine,
-                        "(?:^|\\s)-ProfileId\\s+(?:\"" + escapedId + "\"|" + escapedId +
-                        ")(?:\\s|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    bool known = false;
-                    foreach (string marker in markers)
-                        if (commandLine.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0)
-                        { known = true; break; }
-                    if (!HasValidSid(profile.Sid))
-                    {
-                        if (known && (matchesRoot || matchesProfileId))
-                            throw new InvalidOperationException(
-                                "Starszy profil nie ma SID i nadal działa. Zatrzymaj go lub wyloguj konto, a potem ponów usunięcie.");
-                        continue;
-                    }
-                    ManagementBaseObject input = null;
-                    InvokeMethodOptions options = null;
-                    ManagementBaseObject owner = process.InvokeMethod("GetOwnerSid", input, options);
-                    if (owner == null || (owner.Properties["ReturnValue"] != null &&
-                        Convert.ToUInt32(owner["ReturnValue"]) != 0))
-                        throw new InvalidOperationException(
-                            "Nie można potwierdzić, że konto profilu jest wylogowane. Ponów próbę.");
-                    string ownerSid = owner == null ? "" : Convert.ToString(owner["Sid"]);
-                    if (String.Equals(ownerSid, profile.Sid, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException(
-                            "Konto Windows profilu nadal ma uruchomione procesy. Wyloguj je i ponów usunięcie; MoonWaker nie wyloguje go automatycznie.");
-                }
-            }
-        }
-
-        private static string TrustedInstalledFile(GatewayRegistryStore store, string directory,
-            string name)
+        private static string TrustedInstalledDirectory(GatewayRegistryStore store, string name)
         {
             string root = Path.GetFullPath(store.InstallRoot).TrimEnd('\\');
             string control = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(
@@ -2555,31 +2365,11 @@ namespace MoonWaker.HostConfigurator
                     verifiedRoot.FullName.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
                 throw new UnauthorizedAccessException(
                     "Rejestr Gateway nie należy do chronionej instalacji konfiguratora.");
-            string candidate = Path.GetFullPath(Path.Combine(root, directory, name));
-            if (!candidate.StartsWith(root + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase) || !File.Exists(candidate))
-                throw new FileNotFoundException("Brak chronionego składnika instalacji MoonWaker.", candidate);
+            string candidate = Path.Combine(root, name);
+            if (!Directory.Exists(candidate))
+                throw new DirectoryNotFoundException("Brak chronionego składnika instalacji MoonWaker: " + candidate);
             EnsureOrdinaryPath(candidate);
             return candidate;
-        }
-
-        private static string TrustedSystemExecutable(params string[] relativeParts)
-        {
-            string system = Environment.SystemDirectory;
-            if (Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess)
-            {
-                DirectoryInfo parent = Directory.GetParent(system);
-                if (parent == null) throw new InvalidOperationException(
-                    "Nie można ustalić chronionego katalogu systemu Windows.");
-                system = Path.Combine(parent.FullName, "Sysnative");
-            }
-            string executable = system;
-            foreach (string part in relativeParts) executable = Path.Combine(executable, part);
-            executable = Path.GetFullPath(executable);
-            if (!File.Exists(executable))
-                throw new FileNotFoundException("Brak zaufanego narzędzia systemu Windows.", executable);
-            EnsureOrdinaryPath(executable);
-            return executable;
         }
 
         private static bool HasValidSid(string value)
@@ -2600,22 +2390,15 @@ namespace MoonWaker.HostConfigurator
             try
             {
                 string expected = Path.GetFullPath(Path.Combine(store.ProfilesRoot, profile.Id));
-                string actual = String.IsNullOrWhiteSpace(profile.Root)
-                    ? expected : Path.GetFullPath(profile.Root);
-                string failedStaging = Path.Combine(store.ProfilesRoot,
-                    ".moonwaker-stage-" + profile.Id);
-                string retired = Path.Combine(store.ProfilesRoot, ".moonwaker-delete-" +
-                    profile.Id + "-" + profile.DeletionNonce);
-                bool present = Directory.Exists(actual) || File.Exists(actual) ||
-                    Directory.Exists(failedStaging) || File.Exists(failedStaging) ||
-                    Directory.Exists(retired) || File.Exists(retired);
+                string actual = Path.GetFullPath(profile.Root);
                 return !String.Equals(expected.TrimEnd('\\'), actual.TrimEnd('\\'),
                     StringComparison.OrdinalIgnoreCase);
             }
             catch { return true; }
         }
 
-        private static void EnsureOrdinaryPath(string path)
+        // No existing component of the path is a reparse point.
+        internal static void EnsureOrdinaryPath(string path)
         {
             FileSystemInfo cursor = File.Exists(path)
                 ? (FileSystemInfo)new FileInfo(path) : new DirectoryInfo(path);
@@ -2629,180 +2412,134 @@ namespace MoonWaker.HostConfigurator
                 cursor = parent;
             }
         }
+    }
 
-        private static FileSystemSecurity RemovalSecurity(bool directory)
+    // Creates one new profile's data directory: <profiles>\<id> with the Agent's and, when
+    // Discord is installed, Discord Bridge's configuration seeded from bridge-source's examples
+    // and the profile's ports. Then the whole tree gets a protected ACL owned by Administrators:
+    // SYSTEM and Administrators full, the owner account Modify; the root last, so the account
+    // cannot change the tree during the walk. The profile's registry entry is not touched here.
+    // An input-only command: the elevated Configurator runs it with what it has validated.
+    internal sealed class ProfileProvisioning
+    {
+        private const string SystemSid = "S-1-5-18";
+        private const string AdministratorsSid = "S-1-5-32-544";
+        internal string ProfilesRoot;
+        internal string BridgeSource;
+        internal string ProfileId;
+        internal string OwnerSid;
+        internal int DiscordPort;
+        internal int GameProviderPort;
+
+        internal void Run()
         {
-            FileSystemSecurity security = directory
-                ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
-            security.SetAccessRuleProtection(true, false);
-            security.SetOwner(new SecurityIdentifier(
-                WellKnownSidType.BuiltinAdministratorsSid, null));
-            InheritanceFlags inheritance = directory
-                ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit
-                : InheritanceFlags.None;
-            foreach (SecurityIdentifier sid in new SecurityIdentifier[] {
-                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
-                security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
-                    inheritance, PropagationFlags.None, AccessControlType.Allow));
-            return security;
+            ProtectTree(CreateLayout());
         }
 
-        private static DirectorySecurity ProfilesRootSecurity()
+        internal string CreateLayout()
         {
-            DirectorySecurity security = new DirectorySecurity();
-            security.SetAccessRuleProtection(true, false);
-            security.SetOwner(new SecurityIdentifier(
-                WellKnownSidType.BuiltinAdministratorsSid, null));
-            foreach (SecurityIdentifier sid in new SecurityIdentifier[] {
-                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
-                security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
-                    InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
-            security.AddAccessRule(new FileSystemAccessRule(
-                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
-                FileSystemRights.ReadAndExecute, InheritanceFlags.None,
-                PropagationFlags.None, AccessControlType.Allow));
-            return security;
-        }
-
-        private static void ProtectProfilesRootForManagement(string profilesRoot)
-        {
-            profilesRoot = Path.GetFullPath(profilesRoot);
-            EnsureOrdinaryPath(profilesRoot);
-            DirectoryInfo root = new DirectoryInfo(profilesRoot);
-            DirectorySecurity security = ProfilesRootSecurity();
-            if (root.Exists) Directory.SetAccessControl(profilesRoot, security);
-            else root.Create(security);
-            EnsureOrdinaryPath(profilesRoot);
-            DirectorySecurity applied = Directory.GetAccessControl(profilesRoot,
-                AccessControlSections.Access | AccessControlSections.Owner);
-            string owner = applied.GetOwner(typeof(SecurityIdentifier)).Value;
-            if (!applied.AreAccessRulesProtected ||
-                (owner != "S-1-5-18" && owner != "S-1-5-32-544"))
+            if (!GatewayRegistryStore.IsValidProfileId(ProfileId))
+                throw new InvalidOperationException("Nieprawidłowy identyfikator profilu.");
+            new SecurityIdentifier(OwnerSid);
+            bool discord = File.Exists(Path.Combine(BridgeSource, "discord", "DiscordBridge.ps1"));
+            if (!ValidPort(GameProviderPort) || (discord && !ValidPort(DiscordPort)))
+                throw new InvalidOperationException("Porty Bridge'y muszą mieścić się w zakresie 1024–65535.");
+            if (discord && DiscordPort == GameProviderPort)
+                throw new InvalidOperationException("Discord Bridge i Agent muszą używać różnych portów.");
+            string profilesRoot = Path.GetFullPath(ProfilesRoot).TrimEnd('\\');
+            if (File.Exists(profilesRoot))
+                throw new InvalidOperationException("Katalog profili jest plikiem; tworzenie profilu zatrzymane.");
+            string root = Path.Combine(profilesRoot, ProfileId);
+            ProfileProvisioner.EnsureOrdinaryPath(root);
+            if (Directory.Exists(root) || File.Exists(root))
                 throw new InvalidOperationException(
-                    "Nie udało się ochronić katalogu profili przed zmianami innych użytkowników.");
+                    "Zarezerwowany katalog profilu już istnieje. Usuń nieudany profil jawnie i ponów próbę.");
+            Directory.CreateDirectory(root);
+
+            if (discord)
+            {
+                Dictionary<string, object> config = Seed(root, "discord", "discord",
+                    "discord_bridge_config.example.json");
+                config["port"] = DiscordPort;
+                Write(Path.Combine(root, "discord", "discord_bridge_config.json"), config);
+            }
+            Dictionary<string, object> provider = Seed(root, "playnite", "game-provider", "config.example.json");
+            provider["listen_port"] = GameProviderPort;
+            provider["epic_legendary_enabled"] = true;
+            provider["playnite_enabled"] = false;
+            if (!provider.ContainsKey("legendary_path")) provider["legendary_path"] = "";
+            Write(Path.Combine(root, "game-provider", "config.json"), provider);
+            return root;
         }
 
-        private static void ProtectTreeForRemoval(string profileRoot)
+        private static bool ValidPort(int port) { return port >= 1024 && port <= 65535; }
+
+        private Dictionary<string, object> Seed(string root, string source, string destination, string example)
         {
-            EnsureOrdinaryPath(profileRoot);
-            Directory.SetAccessControl(profileRoot, (DirectorySecurity)RemovalSecurity(true));
+            Directory.CreateDirectory(Path.Combine(root, destination));
+            return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(
+                File.ReadAllText(Path.Combine(BridgeSource, source, example), Encoding.UTF8));
+        }
+
+        private static void Write(string path, Dictionary<string, object> value)
+        {
+            File.WriteAllText(path, new JavaScriptSerializer().Serialize(value), new UTF8Encoding(false));
+        }
+
+        internal void ProtectTree(string root)
+        {
+            ProfileProvisioner.EnsureOrdinaryPath(root);
+            if (!Directory.Exists(root))
+                throw new InvalidOperationException("Nowy katalog profilu zniknął podczas tworzenia.");
             Stack<DirectoryInfo> pending = new Stack<DirectoryInfo>();
-            pending.Push(new DirectoryInfo(profileRoot));
+            pending.Push(new DirectoryInfo(root));
             while (pending.Count != 0)
             {
                 foreach (FileSystemInfo item in pending.Pop().GetFileSystemInfos())
                 {
                     if ((item.Attributes & FileAttributes.ReparsePoint) != 0)
                         throw new InvalidOperationException(
-                            "Katalog profilu zawiera dowiązanie; usunięcie zostało zatrzymane.");
+                            "Katalog profilu zawiera dowiązanie; tworzenie profilu zatrzymane.");
                     DirectoryInfo directory = item as DirectoryInfo;
                     if (directory != null)
                     {
-                        Directory.SetAccessControl(directory.FullName,
-                            (DirectorySecurity)RemovalSecurity(true));
+                        Directory.SetAccessControl(directory.FullName, (DirectorySecurity)Security(true));
+                        RequireTrustedOwner(Directory.GetAccessControl(directory.FullName));
                         pending.Push(directory);
                     }
-                    else File.SetAccessControl(item.FullName, (FileSecurity)RemovalSecurity(false));
+                    else
+                    {
+                        File.SetAccessControl(item.FullName, (FileSecurity)Security(false));
+                        RequireTrustedOwner(File.GetAccessControl(item.FullName));
+                    }
                 }
             }
+            Directory.SetAccessControl(root, (DirectorySecurity)Security(true));
+            RequireTrustedOwner(Directory.GetAccessControl(root));
         }
 
-        private static int Run(string fileName, string arguments, int timeoutMilliseconds,
-            bool ignoreExitCode)
+        internal FileSystemSecurity Security(bool directory)
         {
-            ProcessStartInfo info = new ProcessStartInfo(fileName, arguments);
-            info.UseShellExecute = false;
-            info.CreateNoWindow = true;
-            info.RedirectStandardOutput = true;
-            info.RedirectStandardError = true;
-            using (Process process = Process.Start(info))
-            {
-                System.Threading.Tasks.Task<string> output = process.StandardOutput.ReadToEndAsync();
-                System.Threading.Tasks.Task<string> error = process.StandardError.ReadToEndAsync();
-                if (!process.WaitForExit(timeoutMilliseconds))
-                {
-                    try { process.Kill(); } catch { }
-                    throw new TimeoutException("Konfiguracja profilu przekroczyła limit czasu.");
-                }
-                process.WaitForExit();
-                if (!ignoreExitCode && process.ExitCode != 0)
-                {
-                    System.Threading.Tasks.Task.WaitAll(new System.Threading.Tasks.Task[] {
-                        output, error }, 2000);
-                    string message = String.IsNullOrWhiteSpace(error.Result) ? output.Result : error.Result;
-                    throw new InvalidOperationException(String.IsNullOrWhiteSpace(message)
-                        ? "Instalator profilu zakończył się błędem." : message.Trim());
-                }
-                return process.ExitCode;
-            }
+            FileSystemSecurity security = directory
+                ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.SetOwner(new SecurityIdentifier(AdministratorsSid));
+            InheritanceFlags inheritance = directory
+                ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit : InheritanceFlags.None;
+            security.SetAccessRule(new FileSystemAccessRule(new SecurityIdentifier(SystemSid),
+                FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Allow));
+            security.SetAccessRule(new FileSystemAccessRule(new SecurityIdentifier(AdministratorsSid),
+                FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Allow));
+            security.SetAccessRule(new FileSystemAccessRule(new SecurityIdentifier(OwnerSid),
+                FileSystemRights.Modify, inheritance, PropagationFlags.None, AccessControlType.Allow));
+            return security;
         }
 
-        private static bool TaskExists(string taskScheduler, string taskName)
+        private static void RequireTrustedOwner(FileSystemSecurity security)
         {
-            ProcessStartInfo info = new ProcessStartInfo(taskScheduler, "/Query /FO CSV /NH");
-            info.UseShellExecute = false;
-            info.CreateNoWindow = true;
-            info.RedirectStandardOutput = true;
-            info.RedirectStandardError = true;
-            using (Process process = Process.Start(info))
-            {
-                string output = process.StandardOutput.ReadToEnd();
-                string error = process.StandardError.ReadToEnd();
-                if (!process.WaitForExit(15000))
-                    throw new TimeoutException("Nie można potwierdzić stanu zadań profilu.");
-                if (process.ExitCode != 0)
-                    throw new InvalidOperationException(String.IsNullOrWhiteSpace(error)
-                        ? "Nie można potwierdzić stanu Harmonogramu zadań."
-                        : error.Trim());
-                foreach (string line in output.Split(new string[] { "\r\n", "\n" },
-                    StringSplitOptions.RemoveEmptyEntries))
-                {
-                    if (!line.StartsWith("\"", StringComparison.Ordinal)) continue;
-                    int end = line.IndexOf("\",", 1, StringComparison.Ordinal);
-                    if (end < 0) continue;
-                    string scheduledName = line.Substring(1, end - 1).Replace("\"\"", "\"");
-                    if (String.Equals(scheduledName.TrimStart('\\'), taskName,
-                            StringComparison.OrdinalIgnoreCase)) return true;
-                }
-                return false;
-            }
-        }
-
-        internal static string JoinArguments(IEnumerable<string> values)
-        {
-            StringBuilder result = new StringBuilder();
-            foreach (string value in values)
-            {
-                if (result.Length > 0) result.Append(' ');
-                result.Append(QuoteArgument(value ?? ""));
-            }
-            return result.ToString();
-        }
-
-        private static string QuoteArgument(string value)
-        {
-            if (value.Length > 0 && value.IndexOfAny(new char[] { ' ', '\t', '\n', '\v', '"' }) < 0)
-                return value;
-            StringBuilder result = new StringBuilder("\"");
-            int slashes = 0;
-            foreach (char character in value)
-            {
-                if (character == '\\') { slashes++; continue; }
-                if (character == '"')
-                {
-                    result.Append('\\', (slashes * 2) + 1);
-                    result.Append('"');
-                    slashes = 0;
-                    continue;
-                }
-                if (slashes > 0) { result.Append('\\', slashes); slashes = 0; }
-                result.Append(character);
-            }
-            if (slashes > 0) result.Append('\\', slashes * 2);
-            result.Append('"');
-            return result.ToString();
+            string owner = security.GetOwner(typeof(SecurityIdentifier)).Value;
+            if (owner != SystemSid && owner != AdministratorsSid)
+                throw new InvalidOperationException("Element katalogu profilu ma niezaufanego właściciela ACL.");
         }
     }
 
@@ -2839,23 +2576,39 @@ namespace MoonWaker.HostConfigurator
         private const int MaximumMessageBytes = 32768;
         private static readonly byte[] RequestMagic = Encoding.ASCII.GetBytes("MWLB");
         private static readonly byte[] ResponseMagic = Encoding.ASCII.GetBytes("MWLR");
+        private readonly Func<BrokerOperation, Dictionary<byte, object>, BrokerResult> transport;
 
-        internal BrokerResult ListSupportedLocalAccounts()
+        // transport: the Broker's management pipe; tests pass a stand-in.
+        internal LoginBrokerClient(Func<BrokerOperation, Dictionary<byte, object>, BrokerResult> transport = null)
         {
-            return Send(BrokerOperation.ListSupportedLocalAccounts,
-                new Dictionary<byte, object>());
+            this.transport = transport ?? new Func<BrokerOperation, Dictionary<byte, object>, BrokerResult>(Send);
+        }
+
+        internal static string StatePolish(string state)
+        {
+            if (state == "ready") return "gotowe";
+            if (state == "disabled") return "wyłączone";
+            if (state == "action_required") return "wymaga działania";
+            if (state == "unsupported") return "konto nieobsługiwane";
+            if (state == "broker_unavailable" || state == "unavailable") return "usługa niedostępna";
+            return "nieznany";
+        }
+
+        internal static bool Unavailable(BrokerResult result)
+        {
+            return result.State == "broker_unavailable" || result.State == "unavailable";
         }
 
         internal BrokerResult Configure(ProfileRecord profile, char[] password)
         {
             Dictionary<byte, object> fields = BasicFields(profile);
             fields[4] = password;
-            return Send(BrokerOperation.ConfigureProfileCredential, fields);
+            return transport(BrokerOperation.ConfigureProfileCredential, fields);
         }
 
         internal BrokerResult Test(ProfileRecord profile)
         {
-            return Send(BrokerOperation.TestProfileCredential, BasicFields(profile));
+            return transport(BrokerOperation.TestProfileCredential, BasicFields(profile));
         }
 
         internal BrokerResult Delete(ProfileRecord profile)
@@ -2866,17 +2619,17 @@ namespace MoonWaker.HostConfigurator
             fields[5] = profile.DeletionNonce;
             fields[6] = profile.DeletionGeneration.ToString(
                 System.Globalization.CultureInfo.InvariantCulture);
-            return Send(BrokerOperation.DeleteProfileCredential, fields);
+            return transport(BrokerOperation.DeleteProfileCredential, fields);
         }
 
         internal BrokerResult CredentialState(ProfileRecord profile)
         {
-            return Send(BrokerOperation.GetProfileCredentialState, BasicFields(profile));
+            return transport(BrokerOperation.GetProfileCredentialState, BasicFields(profile));
         }
 
         internal BrokerResult SessionState(ProfileRecord profile)
         {
-            return Send(BrokerOperation.GetProfileSessionState, BasicFields(profile));
+            return transport(BrokerOperation.GetProfileSessionState, BasicFields(profile));
         }
 
         private static Dictionary<byte, object> BasicFields(ProfileRecord profile)
@@ -3051,1058 +2804,6 @@ namespace MoonWaker.HostConfigurator
         }
     }
 
-    internal sealed class AddProfileForm : Form
-    {
-        private readonly GatewayRegistryStore store;
-        private readonly ComboBox accounts = new ComboBox();
-        private readonly TextBox displayName;
-        private readonly Label status;
-        private readonly Button create;
-
-        internal AddProfileForm(GatewayRegistryStore store)
-        {
-            this.store = store;
-            Ui.Prepare(this, "Dodaj profil MoonWaker", 720, 410);
-            Ui.Label(this, "Dodaj profil", 28, 22, 600, 38, 18F, FontStyle.Bold, Color.White);
-            Ui.Label(this, "Wybierz obsługiwane lokalne konto Windows. SID zostanie przypisany na stałe.",
-                30, 64, 650, 38, 9.5F, FontStyle.Regular, Ui.Muted);
-            Ui.Label(this, "Konto Windows", 30, 112, 200, 24, 9.5F, FontStyle.Bold, Color.White);
-            accounts.SetBounds(30, 138, 650, 30);
-            accounts.DropDownStyle = ComboBoxStyle.DropDownList;
-            accounts.BackColor = Ui.Panel;
-            accounts.ForeColor = Color.White;
-            accounts.SelectedIndexChanged += delegate {
-                LocalAccount selected = accounts.SelectedItem as LocalAccount;
-                if (selected != null && String.IsNullOrWhiteSpace(displayName.Text))
-                    displayName.Text = selected.Name;
-            };
-            Controls.Add(accounts);
-            Ui.Label(this, "Nazwa profilu MoonWaker", 30, 188, 260, 24, 9.5F,
-                FontStyle.Bold, Color.White);
-            displayName = Ui.TextBox(this, 30, 214, 650);
-            displayName.MaxLength = 80;
-            status = Ui.Label(this, "", 30, 258, 650, 50, 9F, FontStyle.Regular, Ui.Muted);
-            create = Ui.Button(this, "Utwórz profil", 436, 338, 142, CreateClicked, true);
-            Button cancel = Ui.Button(this, "Anuluj", 588, 338, 92,
-                delegate { Close(); }, false);
-            CancelButton = cancel;
-            Shown += delegate { LoadAccounts(); };
-        }
-
-        private void LoadAccounts()
-        {
-            try
-            {
-                HashSet<string> used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (ProfileRecord profile in store.GetProfiles())
-                    if (!String.IsNullOrWhiteSpace(profile.Sid)) used.Add(profile.Sid);
-                foreach (LocalAccount account in LocalAccountEnumerator.EnumerateSupported())
-                    if (!used.Contains(account.Sid)) accounts.Items.Add(account);
-                if (accounts.Items.Count > 0) accounts.SelectedIndex = 0;
-                else
-                {
-                    status.Text = "Brak wolnego, obsługiwanego lokalnego konta Windows.";
-                    status.ForeColor = Ui.Danger;
-                    create.Enabled = false;
-                }
-            }
-            catch (Exception ex)
-            {
-                status.Text = ex.Message;
-                status.ForeColor = Ui.Danger;
-                create.Enabled = false;
-            }
-        }
-
-        private async void CreateClicked(object sender, EventArgs e)
-        {
-            LocalAccount account = accounts.SelectedItem as LocalAccount;
-            if (account == null) return;
-            create.Enabled = false;
-            ProfileRecord reservation = null;
-            bool finalized = false;
-            try
-            {
-                status.Text = "Rezerwuję profil i instaluję Bridge…";
-                status.ForeColor = Ui.Muted;
-                reservation = store.ReserveProfile(account, displayName.Text);
-                await System.Threading.Tasks.Task.Run(delegate {
-                    store.ProvisionAndFinalize(reservation, delegate {
-                        ProfileProvisioner.Provision(store, reservation);
-                    });
-                });
-                finalized = true;
-                BrokerResult brokerState = new LoginBrokerClient().CredentialState(reservation);
-                DialogResult configureRemote = brokerState.State == "broker_unavailable" ||
-                    brokerState.State == "unavailable"
-                    ? MessageBox.Show(this,
-                        "Profil został utworzony dla " + reservation.AccountName +
-                        ". Zdalne logowanie będzie dostępne po zainstalowaniu usługi Login Broker. " +
-                        "Po zamknięciu konfiguratora otworzy się panel Vibepollo, aby utworzyć konto.",
-                        "MoonWaker Host Configurator", MessageBoxButtons.OK,
-                        MessageBoxIcon.Information)
-                    : MessageBox.Show(this,
-                        "Profil został utworzony dla " + reservation.AccountName +
-                        ". Zdalne logowanie pozostaje wyłączone, dopóki nie zapiszesz hasła w Login Broker.\n\n" +
-                        "Skonfigurować je teraz? Po zamknięciu konfiguratora otworzy się panel Vibepollo, aby utworzyć konto.",
-                        "MoonWaker Host Configurator", MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Information);
-                if (configureRemote == DialogResult.Yes)
-                {
-                    using (RemoteSignInForm remote = new RemoteSignInForm(store, reservation.Id))
-                        remote.ShowDialog(this);
-                    ProfileRecord current = store.GetProfile(reservation.Id);
-                    if (current.RemoteSignInEnabled && MessageBox.Show(this,
-                        "Dane logowania są gotowe. Wybrać urządzenia uprawnione do zdalnego logowania?",
-                        "MoonWaker Host Configurator", MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Warning) == DialogResult.Yes)
-                        using (DeviceGrantsForm devices = new DeviceGrantsForm(store, reservation.Id))
-                            devices.ShowDialog(this);
-                }
-                DialogResult = DialogResult.OK;
-                Close();
-            }
-            catch (Exception ex)
-            {
-                string message = ex.Message;
-                if (reservation != null && !finalized)
-                {
-                    try
-                    {
-                        store.PrepareRemoval(reservation);
-                        message += " Profil pozostawiono wyłączony i oznaczony do jawnego usunięcia; " +
-                            "usuń go w Host Control, a następnie ponów dodawanie.";
-                    }
-                    catch (Exception tombstoneError)
-                    {
-                        message += " Nie udało się utrwalić znacznika naprawy: " +
-                            tombstoneError.Message;
-                    }
-                }
-                status.Text = message;
-                status.ForeColor = Ui.Danger;
-                create.Enabled = true;
-            }
-        }
-    }
-
-    internal sealed class EditProfileForm : Form
-    {
-        private readonly GatewayRegistryStore store;
-        private readonly ProfileRecord profile;
-        private readonly TextBox displayName;
-        private readonly CheckBox enabled = new CheckBox();
-
-        internal EditProfileForm(GatewayRegistryStore store, string profileId)
-        {
-            this.store = store;
-            profile = store.GetProfile(profileId);
-            profile.EnsureMutable();
-            Ui.Prepare(this, "Edytuj profil MoonWaker", 720, 430);
-            Ui.Label(this, "Edytuj profil", 28, 22, 600, 38, 18F, FontStyle.Bold, Color.White);
-            Ui.Label(this, "Konto Windows", 30, 78, 200, 22, 9F, FontStyle.Bold, Color.White);
-            Ui.Label(this, profile.AccountName, 230, 78, 450, 22, 9F, FontStyle.Regular, Ui.Muted);
-            Ui.Label(this, "SID (niezmienny)", 30, 108, 200, 22, 9F, FontStyle.Bold, Color.White);
-            Ui.Label(this, profile.Sid, 230, 108, 450, 22, 9F, FontStyle.Regular, Ui.Muted);
-            Ui.Label(this, "Nazwa profilu", 30, 154, 200, 22, 9F, FontStyle.Bold, Color.White);
-            displayName = Ui.TextBox(this, 230, 150, 450);
-            displayName.Text = profile.DisplayName;
-            displayName.MaxLength = 80;
-            enabled.Text = "Profil włączony";
-            enabled.Checked = profile.Enabled;
-            enabled.SetBounds(230, 198, 260, 28);
-            enabled.ForeColor = Color.White;
-            Controls.Add(enabled);
-            Ui.Label(this, "Zmiana konta Windows wymaga usunięcia i ponownego utworzenia profilu.",
-                30, 244, 650, 38, 9F, FontStyle.Regular, Ui.Muted);
-            Ui.Button(this, "Zdalne logowanie…", 30, 294, 190,
-                delegate { using (RemoteSignInForm form = new RemoteSignInForm(store, profile.Id))
-                    form.ShowDialog(this); }, false);
-            Ui.Button(this, "Urządzenia i dostęp…", 230, 294, 190,
-                delegate { using (DeviceGrantsForm form = new DeviceGrantsForm(store, profile.Id))
-                    form.ShowDialog(this); }, false);
-            Ui.Button(this, "PIN aplikacji…", 430, 294, 150,
-                delegate { using (AppPinForm form = new AppPinForm(store, profile.Id))
-                    form.ShowDialog(this); }, false);
-            Ui.Button(this, "Zapisz", 488, 370, 92, SaveClicked, true);
-            Button cancel = Ui.Button(this, "Anuluj", 588, 370, 92,
-                delegate { Close(); }, false);
-            CancelButton = cancel;
-        }
-
-        private void SaveClicked(object sender, EventArgs e)
-        {
-            try
-            {
-                store.UpdateProfile(profile.Id, profile.Sid, displayName.Text, enabled.Checked);
-                MessageBox.Show(this, "Zmiany zapisano. Gateway wczyta je automatycznie.",
-                    "MoonWaker Host Configurator", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                Close();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-    }
-
-    internal sealed class AppPinForm : Form
-    {
-        private readonly GatewayRegistryStore store;
-        private readonly ProfileRecord profile;
-        private readonly TextBox pin;
-        private readonly TextBox confirmation;
-        private readonly Button remove;
-
-        internal AppPinForm(GatewayRegistryStore store, string profileId)
-        {
-            this.store = store;
-            profile = store.GetProfile(profileId);
-            profile.EnsureMutable();
-            Ui.Prepare(this, "PIN aplikacji MoonWaker", 620, 360);
-            Ui.Label(this, "PIN aplikacji MoonWaker", 28, 22, 560, 38,
-                18F, FontStyle.Bold, Color.White);
-            Ui.Label(this,
-                "To czterocyfrowy PIN aplikacji MoonWaker, nie hasło Windows.",
-                30, 68, 550, 30, 9.5F, FontStyle.Regular, Ui.Muted);
-            Ui.Label(this, profile.AppPinRequired
-                ? "Wpisz nowy PIN, aby zastąpić obecny." : "Ustaw PIN dla tego profilu.",
-                30, 104, 550, 24, 9F, FontStyle.Regular, Ui.Muted);
-            Ui.Label(this, "Nowy PIN", 30, 144, 180, 22, 9F,
-                FontStyle.Bold, Color.White);
-            pin = Ui.TextBox(this, 210, 140, 180);
-            pin.MaxLength = 4;
-            pin.UseSystemPasswordChar = true;
-            Ui.Label(this, "Powtórz PIN", 30, 184, 180, 22, 9F,
-                FontStyle.Bold, Color.White);
-            confirmation = Ui.TextBox(this, 210, 180, 180);
-            confirmation.MaxLength = 4;
-            confirmation.UseSystemPasswordChar = true;
-            Ui.Button(this, profile.AppPinRequired ? "Zmień PIN" : "Ustaw PIN",
-                330, 284, 110, SaveClicked, true);
-            remove = Ui.Button(this, "Usuń PIN", 202, 284, 118, RemoveClicked, false);
-            remove.Enabled = profile.AppPinRequired;
-            Button cancel = Ui.Button(this, "Anuluj", 450, 284, 110,
-                delegate { ClearAndClose(); }, false);
-            CancelButton = cancel;
-        }
-
-        private void SaveClicked(object sender, EventArgs e)
-        {
-            string value = pin.Text;
-            string repeated = confirmation.Text;
-            try
-            {
-                if (!String.Equals(value, repeated, StringComparison.Ordinal))
-                    throw new InvalidOperationException("Wpisane PIN-y aplikacji nie są identyczne.");
-                store.SetAppPin(profile.Id, profile.Sid, value);
-                MessageBox.Show(this, "PIN aplikacji MoonWaker zapisano.",
-                    "MoonWaker Host Configurator", MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-                ClearAndClose();
-            }
-            catch (Exception ex)
-            {
-                pin.Clear();
-                confirmation.Clear();
-                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-            finally
-            {
-                value = null;
-                repeated = null;
-            }
-        }
-
-        private void RemoveClicked(object sender, EventArgs e)
-        {
-            if (MessageBox.Show(this, "Usunąć PIN aplikacji MoonWaker dla tego profilu?",
-                "MoonWaker Host Configurator", MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            try
-            {
-                store.RemoveAppPin(profile.Id, profile.Sid);
-                MessageBox.Show(this, "PIN aplikacji MoonWaker usunięto.",
-                    "MoonWaker Host Configurator", MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-                ClearAndClose();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void ClearAndClose()
-        {
-            pin.Clear();
-            confirmation.Clear();
-            Close();
-        }
-    }
-
-    internal sealed class RemoteSignInForm : Form
-    {
-        private readonly GatewayRegistryStore store;
-        private ProfileRecord profile;
-        private readonly LoginBrokerClient broker = new LoginBrokerClient();
-        private readonly Label credentialState;
-        private readonly Label sessionState;
-        private readonly TextBox password;
-        private readonly TextBox confirmation;
-        private readonly Button configure;
-        private readonly Button test;
-
-        internal RemoteSignInForm(GatewayRegistryStore store, string profileId)
-        {
-            this.store = store;
-            profile = store.GetProfile(profileId);
-            profile.EnsureMutable();
-            Ui.Prepare(this, "Zdalne logowanie Windows", 760, 550);
-            Ui.Label(this, "Zdalne logowanie Windows", 28, 20, 680, 38, 18F,
-                FontStyle.Bold, Color.White);
-            Ui.Label(this, profile.DisplayName + "  •  " + profile.AccountName, 30, 62, 690, 24,
-                9.5F, FontStyle.Regular, Ui.Muted);
-            Label warning = Ui.Label(this,
-                "UPRZYWILEJOWANE: zapisane dane pozwalają zatwierdzonemu urządzeniu zalogować lub odblokować to konto.",
-                30, 100, 690, 46, 9.5F, FontStyle.Bold, Ui.Danger);
-            warning.AutoEllipsis = true;
-            Ui.Label(this, "Dane logowania:", 30, 158, 160, 24, 9F, FontStyle.Bold, Color.White);
-            credentialState = Ui.Label(this, "sprawdzanie…", 190, 158, 300, 24, 9F,
-                FontStyle.Regular, Ui.Muted);
-            Ui.Label(this, "Sesja Windows:", 30, 188, 160, 24, 9F, FontStyle.Bold, Color.White);
-            sessionState = Ui.Label(this, "sprawdzanie…", 190, 188, 300, 24, 9F,
-                FontStyle.Regular, Ui.Muted);
-            Ui.Label(this, "Nowe hasło Windows", 30, 236, 300, 22, 9F, FontStyle.Bold, Color.White);
-            password = Ui.TextBox(this, 30, 260, 700);
-            password.UseSystemPasswordChar = true;
-            password.MaxLength = 256;
-            Ui.Label(this, "Powtórz hasło", 30, 304, 300, 22, 9F, FontStyle.Bold, Color.White);
-            confirmation = Ui.TextBox(this, 30, 328, 700);
-            confirmation.UseSystemPasswordChar = true;
-            confirmation.MaxLength = 256;
-            configure = Ui.Button(this, "Zapisz / zmień", 30, 390, 160,
-                ConfigureClicked, true);
-            test = Ui.Button(this, "Sprawdź zapisane", 200, 390, 170,
-                TestClicked, false);
-            Button disable = Ui.Button(this, "Wyłącz i usuń dane", 380, 390, 190,
-                DisableClicked, false);
-            disable.ForeColor = Ui.Danger;
-            Button close = Ui.Button(this, "Zamknij", 630, 490, 100,
-                delegate { ClearPasswordControls(); Close(); }, false);
-            bool supported = profile.MappingStatus == "resolved" &&
-                !String.IsNullOrWhiteSpace(profile.Sid);
-            password.Enabled = supported;
-            confirmation.Enabled = supported;
-            configure.Enabled = supported;
-            test.Enabled = supported;
-            CancelButton = close;
-            FormClosed += delegate { ClearPasswordControls(); };
-            Shown += delegate { RefreshStates(); };
-        }
-
-        private void RefreshStates()
-        {
-            profile = store.GetProfile(profile.Id);
-            if (profile.MappingStatus != "resolved" || String.IsNullOrWhiteSpace(profile.Sid))
-            {
-                credentialState.Text = "konto nieobsługiwane / mapowanie wymaga naprawy";
-                credentialState.ForeColor = Ui.Danger;
-                sessionState.Text = "nieznany";
-                return;
-            }
-            BrokerResult credential = broker.CredentialState(profile);
-            bool brokerAvailable = credential.State != "broker_unavailable" &&
-                credential.State != "unavailable";
-            password.Enabled = brokerAvailable;
-            confirmation.Enabled = brokerAvailable;
-            configure.Enabled = brokerAvailable;
-            test.Enabled = brokerAvailable;
-            if (!brokerAvailable)
-            {
-                credentialState.Text = "Login Broker niedostępny — zdalne logowanie pojawi się po instalacji usługi";
-                credentialState.ForeColor = Ui.Muted;
-                sessionState.Text = "niedostępna";
-                sessionState.ForeColor = Ui.Muted;
-                return;
-            }
-            BrokerResult session = broker.SessionState(profile);
-            string state = profile.RemoteSignInEnabled ? credential.State : "disabled";
-            credentialState.Text = Ui.BrokerStatePolish(state);
-            credentialState.ForeColor = state == "ready" ? Ui.Success :
-                (state == "disabled" ? Ui.Muted : Ui.Danger);
-            sessionState.Text = String.IsNullOrWhiteSpace(session.State) ? "unknown" : session.State;
-            sessionState.ForeColor = session.Success ? Ui.Muted : Ui.Danger;
-        }
-
-        private void ConfigureClicked(object sender, EventArgs e)
-        {
-            char[] first = password.Text.ToCharArray();
-            char[] second = confirmation.Text.ToCharArray();
-            ClearPasswordControls();
-            try
-            {
-                if (first.Length == 0 || !Same(first, second))
-                    throw new InvalidOperationException("Hasła są puste albo różnią się.");
-                BrokerResult result = broker.Configure(profile, first);
-                if (!result.Success)
-                {
-                    // No client grant exists yet. If delivery was ambiguous, keep the
-                    // policy bit set so removal/Disable retries cleanup with Broker.
-                    if (result.RequestMayHaveReachedBroker)
-                        store.SetRemoteSignInEnabled(profile.Id, profile.Sid, true);
-                    throw new InvalidOperationException(result.State == "broker_unavailable"
-                        ? (result.RequestMayHaveReachedBroker
-                            ? "Login Broker nie potwierdził wyniku. Nie nadano żadnego grantu; po uruchomieniu usługi użyj opcji Wyłącz, aby potwierdzić usunięcie danych."
-                            : "Login Broker jest niedostępny. Hasło nie zostało zapisane.")
-                        : "Login Broker odrzucił dane: " + Ui.BrokerStatePolish(result.State) + ".");
-                }
-                if (result.State != "ready")
-                    throw new InvalidOperationException("Login Broker nie potwierdził gotowości danych logowania.");
-                store.SetRemoteSignInEnabled(profile.Id, profile.Sid, true);
-                MessageBox.Show(this,
-                    "Hasło zostało zweryfikowane i przekazane bezpośrednio do Login Broker. " +
-                    "Nadaj uprawnienie urządzeniom osobno.",
-                    "MoonWaker Host Configurator", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-            finally
-            {
-                Array.Clear(first, 0, first.Length);
-                Array.Clear(second, 0, second.Length);
-                RefreshStates();
-            }
-        }
-
-        private void TestClicked(object sender, EventArgs e)
-        {
-            ClearPasswordControls();
-            BrokerResult result = broker.Test(profile);
-            MessageBox.Show(this, result.Success && result.State == "ready"
-                ? "Login Broker ponownie zweryfikował zapisane dane."
-                : (result.State == "broker_unavailable"
-                    ? "Login Broker jest niedostępny. Nie wykonano testu."
-                    : "Dane wymagają działania w Host Control."),
-                "MoonWaker Host Configurator", MessageBoxButtons.OK,
-                result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-            RefreshStates();
-        }
-
-        private void DisableClicked(object sender, EventArgs e)
-        {
-            ClearPasswordControls();
-            if (MessageBox.Show(this,
-                "Wyłączyć zdalne logowanie, cofnąć uprawnienia remote_sign_in i usunąć dane z Login Broker?",
-                "Zdalne logowanie Windows", MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            store.SetRemoteSignInEnabled(profile.Id, profile.Sid, false);
-            BrokerResult result = broker.Delete(profile);
-            if (!result.Success)
-            {
-                // Grants stay revoked. The policy bit records that Broker cleanup
-                // still has to be retried; it cannot authorize a device by itself.
-                store.SetRemoteSignInEnabled(profile.Id, profile.Sid, true);
-                MessageBox.Show(this,
-                    "Granty zdalnego logowania zostały cofnięte, ale Login Broker nie potwierdził usunięcia sekretu. " +
-                    "Uruchom usługę i ponów operację.", "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-            else
-                MessageBox.Show(this, "Zdalne logowanie wyłączono, a dane usunięto z Login Broker.",
-                    "MoonWaker Host Configurator", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            RefreshStates();
-        }
-
-        private void ClearPasswordControls()
-        {
-            password.Clear();
-            confirmation.Clear();
-        }
-
-        private static bool Same(char[] left, char[] right)
-        {
-            int different = left.Length ^ right.Length;
-            int count = Math.Min(left.Length, right.Length);
-            for (int index = 0; index < count; index++) different |= left[index] ^ right[index];
-            return different == 0;
-        }
-    }
-
-    internal sealed class DeviceGrantsForm : Form
-    {
-        private readonly GatewayRegistryStore store;
-        private readonly ProfileRecord profile;
-        private readonly ProfileRecord grantParent;
-        private readonly bool childProfile;
-        private readonly string updateSid;
-        private readonly string accountDisplayName;
-        private readonly DataGridView grid = new DataGridView();
-        private bool loading;
-
-        internal DeviceGrantsForm(GatewayRegistryStore store, string profileId)
-        {
-            this.store = store;
-            profile = store.GetProfile(profileId);
-            profile.EnsureMutable();
-            childProfile = String.Equals(profile.Kind, "child",
-                StringComparison.OrdinalIgnoreCase);
-            if (childProfile)
-            {
-                grantParent = store.GetProfile(profile.ParentProfileId);
-                if (!String.Equals(grantParent.Kind, "standard",
-                        StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException(
-                        "Profil dziecka wymaga standardowego profilu rodzica.");
-                updateSid = grantParent.Sid;
-                accountDisplayName = grantParent.AccountName;
-            }
-            else
-            {
-                grantParent = null;
-                updateSid = profile.Sid;
-                accountDisplayName = profile.AccountName;
-            }
-            Ui.Prepare(this, "Urządzenia i dostęp", 940, 570);
-            Ui.Label(this, "Urządzenia i dostęp", 24, 18, 700, 38, 18F, FontStyle.Bold, Color.White);
-            Ui.Label(this, (childProfile ? "Profil dziecka: " : "Profil: ") +
-                profile.DisplayName, 26, 58, 500, 24, 9.5F,
-                FontStyle.Regular, Ui.Muted);
-            if (childProfile)
-                Ui.Label(this, "Konto Windows rodzica: " + accountDisplayName,
-                    520, 58, 390, 24, 9.5F, FontStyle.Regular, Ui.Muted);
-            Ui.Label(this,
-                "Zdalne logowanie jest uprawnieniem podwyższonego ryzyka. Wymaga zwykłego dostępu i osobnego potwierdzenia.",
-                26, 88, 880, 34, 9F, FontStyle.Bold, Ui.Danger);
-            grid.SetBounds(24, 130, 892, 360);
-            grid.AllowUserToAddRows = false;
-            grid.AllowUserToDeleteRows = false;
-            grid.MultiSelect = false;
-            grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            grid.RowHeadersVisible = false;
-            grid.BackgroundColor = Ui.Panel;
-            grid.ForeColor = Color.Black;
-            grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-            grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Urządzenie", ReadOnly = true });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Bezpieczne ID", ReadOnly = true });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Sparowano", ReadOnly = true });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Ostatnio widziane", ReadOnly = true });
-            grid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Dostęp do profilu" });
-            grid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "ZDALNE LOGOWANIE" });
-            if (!childProfile)
-                grid.Columns.Add(new DataGridViewCheckBoxColumn {
-                    HeaderText = "ZARZĄDZANIE DZIEĆMI" });
-            grid.CurrentCellDirtyStateChanged += delegate {
-                if (grid.IsCurrentCellDirty) grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-            };
-            grid.CellValueChanged += CellValueChanged;
-            Controls.Add(grid);
-            Button remove = Ui.Button(this, "Usuń urządzenie", 24, 512, 150,
-                RemoveClicked, false);
-            remove.ForeColor = Ui.Danger;
-            Ui.Button(this, "Zapisz uprawnienia", 666, 512, 160, SaveClicked, true);
-            Button close = Ui.Button(this, "Anuluj", 834, 512, 82,
-                delegate { Close(); }, false);
-            CancelButton = close;
-            Shown += delegate { LoadDevices(); };
-        }
-
-        private void RemoveClicked(object sender, EventArgs e)
-        {
-            DataGridViewRow row = grid.CurrentRow;
-            string id = row == null ? null : row.Tag as string;
-            if (String.IsNullOrWhiteSpace(id))
-            {
-                MessageBox.Show(this, "Wybierz urządzenie do usunięcia.", "MoonWaker",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            string name = Convert.ToString(row.Cells[0].Value);
-            if (MessageBox.Show(this,
-                "Usunąć parowanie urządzenia „" + name + "”? Utraci ono dostęp do wszystkich profili " +
-                "i będzie wymagało ponownego sparowania.", "Usuń urządzenie",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            try
-            {
-                store.RemoveClient(id);
-                LoadDevices();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void LoadDevices()
-        {
-            loading = true;
-            try
-            {
-                grid.Rows.Clear();
-                foreach (DeviceRecord device in store.GetDevices(profile.Id))
-                {
-                    int index = grid.Rows.Add(device.Name, device.SafeId, FormatTime(device.PairedAt),
-                        FormatTime(device.LastSeenAt), device.UseProfile, device.RemoteSignIn);
-                    if (!childProfile) grid.Rows[index].Cells[6].Value = device.ManageChildren;
-                    grid.Rows[index].Tag = device.Id;
-                }
-            }
-            finally { loading = false; }
-        }
-
-        private void CellValueChanged(object sender, DataGridViewCellEventArgs e)
-        {
-            if (loading || e.RowIndex < 0 || e.ColumnIndex < 4) return;
-            DataGridViewRow row = grid.Rows[e.RowIndex];
-            if (e.ColumnIndex == 4 && !Convert.ToBoolean(row.Cells[4].Value))
-            {
-                loading = true;
-                row.Cells[5].Value = false;
-                if (!childProfile) row.Cells[6].Value = false;
-                loading = false;
-            }
-            if (e.ColumnIndex == 5 && Convert.ToBoolean(row.Cells[5].Value))
-            {
-                string name = Convert.ToString(row.Cells[0].Value);
-                DialogResult confirmed = MessageBox.Show(this,
-                    "Nadać urządzeniu „" + name + "” uprzywilejowane prawo do zdalnego zalogowania lub " +
-                    "odblokowania konta " + accountDisplayName + "?",
-                    "Potwierdź zdalne logowanie", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                loading = true;
-                if (confirmed == DialogResult.Yes) row.Cells[4].Value = true;
-                else row.Cells[5].Value = false;
-                loading = false;
-            }
-            if (!childProfile && e.ColumnIndex == 6 &&
-                Convert.ToBoolean(row.Cells[6].Value) && !profile.AppPinRequired)
-            {
-                MessageBox.Show(this,
-                    "Zarządzanie dziećmi wymaga ustawionego PIN-u aplikacji rodzica.",
-                    "Ustaw PIN aplikacji", MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-                loading = true;
-                row.Cells[6].Value = false;
-                loading = false;
-            }
-        }
-
-        private void SaveClicked(object sender, EventArgs e)
-        {
-            try
-            {
-                Dictionary<string, DeviceGrant> grants = new Dictionary<string, DeviceGrant>();
-                foreach (DataGridViewRow row in grid.Rows)
-                {
-                    string id = row.Tag as string;
-                    if (String.IsNullOrWhiteSpace(id)) continue;
-                    grants[id] = new DeviceGrant {
-                        UseProfile = Convert.ToBoolean(row.Cells[4].Value),
-                        RemoteSignIn = Convert.ToBoolean(row.Cells[5].Value),
-                        ManageChildren = !childProfile &&
-                            Convert.ToBoolean(row.Cells[6].Value)
-                    };
-                }
-                store.UpdateGrants(profile.Id, updateSid, grants);
-                MessageBox.Show(this, "Uprawnienia zapisano. Gateway zastosuje je przy następnym żądaniu.",
-                    "MoonWaker Host Configurator", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                Close();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        internal static DeviceGrant PreserveManageChildren(DeviceGrant requested,
-            DeviceRecord existing)
-        {
-            if (requested == null) throw new ArgumentNullException("requested");
-            requested.ManageChildren = requested.UseProfile && existing != null &&
-                existing.ManageChildren;
-            return requested;
-        }
-
-        private static string FormatTime(long unix)
-        {
-            if (unix <= 0) return "nigdy";
-            try { return DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime().ToString("g"); }
-            catch { return "nieznany"; }
-        }
-    }
-
-    internal sealed class ChildProfileManagerForm : Form
-    {
-        private static readonly string[] Days = new string[] {
-            "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
-        private readonly GatewayRegistryStore store;
-        private readonly string parentProfileId;
-        private readonly string parentProfileName;
-        private readonly ListBox children = new ListBox();
-        private readonly Label status = new Label();
-        private int loadedRevision;
-        private bool parentAvailable;
-        private bool parentNeedsLocalCleanup;
-
-        internal ChildProfileManagerForm(GatewayRegistryStore store,
-            string parentProfileId)
-        {
-            this.store = store;
-            this.parentProfileId = parentProfileId;
-            ProfileRecord parent = null;
-            try { parent = store.GetProfile(parentProfileId); } catch { }
-            parentProfileName = parent == null ? parentProfileId : parent.DisplayName;
-
-            Ui.Prepare(this, "Profile dzieci", 760, 500);
-            Ui.Label(this, "Profile dzieci", 28, 22, 680, 34, 18F,
-                FontStyle.Bold, Color.White);
-            Ui.Label(this, "Rodzic: " + parentProfileName,
-                30, 62, 690, 28, 10F, FontStyle.Regular, Ui.Muted);
-            children.SetBounds(30, 105, 700, 285);
-            children.BackColor = Ui.Panel;
-            children.ForeColor = Color.White;
-            children.BorderStyle = BorderStyle.FixedSingle;
-            children.IntegralHeight = false;
-            Controls.Add(children);
-
-            status.SetBounds(30, 400, 700, 28);
-            status.ForeColor = Ui.Muted;
-            Controls.Add(status);
-            Ui.Button(this, "Dodaj dziecko", 30, 440, 140,
-                delegate { CreateClicked(); }, true);
-            Ui.Button(this, "Edytuj", 180, 440, 110,
-                delegate { EditClicked(); }, false);
-            Ui.Button(this, "Usuń", 300, 440, 110,
-                delegate { DeleteClicked(); }, false);
-            Ui.Button(this, "Urządzenia", 420, 440, 130,
-                delegate { DevicesClicked(); }, false);
-            Ui.Button(this, "Zamknij", 616, 440, 114,
-                delegate { Close(); }, false);
-            LoadChildren();
-        }
-
-        private void DevicesClicked()
-        {
-            ChildListItem selected = children.SelectedItem as ChildListItem;
-            if (selected == null)
-            {
-                MessageBox.Show(this, "Wybierz profil dziecka.", "Profile dzieci",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            try
-            {
-                using (DeviceGrantsForm form = new DeviceGrantsForm(store,
-                    selected.Profile.Id)) form.ShowDialog(this);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "Urządzenia profilu dziecka",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void LoadChildren()
-        {
-            children.Items.Clear();
-            try
-            {
-                // Capture the list revision before reading the rows.  Every
-                // editor opened from this snapshot uses this exact revision,
-                // so a concurrent TV/Windows edit becomes a visible 409.
-                loadedRevision = store.GetChildPolicyRevision(parentProfileId);
-                ProfileRecord parent = null;
-                try { parent = store.GetProfile(parentProfileId); } catch { }
-                parentAvailable = parent != null &&
-                    String.Equals(parent.Kind, "standard", StringComparison.OrdinalIgnoreCase) &&
-                    parent.Enabled && parent.AppPinRequired &&
-                    !String.IsNullOrWhiteSpace(parent.Sid) &&
-                    !String.IsNullOrWhiteSpace(parent.AccountName) &&
-                    String.Equals(parent.MappingStatus, "resolved",
-                        StringComparison.OrdinalIgnoreCase);
-                parentNeedsLocalCleanup = parent == null ||
-                    !String.Equals(parent.Kind, "standard", StringComparison.OrdinalIgnoreCase) ||
-                    !parent.Enabled;
-                foreach (ProfileRecord child in store.GetChildren(parentProfileId))
-                    children.Items.Add(new ChildListItem(child));
-                status.Text = children.Items.Count == 0
-                    ? "Brak profili dzieci."
-                    : "Profile dzieci: " + children.Items.Count;
-                if (!parentAvailable && !parentNeedsLocalCleanup)
-                    status.Text += " Rodzic wymaga ponownego skonfigurowania.";
-            }
-            catch (Exception ex)
-            {
-                parentAvailable = false;
-                parentNeedsLocalCleanup = false;
-                status.Text = ex.Message;
-            }
-        }
-
-        private void CreateClicked()
-        {
-            int expectedRevision = loadedRevision;
-            using (ChildProfileForm form = new ChildProfileForm(
-                ChildProfileDraft.New(),
-                delegate(ChildProfileDraft draft) { SaveNew(draft, expectedRevision); },
-                parentProfileName))
-            {
-                form.ShowDialog(this);
-            }
-            LoadChildren();
-        }
-
-        private void EditClicked()
-        {
-            ChildListItem selected = children.SelectedItem as ChildListItem;
-            if (selected == null)
-            {
-                MessageBox.Show(this, "Wybierz profil dziecka.", "Profile dzieci",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            ProfileRecord profile = selected.Profile;
-            int expectedRevision = loadedRevision;
-            using (ChildProfileForm form = new ChildProfileForm(
-                DraftFromProfile(profile),
-                delegate(ChildProfileDraft draft) {
-                    SaveExisting(profile, draft, expectedRevision);
-                },
-                parentProfileName))
-            {
-                form.ShowDialog(this);
-            }
-            LoadChildren();
-        }
-
-        private void DeleteClicked()
-        {
-            ChildListItem selected = children.SelectedItem as ChildListItem;
-            if (selected == null)
-            {
-                MessageBox.Show(this, "Wybierz profil dziecka.", "Profile dzieci",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            if (MessageBox.Show(this,
-                    "Usunąć profil dziecka „" + selected.Profile.DisplayName + "”?",
-                    "Profile dzieci", MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            try
-            {
-                if (parentNeedsLocalCleanup)
-                {
-                    // This local cleanup path deliberately works for an orphan
-                    // or a disabled former parent.  A live parent always uses
-                    // the revision checked writer path below.
-                    store.RemoveChildProfileLocal(selected.Profile.Id);
-                }
-                else
-                {
-                    store.ApplyChildProfileRequest(Mutation("delete",
-                        selected.Profile.Id, null, loadedRevision));
-                }
-                LoadChildren();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "Profile dzieci",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void SaveNew(ChildProfileDraft draft, int expectedRevision)
-        {
-            store.ApplyChildProfileRequest(Mutation("create", "", draft,
-                expectedRevision));
-        }
-
-        private void SaveExisting(ProfileRecord profile, ChildProfileDraft draft,
-            int expectedRevision)
-        {
-            store.ApplyChildProfileRequest(Mutation("update", profile.Id, draft,
-                expectedRevision));
-        }
-
-        private Dictionary<string, object> Mutation(string operation,
-            string childProfileId, ChildProfileDraft draft, int expectedRevision)
-        {
-            Dictionary<string, object> request = new Dictionary<string, object> {
-                { "operation", operation },
-                { "parent_profile_id", parentProfileId },
-                { "child_profile_id", childProfileId },
-                { "request_id", "ui-" + Guid.NewGuid().ToString("N") },
-                { "expected_revision", expectedRevision },
-                { "grant_current_device", false },
-                { "grant_client_id", "" }
-            };
-            if (draft != null) request["draft"] = DraftObject(draft);
-            return request;
-        }
-
-        private static ChildProfileDraft DraftFromProfile(ProfileRecord profile)
-        {
-            ChildProfileDraft result = ChildProfileDraft.New();
-            result.Name = profile.DisplayName ?? "";
-            result.AvatarId = profile.AvatarId ?? "";
-            result.Enabled = profile.Enabled;
-            if (profile.Days != null && profile.Days.Count == Days.Length)
-            {
-                result.Days.Clear();
-                foreach (ChildDayDraft day in profile.Days)
-                    result.Days.Add(day == null ? new ChildDayDraft() : day.Clone());
-            }
-            return result;
-        }
-
-        private static Dictionary<string, object> DraftObject(ChildProfileDraft draft)
-        {
-            Dictionary<string, object> weekdays = new Dictionary<string, object>();
-            for (int index = 0; index < Days.Length; index++)
-            {
-                ChildDayDraft day = draft.Days != null && index < draft.Days.Count
-                    ? draft.Days[index] : new ChildDayDraft();
-                if (day == null) day = new ChildDayDraft();
-                weekdays[Days[index]] = new Dictionary<string, object> {
-                    { "enabled", day.Enabled }, { "start_minute", day.StartMinute },
-                    { "end_minute", day.EndMinute },
-                    { "daily_limit_seconds", day.DailyLimitSeconds }
-                };
-            }
-            return new Dictionary<string, object> {
-                { "name", (draft.Name ?? "").Trim() },
-                { "avatar_id", (draft.AvatarId ?? "").Trim() },
-                { "enabled", draft.Enabled },
-                { "schedule", new Dictionary<string, object> { { "weekdays", weekdays } } }
-            };
-        }
-
-        private sealed class ChildListItem
-        {
-            internal readonly ProfileRecord Profile;
-
-            internal ChildListItem(ProfileRecord profile) { Profile = profile; }
-
-            public override string ToString()
-            {
-                return Profile.DisplayName + (Profile.Enabled ? "" : "  (wyłączony)");
-            }
-        }
-    }
-
-    internal sealed class RemoveProfileForm : Form
-    {
-        private readonly GatewayRegistryStore store;
-        private readonly ProfileRecord profile;
-        private readonly Button remove;
-
-        internal RemoveProfileForm(GatewayRegistryStore store, string profileId)
-        {
-            this.store = store;
-            profile = store.GetProfile(profileId);
-            bool offline = ProfileProvisioner.RequiresOfflineCleanup(store, profile);
-            bool unresolved = !ProfileProvisioner.HasAuthoritativeOwner(profile);
-            Ui.Prepare(this, "Usuń profil MoonWaker", 700, 390);
-            Ui.Label(this, "Usuń profil MoonWaker", 28, 22, 620, 38, 18F, FontStyle.Bold, Color.White);
-            Label scope = Ui.Label(this,
-                offline
-                    ? "Ta operacja bezpiecznie wyłączy profil, cofnie granty, usunie sekret Login Broker i dokładne " +
-                      "zadania startowe. Katalog profilu pozostanie nienaruszony do ręcznego sprzątania offline. " +
-                      "Konto Windows ani jego pliki użytkownika nie zostaną zmienione."
-                    : "Ta operacja usuwa wyłącznie dane profilu MoonWaker, jego Bridge, autostart, granty urządzeń " +
-                      "i sekret Login Broker. Konto Windows „" + profile.AccountName + "” oraz jego pliki użytkownika " +
-                      "nie zostaną usunięte ani zmienione.",
-                30, 78, 640, 112, 10F, FontStyle.Regular, Ui.Muted);
-            scope.AutoEllipsis = true;
-            Ui.Label(this, "Profil: " + profile.DisplayName + "  •  " + profile.Id,
-                30, 210, 640, 28, 10F, FontStyle.Bold, Ui.Danger);
-            if (offline)
-                Ui.Label(this,
-                    "Brak zaufanego znacznika utworzenia: MoonWaker nie przejdzie ani nie usunie tego katalogu online. " +
-                    (unresolved
-                        ? "Po oznaczeniu możesz od razu dodać nowy profil SID; stary katalog sprząta administrator offline."
-                        : "Po sprzątaniu offline ponów usunięcie, aby zwolnić SID przed utworzeniem nowego profilu."),
-                    30, 250, 620, 52, 9.5F, FontStyle.Bold, Ui.Danger);
-            else if (String.Equals(profile.Id, "default", StringComparison.OrdinalIgnoreCase))
-                Ui.Label(this,
-                    "To profil zgodności. Usunięcie dotyczy wyłącznie MoonWaker i nigdy nie zmieni konta Windows.",
-                    30, 250, 620, 52, 9.5F, FontStyle.Bold, Ui.Danger);
-            remove = Ui.Button(this, offline ? "Wyłącz; sprzątanie offline" : "Usuń dane profilu",
-                386, 330, 200, RemoveClicked, false);
-            remove.ForeColor = Ui.Danger;
-            Button cancel = Ui.Button(this, "Anuluj", 596, 330, 74,
-                delegate { Close(); }, false);
-            CancelButton = cancel;
-        }
-
-        private async void RemoveClicked(object sender, EventArgs e)
-        {
-            bool offline = ProfileProvisioner.RequiresOfflineCleanup(store, profile);
-            bool unresolved = !ProfileProvisioner.HasAuthoritativeOwner(profile);
-            bool compatibility = String.Equals(profile.Id, "default", StringComparison.OrdinalIgnoreCase);
-            bool legacy = compatibility || offline;
-            if (offline && MessageBox.Show(this,
-                "Nie można potwierdzić bezpiecznego pochodzenia tego katalogu. Profil zostanie trwale wyłączony, granty, " +
-                "sekret i zadania startowe zostaną cofnięte, ale katalog pozostanie do ręcznego sprzątania offline. " +
-                (unresolved
-                    ? "Możesz od razu utworzyć nowy profil z SID. Kontynuować?"
-                    : "Po sprzątaniu offline ponów usunięcie, aby zwolnić SID. Kontynuować?"),
-                "Wyłącz profil; sprzątanie offline", MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            if (!offline && compatibility && MessageBox.Show(this,
-                "To profil zgodności. Usunięta zostanie tylko konfiguracja i dane MoonWaker; konto Windows " +
-                "pozostanie bez zmian. Kontynuować?",
-                "Usuń profil zgodności", MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            if (MessageBox.Show(this,
-                (offline
-                    ? "Trwale wyłączyć profil MoonWaker „" + profile.DisplayName +
-                      "” i pozostawić jego katalog do sprzątania offline? Konto Windows pozostanie bez zmian."
-                    : "Usunąć tylko profil MoonWaker „" + profile.DisplayName +
-                      "”? Konto Windows pozostanie bez zmian."),
-                "Ostateczne potwierdzenie", MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            remove.Enabled = false;
-            try
-            {
-                // A false policy bit means the profile was never configured or its
-                // Broker secret was already deleted. This lets a fresh Slice 2
-                // profile be removed while Broker is not installed yet.
-                if (profile.RemoteSignInEnabled)
-                {
-                    BrokerResult brokerResult = new LoginBrokerClient().Delete(profile);
-                    if (!brokerResult.Success)
-                        throw new InvalidOperationException(
-                            "Login Broker nie potwierdził usunięcia sekretu. " +
-                            "uruchom usługę i ponów usunięcie.");
-                }
-                store.PrepareRemoval(profile);
-                await System.Threading.Tasks.Task.Run(delegate {
-                    ProfileProvisioner.RemoveArtifacts(store, profile);
-                });
-                store.RemoveProfile(profile);
-                MessageBox.Show(this,
-                    "Profil MoonWaker usunięto. Konto Windows nie zostało zmienione." +
-                    (legacy ? " Teraz utwórz nowy profil w Host Control." : ""),
-                    "MoonWaker Host Configurator", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                Close();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-                remove.Enabled = true;
-            }
-        }
-    }
-
     internal static class SelfTestProgram
     {
         private static void Main(string[] args)
@@ -4121,17 +2822,15 @@ namespace MoonWaker.HostConfigurator
                 File.WriteAllText(config,
                     "{\"schema_version\":2,\"child_profiles_enabled\":true,\"unknown_top\":{\"keep\":true},\"profiles\":{" +
                     "\"profile-a\":{\"id\":\"profile-a\",\"name\":\"A\",\"display_name\":\"A\"," +
-                    "\"owner_sid\":\"" + sidA + "\",\"windows_account_sid\":\"" + sidA + "\"," +
-                    "\"owner\":\"PC\\\\A\",\"windows_account_name\":\"PC\\\\A\",\"enabled\":true," +
+                    "\"windows_account_sid\":\"" + sidA + "\"," +
+                    "\"windows_account_name\":\"PC\\\\A\",\"enabled\":true," +
                     "\"profile_root\":\"C:\\\\MoonWaker\\\\profiles\\\\profile-a\"," +
                     "\"discord_bridge\":\"http://127.0.0.1:8765\"," +
-                    "\"vibepollo_bridge\":\"http://127.0.0.1:8775\"," +
                     "\"game_provider_bridge\":\"http://127.0.0.1:8780\"," +
-                    "\"playnite_bridge\":\"http://127.0.0.1:8780\"," +
                     "\"remote_sign_in_enabled\":false,\"account_mapping_status\":\"resolved\"," +
                     "\"unknown_profile\":17},\"default\":{\"id\":\"default\",\"name\":\"Legacy\"," +
-                    "\"display_name\":\"Legacy\",\"owner_sid\":\"\",\"windows_account_sid\":\"\"," +
-                    "\"owner\":\"\",\"windows_account_name\":\"\",\"enabled\":true," +
+                    "\"display_name\":\"Legacy\",\"windows_account_sid\":\"\"," +
+                    "\"windows_account_name\":\"\",\"enabled\":true," +
                     "\"profile_root\":\"" + legacyRecordedRoot.Replace("\\", "\\\\") +
                     "\",\"remote_sign_in_enabled\":false," +
                     "\"account_mapping_status\":\"action_required\"}},\"clients\":[{" +
@@ -4205,7 +2904,7 @@ namespace MoonWaker.HostConfigurator
                 ProfileRecord child = store.CreateChildProfile("profile-a", "Kid", "avatar-1");
                 Assert(child.Kind == "child" && child.ParentProfileId == "profile-a" &&
                     child.AllowedGameKeys.Count == 0 && child.Sid == "" && child.Root == "" &&
-                    child.DiscordEndpoint == "" && child.VibepolloEndpoint == "" &&
+                    child.DiscordEndpoint == "" &&
                     child.GameProviderEndpoint == "" && !child.AppPinRequired,
                     "Child profile inherited executable identity or policy data.");
                 Assert(store.GetProfiles().Find(delegate(ProfileRecord value) {
@@ -4215,7 +2914,7 @@ namespace MoonWaker.HostConfigurator
                 Dictionary<string, object> childRaw = dictionaryValue(
                     dictionaryValue(jsonDocument(File.ReadAllText(config)), "profiles"), child.Id);
                 foreach (string forbidden in new string[] { "windows_account_sid", "profile_root",
-                    "discord_bridge", "vibepollo_bridge", "game_provider_bridge", "playnite_bridge",
+                    "discord_bridge", "game_provider_bridge",
                     "pin_verifier", "reservation_nonce" })
                     Assert(!childRaw.ContainsKey(forbidden), "Child profile cloned " + forbidden + ".");
                 Dictionary<string, object> weekdays = dictionaryValue(
@@ -4637,14 +3336,6 @@ namespace MoonWaker.HostConfigurator
                 devices = store.GetDevices("profile-a");
                 Assert(devices[0].UseProfile && !devices[0].RemoteSignIn && devices[0].ManageChildren,
                     "Disabling remote sign-in dropped the unrelated child-management grant.");
-                DeviceGrant preservedManagement = DeviceGrantsForm.PreserveManageChildren(
-                    new DeviceGrant { UseProfile = true, RemoteSignIn = false },
-                    new DeviceRecord { ManageChildren = true });
-                DeviceGrant removedManagement = DeviceGrantsForm.PreserveManageChildren(
-                    new DeviceGrant { UseProfile = false, RemoteSignIn = false },
-                    new DeviceRecord { ManageChildren = true });
-                Assert(preservedManagement.ManageChildren && !removedManagement.ManageChildren,
-                    "The device editor did not preserve management on unrelated edits.");
                 bool lockBlocked = false;
                 using (RegistryFileLock held = RegistryFileLock.Acquire(store.RegistryLockPath, 250))
                 {
@@ -4659,10 +3350,139 @@ namespace MoonWaker.HostConfigurator
                 Assert(Directory.GetFiles(gateway, "*.tmp").Length == 0,
                     "Atomic writer left a temporary file.");
                 Console.WriteLine("MoonWaker Host Configurator registry tests passed.");
+                TestProfileProvisioning(root);
+                Console.WriteLine("MoonWaker Host Configurator profile provisioning tests passed.");
+                TestRemoveArtifacts(store);
+                Console.WriteLine("MoonWaker Host Configurator profile removal tests passed.");
             }
             finally
             {
                 if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }
+
+        // Removal waits for the profile's Agent (a loopback listener here) to stop answering and
+        // for its files to be released; past the limit the directory stays and the error says so.
+        private static void TestRemoveArtifacts(GatewayRegistryStore store)
+        {
+            System.Net.Sockets.TcpListener agent = new System.Net.Sockets.TcpListener(
+                System.Net.IPAddress.Loopback, 0);
+            agent.Start();
+            int port = ((System.Net.IPEndPoint)agent.LocalEndpoint).Port;
+            string directory = Path.Combine(store.ProfilesRoot, "removed");
+            Directory.CreateDirectory(Path.Combine(directory, "game-provider", "logs"));
+            string log = Path.Combine(directory, "game-provider", "logs", "provider-diagnostics.jsonl");
+            ProfileRecord profile = new ProfileRecord {
+                Id = "removed", Root = directory, DeletionNonce = "nonce",
+                GameProviderEndpoint = "http://127.0.0.1:" + port, DiscordEndpoint = "" };
+            File.WriteAllText(log, "{}");
+            FileStream held = null;
+            try
+            {
+                bool refused = false;
+                try { ProfileProvisioner.RemoveArtifacts(store, profile, TimeSpan.FromSeconds(1)); }
+                catch (InvalidOperationException error) { refused = error.Message.Contains("oznaczony do usunięcia"); }
+                Assert(refused && File.Exists(log), "Removal did not wait for a running Agent.");
+                agent.Stop();
+                held = new FileStream(log, FileMode.Open, FileAccess.Write, FileShare.None);
+                refused = false;
+                try { ProfileProvisioner.RemoveArtifacts(store, profile, TimeSpan.FromSeconds(1)); }
+                catch (InvalidOperationException) { refused = true; }
+                Assert(refused && File.Exists(log), "Removal did not wait for files still in use.");
+                // Released while removal waits: it finishes.
+                FileStream release = held;
+                Thread releaser = new Thread(delegate() { Thread.Sleep(700); release.Dispose(); });
+                releaser.Start();
+                Stopwatch clock = Stopwatch.StartNew();
+                ProfileProvisioner.RemoveArtifacts(store, profile);
+                releaser.Join();
+                Assert(!Directory.Exists(directory) && clock.ElapsedMilliseconds >= 600 &&
+                    clock.ElapsedMilliseconds < 5000, "Removal did not retry until the files were released.");
+            }
+            finally
+            {
+                if (held != null) held.Dispose();
+                agent.Stop();
+            }
+        }
+
+        // The data directory of a new profile under a temporary installation. The ACL walk needs
+        // an elevated token (owner Administrators); without one only its descriptor is checked.
+        private static void TestProfileProvisioning(string root)
+        {
+            string source = Path.Combine(root, "bridge-source");
+            Directory.CreateDirectory(Path.Combine(source, "playnite"));
+            File.WriteAllText(Path.Combine(source, "playnite", "config.example.json"),
+                "{\"listen_host\":\"127.0.0.1\",\"listen_port\":8780,\"epic_legendary_enabled\":false," +
+                "\"playnite_enabled\":true,\"streamed_display\":\"\"}");
+            string sid = WindowsIdentity.GetCurrent().User.Value;
+            ProfileProvisioning provisioning = new ProfileProvisioning {
+                ProfilesRoot = Path.Combine(root, "profiles"), BridgeSource = source,
+                ProfileId = "p-one", OwnerSid = sid, DiscordPort = 8800, GameProviderPort = 8801 };
+            string profile = provisioning.CreateLayout();
+            Assert(profile == Path.Combine(root, "profiles", "p-one"), "Profile root is not <profiles>\\<id>.");
+            Dictionary<string, object> provider = jsonDocument(File.ReadAllText(
+                Path.Combine(profile, "game-provider", "config.json")));
+            Assert(Convert.ToInt32(provider["listen_port"]) == 8801 &&
+                (bool)provider["epic_legendary_enabled"] && !(bool)provider["playnite_enabled"] &&
+                (string)provider["legendary_path"] == "" && (string)provider["listen_host"] == "127.0.0.1",
+                "The Agent configuration was not seeded from its example with the profile's port.");
+            Assert(!Directory.Exists(Path.Combine(profile, "discord")),
+                "A profile got Discord data although Discord is not installed.");
+            Assert(Directory.GetFiles(profile, "*", SearchOption.AllDirectories).Length == 1,
+                "Provisioning copied code or other files into the profile.");
+            bool refused = false;
+            try { provisioning.CreateLayout(); }
+            catch (InvalidOperationException) { refused = true; }
+            Assert(refused, "Provisioning reused an existing profile root.");
+
+            Directory.CreateDirectory(Path.Combine(source, "discord"));
+            File.WriteAllText(Path.Combine(source, "discord", "DiscordBridge.ps1"), "");
+            File.WriteAllText(Path.Combine(source, "discord", "discord_bridge_config.example.json"),
+                "{\"client_id\":\"\",\"port\":8765,\"scopes\":[\"rpc\"]}");
+            provisioning.ProfileId = "p-two";
+            provisioning.GameProviderPort = 8800;
+            refused = false;
+            try { provisioning.CreateLayout(); }
+            catch (InvalidOperationException) { refused = true; }
+            Assert(refused && !Directory.Exists(Path.Combine(root, "profiles", "p-two")),
+                "Discord and the Agent were given one port.");
+            provisioning.GameProviderPort = 1000;
+            refused = false;
+            try { provisioning.CreateLayout(); }
+            catch (InvalidOperationException) { refused = true; }
+            Assert(refused, "A port below 1024 was accepted.");
+            provisioning.GameProviderPort = 8802;
+            profile = provisioning.CreateLayout();
+            Dictionary<string, object> discord = jsonDocument(File.ReadAllText(
+                Path.Combine(profile, "discord", "discord_bridge_config.json")));
+            Assert(Convert.ToInt32(discord["port"]) == 8800 && discord.ContainsKey("scopes"),
+                "Discord configuration was not seeded with the profile's port.");
+
+            DirectorySecurity security = (DirectorySecurity)provisioning.Security(true);
+            Assert(security.AreAccessRulesProtected &&
+                security.GetOwner(typeof(SecurityIdentifier)).Value == "S-1-5-32-544",
+                "The profile ACL is not protected or not owned by Administrators.");
+            Dictionary<string, FileSystemRights> rights = new Dictionary<string, FileSystemRights>();
+            foreach (FileSystemAccessRule rule in security.GetAccessRules(true, false, typeof(SecurityIdentifier)))
+            {
+                Assert(rule.AccessControlType == AccessControlType.Allow && rule.InheritanceFlags ==
+                    (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit),
+                    "A profile directory rule is not an inherited allow rule.");
+                rights[rule.IdentityReference.Value] = rule.FileSystemRights;
+            }
+            Assert(rights.Count == 3 && rights["S-1-5-18"] == FileSystemRights.FullControl &&
+                rights["S-1-5-32-544"] == FileSystemRights.FullControl &&
+                (rights[sid] & FileSystemRights.Modify) == FileSystemRights.Modify &&
+                (rights[sid] & (FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership)) == 0,
+                "The profile ACL is not SYSTEM/Administrators full and owner Modify.");
+            if (new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
+            {
+                provisioning.ProtectTree(profile);
+                foreach (string path in Directory.GetFileSystemEntries(profile, "*", SearchOption.AllDirectories))
+                    Assert(File.GetAccessControl(path).AreAccessRulesProtected &&
+                        File.GetAccessControl(path).GetOwner(typeof(SecurityIdentifier)).Value == "S-1-5-32-544",
+                        "A profile element kept its inherited ACL: " + path);
             }
         }
 
@@ -4692,6 +3512,316 @@ namespace MoonWaker.HostConfigurator
                 Dictionary<string, object> client = value as Dictionary<string, object>;
                 if (client != null) yield return client;
             }
+        }
+    }
+
+    // The computer's one Vibepollo token for the Gateway. Only this elevated process writes
+    // gateway\vibepollo-api.json (in place, keeping the installer's ACL: Administrators, SYSTEM
+    // and read for the Gateway service). Every call pins the certificate Vibepollo keeps in its
+    // configuration directory, the same rule the Gateway applies.
+    internal static class VibepolloMachineApi
+    {
+        internal const string DefaultBaseUrl = "https://127.0.0.1:47990";
+        private const int MaxLocalFileBytes = 1024 * 1024;
+
+        internal static string LocalBaseUrl(string value)
+        {
+            Uri uri;
+            if (!Uri.TryCreate((value ?? "").Trim(), UriKind.Absolute, out uri) ||
+                uri.Scheme != Uri.UriSchemeHttps || !String.IsNullOrEmpty(uri.UserInfo) ||
+                !(uri.Host == "127.0.0.1" || uri.Host == "localhost") ||
+                uri.AbsolutePath != "/" || !String.IsNullOrEmpty(uri.Query) ||
+                !String.IsNullOrEmpty(uri.Fragment))
+                throw new InvalidOperationException("API Vibepollo musi używać HTTPS na 127.0.0.1 lub localhost.");
+            return "https://" + uri.Host + ":" + uri.Port;
+        }
+
+        internal static string SettingsPath(GatewayRegistryStore store)
+        {
+            return Path.Combine(store.GatewayDirectory, "vibepollo-api.json");
+        }
+
+        internal static Dictionary<string, object> ReadSettings(GatewayRegistryStore store)
+        {
+            try
+            {
+                return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(
+                    File.ReadAllText(SettingsPath(store))) ?? new Dictionary<string, object>();
+            }
+            catch { return new Dictionary<string, object>(); }
+        }
+
+        internal static void WriteSettings(GatewayRegistryStore store, string baseUrl, string token)
+        {
+            string path = SettingsPath(store);
+            if (!File.Exists(path))
+                throw new InvalidOperationException(
+                    "Brak chronionego pliku tokenu Vibepollo. Uruchom ponownie instalator MoonWaker Host.");
+            byte[] content = new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(
+                new Dictionary<string, object> { { "base_url", baseUrl }, { "token", token } }));
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.Read))
+            {
+                stream.SetLength(0);
+                stream.Write(content, 0, content.Length);
+            }
+        }
+
+        private static bool IsReparsePoint(string path)
+        {
+            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+        }
+
+        internal static string ConfigDirectory()
+        {
+            Dictionary<string, string> roots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (RegistryView view in new RegistryView[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                using (RegistryKey machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
+                using (RegistryKey uninstall = machine.OpenSubKey(
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", false))
+                {
+                    if (uninstall == null) continue;
+                    foreach (string name in uninstall.GetSubKeyNames())
+                    {
+                        using (RegistryKey entry = uninstall.OpenSubKey(name, false))
+                        {
+                            if (entry == null) continue;
+                            string display = Convert.ToString(entry.GetValue("DisplayName", ""));
+                            string location = Convert.ToString(entry.GetValue("InstallLocation", "")).Trim();
+                            if (display.IndexOf("vibepollo", StringComparison.OrdinalIgnoreCase) < 0 ||
+                                location.Length == 0) continue;
+                            try
+                            {
+                                string root = Path.GetFullPath(location).TrimEnd('\\', '/');
+                                if (Directory.Exists(root) && !IsReparsePoint(root)) roots[root] = root;
+                            }
+                            catch { }
+                        }
+                    }
+                }
+            }
+            if (roots.Count != 1)
+                throw new InvalidOperationException("Nie znaleziono jednoznacznej instalacji Vibepollo.");
+            string config = Path.Combine(new List<string>(roots.Keys)[0], "config");
+            if (!Directory.Exists(config) || IsReparsePoint(config))
+                throw new InvalidOperationException("Katalog konfiguracji Vibepollo jest niedostępny.");
+            return config;
+        }
+
+        private static byte[] ReadLocalFile(string path)
+        {
+            FileInfo info = new FileInfo(path);
+            if (!info.Exists || IsReparsePoint(path) || info.Length > MaxLocalFileBytes)
+                throw new InvalidOperationException("Plik Vibepollo jest niedostępny: " + path);
+            return File.ReadAllBytes(path);
+        }
+
+        internal static string ConfiguredFile(string configDirectory, string key, string fallback)
+        {
+            string value = fallback;
+            string conf = Path.Combine(configDirectory, "sunshine.conf");
+            if (File.Exists(conf))
+            {
+                List<string> values = new List<string>();
+                foreach (string rawLine in Encoding.UTF8.GetString(ReadLocalFile(conf))
+                    .TrimStart('﻿').Split('\r', '\n'))
+                {
+                    string line = System.Text.RegularExpressions.Regex.Replace(rawLine, "#.*$", "").Trim();
+                    System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(
+                        line, "^" + System.Text.RegularExpressions.Regex.Escape(key) + @"\s*=\s*(.*?)\s*$");
+                    if (!match.Success) continue;
+                    string item = match.Groups[1].Value.Trim();
+                    if (item.Length >= 2 && item[0] == item[item.Length - 1] && (item[0] == '"' || item[0] == '\''))
+                        item = item.Substring(1, item.Length - 2);
+                    if (item.Length > 0 && !values.Contains(item)) values.Add(item);
+                }
+                if (values.Count > 1)
+                    throw new InvalidOperationException("sunshine.conf podaje kilka wartości " + key + ".");
+                if (values.Count == 1) value = values[0];
+            }
+            string path = Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(configDirectory, value));
+            if (!path.StartsWith(configDirectory.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(key + " wskazuje plik poza konfiguracją Vibepollo.");
+            return path;
+        }
+
+        // Read access for the Gateway service to the files it reads from Vibepollo's
+        // configuration, found by the rules vibepollo_client.py applies: sunshine.conf, the
+        // state file and the HTTPS certificate it names, all inside the configuration
+        // directory and free of reparse points. The directories down to each file get
+        // traverse only, never listing: credentials also holds Vibepollo's private key.
+        // Returns the files that do not exist yet.
+        internal static List<string> GrantGatewayReadAccess()
+        {
+            string config = ConfigDirectory();
+            SecurityIdentifier gateway = (SecurityIdentifier)new NTAccount(@"NT SERVICE\MoonWakerGateway")
+                .Translate(typeof(SecurityIdentifier));
+            List<string> missing = new List<string>();
+            foreach (string file in new string[] {
+                Path.Combine(config, "sunshine.conf"),
+                ConfiguredFile(config, "file_state", "sunshine_state.json"),
+                ConfiguredFile(config, "cert", "credentials/cacert.pem") })
+            {
+                if (!File.Exists(file)) { missing.Add(file); continue; }
+                List<string> directories = new List<string>();
+                for (string directory = Path.GetDirectoryName(file);
+                    !String.Equals(directory, config, StringComparison.OrdinalIgnoreCase);
+                    directory = Path.GetDirectoryName(directory))
+                {
+                    if (IsReparsePoint(directory))
+                        throw new InvalidOperationException("Katalog Vibepollo jest punktem reparse: " + directory);
+                    directories.Add(directory);
+                }
+                directories.Add(config);
+                if (IsReparsePoint(file))
+                    throw new InvalidOperationException("Plik Vibepollo jest punktem reparse: " + file);
+                foreach (string directory in directories)
+                {
+                    DirectorySecurity security = Directory.GetAccessControl(directory, AccessControlSections.Access);
+                    security.AddAccessRule(new FileSystemAccessRule(gateway,
+                        FileSystemRights.Traverse | FileSystemRights.ReadAttributes, AccessControlType.Allow));
+                    Directory.SetAccessControl(directory, security);
+                }
+                FileSecurity fileSecurity = File.GetAccessControl(file, AccessControlSections.Access);
+                fileSecurity.AddAccessRule(new FileSystemAccessRule(gateway, FileSystemRights.Read,
+                    AccessControlType.Allow));
+                File.SetAccessControl(file, fileSecurity);
+            }
+            return missing;
+        }
+
+        internal static string PinnedCertificateSha256()
+        {
+            string configDirectory = ConfigDirectory();
+            string pem = Encoding.ASCII.GetString(ReadLocalFile(
+                ConfiguredFile(configDirectory, "cert", "credentials/cacert.pem")));
+            System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(pem,
+                @"-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+/=\s]+?)\s*-----END CERTIFICATE-----");
+            if (!match.Success) throw new InvalidOperationException("Certyfikat Vibepollo jest nieczytelny.");
+            byte[] der = Convert.FromBase64String(
+                System.Text.RegularExpressions.Regex.Replace(match.Groups[1].Value, @"\s", ""));
+            return Sha256Hex(der);
+        }
+
+        private static string Sha256Hex(byte[] value)
+        {
+            using (SHA256 sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(value)).Replace("-", "").ToLowerInvariant();
+        }
+
+        internal static string Request(string baseUrl, string method, string path, string authorization,
+            object body, string pinnedSha256)
+        {
+            System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
+            System.Net.HttpWebRequest request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(baseUrl + path);
+            request.Method = method;
+            request.Timeout = 15000;
+            request.ReadWriteTimeout = 15000;
+            request.Accept = "application/json";
+            request.Headers[System.Net.HttpRequestHeader.Authorization] = authorization;
+            // Authentication is this pin: the self-signed certificate names no host and chains to no CA.
+            request.ServerCertificateValidationCallback = delegate(object sender,
+                System.Security.Cryptography.X509Certificates.X509Certificate certificate,
+                System.Security.Cryptography.X509Certificates.X509Chain chain,
+                System.Net.Security.SslPolicyErrors errors)
+            {
+                return certificate != null && Sha256Hex(certificate.GetRawCertData()) == pinnedSha256;
+            };
+            try
+            {
+                // The connection, and so the certificate check, starts here when there is a body.
+                if (body != null)
+                {
+                    byte[] content = new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(body));
+                    request.ContentType = "application/json";
+                    request.ContentLength = content.Length;
+                    using (Stream stream = request.GetRequestStream()) stream.Write(content, 0, content.Length);
+                }
+                using (System.Net.WebResponse response = request.GetResponse())
+                using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+                    return reader.ReadToEnd();
+            }
+            catch (System.Net.WebException error)
+            {
+                System.Net.HttpWebResponse response = error.Response as System.Net.HttpWebResponse;
+                if (response != null)
+                    throw new InvalidOperationException("Vibepollo odrzuciło żądanie " + path +
+                        " (HTTP " + (int)response.StatusCode + ").");
+                if (error.Status == System.Net.WebExceptionStatus.TrustFailure)
+                    throw new InvalidOperationException(
+                        "Certyfikat Vibepollo nie zgadza się z plikiem w jego konfiguracji.");
+                throw new InvalidOperationException("API Vibepollo nie odpowiada: " + error.Message);
+            }
+        }
+
+        internal static string CreateToken(string baseUrl, string username, string password, string pin)
+        {
+            Dictionary<string, object> scopes = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(
+                File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "vibepollo-token-scopes.json")));
+            string basic = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(username + ":" + password));
+            string raw = Request(baseUrl, "POST", "/api/token", basic,
+                new Dictionary<string, object> { { "scopes", scopes["scopes"] } }, pin).Trim();
+            string token = raw;
+            try
+            {
+                object parsed = new JavaScriptSerializer().DeserializeObject(raw);
+                Dictionary<string, object> document = parsed as Dictionary<string, object>;
+                if (parsed is string) token = (string)parsed;
+                else if (document != null)
+                    token = Convert.ToString(document.ContainsKey("token") ? document["token"] :
+                        document.ContainsKey("access_token") ? document["access_token"] : "");
+            }
+            catch (ArgumentException) { }
+            if (String.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Vibepollo nie zwróciło tokenu API.");
+            return token.Trim();
+        }
+
+        // "Pobierz / odnów token": a token from /api/token with the panel's administrator login
+        // (or a pasted one), checked with /api/apps and written for the Gateway; every save also
+        // repairs the Gateway's read access (e.g. after Vibepollo regenerated its certificate).
+        // Returns the Vibepollo files that do not exist yet.
+        internal static List<string> SaveToken(GatewayRegistryStore store, VibepolloInput input)
+        {
+            string problem = input.Problem();
+            if (problem != null) throw new InvalidOperationException(problem);
+            string baseUrl = LocalBaseUrl(input.Url);
+            string pin = PinnedCertificateSha256();
+            string value = input.Automatic
+                ? CreateToken(baseUrl, input.Username.Trim(), new string(input.Password), pin)
+                : new string(input.Token).Trim();
+            Request(baseUrl, "GET", "/api/apps", "Bearer " + value, null, pin);
+            WriteSettings(store, baseUrl, value);
+            return GrantGatewayReadAccess();
+        }
+    }
+
+    // What "Pobierz / odnów token" asks for. It is typed only in the helper's elevated window:
+    // the panel's administrator login is never in Host Control or in the change channel.
+    internal sealed class VibepolloInput
+    {
+        internal bool Automatic = true;
+        internal string Url = VibepolloMachineApi.DefaultBaseUrl;
+        internal string Username = "";
+        internal char[] Password = new char[0];
+        internal char[] Token = new char[0];
+
+        // Null when the input can be used.
+        internal string Problem()
+        {
+            try { VibepolloMachineApi.LocalBaseUrl(Url); }
+            catch (InvalidOperationException error) { return error.Message; }
+            if (Automatic && (Username.Trim().Length == 0 || Password.Length == 0))
+                return "Podaj login i hasło administratora Vibepollo albo wklej istniejący token.";
+            if (!Automatic && !System.Text.RegularExpressions.Regex.IsMatch(
+                    new string(Token).Trim(), "^[\\x21-\\x7e]{1,4096}$"))
+                return "Wklej token API Vibepollo albo włącz jego automatyczne pobranie.";
+            return null;
+        }
+
+        internal void Clear()
+        {
+            Array.Clear(Password, 0, Password.Length);
+            Array.Clear(Token, 0, Token.Length);
         }
     }
 }

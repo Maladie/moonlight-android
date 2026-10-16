@@ -95,16 +95,14 @@ class StreamerControlOperation:
         })
 
     @staticmethod
-    def _await_idle(proxy, profile_id, timeout=5.0, trace=None):
+    def _await_idle(streamer, timeout=5.0, trace=None):
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
             try:
-                ok, observed = proxy(
-                    "vibepollo", "/snapshot?force=1",
-                    timeout=min(2.0, remaining), profile_id=profile_id)
+                ok, observed = streamer.control_snapshot(timeout=min(2.0, remaining))
                 if trace is not None:
                     session = observed.get("session") if isinstance(observed, dict) else None
                     clients = ControlOperationPolicy._snapshot_items(
@@ -157,10 +155,9 @@ class StreamerControlOperation:
             time.sleep(min(0.25, remaining))
 
     @staticmethod
-    def force_close(proxy, profile_id, trace=None):
+    def force_close(streamer, trace=None):
         try:
-            ok, result = proxy("vibepollo", "/action/close-app", timeout=8.0,
-                               profile_id=profile_id)
+            ok, result = streamer.close_app(timeout=8.0)
             if trace is not None:
                 trace["close_http_ok"] = int(bool(ok))
                 trace["close_http_status"] = 200 if ok else (
@@ -170,10 +167,10 @@ class StreamerControlOperation:
             if trace is not None:
                 trace["close_http_ok"] = 0
                 trace["close_http_status"] = 0
-        return StreamerControlOperation._await_idle(proxy, profile_id, trace=trace)
+        return StreamerControlOperation._await_idle(streamer, trace=trace)
 
     @staticmethod
-    def close(proxy, profile_id, stream, trace=None, host_held=False):
+    def close(streamer, stream, trace=None, host_held=False):
         """Caller holds the exact Gateway permit through observation and effect."""
         def result(closed, reason, stage):
             if trace is not None:
@@ -181,18 +178,18 @@ class StreamerControlOperation:
             return closed, reason
 
         allowed, reason = StreamerControlOperation.closable(
-            proxy, profile_id, stream, trace, host_held)
+            streamer, stream, trace, host_held)
         if not allowed or reason == "streamer_already_idle":
             return allowed, reason
         # An accepted close is asynchronous, and Vibepollo can also return HTTP
         # 500 after closing or lose the response.  In every case, keep the same
         # permit until fresh physical evidence confirms the postcondition.
-        if StreamerControlOperation.force_close(proxy, profile_id, trace=trace):
+        if StreamerControlOperation.force_close(streamer, trace=trace):
             return result(True, "streamer_idle_after_close", "idle_confirmed")
         return result(False, "streamer_close_unconfirmed", "observe_idle")
 
     @staticmethod
-    def closable(proxy, profile_id, stream, trace=None, host_held=False):
+    def closable(streamer, stream, trace=None, host_held=False):
         """The decision `close` acts on, without its effect: (True, "streamer_already_idle"
         | "streamer_close_allowed") or (False, refusal). A host-held close of the Gateway's
         own record uses `host_streamer_close_allowed`, every other close the client rule."""
@@ -204,17 +201,14 @@ class StreamerControlOperation:
                 trace.update({"reason": reason, "close_stage": stage})
             return closed, reason
 
-        def snapshot(timeout=8.0):
-            return proxy("vibepollo", "/snapshot?force=1", timeout=timeout,
-                         profile_id=profile_id)
-        # A forced snapshot fans out to several local Vibepollo endpoints. One
+        # A control snapshot fans out to several Vibepollo endpoints. One
         # transiently unavailable source is not evidence that another owner has
         # the stream, so retry only the unavailable observation. An authoritative
         # identity mismatch still fails closed immediately.
         observation_deadline = time.monotonic() + 12.0
         while True:
             try:
-                ok, observed = snapshot(min(8.0, max(
+                ok, observed = streamer.control_snapshot(timeout=min(8.0, max(
                     0.1, observation_deadline - time.monotonic())))
             except OSError:
                 ok, observed = False, None

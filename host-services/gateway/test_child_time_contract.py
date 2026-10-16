@@ -12,6 +12,9 @@ from unittest import mock
 import wakeplay_gateway
 from test_child_library_integration import BridgeFixture
 from wakeplay_gateway import GatewayState, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 GAME_ID = "steam:123"
@@ -55,7 +58,6 @@ class ChildTimeContractTest(unittest.TestCase):
                     "windows_account_name": "TESTPC\\Player",
                     "account_mapping_status": "resolved",
                     "game_provider_bridge": "http://127.0.0.1:8780",
-                    "playnite_bridge": "http://127.0.0.1:8780",
                 },
                 "kid": {
                     "id": "kid",
@@ -76,7 +78,7 @@ class ChildTimeContractTest(unittest.TestCase):
                 "vibepollo_client_uuids": {"parent": "vibepollo-parent"},
             }],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.client = self.state.config["clients"][0]
         self.monotonic = 100.0
         self.wall = datetime(2026, 9, 7, 19, 50, tzinfo=timezone.utc)
@@ -348,7 +350,7 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
                 },
             }],
         }), encoding="utf-8")
-        self.gateway = GatewayState(self.config_path, None)
+        self.gateway = GatewayState(self.config_path)
         self.client = self.gateway.config["clients"][0]
         self.monotonic = 100.0
         self.wall = datetime(2026, 9, 7, 19, 50, tzinfo=timezone.utc)

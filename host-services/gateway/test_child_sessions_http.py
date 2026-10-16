@@ -11,6 +11,9 @@ from unittest import mock
 
 import wakeplay_gateway
 from wakeplay_gateway import GatewayHandler, GatewayState, sha256_text
+from control_snapshot_fixture import route_vibepollo_through_proxy
+
+route_vibepollo_through_proxy(wakeplay_gateway.GatewayState)
 
 
 SESSION_ID = "01234567-89ab-cdef-0123-456789abcdef"
@@ -36,9 +39,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
                     "id": "parent", "kind": "standard", "name": "Parent",
                     "enabled": True,
                     "windows_account_sid": "S-1-5-21-1-2-3-1001",
-                    "owner_sid": "S-1-5-21-1-2-3-1001",
                     "windows_account_name": "TESTPC\\Parent",
-                    "owner": "TESTPC\\Parent",
                     "account_mapping_status": "resolved",
                 },
                 "kid": {
@@ -60,7 +61,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
                 "vibepollo_client_uuids": {"parent": VIBE_UUID},
             }],
         }), encoding="utf-8")
-        self.state = GatewayState(self.config_path, None)
+        self.state = GatewayState(self.config_path)
         self.state.child_profiles_api_enabled = True
         self.client = self.state.client_for_token("child-token")
         self.clock = [0.0, datetime(2026, 1, 3, 12, 0, tzinfo=timezone.utc)]
@@ -267,7 +268,6 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertEqual("parent", child["execution_profile_id"])
         self.assertFalse(child["permissions"]["manage_children"])
         self.assertNotIn("discord_bridge_online", child)
-        self.assertIn("virtualhere_available", child)
 
     def test_child_capabilities_negotiate_control_without_parent_health_or_effects(self):
         with mock.patch.object(self.state, "proxy") as proxy, \
@@ -816,7 +816,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertTrue(result["recovered"])
         self.assertFalse(result["cleanup_confirmed"])
-        restarted = GatewayState(self.config_path, None)
+        restarted = GatewayState(self.config_path)
         restarted.child_profiles_api_enabled = True
         restarted.child_time_clock = lambda: tuple(self.clock)
         restarted.proxy = self.state.proxy
@@ -911,7 +911,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
             suspend.assert_not_called()
             self.assertIs(session, self.state.child_time_session)
 
-    def test_child_install_uninstall_and_virtualhere_match_parent_capabilities(self):
+    def test_child_install_uninstall_match_parent_capabilities(self):
         for action in ("install", "uninstall"):
             status, result = self.post(
                 "/api/v1/game/" + action, {"game_id": "steam:123"},
@@ -922,19 +922,6 @@ class ChildSessionsHttpTest(unittest.TestCase):
             path for name, path, _body in self.bridge_calls
             if name == "game_provider" and path in {"/game/install", "/game/uninstall"}
         ])
-        with mock.patch.object(self.state, "virtualhere_action",
-                               return_value=(200, {"ok": True})) as action:
-            status, result = self.post(
-                "/api/v1/virtualhere/restart", {}, profile="kid",
-                capability=True, request_id="child-virtualhere")
-        self.assertEqual(200, status, result)
-        action.assert_called_once_with("restart", {})
-        with mock.patch.object(self.state, "virtualhere_state",
-                               return_value=(200, {"ok": True})) as state:
-            status, result = self.get(
-                "/api/v1/virtualhere/state", profile="kid", capability=True)
-        self.assertEqual(200, status, result)
-        state.assert_called_once_with(False)
 
     def test_child_discord_and_unrelated_destructive_routes_are_rejected(self):
         for path in ("/api/v1/discord/home", "/api/v1/vibepollo/action/restart"):
