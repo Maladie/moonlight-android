@@ -97,6 +97,11 @@ final class ConsolePanel {
 
     private enum Kind { DESTRUCTIVE, STEPPER, TOGGLE }
 
+    /** Moves a stepper's range and value in place, without its change callback. */
+    private interface StepperRange {
+        void set(int min, int max, int value);
+    }
+
     private final Context context;
     private final LockableScrollView scroll;
     private final ConsoleGlass glass;
@@ -462,11 +467,12 @@ final class ConsolePanel {
         Slider bar = slider;
         result.setTag(R.id.console_panel_row_kind, Kind.STEPPER);
         result.setTag(R.id.console_panel_step_label, stepLabel);
+        int[] bounds = {min, max};
         int[] current = {Math.max(min, Math.min(max, value))};
         Runnable show = () -> {
             String formatted = format.apply(current[0]);
             SpannableString text = new SpannableString(
-                    stepperText(current[0], min, max, formatted));
+                    stepperText(current[0], bounds[0], bounds[1], formatted));
             int arrow = Math.round(ARROW_SP * context.getResources().getDisplayMetrics().scaledDensity);
             for (int index = 0; index < text.length(); index++) {
                 char glyph = text.charAt(index);
@@ -490,20 +496,37 @@ final class ConsolePanel {
                 return false;
             }
             int direction = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1;
-            if (!handlesStepKey(current[0], direction, min, max, event.getRepeatCount())) {
+            if (!handlesStepKey(current[0], direction, bounds[0], bounds[1],
+                    event.getRepeatCount())) {
                 return false;
             }
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
                 int repeat = event.getRepeatCount();
                 int stride = step * (repeat >= 20 ? 10 : repeat >= 6 ? 5 : 1);
-                set.accept(stepValue(current[0], direction, min, max, stride));
+                set.accept(stepValue(current[0], direction, bounds[0], bounds[1], stride));
             }
             return true;
         });
         // No wrap: none of the values is cyclic, and max → min would e.g. drop the bitrate.
-        result.setOnClickListener(view -> set.accept(stepValue(current[0], 1, min, max, step)));
+        result.setOnClickListener(view -> set.accept(stepValue(current[0], 1, bounds[0],
+                bounds[1], step)));
+        result.setTag(R.id.console_panel_stepper_range, (StepperRange) (low, high, next) -> {
+            bounds[0] = low;
+            bounds[1] = high;
+            current[0] = Math.max(low, Math.min(high, next));
+            if (bar != null) bar.setRange(low, high, format.apply(low), format.apply(high));
+            show.run();
+        });
         show.run();
         return result;
+    }
+
+    /**
+     * Gives a stepper row a new range and value, e.g. when another row bounds it; its change
+     * callback does not run. The row stays in place, so focus and held keys are kept.
+     */
+    static void setStepper(View row, int min, int max, int value) {
+        ((StepperRange) row.getTag(R.id.console_panel_stepper_range)).set(min, max, value);
     }
 
     /** A number field row; OK opens the TV's number keyboard. */
@@ -814,11 +837,11 @@ final class ConsolePanel {
     private static final class Slider extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF track = new RectF();
-        private final int min;
-        private final int max;
+        private int min;
+        private int max;
         private final int[] ticks;
-        private final String low;
-        private final String high;
+        private String low;
+        private String high;
         private int value;
 
         Slider(Context context, int min, int max, int[] ticks, String low, String high) {
@@ -836,6 +859,14 @@ final class ConsolePanel {
         void setValue(int value) {
             if (this.value == value) return;
             this.value = value;
+            invalidate();
+        }
+
+        void setRange(int min, int max, String low, String high) {
+            this.min = min;
+            this.max = max;
+            this.low = low;
+            this.high = high;
             invalidate();
         }
 

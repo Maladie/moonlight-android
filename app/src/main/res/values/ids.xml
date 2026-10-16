@@ -7,4 +7,5 @@
     <item name="playnite_tile_layout" type="id" />
     <item name="console_panel_row_kind" type="id" />
     <item name="console_panel_step_label" type="id" />
+    <item name="console_panel_stepper_range" type="id" />
 </resources>

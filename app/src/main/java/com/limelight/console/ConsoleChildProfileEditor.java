@@ -1,6 +1,7 @@
 package com.limelight.console;
 
 import android.app.Activity;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.view.View;
 import android.view.ViewGroup;
@@ -278,7 +279,8 @@ final class ConsoleChildProfileEditor {
         dot.setStroke(Math.round(density), 0x66FFFFFF);
         int size = Math.round(14 * density);
         dot.setSize(size, size);
-        label.setCompoundDrawablesRelativeWithIntrinsicBounds(dot, null, null, null);
+        Drawable[] kept = label.getCompoundDrawablesRelative();
+        label.setCompoundDrawablesRelativeWithIntrinsicBounds(dot, kept[1], kept[2], kept[3]);
         label.setCompoundDrawablePadding(Math.round(ConsolePanel.ICON_GAP_DP * density));
     }
 
@@ -293,7 +295,10 @@ final class ConsoleChildProfileEditor {
         return rows;
     }
 
-    /** One day's page; every change rebuilds it so the other rows' bounds follow. */
+    /**
+     * One day's page. A step moves the other rows' ranges in place (a rebuild flickers the whole
+     * card); only switching the day on or off rebuilds it, since rows appear or go.
+     */
     private void showDay(int index, int focus) {
         ConsolePanel panel = screen.panel();
         Day day = days[index];
@@ -306,27 +311,36 @@ final class ConsoleChildProfileEditor {
         rows.add(allowed);
         if (day.enabled) {
             String step = activity.getString(R.string.console_child_step, STEP_MINUTES);
-            rows.add(panel.stepper(s(R.string.console_child_day_start), day.startMinute, 0,
-                    day.endMinute - STEP_MINUTES, STEP_MINUTES, ConsoleChildProfileEditor::clock,
-                    step, new int[0], start -> {
+            LinearLayout[] steppers = new LinearLayout[3];
+            Runnable bound = () -> {
+                Day current = days[index];
+                int window = current.windowMinutes();
+                ConsolePanel.setStepper(steppers[0], 0, current.endMinute - STEP_MINUTES,
+                        current.startMinute);
+                ConsolePanel.setStepper(steppers[1], current.startMinute + STEP_MINUTES,
+                        MINUTES_PER_DAY, current.endMinute);
+                ConsolePanel.setStepper(steppers[2], Math.min(STEP_MINUTES, window), window,
+                        Math.min(current.limitMinutes(), window));
+            };
+            steppers[0] = panel.stepper(s(R.string.console_child_day_start), day.startMinute,
+                    0, day.endMinute - STEP_MINUTES, STEP_MINUTES,
+                    ConsoleChildProfileEditor::clock, step, new int[0], start -> {
                         days[index] = days[index].withWindow(start, days[index].endMinute);
-                        showDay(index, 1);
-                    }));
-            rows.add(panel.stepper(s(R.string.console_child_day_end), day.endMinute,
+                        bound.run();
+                    });
+            steppers[1] = panel.stepper(s(R.string.console_child_day_end), day.endMinute,
                     day.startMinute + STEP_MINUTES, MINUTES_PER_DAY, STEP_MINUTES,
                     ConsoleChildProfileEditor::clock, step, new int[0], end -> {
                         days[index] = days[index].withWindow(days[index].startMinute, end);
-                        showDay(index, 2);
-                    }));
+                        bound.run();
+                    });
             int window = day.windowMinutes();
-            rows.add(panel.stepper(s(R.string.console_child_day_limit),
+            steppers[2] = panel.stepper(s(R.string.console_child_day_limit),
                     Math.min(day.limitMinutes(), window), Math.min(STEP_MINUTES, window), window,
-                    STEP_MINUTES, minutes -> minutes >= window
+                    STEP_MINUTES, minutes -> minutes >= days[index].windowMinutes()
                             ? s(R.string.console_child_day_unlimited) : duration(minutes),
-                    step, new int[0], limit -> {
-                        days[index] = days[index].withLimit(limit);
-                        showDay(index, 3);
-                    }));
+                    step, new int[0], limit -> days[index] = days[index].withLimit(limit));
+            Collections.addAll(rows, steppers);
         }
         rows.add(panel.section(s(R.string.console_child_day_copy)));
         TextView workdays = panel.action(s(R.string.console_child_day_copy_workdays));
@@ -335,7 +349,8 @@ final class ConsoleChildProfileEditor {
         TextView week = panel.action(s(R.string.console_child_day_copy_week));
         week.setOnClickListener(view -> copy(index, DAY_COUNT));
         rows.add(week);
-        screen.showPage(s(DAY_LABELS[index]), summary(day), rows.toArray(new View[0]),
+        screen.showPage(s(DAY_LABELS[index]), s(R.string.console_child_day_details),
+                rows.toArray(new View[0]),
                 focus, s(R.string.console_child_profile_step_schedule));
     }
 

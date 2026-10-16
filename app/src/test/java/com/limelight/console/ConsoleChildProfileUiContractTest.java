@@ -219,6 +219,16 @@ public class ConsoleChildProfileUiContractTest {
         assertEquals("24:00", ConsoleChildProfileEditor.clock(1440));
     }
 
+    /** TV 2026-10-16: rebuilding the day page on every step flickered the whole card. */
+    @Test public void dayStepsMoveRowsInPlace() throws Exception {
+        String editor = source("src/main/java/com/limelight/console/"
+                + "ConsoleChildProfileEditor.java");
+        String day = between(editor, "private void showDay(", "private void copy(");
+        // Only switching the day on or off rebuilds the page.
+        assertEquals(1, day.split("showDay\\(index", -1).length - 1);
+        assertTrue(day.contains("ConsolePanel.setStepper("));
+    }
+
     @Test public void parentPinUsesThePinPage() throws Exception {
         String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
         String authorize = between(activity, "private void reauthorizeChildManagementFor(",

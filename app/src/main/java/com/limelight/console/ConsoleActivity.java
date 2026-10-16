@@ -5546,10 +5546,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         for (HostGatewayClient.ChildProfile child : profiles.children) {
             if (child == null || !parentProfileId.equals(child.parentProfileId)) continue;
             ConsoleChildProfileEditor.Draft draft = childDraft(child, profiles.revision);
-            LinearLayout row = consolePanel.value(draft.name.isEmpty()
+            // Today's plan on a second line, so the name keeps the row's whole width.
+            TextView row = consolePanel.navigation(consolePanel.withDetail(draft.name.isEmpty()
                             ? getString(R.string.console_child_profile_title) : draft.name,
-                    ConsoleChildProfileEditor.todaySummary(this, draft, today));
-            ConsoleChildProfileEditor.paintAvatar((TextView) row.getChildAt(0), draft.avatar);
+                    ConsoleChildProfileEditor.todaySummary(this, draft, today)));
+            ConsoleChildProfileEditor.paintAvatar(row, draft.avatar);
             row.setOnClickListener(view -> showChildEditor(host, draft, false, token));
             actions.add(row);
         }

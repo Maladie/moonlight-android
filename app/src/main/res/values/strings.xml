@@ -667,6 +667,7 @@
     <string name="console_child_avatar_step">colour</string>
     <string name="console_child_management_delete_named">Delete profile %1$s</string>
     <string name="console_child_step">%1$d min</string>
+    <string name="console_child_day_details">Play is possible between From and Until, at most the daily limit in total.</string>
     <string name="console_child_day_unlimited">no limit</string>
     <string name="console_child_day_copy">Copy settings</string>
     <string name="console_child_day_copy_workdays">To Monday–Friday</string>

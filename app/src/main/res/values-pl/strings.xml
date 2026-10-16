@@ -632,6 +632,7 @@
     <string name="console_child_avatar_step">kolor</string>
     <string name="console_child_management_delete_named">Usuń profil %1$s</string>
     <string name="console_child_step">%1$d min</string>
+    <string name="console_child_day_details">Gra możliwa między „Od” i „Do”, łącznie najwyżej limit dzienny.</string>
     <string name="console_child_day_unlimited">bez limitu</string>
     <string name="console_child_day_copy">Kopiuj ustawienia</string>
     <string name="console_child_day_copy_workdays">Na dni robocze (pn–pt)</string>
