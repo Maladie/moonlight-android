@@ -1,6 +1,6 @@
 {
   "product": "MoonWaker Host",
-  "version": "0.7.138",
-  "build": "2026.10.16-update-tiles",
+  "version": "0.7.139",
+  "build": "2026.10.16-no-licence",
   "protocol_version": 7
 }
