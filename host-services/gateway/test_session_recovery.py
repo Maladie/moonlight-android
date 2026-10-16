@@ -450,6 +450,37 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertEqual(200, status, parent)
         self.assertEqual([("game_provider", False)], reads)
 
+    def test_parent_takes_over_the_stream_after_the_childs_game_ended(self):
+        child_id = self.start_child()
+        self.processes.clear()
+        self.bridge.state.current = {"id": "", "state": "idle"}
+        self.bridge.state.refresh_running_games()
+        self.fixture.clock.advance(5)
+        _status, ended = self.gateway.child_time_housekeeping_tick()
+        self.assertEqual(("ended", "game_ended"), (ended["state"], ended["reason"]))
+        stream = dict(self.gateway.control_state["stream"])
+        self.assertEqual(child_id, stream["child_session_id"])
+
+        # The fences still hold: a stale generation or another TV gets no permit.
+        stale = {**stream, "generation": stream["generation"] - 1}
+        status, rejected = self.acquire("parent", "reauthorize", stream=stale)
+        self.assertEqual(409, status, rejected)
+        self.assertEqual("retained_owner_unconfirmed", rejected["reason"])
+        other = {**self.client, "id": "other-tv"}
+        status, rejected = self.gateway.control_operation_acquire(other, {
+            "operation_id": "other-tv-takeover", "intent": "reauthorize",
+            "stream_session_id": stream["stream_session_id"], "sunshine_app_id": 7,
+            "expected_generation": stream["generation"], "observed_sunshine_app_id": 7,
+            "child_session_id": ""}, "other-tv-takeover", 0)
+        self.assertEqual(409, status, rejected)
+        self.assertEqual(stream, self.gateway.control_state["stream"])
+
+        status, parent = self.acquire("parent", "reauthorize")
+        self.assertEqual(200, status, parent)
+        self.assertEqual("parent", self.gateway.control_state["stream"]["actor_profile_id"])
+        self.assertEqual("", self.gateway.control_state["stream"]["child_session_id"])
+        self.assertEqual([], self.closes)
+
     def test_child_session_ending_during_a_read_yields_no_permit(self):
         # The entitlement gate is re-checked under the lock after every unlocked read.
         child_id = self.start_child()

@@ -4874,9 +4874,12 @@ class GatewayState:
                             "client_id", "execution_profile_id", "stream_session_id", "sunshine_app_id"))
                     previous_child = str((stream or {}).get("child_session_id") or "")
                     previous_ended = self.child_time_completed.get(previous_child, {})
+                    # Lease-only releases leave the stream retained for the next actor:
+                    # the client's verified stop (game_stopped), the host's own observed
+                    # game end (game_ended) and the two handoffs.
                     if not exact or previous_child and previous_child != child_session_id \
                             and previous_ended.get("reason") not in {
-                                "game_stopped", "actor_replaced", "replacement"}:
+                                "game_stopped", "game_ended", "actor_replaced", "replacement"}:
                         return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                      "reason": "retained_owner_unconfirmed"}
                     target = stream if self._child_time_process_token(stream) \
