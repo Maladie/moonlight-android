@@ -77,6 +77,21 @@ for readiness, Play or close, and neither opens a new `state_episode`.
   game for its status line only with a non-zero start, so it reads "Online" beside a game
   its parent runs.
 
+### Streamer application
+
+`streamer` (Gateway, required): the Sunshine/Vibepollo application the streamer runs, as
+`{"evidence", "app_id"}`. `app_id` is the GameStream app id clients launch (Vibepollo's
+`/api/apps` `id` of `current_app`). `VERIFIED` with `app_id > 0`: it runs that app. `ABSENT`
+with `app_id` `0`: it runs none. `UNAVAILABLE` with `app_id` `0`: the read could not tell
+(Vibepollo unavailable, malformed, or a current app without exactly one listed id); `0` is
+then not "none", and a client decides on unknown explicitly. The Gateway reads it once per
+successful provider read, outside the Gateway lock, bounded by Vibepollo's per-source budget
+(0.6 s); a failed provider read answers `503` without it. It is host-global and not scoped:
+Sunshine's serverinfo already reports the same running app id to every paired client. The
+client's session projection holds it from the last accepted observation for 15 s
+(`OBSERVATION_LIVENESS_MS`) and retires it at a termination boundary; it replaced the client's
+serverinfo `runningGameId` for close, host-sleep, warm-up and app-card decisions.
+
 ## Current lifecycle events
 
 The Bridge currently publishes:

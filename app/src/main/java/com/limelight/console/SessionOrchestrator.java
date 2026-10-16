@@ -70,7 +70,7 @@ public final class SessionOrchestrator implements AutoCloseable {
         final HostProfileKey profileKey;
         final NvApp target;
         final ComputerDetails host;
-        /** The host's session when it answered, before the warm-up observed it. */
+        /** The host's session once it answered and the warm-up observed it. */
         final SessionSnapshot readyProjection;
 
         PreparedWarmUp(NvApp target, ComputerDetails host, HostProfileKey profileKey,
@@ -1242,7 +1242,7 @@ public final class SessionOrchestrator implements AutoCloseable {
         return (s.state == SessionModel.State.HOME_LIVE
                 || s.state == SessionModel.State.PARKED_LIVE)
                 && r.projection != null
-                && r.projection.hostRunningAppId == s.appId
+                && r.projection.streamerAppId == s.appId
                 && switchKeepsHostGame(s.playniteGameId, r.projection, intent.playniteGameId)
                 && s.hostId.equalsIgnoreCase(intent.hostId)
                 && (!s.profileId.equals(intent.profileId)
@@ -1300,7 +1300,7 @@ public final class SessionOrchestrator implements AutoCloseable {
         boolean exactRetained = !s.streamSessionId.isEmpty()
                 && s.hostId.equalsIgnoreCase(intent.hostId)
                 && s.executionProfileId.equals(r.executionProfileId)
-                && r.projection != null && s.appId == r.projection.hostRunningAppId;
+                && r.projection != null && s.appId == r.projection.streamerAppId;
         return exactRetained ? ClosePath.CLOSE_RETAINED : ClosePath.CLOSE_DIRECT;
     }
 
@@ -1378,14 +1378,17 @@ public final class SessionOrchestrator implements AutoCloseable {
                 prepared.target.getAppId(), runningGame, nowMillis);
     }
 
-    /** The host runs an app other than {@code appId}. */
+    /** The host's streamer is known to run an app other than {@code appId}; unknown is not. */
     static boolean anotherAppRuns(SessionSnapshot projection, int appId) {
-        return projection.hostRunningAppId != 0 && projection.hostRunningAppId != appId;
+        return projection.streamerAppId > 0 && projection.streamerAppId != appId;
     }
 
-    /** A stream started while the host runs no app owns the fresh host session. */
+    /**
+     * A stream started while the host is known to run no app owns the fresh host session; an
+     * unknown streamer proves nothing, so that stream owns nothing it could later close.
+     */
     static boolean ownsFreshSession(SessionSnapshot projection) {
-        return projection.hostRunningAppId == 0;
+        return projection.streamerAppId == 0;
     }
 
     // ---------------------------------------------------------------- stream-screen rows

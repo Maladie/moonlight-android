@@ -14,6 +14,10 @@ class RoutedVibepollo:
 
     def __init__(self, state):
         self.state = state
+        self.running_app = None  # running_app_id(): None (unknown) unless a test sets it
+
+    def running_app_id(self, timeout=0.6):
+        return self.running_app
 
     def _route(self, path, timeout):
         try:

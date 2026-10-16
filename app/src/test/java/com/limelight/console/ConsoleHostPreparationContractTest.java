@@ -68,7 +68,10 @@ public class ConsoleHostPreparationContractTest {
         assertOrdered(fresh, "!ConsoleActionCatalog.isPaired(ready)",
                 "new SessionOrchestrator.PreparedWarmUp(");
         assertFalse(fresh.substring(0, fresh.indexOf("new SessionOrchestrator.PreparedWarmUp("))
-                .contains("hostRunningAppId"));
+                .contains("streamerAppId"));
+        // The ready projection's streamer app comes from an observation made after the answer.
+        assertOrdered(fresh, "refreshObservationNow(ready, intent.profileId);",
+                "SessionSnapshot readyProjection = resolveSessionSnapshot(ready, intent.profileId);");
         String retained = section(source, "@Override public NvApp verifiedRetainedTarget(",
                 "@Override public List<NvApp> refreshApps(");
         assertTrue(retained.contains("request.action != HostLaunchPreflight.Action.SWITCH_RETAINED"));

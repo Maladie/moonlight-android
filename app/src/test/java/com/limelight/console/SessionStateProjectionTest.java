@@ -122,7 +122,7 @@ public class SessionStateProjectionTest {
                 "suspend-a", "host", "child", 42, "game", "Game", "", 1L,
                 "parent");
         SessionStateResolver.LocalFacts local = new SessionStateResolver.LocalFacts(
-                suspended, false, null, false, false, false, 0);
+                suspended, false, null, false, false, false);
 
         SessionSnapshot snapshot = owner.rendered(m.snapshot(), local, 0L);
 
@@ -167,8 +167,7 @@ public class SessionStateProjectionTest {
 
     private static SessionStateResolver.LocalFacts local(
             SessionResumeManager.PendingSession pending) {
-        return new SessionStateResolver.LocalFacts(null, false, pending, false, false, false,
-                0);
+        return new SessionStateResolver.LocalFacts(null, false, pending, false, false, false);
     }
     @Test public void acceptReturnsTheProjectionOfItsOwnObservationNotALaterOne() {
         long first = owner.nextRequestOrdinal();
@@ -946,12 +945,32 @@ public class SessionStateProjectionTest {
         assertNull(observe("host", ready("boot", 2L, inFlight)).accepted);
     }
 
-    @Test public void projectionCarriesTheRunningAppOfTheHostPollItWasGiven() {
-        SessionStateResolver.LocalFacts local = new SessionStateResolver.LocalFacts(
-                null, false, null, false, false, false, 42);
-
-        assertEquals(42, owner.rendered(m.snapshot(), local, 1L).hostRunningAppId);
-        assertEquals(0, owner.current(m.snapshot(), 2L).hostRunningAppId);
+    @Test public void projectionCarriesTheStreamerAppOfTheLiveObservationOnly() {
+        assertEquals(SessionSnapshot.STREAMER_APP_UNKNOWN,
+                owner.current(m.snapshot(), 0L).streamerAppId);
+        HostGatewayClient.SessionObservation seen =
+                pending("boot-a", 1, owner.nextRequestOrdinal(), "episode-a");
+        seen.streamerAppId = 42;
+        owner.accept(seen, m.snapshot(), 1_000L);
+        // Decisions follow the observation's streamer, not the serverinfo poll.
+        SessionSnapshot observed = owner.current(m.snapshot(), 1_000L);
+        assertTrue(SessionOrchestrator.anotherAppRuns(observed, 7));
+        assertFalse(SessionOrchestrator.anotherAppRuns(observed, 42));
+        assertFalse(SessionOrchestrator.ownsFreshSession(observed));
+        // Host-global: told while the observation is live, even uncorrelated and unresolved.
+        assertEquals(42, owner.current(m.snapshot(), 1_000L
+                + SessionStateResolver.OBSERVATION_LIVENESS_MS).streamerAppId);
+        assertEquals(SessionSnapshot.STREAMER_APP_UNKNOWN, owner.current(m.snapshot(), 1_001L
+                + SessionStateResolver.OBSERVATION_LIVENESS_MS).streamerAppId);
+        HostGatewayClient.SessionObservation none =
+                pending("boot-a", 2, owner.nextRequestOrdinal(), "episode-a");
+        none.streamerAppId = 0;
+        owner.accept(none, m.snapshot(), 20_000L);
+        assertEquals(0, owner.current(m.snapshot(), 20_000L).streamerAppId);
+        // A termination boundary retires it with the observation.
+        owner.terminationBoundary(true);
+        assertEquals(SessionSnapshot.STREAMER_APP_UNKNOWN,
+                owner.current(m.snapshot(), 20_001L).streamerAppId);
     }
     @Test public void renderedProjectionOfAnOlderSnapshotPublishesNothing() {
         Controller controller = new Controller();

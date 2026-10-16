@@ -8098,6 +8098,16 @@ class GatewayState:
                 stream.get("stream_started_unix_ms") or 0) if own else 0,
         }
 
+    def _observation_streamer(self) -> dict[str, Any]:
+        """The streamer's running application, one bounded Vibepollo read made outside the
+        Gateway lock: VERIFIED with its app id, ABSENT (app_id 0) when it runs none, or
+        UNAVAILABLE (app_id 0) when the read cannot tell. Not scoped: Sunshine's serverinfo
+        already reports the same running app id to every paired client."""
+        app_id = self.vibepollo.running_app_id()
+        if app_id is None:
+            return {"evidence": "UNAVAILABLE", "app_id": 0}
+        return {"evidence": "VERIFIED" if app_id else "ABSENT", "app_id": app_id}
+
     def _record_slow_observation(self, started: float, locked: float, proxied: float,
                                  relocked: float, in_flight: int) -> None:
         """Phases of a slow observation read; the Android client gives up after 5 s."""
@@ -8132,9 +8142,12 @@ class GatewayState:
             self.observation_inflight += 1
             in_flight = self.observation_inflight
         proxied = relocked = locked
+        streamer = {"evidence": "UNAVAILABLE", "app_id": 0}
         try:
             ok, provider = self.proxy("game_provider", "/observation", timeout=3.0,
                                       profile_id=execution_id)
+            if ok and isinstance(provider, dict):
+                streamer = self._observation_streamer()
             proxied = time.monotonic()
             with self.lock:
                 relocked = time.monotonic()
@@ -8154,7 +8167,7 @@ class GatewayState:
         if before != after:
             return HTTPStatus.OK, {
                 **provider, "ok": False, "scope": scope,
-                "correlation": correlation,
+                "correlation": correlation, "streamer": streamer,
                 "provider": {"state": "unknown",
                              "connector_evidence": "UNAVAILABLE",
                              "reason": "control_correlation_changed"},
@@ -8180,7 +8193,7 @@ class GatewayState:
             if not own_game:
                 provider = {**provider, "process": {**process, "started_unix_ms": 0}}
         return HTTPStatus.OK, {**provider, "ok": True, "scope": scope,
-                              "correlation": correlation}
+                              "correlation": correlation, "streamer": streamer}
 
     def playnite_library(self, cursor: Any, limit: Any,
                          client: dict[str, Any] | None = None,

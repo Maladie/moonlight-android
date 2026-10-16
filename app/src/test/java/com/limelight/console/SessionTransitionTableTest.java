@@ -1183,6 +1183,10 @@ public class SessionTransitionTableTest {
         assertTrue(SessionOrchestrator.anotherAppRuns(hostRuns(7, "", false), 42));
         assertFalse(SessionOrchestrator.anotherAppRuns(hostRuns(42, "", false), 42));
         assertFalse(SessionOrchestrator.anotherAppRuns(hostRuns(0, "", false), 42));
+        // An unknown streamer is neither another app nor an idle host whose session is owned.
+        SessionSnapshot unknown = hostRuns(SessionSnapshot.STREAMER_APP_UNKNOWN, "", false);
+        assertFalse(SessionOrchestrator.anotherAppRuns(unknown, 42));
+        assertFalse(SessionOrchestrator.ownsFreshSession(unknown));
     }
 
     /** K5.2 addendum: resume or start fresh is the table's, read from the model and record. */

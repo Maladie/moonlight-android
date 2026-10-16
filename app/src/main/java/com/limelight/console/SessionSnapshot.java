@@ -49,15 +49,19 @@ public final class SessionSnapshot {
     final String processToken;
     final String windowEvidence;
     final String observationReason;
+    /** {@link #streamerAppId} when no live Gateway observation tells it. */
+    static final int STREAMER_APP_UNKNOWN = -1;
     /**
-     * Sunshine's running app from the host poll this projection was given; 0 when none or not
-     * supplied (gateway-path projections carry no poll). Not part of the projection identity
-     * ({@link #equals}, {@link #signature}), so a gateway projection still compares equal.
+     * The Sunshine/Vibepollo app the host's streamer runs, from the projection owner's last
+     * accepted Gateway observation while it is live ({@code SessionStateResolver}); 0 when the
+     * host says it runs none, {@link #STREAMER_APP_UNKNOWN} when no live observation tells.
+     * Decisions must treat unknown explicitly, never as 0. Not part of the projection identity
+     * ({@link #equals}, {@link #signature}).
      */
-    final int hostRunningAppId;
+    final int streamerAppId;
     /** A game stop this client runs is in flight; a live stream beside it stays ACTIVE. */
     final boolean endingGame;
-    /** Status-line facts; like {@link #hostRunningAppId} not part of the projection identity. */
+    /** Status-line facts; like {@link #streamerAppId} not part of the projection identity. */
     final Display display;
     /**
      * This client stopped its stream and the host did not confirm the session ended; the
@@ -110,14 +114,14 @@ public final class SessionSnapshot {
                     long actorLeaseEpoch, String operationId,
                     String streamSessionId, String processEvidence, int processId,
                     String processToken, String windowEvidence, String observationReason,
-                    int hostRunningAppId, boolean endingGame) {
+                    int streamerAppId, boolean endingGame) {
         this(hostId, profileId, executionProfileId, state, hostGameAppId, playniteGameId,
                 retainedTransport, explicitSuspension, suspensionSleepObserved,
                 hostSleepRequested, hostSleepObserved, suspendId, neutralStreamTarget,
                 observationState, observationCorrelated, producerBootId, producerRevision,
                 requestOrdinal, transportGeneration, controlGeneration, actorLeaseEpoch,
                 operationId, streamSessionId, processEvidence, processId,
-                processToken, windowEvidence, observationReason, hostRunningAppId,
+                processToken, windowEvidence, observationReason, streamerAppId,
                 endingGame, Display.NONE, false, false);
     }
 
@@ -133,7 +137,7 @@ public final class SessionSnapshot {
                     long actorLeaseEpoch, String operationId,
                     String streamSessionId, String processEvidence, int processId,
                     String processToken, String windowEvidence, String observationReason,
-                    int hostRunningAppId, boolean endingGame, Display display,
+                    int streamerAppId, boolean endingGame, Display display,
                     boolean terminationUnconfirmed, boolean closeFailed) {
         this.display = display;
         this.terminationUnconfirmed = terminationUnconfirmed;
@@ -172,7 +176,7 @@ public final class SessionSnapshot {
         this.processToken = processToken == null ? "" : processToken;
         this.windowEvidence = windowEvidence == null ? "UNAVAILABLE" : windowEvidence;
         this.observationReason = observationReason == null ? "" : observationReason;
-        this.hostRunningAppId = hostRunningAppId;
+        this.streamerAppId = streamerAppId;
         this.endingGame = endingGame;
     }
 
@@ -182,7 +186,8 @@ public final class SessionSnapshot {
                 State.UNCERTAIN, 0, "", false, false, false,
                 false, false, "", false, ObservationState.PENDING, false,
                 "", 0L, 0L, 0L, 0L, 0L, "", "",
-                "UNAVAILABLE", 0, "", "UNAVAILABLE", "observation_pending", 0, false);
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "observation_pending", STREAMER_APP_UNKNOWN,
+                false);
     }
 
     boolean hasActiveSession() { return state == State.ACTIVE; }

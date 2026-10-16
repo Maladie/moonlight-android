@@ -529,7 +529,7 @@ public class ConsoleActivityEnsureContractTest {
         String actions = source.substring(source.indexOf("private void showPlayniteGameActions("),
                 source.indexOf("private void confirmPlayniteUninstall("));
 
-        assertTrue(confirm.contains("session.hostRunningAppId == 0"));
+        assertTrue(confirm.contains("session.streamerAppId == 0"));
         assertTrue(confirm.contains("SessionSnapshot.State.ACTIVE"));
         assertTrue(actions.contains("session.state == SessionSnapshot.State.ACTIVE"));
         assertTrue(actions.contains("session.playniteGameId"));

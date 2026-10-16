@@ -4910,7 +4910,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         SessionStateResolver.LocalFacts local = new SessionStateResolver.LocalFacts(suspended,
                 records.recentlyEndedForExecution(host.uuid, executionProfileId), pending,
                 sleep != null, sleep != null && sleep.sleepObservedAt > 0L,
-                neutralStreamTarget, host.runningGameId);
+                neutralStreamTarget);
         return SessionStateResolver.render(retained, host.uuid, profileKey.profileId,
                 executionProfileId, local, SystemClock.uptimeMillis());
     }
@@ -5205,7 +5205,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 host.uuid, address, selectedProfileId(host.uuid)) != null;
         facts.canWake = !terminating && ConsoleHostPresentation.canWake(host)
                 && !hostStateController.isWaking(host.uuid);
-        facts.streamRunning = session.hostRunningAppId != 0;
+        facts.streamRunning = session.streamerAppId > 0;
         facts.inHost = !hostSelectionVisible;
         facts.sessionActive = facts.online && facts.paired && session.hasActiveSession();
         facts.resumeAvailable = session.isResumeAvailable() && session.hostGameAppId != 0;
@@ -6338,7 +6338,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             });
             actions.add(right);
         }
-        if (host != null && session.hostRunningAppId == item.appId) {
+        if (host != null && session.streamerAppId == item.appId) {
             TextView quit = consolePanel.action(getString(R.string.console_close_session));
             consolePanel.destructive(quit);
             quit.setOnClickListener(view -> confirmTerminateSession(host));
@@ -7130,7 +7130,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     } else if (state == PairingManager.PairState.ALREADY_IN_PROGRESS) {
                         message = getString(R.string.pair_already_in_progress);
                     } else {
-                        message = getString(resolveSessionSnapshot(host).hostRunningAppId != 0
+                        message = getString(resolveSessionSnapshot(host).streamerAppId > 0
                                 ? R.string.pair_pc_ingame : R.string.pair_fail);
                     }
                 }
@@ -7246,8 +7246,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                   GatewayConnection connection) {
         final SuspendedSessionStore.Session suspendedRequest;
         final long sleepRequestedAt;
-        int runningAppId = resolveSessionSnapshot(host).hostRunningAppId;
-        if (runningAppId != 0) {
+        int runningAppId = resolveSessionSnapshot(host).streamerAppId;
+        if (runningAppId > 0) {
             String gameId = uniquePlayniteGameIdForRunningApp(host, runningAppId);
             if (gameId.isEmpty()) {
                 gameId = preferences.getString("selected_playnite." + host.uuid, "");
@@ -7379,7 +7379,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         SessionSnapshot session = renderedSessionSnapshot(host);
         if (host == null || host.state != ComputerDetails.State.ONLINE
                 || (session.state != SessionSnapshot.State.ACTIVE
-                && session.hostRunningAppId == 0)
+                && session.streamerAppId == 0)
                 || managerBinder == null) return;
         TextView cancel = consolePanel.action(getString(R.string.console_cancel));
         TextView terminate = consolePanel.action(getString(R.string.console_close_session));
@@ -11792,7 +11792,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (selectedProfileIsChild(host == null ? null : host.uuid)) {
             apps = Collections.emptyList();
         }
-        int runningAppId = renderedSessionSnapshot(host).hostRunningAppId;
+        int runningAppId = renderedSessionSnapshot(host).streamerAppId;
         // One preferences handle per render: the signature and every card read it in memory.
         SharedPreferences appSettings = getSharedPreferences(
                 AppPreferences.APP_PREFERENCES_FILE, MODE_PRIVATE);
@@ -12091,8 +12091,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         boolean online = ConsoleActionCatalog.isOnline(host);
         boolean paired = ConsoleActionCatalog.isPaired(host);
-        boolean thisAppRunning = session.hostRunningAppId == app.getAppId();
-        boolean anotherAppRunning = session.hostRunningAppId != 0 && !thisAppRunning;
+        boolean thisAppRunning = session.streamerAppId == app.getAppId();
+        boolean anotherAppRunning = session.streamerAppId > 0 && !thisAppRunning;
         Set<String> hidden = new HashSet<>(getSharedPreferences(
                 AppView.HIDDEN_APPS_PREF_FILENAME, MODE_PRIVATE)
                 .getStringSet(host.uuid, Collections.emptySet()));
@@ -12724,7 +12724,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
      * One fresh host observation into the session projection before the warm-up launches. The
      * warm-up reads its game from that projection when it launches, never from this read.
      */
-    private void refreshWarmUpObservation(ComputerDetails host, String profileId) {
+    private void refreshObservationNow(ComputerDetails host, String profileId) {
         String address = host.activeAddress == null ? null : host.activeAddress.address;
         GatewayConnection gateway = hostGatewayStore.loadForHost(
                 host.uuid, address, profileId);
@@ -13189,8 +13189,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
                     return null;
                 }
+                // The streamer's app is the observation's fact: observe before deciding on it.
+                refreshObservationNow(ready, intent.profileId);
                 SessionSnapshot readyProjection = resolveSessionSnapshot(ready, intent.profileId);
-                refreshWarmUpObservation(ready, intent.profileId);
                 return new SessionOrchestrator.PreparedWarmUp(
                         result.target, ready, intent.profileKey, readyProjection);
             }
@@ -13380,6 +13381,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                 }
             }
+            if (ready != null) refreshObservationNow(ready, transitionProfileId);
             if (ready != null && SessionOrchestrator.anotherAppRuns(
                     resolveSessionSnapshot(ready, transitionProfileId), app.getAppId())
                     && !terminateKnownControlPlane(ready, transitionProfileId,

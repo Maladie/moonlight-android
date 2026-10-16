@@ -654,6 +654,8 @@ public class PlayniteTransitionGatewayTest {
                                     .put("control_generation", controlGeneration)
                                     .put("actor_lease_epoch", actorLeaseEpoch)
                                     .put("stream_started_unix_ms", 0))
+                            .put("streamer", new JSONObject().put("evidence", "ABSENT")
+                                    .put("app_id", 0))
                             .put("provider", new JSONObject().put("state", gameState)
                                     .put("connector_evidence", "VERIFIED")
                                     .put("reason", "none"))

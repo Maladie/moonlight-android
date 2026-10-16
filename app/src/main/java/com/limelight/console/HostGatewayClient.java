@@ -549,6 +549,12 @@ public class HostGatewayClient {
          */
         long streamStartedUnixMs;
         long processStartedUnixMs;
+        /**
+         * {@code streamer}: the Sunshine/Vibepollo app the host's streamer runs (the app id
+         * clients launch), 0 when it runs none, {@link SessionSnapshot#STREAMER_APP_UNKNOWN}
+         * when the host could not tell. Host-global, not scoped to the actor.
+         */
+        int streamerAppId = SessionSnapshot.STREAMER_APP_UNKNOWN;
 
         SessionObservation(String producerBootId, long producerRevision,
                            long observedAtUnixMs, long freshForMs,
@@ -1806,6 +1812,14 @@ public class HostGatewayClient {
         if (streamStarted < 0L || processStarted < 0L) {
             throw new IOException("stale_or_malformed_observation");
         }
+        JSONObject streamer = requiredObject(response, "streamer");
+        Evidence streamerEvidence = evidence(streamer, "evidence");
+        int streamerAppId = requiredInt(streamer, "app_id");
+        if (streamerEvidence == Evidence.PENDING
+                || (streamerEvidence == Evidence.VERIFIED) != (streamerAppId > 0)
+                || streamerAppId < 0) {
+            throw new IOException("inconsistent_observation_evidence");
+        }
         if (!GatewayConnection.normalizeProfileId(expectedActor).equals(actor)
                 || !GatewayConnection.normalizeProfileId(expectedExecution).equals(execution)
                 || ordinal != expectedOrdinal) {
@@ -1879,6 +1893,8 @@ public class HostGatewayClient {
         parsed.updatePatching = updatePatching;
         parsed.streamStartedUnixMs = streamStarted;
         parsed.processStartedUnixMs = processStarted;
+        parsed.streamerAppId = streamerEvidence == Evidence.UNAVAILABLE
+                ? SessionSnapshot.STREAMER_APP_UNKNOWN : streamerAppId;
         return parsed;
     }
 
