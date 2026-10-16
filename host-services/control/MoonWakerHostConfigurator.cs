@@ -3760,16 +3760,13 @@ namespace MoonWaker.HostConfigurator
                 File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "vibepollo-token-scopes.json")));
             string basic = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(username + ":" + password));
             string raw = Request(baseUrl, "POST", "/api/token", basic,
-                new Dictionary<string, object> { { "scopes", scopes["scopes"] } }, pin).Trim();
-            string token = raw;
+                new Dictionary<string, object> { { "scopes", scopes["scopes"] } }, pin);
+            string token = null;
             try
             {
-                object parsed = new JavaScriptSerializer().DeserializeObject(raw);
-                Dictionary<string, object> document = parsed as Dictionary<string, object>;
-                if (parsed is string) token = (string)parsed;
-                else if (document != null)
-                    token = Convert.ToString(document.ContainsKey("token") ? document["token"] :
-                        document.ContainsKey("access_token") ? document["access_token"] : "");
+                Dictionary<string, object> document =
+                    new JavaScriptSerializer().DeserializeObject(raw) as Dictionary<string, object>;
+                if (document != null && document.ContainsKey("token")) token = document["token"] as string;
             }
             catch (ArgumentException) { }
             if (String.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Vibepollo nie zwróciło tokenu API.");

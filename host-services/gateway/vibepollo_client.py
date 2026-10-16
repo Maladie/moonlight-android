@@ -36,8 +36,6 @@ CLIENT_PERMISSIONS = 0x07001F00
 # The authoritative sources of a control decision, read in parallel.
 CONTROL_PATHS = {
     "session": "/api/session/status",
-    "rtsp": "/api/rtsp/sessions",
-    "webrtc": "/api/webrtc/sessions",
     "apps": "/api/apps",
     "clients": "/api/clients/list",
 }
@@ -64,7 +62,7 @@ PEM_CERTIFICATE = re.compile(
 RSA_ENCRYPTION_OID = bytes.fromhex("2a864886f70d010101")
 SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
 STREAM_COMMAND_FIELDS = ("cmd", "prep-cmd", "state-cmd", "detached", "playnite-id",
-                         "playnite_id", "playnite-managed", "playnite-source")
+                         "playnite-managed", "playnite-source")
 
 
 class VibepolloError(Exception):
@@ -101,9 +99,7 @@ def _first(value: Any, *names: str, default: Any = None) -> Any:
 
 
 def _items(value: Any) -> list[Any]:
-    if value is None:
-        return []
-    return value if isinstance(value, list) else [value]
+    return value if isinstance(value, list) else []
 
 
 def local_base_url(value: Any) -> str:
@@ -364,7 +360,7 @@ def _normalize_apps(response: Any) -> list[dict[str, Any]]:
     current = str(_first(response, "current_app", default=""))
     result = []
     for app in _items(_first(response, "apps")):
-        uuid = str(_first(app, "uuid", "id", default=""))
+        uuid = str(_first(app, "uuid", default=""))
         try:
             app_id = int(str(_first(app, "id", default="0")))
         except ValueError:
@@ -378,82 +374,45 @@ def _normalize_apps(response: Any) -> list[dict[str, Any]]:
     return sorted(result, key=lambda item: (not item["running"], item["name"].casefold()))
 
 
-def _normalize_clients(response: Any, rtsp: Any) -> list[dict[str, Any]]:
-    sessions = {}
-    for session in _items(_first(rtsp, "sessions")):
-        uuid = str(_first(session, "uuid", "client_uuid", default=""))
-        if uuid:
-            sessions[uuid] = session
-    result = []
-    for client in _items(_first(response, "named_certs", "clients")):
-        uuid = str(_first(client, "uuid", "id", default=""))
-        session = sessions.get(uuid)
-        result.append({
-            "uuid": uuid,
-            "name": str(_first(client, "name", "device_name", default="Unnamed client")),
-            "connected": session is not None,
-            "width": _first(session, "width"), "height": _first(session, "height"),
-            "fps": _first(session, "fps"), "codec": _first(session, "codec", default=""),
-            "hdr": bool(_first(session, "hdr", default=False)),
-        })
-    return sorted(result, key=lambda item: (not item["connected"], item["name"].casefold()))
+def _normalize_clients(response: Any) -> list[dict[str, Any]]:
+    # A session's own UUID is per stream; Vibepollo attributes connections to clients itself.
+    result = [{"uuid": str(_first(client, "uuid", default="")),
+               "name": str(_first(client, "name", default="Unnamed client")),
+               "connected": _first(client, "connected")}
+              for client in _items(_first(response, "named_certs"))]
+    return sorted(result, key=lambda item: (item["connected"] is not True,
+                                            item["name"].casefold()))
 
 
 def build_control_snapshot(sources: dict[str, Any], probe: dict[str, dict[str, Any]]) \
         -> dict[str, Any]:
     """Control evidence from fresh source reads; an unavailable or malformed source is
     named in `control_unavailable_sources`, never normalized into an empty collection."""
-    status, rtsp, webrtc = sources.get("session"), sources.get("rtsp"), sources.get("webrtc")
-    apps_raw, clients_raw = sources.get("apps"), sources.get("clients")
-    if isinstance(clients_raw, dict) and "named_certs" in clients_raw:
-        client_items = clients_raw["named_certs"]
-    else:
-        client_items = clients_raw.get("clients") if isinstance(clients_raw, dict) else None
-    rtsp_ok = isinstance(rtsp, dict) and rtsp.get("sessions") is not None
-    webrtc_ok = isinstance(webrtc, dict) and webrtc.get("sessions") is not None
-    rtsp_sessions = _items(_first(rtsp, "sessions"))
-    web_sessions = _items(_first(webrtc, "sessions"))
-    apps = _normalize_apps(apps_raw)
-    clients = _normalize_clients(clients_raw, rtsp)
-    count_value = _first(status, "activeSessions", "active_sessions", "sessionCount")
-    status_valid = isinstance(status, dict) and isinstance(status.get("appRunning"), bool) \
-        and type(count_value) is int and count_value >= 0
-    current_app = str(_first(apps_raw, "current_app", default=""))
-    running = sum(item["running"] for item in apps)
-    running_consistent = running == (1 if current_app else 0)
-    apps_ok = isinstance(apps_raw, dict) and apps_raw.get("apps") is not None and \
-        apps_raw.get("current_app") is not None and running_consistent
-    # Builds without /api/session/status: complete fresh transport, app and client
-    # sources are equivalent evidence.
-    derived_valid = rtsp_ok and webrtc_ok and apps_ok and client_items is not None
+    status, apps_raw = sources.get("session"), sources.get("apps")
+    clients_raw = sources.get("clients")
+    apps, clients = _normalize_apps(apps_raw), _normalize_clients(clients_raw)
+    count = _first(status, "activeSessions")  # RTSP and WebRTC, counted by Vibepollo
+    status_ok = isinstance(_first(status, "appRunning"), bool) and type(count) is int and \
+        count >= 0
+    current_app = _first(apps_raw, "current_app")
+    apps_ok = isinstance(_first(apps_raw, "apps"), list) and isinstance(current_app, str) and \
+        sum(item["running"] for item in apps) == (1 if current_app else 0)
+    clients_ok = isinstance(_first(clients_raw, "named_certs"), list) and \
+        all(type(item["connected"]) is bool for item in clients)
     unavailable = [name for name, ok in (
-        ("rtsp", rtsp_ok), ("webrtc", webrtc_ok), ("apps", apps_ok),
-        ("clients", client_items is not None),
-        ("session", status_valid or derived_valid)) if not ok]
+        ("apps", apps_ok), ("clients", clients_ok), ("session", status_ok)) if not ok]
     probe = {name: dict(row) for name, row in probe.items()}
     for name in unavailable:
         if probe.get(name, {}).get("outcome") == "ok":
             probe[name]["outcome"] = "schema_invalid"
-    active_count = count_value if status_valid else len(rtsp_sessions) + len(web_sessions)
-    stream = (rtsp_sessions or web_sessions or [None])[0]
-    if stream is None and active_count > 0:
-        # Some builds report the connection through /api/session/status only.
-        stream = {"uuid": "session-status-fallback", "device_name": "Moonlight client",
-                  "state": "running", "telemetry_limited": True}
+    count = count if status_ok else 0
     return {
         "generated_at": int(time.time() * 1000),
         "control_fresh": not unavailable,
         "control_unavailable_sources": unavailable,
         "control_source_probe": probe,
-        "session": {
-            "active": stream is not None,
-            "count": max(len(rtsp_sessions) + len(web_sessions), active_count),
-            "app_running": status["appRunning"] if status_valid else current_app != "",
-            "source": "session_status" if status_valid else "derived",
-            "app_name": str(_first(status, "appName", default="")),
-            "paused": bool(_first(status, "paused", default=False)),
-            "stream": stream,
-        },
+        "session": {"active": count > 0, "count": count,
+                    "app_running": status_ok and status["appRunning"]},
         "apps": apps,
         "clients": clients,
     }
@@ -692,7 +651,7 @@ class VibepolloClient:
         raise ValueError("Unknown Vibepollo action.")
 
     def _clients(self) -> list[Any]:
-        return _items(_first(self.call("GET", "/api/clients/list"), "named_certs", "clients"))
+        return _items(_first(self.call("GET", "/api/clients/list"), "named_certs"))
 
     def pair(self, pin: str, name: str) -> dict[str, Any]:
         """Submit a pending Moonlight PIN, then grant the new client MoonWaker's permissions."""
@@ -707,10 +666,9 @@ class VibepolloClient:
             if bool(_first(accepted, "status", default=False)):
                 break
             if time.monotonic() - started >= 8.0:
-                reason = str(_first(accepted, "error", "message", default=""))
                 raise VibepolloError(
                     "Vibepollo did not expose a pending Moonlight pairing session within "
-                    f"8 seconds after {attempts} PIN attempts" + (f": {reason}" if reason else ""))
+                    f"8 seconds after {attempts} PIN attempts")
             time.sleep(0.25)
         deadline = time.monotonic() + 15.0
         paired = None
@@ -732,8 +690,8 @@ class VibepolloClient:
             "perm": CLIENT_PERMISSIONS,
             "enable_legacy_ordering": bool(_first(paired, "enable_legacy_ordering", default=True)),
             "allow_client_commands": bool(_first(paired, "allow_client_commands", default=True)),
-            "do": _items(_first(paired, "do", default=[])),
-            "undo": _items(_first(paired, "undo", default=[])),
+            "do": _items(_first(paired, "do")),
+            "undo": _items(_first(paired, "undo")),
             "display_mode": str(_first(paired, "display_mode", default="")),
             "output_name_override": str(_first(paired, "output_name_override", default="")),
             "always_use_virtual_display": bool(
@@ -749,9 +707,7 @@ class VibepolloClient:
         except VibepolloError as error:
             raise VibepolloError(f"Vibepollo client permission update failed: {error}") from None
         if not bool(_first(updated, "status", default=False)):
-            reason = str(_first(updated, "error", "message", default=""))
-            raise VibepolloError("Vibepollo rejected the MoonWaker client permission update" +
-                                 (f": {reason}" if reason else ""))
+            raise VibepolloError("Vibepollo rejected the MoonWaker client permission update")
         verified = next((client for client in self._clients()
                          if str(_first(client, "uuid", default="")) == payload["uuid"]), None)
         try:
@@ -780,7 +736,7 @@ class VibepolloClient:
         host_id, records = read_identity_state(state_path)
         try:
             live_host_id = str(_first(self.call("GET", "/api/apps"), "host_uuid",
-                                      "host_uniqueid", "uniqueid", default="")).strip()
+                                      default="")).strip()
             if live_host_id != host_id:
                 raise IdentityError("identity_binding_unsupported")
             matches = [record for record in records if record[1] == certificate_sha256]
@@ -803,7 +759,7 @@ class VibepolloClient:
 
     def _apps(self) -> list[Any]:
         value = self.call("GET", "/api/apps")
-        return _items(_first(value, "apps", default=value))
+        return _items(_first(value, "apps"))
 
     @staticmethod
     def _stream_matches(apps: list[Any]) -> list[tuple[dict[str, Any], int]]:

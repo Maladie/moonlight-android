@@ -797,7 +797,7 @@ class ControlOperationTest(unittest.TestCase):
                 with self.subTest(missing=missing, snapshot=valid):
                     self.assertFalse(policy(incomplete))
             for changes in ({"control_fresh": False}, {"control_fresh": "true"},
-                            {"control_unavailable_sources": ["rtsp"]},
+                            {"control_unavailable_sources": ["clients"]},
                             {"control_unavailable_sources": None}, {"session": {}},
                             {"session": {"active": False, "count": True, "app_running": False}},
                             {"session": {"active": False, "count": 1, "app_running": True}},
