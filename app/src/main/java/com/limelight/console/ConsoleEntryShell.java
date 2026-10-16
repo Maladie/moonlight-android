@@ -20,8 +20,10 @@ import android.view.animation.AnimationUtils;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.TextClock;
 import android.widget.TextView;
 
+import com.limelight.ui.ConsoleClock;
 import com.limelight.ui.ControllerGlyphs;
 
 import java.util.Random;
@@ -66,7 +68,7 @@ final class ConsoleEntryShell extends FrameLayout {
     private static Bitmap vignetteBitmap;
 
     private final Blooms blooms;
-    private final TextView clock;
+    private final TextClock clock;
     private final Typeface medium = Typeface.create("sans-serif-medium", Typeface.NORMAL);
     private Page current;
     private boolean reducedMotion;
@@ -92,12 +94,9 @@ final class ConsoleEntryShell extends FrameLayout {
         addView(atmosphere, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
-        clock = text(22, TEXT, Typeface.create("sans-serif-light", Typeface.NORMAL));
-        LayoutParams clockParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
-        clockParams.topMargin = dp(31);
-        clockParams.rightMargin = dp(48);
-        addView(clock, clockParams);
+        clock = ConsoleClock.create(context);
+        addView(clock, ConsoleClock.topEnd(context));
+
     }
 
     /** A screen of the shell; the first one added is the one on screen. */
@@ -113,10 +112,6 @@ final class ConsoleEntryShell extends FrameLayout {
     void addBelowClock(View layer) {
         addView(layer, indexOfChild(clock), new LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-    }
-
-    void setClock(CharSequence value) {
-        clock.setText(value);
     }
 
     boolean shows(Page page) {

@@ -61,7 +61,9 @@ final class DiscordDmCuePlayer implements DiscordDmNotificationCoordinator.CuePl
         stop();
         currentTrack = track;
         AudioTrack playingTrack = track;
-        handler.postDelayed(() -> release(playingTrack), DURATION_MS + 80L);
+        // stop() on a static track drops what the output has not played yet; TV output latency
+        // can exceed 100 ms, so an early release cut the chime's tail.
+        handler.postDelayed(() -> release(playingTrack), DURATION_MS + 1_000L);
         return true;
     }
 

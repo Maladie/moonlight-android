@@ -3,6 +3,7 @@ package com.limelight.session;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.os.SystemClock;
 import android.util.Base64;
 
 import com.limelight.Game;
@@ -40,7 +41,6 @@ public final class SessionResumeManager {
     private static final String KEY_RUNTIME_BITRATE = "runtimeBitrate";
     private static final String KEY_CONSOLE_LOADING = "consoleLoading";
     private static final String KEY_LOADING_MESSAGE = "loadingMessage";
-    private static final String KEY_LOADING_EPOCH = "loadingEpoch";
     private static final String KEY_LOADING_STEP = "loadingStep";
     private static final String KEY_LOADING_STATUS = "loadingStatus";
     private static final String KEY_LOADING_ARTWORK = "loadingArtwork";
@@ -170,8 +170,6 @@ public final class SessionResumeManager {
                 gameIntent.getStringExtra(Game.EXTRA_QUICK_LAUNCH_APP_KEY));
         putString(editor, KEY_LOADING_MESSAGE,
                 gameIntent.getStringExtra(Game.EXTRA_CONSOLE_LOADING_MESSAGE));
-        editor.putLong(KEY_LOADING_EPOCH,
-                gameIntent.getLongExtra(Game.EXTRA_CONSOLE_LOADING_EPOCH, 0L));
         editor.putInt(KEY_LOADING_STEP,
                 gameIntent.getIntExtra(Game.EXTRA_CONSOLE_LOADING_STEP, 2));
         putString(editor, KEY_LOADING_STATUS,
@@ -248,8 +246,9 @@ public final class SessionResumeManager {
             intent.putExtra(Game.EXTRA_CONSOLE_LOADING, true);
             putExtra(intent, Game.EXTRA_CONSOLE_LOADING_MESSAGE,
                     prefs.getString(KEY_LOADING_MESSAGE, null));
-            intent.putExtra(Game.EXTRA_CONSOLE_LOADING_EPOCH,
-                    prefs.getLong(KEY_LOADING_EPOCH, 0L));
+            // A resume is a new transition: its cover counts from now, never from the parked
+            // stream's own start (TV 2026-10-16: a resumed cover showed 8 h).
+            intent.putExtra(Game.EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.elapsedRealtime());
             intent.putExtra(Game.EXTRA_CONSOLE_LOADING_STEP,
                     prefs.getInt(KEY_LOADING_STEP, 2));
             putExtra(intent, Game.EXTRA_CONSOLE_LOADING_STATUS,

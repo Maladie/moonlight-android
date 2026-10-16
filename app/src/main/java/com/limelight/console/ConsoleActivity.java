@@ -44,10 +44,7 @@ import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.text.TextUtils;
 import android.text.InputType;
-import android.text.SpannableString;
-import android.text.Spanned;
 import android.text.format.DateUtils;
-import android.text.style.RelativeSizeSpan;
 import android.util.LruCache;
 import android.view.Gravity;
 import android.view.Display;
@@ -617,15 +614,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private int screenSaverItemIndex;
     private final Runnable screenSaverTimeout = this::showScreenSaver;
     private final Runnable screenSaverSlide = this::showNextScreenSaverArtwork;
-    private final Runnable clockTick = new Runnable() {
-        @Override public void run() {
-            Date now = new Date();
-            String clockText = DateFormat.getTimeInstance(DateFormat.SHORT).format(now);
-            if (entryShell != null) entryShell.setClock(clockText);
-            long delay = 60_000L - System.currentTimeMillis() % 60_000L;
-            mainHandler.postDelayed(this, delay);
-        }
-    };
     private FrameLayout homeLayer;
     private ConsoleEntryShell entryShell;
     private ConsoleHostSelectView hostSelectView;
@@ -865,13 +853,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String currentPlayniteHostUuid;
     private int pendingConsoleUpdateChannels;
     private boolean consoleUpdatePosted;
-    private long lastDirectionalAudioInputAt;
     private final ViewTreeObserver.OnGlobalFocusChangeListener consoleFocusSoundListener =
             (oldFocus, newFocus) -> {
                 if (newFocus != null) newFocus.setSoundEffectsEnabled(false);
-                if (newFocus != null && oldFocus != null
-                        && SystemClock.uptimeMillis() - lastDirectionalAudioInputAt < 320L
-                        && consoleAudioEngine != null) {
+                // The engine ticks only when a directional key pressed here caused this move.
+                if (newFocus != null && oldFocus != null && consoleAudioEngine != null) {
                     consoleAudioEngine.play(ConsoleAudioSynthesis.Cue.NAVIGATE);
                 }
             };
@@ -1303,10 +1289,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         active = true;
         if (initialHostsLoaded) resolveInitialHostSelection();
-        if (sessionOrchestrator != null && sessionOrchestrator.queued() != null) {
-            renderQueue();
-            sessionOrchestrator.sessionChanged();
-        }
         String hardTerminateOffer = returnRequests.takeHardTerminateOffer();
         if (!hardTerminateOffer.isEmpty()) {
             // ponytail: also dropped when this console was recreated and its host binder is
@@ -1375,11 +1357,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             entryShell.setVisibility(hostSelectionVisible
                     || profileGateHostUuid != null ? View.VISIBLE : View.GONE);
         }
+        // After the stale-cover cleanup above: a queued Play taken over from the stream Home
+        // draws its cover now and keeps it.
+        if (sessionOrchestrator != null && sessionOrchestrator.queued() != null) {
+            renderQueue();
+            sessionOrchestrator.sessionChanged();
+        }
         hideSystemUi();
         resetScreenSaverTimer();
         updateScreenSaverWakePolicy();
-        mainHandler.removeCallbacks(clockTick);
-        clockTick.run();
     }
 
     @Override
@@ -1614,7 +1600,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 || consoleAudioEngine == null) return;
         int keyCode = event.getKeyCode();
         if (isDirectionalNavigationKey(keyCode)) {
-            lastDirectionalAudioInputAt = SystemClock.uptimeMillis();
+            consoleAudioEngine.noteDirectionalInput(event.getDownTime());
             return;
         }
         if (event.getRepeatCount() != 0) return;
@@ -1874,7 +1860,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         screenSaverMotionBlockUntil = 0L;
         hideScreenSaver();
         mainHandler.removeCallbacks(screenSaverTimeout);
-        mainHandler.removeCallbacks(clockTick);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (consoleAudioEngine != null) consoleAudioEngine.pause();
         // A queued Play this screen started and not yet decided goes to the screen shown next.
@@ -2291,10 +2276,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(24));
             playtimePillParams.leftMargin = dp(12);
             selectedGameFactsRow.addView(selectedGamePlaytimePill, playtimePillParams);
-            selectedGameDescription = text("", 11, 0xFFD2D9E2, false);
+            selectedGameDescription = text("", 14, 0xFFD2D9E2, false);
             selectedGameDescription.setShadowLayer(dp(2), 0, dp(1), 0xE0000000);
             selectedGameDescription.setLineSpacing(0, 1.25f);
-            selectedGameDescription.setMaxLines(6);
+            selectedGameDescription.setMaxLines(4);
             selectedGameDescription.setEllipsize(TextUtils.TruncateAt.END);
             selectedGameDescription.setVisibility(
                     showCarouselGameDescription ? View.VISIBLE : View.GONE);
@@ -2435,7 +2420,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void buildHostSelectionLayer(FrameLayout container) {
         entryShell = new ConsoleEntryShell(this);
         entryShell.setReducedMotion(reducedMotion);
-        entryShell.setClock(DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
         hostSelectView = new ConsoleHostSelectView(this, entryShell, HOST_WAKING_TIMEOUT_MS,
                 new ConsoleHostSelectView.Listener() {
                     @Override public void onHostSelected(String uuid) {
@@ -3928,7 +3912,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         expandedGameTitle.setEllipsize(TextUtils.TruncateAt.END);
         expandedGameFacts = text("", 12, 0xFFB8C9DC, false);
         expandedGameFacts.setMaxLines(3);
-        expandedGameDescription = text("", 12, 0xFFE0E5EA, false);
+        expandedGameDescription = text("", 14, 0xFFE0E5EA, false);
         expandedGameDescription.setLineSpacing(0, 1.25f);
         expandedGameDescription.setPadding(0, 0, 0, dp(20));
         details.addView(expandedGameTitle, matchLinearWidth());
@@ -9714,21 +9698,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         source.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         source.setPadding(dp(2), dp(2), dp(2), dp(2));
         source.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        TextView running = text(getString(R.string.playnite_running_badge), 8,
-                Color.WHITE, true);
-        running.setTag("playnite.running");
-        running.setSingleLine(true);
-        if (debugCarousel && !expandedCard) running.setTextSize(6);
-        running.setPadding(dp(5), dp(2), dp(5), dp(2));
-        running.setBackground(gradient(0xEE147D75, 0xEE0E625D, 5));
-        running.setVisibility(View.GONE);
-        running.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        FrameLayout.LayoutParams runningParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.START);
-        runningParams.leftMargin = dp(5);
-        runningParams.topMargin = dp(5);
-        artworkFrame.addView(running, runningParams);
         TextView state = text("", debugCarousel ? 8 : 10, 0xFF929BAD, false);
         state.setTag("playnite.state");
         state.setSingleLine(true);
@@ -9805,9 +9774,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         installProgress.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         FrameLayout.LayoutParams progressParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(3), Gravity.BOTTOM);
-        ViewGroup artworkFrame = (ViewGroup) views.running.getParent();
-        // Same stacking as before: above the badge, below the caption scrim.
-        artworkFrame.addView(installProgress, artworkFrame.indexOfChild(views.running) + 1,
+        ViewGroup artworkFrame = (ViewGroup) views.poster.getParent();
+        // Above the artwork, below the caption scrim.
+        artworkFrame.addView(installProgress, artworkFrame.indexOfChild(views.poster) + 1,
                 progressParams);
         views.installProgress = installProgress;
         return installProgress;
@@ -9891,18 +9860,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         TextView playtime = views.playtime;
         TextView state = views.state;
         ImageView source = views.source;
-        TextView running = views.running;
         ImageView poster = views.poster;
         ImageView backdrop = views.backdrop;
         PlayniteSessionPresentation.State sessionState = playniteSessionState(item);
-        boolean resumeSession = sessionState
-                == PlayniteSessionPresentation.State.RESUME_ACTIVE;
-        boolean runningSession = playniteSessionProjection != null && isExactRunningManagedGame(
-                host, item, playniteSessionProjection.snapshot);
+        // A session needing recovery is still this game's session: it shows Resume, never the
+        // ready checkmark (which belongs to the full library only).
+        boolean resumeSession = sessionState == PlayniteSessionPresentation.State.RESUME_ACTIVE
+                || sessionState == PlayniteSessionPresentation.State.RECOVERY_REQUIRED;
         boolean suspendedSession = sessionState
                 == PlayniteSessionPresentation.State.RESUME_SUSPENDED;
         stylePlayniteSessionCard(card, card.hasFocus(), resumeSession || suspendedSession);
-        running.setVisibility(runningSession ? View.VISIBLE : View.GONE);
         GameOperationsController.Presentation operation =
                 gameOperationsController.presentation(host.uuid, item.game);
         boolean installing = operation.installActive || operation.uninstallActive;
@@ -9953,16 +9920,23 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         }
         if ((payload & (PlayniteLibraryDiff.TEXT | PlayniteLibraryDiff.LAUNCH)) != 0) {
-            String glyph = suspendedSession ? "◷"
+            boolean sessionChip = resumeSession || suspendedSession;
+            // A resumable game shows an icon and its label, not a glyph character resized in text.
+            String glyph = sessionChip ? ""
                     : playniteStateGlyph(host.uuid, item, resumeSession);
             String label = suspendedSession ? getString(R.string.console_resume)
                     : playniteStateChipLabel(host.uuid, item, resumeSession);
-            CharSequence chip = playniteStateChipText(glyph, label, resumeSession);
-            if (!TextUtils.equals(chip, state.getText()) || views.chipResume != resumeSession) {
-                views.chipResume = resumeSession;
-                state.setText(chip);
-            }
-            stylePlayniteStateChip(state, host.uuid, item, resumeSession || suspendedSession);
+            CharSequence chip = playniteStateChipText(glyph, label);
+            if (!TextUtils.equals(chip, state.getText())) state.setText(chip);
+            stylePlayniteStateChip(state, host.uuid, item, sessionChip);
+            state.setCompoundDrawablesWithIntrinsicBounds(!sessionChip ? 0
+                    : suspendedSession ? R.drawable.ic_console_clock
+                    : R.drawable.ic_console_play, 0, 0, 0);
+            state.setCompoundDrawablePadding(dp(4));
+            state.setCompoundDrawableTintList(
+                    android.content.res.ColorStateList.valueOf(state.getCurrentTextColor()));
+            state.setPadding(dp(sessionChip ? 7 : 4), dp(sessionChip ? 3 : 1),
+                    dp(sessionChip ? 8 : 4), dp(sessionChip ? 3 : 1));
         }
         stylePlayniteStateEmphasis(state, item, operation,
                 resumeSession || suspendedSession, card.hasFocus());
@@ -10007,15 +9981,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 : sessionState == PlayniteSessionPresentation.State.RESUME_ACTIVE
                 ? getString(R.string.console_resume_session)
                 : playniteState(host.uuid, item);
-        boolean runningSession = playniteSessionProjection != null && isExactRunningManagedGame(
-                host, item, playniteSessionProjection.snapshot);
         String sourceName = PlayniteLibrarySources.label(item.game.libraryName.isEmpty()
                 ? item.game.source : item.game.libraryName);
         String cardDescription = getString(R.string.playnite_card_description,
                 item.game.name, formatPlayniteTime(item.game.playtimeSeconds), stateText)
-                + ". " + getString(R.string.playnite_source, sourceName)
-                + (runningSession ? ". " + getString(
-                R.string.playnite_running_badge_description, item.game.name) : "");
+                + ". " + getString(R.string.playnite_source, sourceName);
         ChildEligibilityProjection childPolicy = childEligibilityProjection(
                 host.uuid, selectedProfileId(host.uuid));
         if (childPolicy.blocked) {
@@ -10046,7 +10016,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         final TextView playtime;
         final TextView state;
         final ImageView source;
-        final TextView running;
         final ImageView poster;
         final ImageView backdrop;
         ProgressBar installProgress;
@@ -10054,16 +10023,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String hostUuid;
         boolean sessionCard;
         int sourceIcon;
-        boolean chipResume;
 
         PlayniteCardViews(TextView name, TextView playtime, TextView state, ImageView source,
-                          TextView running, ImageView poster, ImageView backdrop,
+                          ImageView poster, ImageView backdrop,
                           ProgressBar installProgress) {
             this.name = name;
             this.playtime = playtime;
             this.state = state;
             this.source = source;
-            this.running = running;
             this.poster = poster;
             this.backdrop = backdrop;
             this.installProgress = installProgress;
@@ -10079,7 +10046,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 (TextView) findTaggedChild(group, "playnite.playtime"),
                 (TextView) findTaggedChild(group, "playnite.state"),
                 (ImageView) findTaggedChild(group, "playnite.source"),
-                (TextView) findTaggedChild(group, "playnite.running"),
                 (ImageView) findTaggedChild(group, "playnite.poster"),
                 (ImageView) findTaggedChild(group, "playnite.poster.backdrop"),
                 (ProgressBar) findTaggedChild(group, "playnite.install.progress"));
@@ -10587,15 +10553,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return getString(R.string.playnite_configuration_short);
     }
 
-    private CharSequence playniteStateChipText(String glyph, String label,
-                                               boolean resumeSession) {
-        SpannableString text = new SpannableString(
-                label.isEmpty() ? glyph : glyph + "  " + label);
-        if (resumeSession && !glyph.isEmpty()) {
-            text.setSpan(new RelativeSizeSpan(1.5f), 0, glyph.length(),
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        }
-        return text;
+    private CharSequence playniteStateChipText(String glyph, String label) {
+        return glyph.isEmpty() ? label : label.isEmpty() ? glyph : glyph + "  " + label;
     }
 
     private void stylePlayniteStateChip(TextView state, String hostUuid,
@@ -12928,7 +12887,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 LimeLog.info("Launch timeline epoch=" + timelineEpoch
                         + " host=" + intent.hostId
                         + " game=" + intent.transitionGameId()
-                        + " +" + Math.max(0L, SystemClock.uptimeMillis() - timelineEpoch)
+                        + " +" + Math.max(0L, SystemClock.elapsedRealtime() - timelineEpoch)
                         + "ms preflight-start action=" + action);
                 HostLaunchPreflight.Result result = hostLaunchPreflight.run(
                         HostLaunchPreflight.Request.from(
@@ -12942,7 +12901,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 LimeLog.info("Launch timeline epoch=" + timelineEpoch
                         + " host=" + intent.hostId
                         + " game=" + intent.transitionGameId()
-                        + " +" + Math.max(0L, SystemClock.uptimeMillis() - timelineEpoch)
+                        + " +" + Math.max(0L, SystemClock.elapsedRealtime() - timelineEpoch)
                         + "ms preflight-" + result.status.name().toLowerCase(Locale.ROOT));
                 return result;
             }
@@ -13493,7 +13452,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         presentation.putBoolean(Game.EXTRA_CONSOLE_LOADING, true);
         presentation.putString(Game.EXTRA_CONSOLE_LOADING_MESSAGE,
                 streamLoadingView == null ? null : streamLoadingView.getCurrentMessage());
-        presentation.putLong(Game.EXTRA_CONSOLE_LOADING_EPOCH, streamLoadingEpoch);
+        // A hidden warm-up no one asked for starts now; its game's Play (a switch) brings its own.
+        presentation.putLong(Game.EXTRA_CONSOLE_LOADING_EPOCH,
+                autoWarmUp && pendingWarmUpGame == null
+                        ? SystemClock.elapsedRealtime() : streamLoadingEpoch);
         presentation.putInt(Game.EXTRA_CONSOLE_LOADING_STEP, 2);
         presentation.putString(Game.EXTRA_CONSOLE_LOADING_STATUS, openingStatus);
         presentation.putBoolean(Game.EXTRA_CONSOLE_REDUCED_MOTION, reducedMotion);
@@ -13633,7 +13595,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 .putExtra(Game.EXTRA_PENDING_SWITCH_STREAM_TARGET, target.getAppName())
                 .putExtra(Game.EXTRA_PENDING_SWITCH_ARTWORK, coverArtworkPath(intent.hostId,
                         intent.profileId, intent.loadingArtworkGameId, "switch"))
-                .putExtra(Game.EXTRA_PENDING_SWITCH_ORCHESTRATION_ID, orchestrationId);
+                .putExtra(Game.EXTRA_PENDING_SWITCH_ORCHESTRATION_ID, orchestrationId)
+                // The switch's cover counts from this Home's Play, not from the attach.
+                .putExtra(Game.EXTRA_CONSOLE_LOADING_EPOCH, streamLoadingEpoch);
         try {
             startActivity(attach);
         } catch (RuntimeException error) {
@@ -13653,7 +13617,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 "profile_id", intent.profileId, "app_id", target.getAppId(),
                 "game_id", intent.playniteGameId);
         if (isStreamHome()) finish();
-        overridePendingTransition(0, android.R.anim.fade_out);
+        // The stream's own switch cover takes over: no cross-fade between the two covers.
+        overridePendingTransition(0, 0);
     }
 
     private void returnToRetainedStream() {
@@ -13665,8 +13630,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             Intent resume = SessionResumeManager.buildResumeIntent(this, pending);
             if (resume != null) startActivity(resume);
         }
+        boolean coverHandOff = loadingLayer.getVisibility() == View.VISIBLE;
         if (isStreamHome()) finish();
-        overridePendingTransition(0, android.R.anim.fade_out);
+        // A launch or switch cover hands over to the stream's cover, already drawn under this
+        // window: fading this one out over it blinked the cover (TV 2026-10-16).
+        overridePendingTransition(0, coverHandOff ? 0 : android.R.anim.fade_out);
     }
 
     private void reconnectSavedSessionForActor(PlayIntent intent) {
@@ -13871,7 +13839,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 intent.profileId, isChildIntent(intent), target.getAppId(),
                 intent.playniteGameId, intent.appName, target.getAppName(),
                 coverArtworkPath(intent.hostId, intent.profileId,
-                        intent.loadingArtworkGameId, "switch"), 0L, cancelled, (result, reason) -> {
+                        intent.loadingArtworkGameId, "switch"), streamLoadingEpoch, 0L,
+                cancelled, (result, reason) -> {
                     outcome.set(result);
                     error.set(reason == null ? "" : reason);
                     completed.countDown();
@@ -13924,8 +13893,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             streamLoadingView.stop();
             loadingLayer.removeView(streamLoadingView);
         }
-        streamLoadingEpoch = SystemClock.uptimeMillis();
-        streamLoadingView = new ConsoleStreamLoadingView(this, hostName,
+        // The user's action that began this transition: every cover of it counts from here.
+        streamLoadingEpoch = SystemClock.elapsedRealtime();
+        streamLoadingView = new ConsoleStreamLoadingView(this,
                 appDisplayName(appName), null, reducedMotion, streamLoadingEpoch);
         streamLoadingView.setSplashArtwork(loadingArtworkPath);
         loadingLayer.addView(streamLoadingView, match());
@@ -15608,7 +15578,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private TextView metadataPill() {
-        TextView pill = text("", 10, 0xFFF0F5F8, true);
+        TextView pill = text("", 11, 0xFFF0F5F8, true);
         pill.setSingleLine(true);
         pill.setGravity(Gravity.CENTER);
         pill.setMinHeight(dp(24));
@@ -15965,7 +15935,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
     }
 
-    private static boolean isDirectionalNavigationKey(int keyCode) {
+    static boolean isDirectionalNavigationKey(int keyCode) {
         return keyCode == KeyEvent.KEYCODE_DPAD_LEFT
                 || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
                 || keyCode == KeyEvent.KEYCODE_DPAD_UP

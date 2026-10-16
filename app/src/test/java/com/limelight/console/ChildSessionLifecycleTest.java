@@ -30,6 +30,28 @@ public class ChildSessionLifecycleTest {
         assertEquals("time_expired", fixture.terminated);
     }
 
+    @Test public void remainingTimeIsAnnouncedOnRevealThenOnlyAtWarnings() {
+        Fixture fixture = new Fixture();
+        fixture.now = 0;
+        fixture.lifecycle.configure("session-a", 2 * 3_600L + 60L, 0);
+        fixture.lifecycle.announce();
+        assertTrue(fixture.notices.isEmpty());
+
+        fixture.lifecycle.start();
+        fixture.scheduler.runPosted(0);
+        fixture.lifecycle.announce();
+        assertEquals(List.of(2 * 3_600L + 60L), fixture.notices);
+
+        fixture.now = 30_000;
+        fixture.scheduler.runDelayed(0);
+        assertEquals(1, fixture.notices.size());
+
+        fixture.now = 61_000;
+        fixture.scheduler.runDelayed(0);
+        assertEquals(List.of(2 * 3_600L + 60L, 2 * 3_600L - 1L), fixture.notices);
+        assertEquals(2 * 3_600L - 1L, fixture.lifecycle.remainingSeconds());
+    }
+
     @Test public void staleHeartbeatCannotAffectANewGeneration() throws Exception {
         Fixture fixture = new Fixture();
         fixture.lifecycle.configure("session-a", 60, 0);
@@ -252,6 +274,7 @@ public class ChildSessionLifecycleTest {
         final Scheduler scheduler = new Scheduler();
         final List<ChildSessionLifecycle.HeartbeatCallback> heartbeats = new ArrayList<>();
         final List<ChildSessionLifecycle.HeartbeatCallback> gameStops = new ArrayList<>();
+        final List<Long> notices = new ArrayList<>();
         long now = 1_000;
         final ChildSessionLifecycle lifecycle = new ChildSessionLifecycle(
                 scheduler, () -> now, this, 1_000, 5_000);
@@ -261,7 +284,7 @@ public class ChildSessionLifecycleTest {
 
         @Override public boolean active() { return true; }
         @Override public void render(long remainingSeconds) { }
-        @Override public void warning(long remainingMinutes) { }
+        @Override public void notice(long remainingSeconds) { notices.add(remainingSeconds); }
         @Override public void requestHeartbeat(ChildSessionLifecycle.HeartbeatCallback callback) {
             heartbeats.add(callback);
         }

@@ -13,11 +13,14 @@ final class PendingRetainedSwitch {
     final String gameName;
     final String streamTarget;
     final String artwork;
+    /** The user's Play on the Home (elapsedRealtime): the switch's cover counts from it. */
+    final long coverStartedAtMillis;
     final long orchestrationId;
 
     PendingRetainedSwitch(String hostId, String executionProfileId, String targetProfileId,
                           boolean targetIsChild, int appId, String gameId, String gameName,
-                          String streamTarget, String artwork, long orchestrationId) {
+                          String streamTarget, String artwork, long coverStartedAtMillis,
+                          long orchestrationId) {
         this.hostId = hostId;
         this.executionProfileId = executionProfileId;
         this.targetProfileId = targetProfileId;
@@ -27,6 +30,7 @@ final class PendingRetainedSwitch {
         this.gameName = gameName;
         this.streamTarget = streamTarget;
         this.artwork = artwork;
+        this.coverStartedAtMillis = coverStartedAtMillis;
         this.orchestrationId = orchestrationId;
     }
 
@@ -43,6 +47,7 @@ final class PendingRetainedSwitch {
                 intent.getStringExtra(Game.EXTRA_PENDING_SWITCH_GAME_NAME),
                 intent.getStringExtra(Game.EXTRA_PENDING_SWITCH_STREAM_TARGET),
                 intent.getStringExtra(Game.EXTRA_PENDING_SWITCH_ARTWORK),
+                intent.getLongExtra(Game.EXTRA_CONSOLE_LOADING_EPOCH, 0L),
                 intent.getLongExtra(Game.EXTRA_PENDING_SWITCH_ORCHESTRATION_ID, 0L));
     }
 

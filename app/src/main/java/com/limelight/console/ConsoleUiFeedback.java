@@ -268,6 +268,10 @@ final class ConsoleUiFeedback {
         dialog.setCancelable(false);
         dialog.setCanceledOnTouchOutside(false);
         dialog.setOnKeyListener((ignored, keyCode, event) -> {
+            if (audio != null && event.getAction() == KeyEvent.ACTION_DOWN
+                    && ConsoleActivity.isDirectionalNavigationKey(keyCode)) {
+                audio.noteDirectionalInput(event.getDownTime());
+            }
             if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) {
                 return false;
             }

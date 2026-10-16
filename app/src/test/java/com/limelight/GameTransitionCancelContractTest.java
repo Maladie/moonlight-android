@@ -624,8 +624,9 @@ public class GameTransitionCancelContractTest {
         // The screen stays until the user answers it: both dialogs finish Game themselves.
         String shown = rejected.substring(dialog);
         assertTrue(shown.contains("if (rejection != null && rejection.offersHardTerminate()) {"));
-        assertTrue(shown.contains(
-                "getResources().getString(R.string.conn_error_title), dialogText, true);"));
+        assertTrue(shown.contains("Dialog.displayDialog(Game.this, title, dialogText, true);"));
+        // A host's refusal is never titled as a connection error.
+        assertTrue(shown.contains("? R.string.control_rejected_title : R.string.conn_error_title"));
         assertFalse(shown.contains("finish();"));
 
         // What each refused acquire shows: only an uncertain host operation offers the hard
@@ -774,7 +775,7 @@ public class GameTransitionCancelContractTest {
         assertFalse(executed.contains("stopConnection("));
         assertTrue(restart.contains("stopConnection("));
         assertTrue(restart.contains(
-                "retry.putExtra(EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.uptimeMillis())"));
+                "retry.putExtra(EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.elapsedRealtime())"));
         assertFalse(onStream.contains("stopConnection"));
         assertFalse(onStream.contains("startActivity("));
         assertTrue(onStream.contains("LaunchTransitionType.GAME,"));

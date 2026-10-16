@@ -1150,8 +1150,6 @@
     <string name="playnite_invalid_response">Incompatible response from MoonWaker Host</string>
     <string name="playnite_server_error">MoonWaker Host game library error</string>
     <string name="playnite_card_description">%1$s. %2$s. %3$s</string>
-    <string name="playnite_running_badge">RUNNING</string>
-    <string name="playnite_running_badge_description">%1$s is currently running</string>
     <string name="playnite_end_game_success">The game has ended. Other games and the stream were not closed.</string>
     <string name="playnite_ending_game">Ending the game…</string>
     <string name="playnite_end_game_confirmation">End this game? Other games and the stream will not be closed.</string>
@@ -1193,6 +1191,7 @@
     <string name="control_state_changed">The session state on the host changed while starting. Try again.</string>
     <string name="control_rejected">The host rejected starting this stream. Try again in a moment.</string>
     <string name="control_operation_pending">The host is still holding an unfinished operation and could not resolve it by itself. Try again in a moment, or use Hard close to reset the host session.</string>
+    <string name="control_rejected_title">The host did not start the stream</string>
     <string name="console_session_uncertain_title">Session status is still being verified</string>
     <string name="console_session_uncertain_details">MoonWaker has not yet confirmed which game is running. Wait a moment and try again. No game or stream was started or stopped.</string>
     <string name="console_presentation_launch_failed_title">Could not show the stream</string>
@@ -1253,9 +1252,9 @@
     <string name="transition_previous_game_running_child">A game from an earlier launch is running instead of the one you chose. Reveal it, or cancel.</string>
     <string name="transition_switch_authorization_pending">The previous game was closed, but the host has not confirmed it is ready yet. Try again.</string>
     <string name="transition_host_session_locked_title">Windows session locked</string>
-    <string name="transition_host_session_locked">The Windows session on the host is locked. Choose Reveal now to unlock it on screen. For automatic unlocking, check the saved credentials and this device\'s remote sign-in permission in Host Control.</string>
+    <string name="transition_host_session_locked">The Windows session on the host is locked. Reveal now unlocks it on screen. For automatic unlocking, check the saved credentials and this device\'s remote sign-in permission in Host Control.</string>
     <string name="transition_stream_display_not_configured">The streamed display is not configured on the host</string>
-    <string name="transition_target_wrong_display">The game window is outside the streamed display. The picture stays hidden.</string>
+    <string name="transition_target_wrong_display">The game window is outside the streamed display. Reveal now shows that display without the game.</string>
     <string name="console_provider_stop_waiting_for_process">The game is still starting and has no process that can be closed yet. Wait a moment and try again.</string>
     <string name="transition_kicker_starting">Starting</string>
     <string name="transition_kicker_running">Game running</string>

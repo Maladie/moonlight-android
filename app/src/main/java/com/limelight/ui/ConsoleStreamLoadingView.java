@@ -14,6 +14,7 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.os.Handler;
 import android.os.Looper;
@@ -53,14 +54,23 @@ import java.util.concurrent.Executors;
 /**
  * A fully opaque, modal privacy surface rendered in the Activity window above video: the game's
  * full background artwork (or the app's standard background), a light vignette and a scrim from
- * the left and the bottom, the host chip top-left and one information card bottom-left
+ * the left and the bottom, the console clock top-right and one information card bottom-left
  * ({@link LoadingCoverModel}). The card never moves or rescales between states; only its
  * content changes.
  */
 public final class ConsoleStreamLoadingView extends FrameLayout {
     /** Sizes follow the approved mockup on a 960 dp wide TV: 1% of its width is 9.6 dp. */
     private static final int EDGE_DP = 40;
-    private static final int CARD_WIDTH_DP = 442;
+    /** Wide enough for the 10-foot message line (TV 2026-10-16: 442 dp clipped it). */
+    private static final int CARD_WIDTH_DP = 520;
+    /** Kicker and the game a switch leaves: one group, one font. */
+    private static final float KICKER_SP = 12f;
+    private static final float STAGE_SP = 15f;
+    private static final float LINE_SP = 14f;
+    /** Longest notice (host_session_locked) is ~190 chars at ~72 chars per line (507dp / 7dp): 3 lines. */
+    private static final int LINE_COUNT = 3;
+    private static final float ACTION_SP = 12.5f;
+    private static final int ACTION_HEIGHT_DP = 36;
     private static final float TITLE_SP = 35f;
     private static final float CLOSING_TITLE_SP = 27f;
     private static final long MESSAGE_INTERVAL_MS = 3000L;
@@ -72,8 +82,6 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private static final int INK_FAINT = 0x75F3F6FB;
     private static final int LINE = 0x2EF3F6FB;
     private static final int ON_INK = 0xFF0B0F17;
-    /** The carousel's "Online" green. */
-    private static final int ONLINE = 0xFF62E68B;
     private static final int WARN = 0xFFFFB547;
     // ponytail: the last decoded splash stays for the window that takes the cover over (a few
     // MB until another game's artwork replaces it); key it by file version if artwork can
@@ -86,11 +94,11 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     });
 
     public ConsoleStreamLoadingView(Context context) {
-        this(context, null, null, null, false, SystemClock.uptimeMillis());
+        this(context, null, null, false, SystemClock.elapsedRealtime());
     }
 
     public ConsoleStreamLoadingView(Context context, AttributeSet attrs) {
-        this(context, null, null, null, false, SystemClock.uptimeMillis());
+        this(context, null, null, false, SystemClock.elapsedRealtime());
     }
 
     public interface Actions {
@@ -107,7 +115,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final Backdrop defaultBackdrop;
     private final ImageView artworkView;
     private final Scrim scrim;
-    private final LinearLayout hostChip;
+    private final TextView clock;
     private final LinearLayout card;
     private final TextView kickerView;
     private final TextView fromView;
@@ -124,7 +132,6 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final LinearLayout cancelView;
     private final TextView cancelLabel;
     private final boolean reducedMotion;
-    private final boolean hasHost;
     /**
      * This cover continues one another window shows now: until it is attached it takes that
      * one's message and shows its artwork at once, so its first frame is the frame on screen.
@@ -164,13 +171,16 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final Runnable tickElapsed = new Runnable() {
         @Override public void run() {
             if (stopped) return;
-            elapsedView.setText(model.elapsed(SystemClock.uptimeMillis()));
+            elapsedView.setText(model.elapsed(SystemClock.elapsedRealtime()));
             handler.postDelayed(this, 1000L);
         }
     };
 
-    /** {@code epochMillis}: the transition's start on {@link SystemClock#uptimeMillis}. */
-    public ConsoleStreamLoadingView(Context context, String hostName, String title,
+    /**
+     * {@code epochMillis}: the transition's start on {@link SystemClock#elapsedRealtime}, the
+     * one cover time base (it keeps counting through deep sleep).
+     */
+    public ConsoleStreamLoadingView(Context context, String title,
                                     String initialMessage, boolean reducedMotion,
                                     long epochMillis) {
         super(context);
@@ -199,31 +209,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         scrim = new Scrim(context);
         addView(scrim, match());
 
-        hostChip = new LinearLayout(context);
-        hostChip.setOrientation(LinearLayout.HORIZONTAL);
-        hostChip.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView glyph = new ImageView(context);
-        glyph.setImageResource(R.drawable.ic_console_bar_monitor);
-        glyph.setImageTintList(ColorStateList.valueOf(INK));
-        LinearLayout.LayoutParams glyphParams = new LinearLayout.LayoutParams(dp(28), dp(28));
-        glyphParams.rightMargin = dp(4);
-        hostChip.addView(glyph, glyphParams);
-        LinearLayout hostTexts = new LinearLayout(context);
-        hostTexts.setOrientation(LinearLayout.VERTICAL);
-        TextView hostNameView = text(hostName == null ? "" : hostName.trim(), 15, INK);
-        hostNameView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        hostTexts.addView(hostNameView, wrap());
-        TextView hostLine = text(context.getString(R.string.console_status_online), 13, INK_SOFT);
-        hostLine.setCompoundDrawablesRelativeWithIntrinsicBounds(dot(ONLINE), null, null, null);
-        hostLine.setCompoundDrawablePadding(dp(6));
-        hostTexts.addView(hostLine, wrap());
-        hostChip.addView(hostTexts, wrap());
-        hasHost = hostName != null && !hostName.trim().isEmpty();
-        LayoutParams hostParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
-        hostParams.leftMargin = dp(EDGE_DP);
-        hostParams.topMargin = dp(32);
-        addView(hostChip, hostParams);
+        clock = ConsoleClock.create(context);
+        addView(clock, ConsoleClock.topEnd(context));
 
         card = new LinearLayout(context);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -233,13 +220,19 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         cardParams.bottomMargin = dp(EDGE_DP);
         addView(card, cardParams);
 
-        kickerView = text("", 9, INK_SOFT);
+        kickerView = text("", KICKER_SP, INK_SOFT);
         kickerView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         kickerView.setLetterSpacing(.14f);
         kickerView.setAllCaps(true);
         card.addView(kickerView, row(0));
-        fromView = text("", 11, INK_FAINT);
-        card.addView(fromView, row(11));
+        // Tight under the kicker, apart from the new title: "Switching / from game A".
+        fromView = text("", KICKER_SP, INK_SOFT);
+        fromView.setTypeface(kickerView.getTypeface());
+        fromView.setSingleLine(true);
+        fromView.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams fromParams = row(4);
+        fromParams.bottomMargin = dp(10);
+        card.addView(fromView, fromParams);
         titleView = text("", TITLE_SP, INK);
         titleView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titleView.setLetterSpacing(-.01f);
@@ -257,31 +250,31 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         stageRow.setOrientation(LinearLayout.HORIZONTAL);
         stageRow.setGravity(Gravity.BOTTOM);
         card.addView(stageRow, row(8));
-        stageView = text("", 14, INK);
+        stageView = text("", STAGE_SP, INK);
         stageView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         stageView.setSingleLine(true);
         stageView.setEllipsize(TextUtils.TruncateAt.END);
         stageView.setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_POLITE);
         stageRow.addView(stageView, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        elapsedView = text("", 10, INK_FAINT);
-        elapsedView.setTypeface(Typeface.MONOSPACE);
-        elapsedView.setPadding(dp(10), 0, 0, 0);
-        // A fixed monospace width ("10:00" never pushes the stage); hours may widen it once.
+        // A fixed slot at the card's right edge, whatever the stage says (TV 2026-10-16: glued
+        // to the stage it moved with every change). Tabular digits keep it steady; a fixed
+        // width lets the per-second tick redraw without a relayout of the card.
+        elapsedView = text("", STAGE_SP, INK_SOFT);
+        elapsedView.setFontFeatureSettings("tnum");
         elapsedView.setGravity(Gravity.END);
-        elapsedView.setMinWidth(dp(10)
-                + (int) Math.ceil(elapsedView.getPaint().measureText("00:00")));
-        stageRow.addView(elapsedView, wrap());
+        stageRow.addView(elapsedView, new LinearLayout.LayoutParams(dp(12)
+                + (int) Math.ceil(elapsedView.getPaint().measureText("0:00:00")),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         currentMessage = handedOver ? initialMessage
                 : messages.length == 0 ? "" : messages[nextMessageIndex()];
-        lineView = text("", 10.5f, INK_SOFT);
-        // One fixed line for message and notice alike: a change never moves the card; a long
-        // reason ellipsizes (the full reason is in the diagnostics).
-        lineView.setSingleLine(true);
+        lineView = text("", LINE_SP, INK_SOFT);
+        // A fixed area of LINE_COUNT lines for message and notice alike: a notice wraps inside
+        // it, a change never moves the card or the buttons; beyond it, it ellipsizes.
+        lineView.setLines(LINE_COUNT);
         lineView.setEllipsize(TextUtils.TruncateAt.END);
-        lineView.setGravity(Gravity.CENTER_VERTICAL);
-        lineView.setHeight(Math.max(dp(15), lineView.getLineHeight()));
+        lineView.setGravity(Gravity.TOP);
         card.addView(lineView, row(11));
 
         actionsRow = new LinearLayout(context);
@@ -299,16 +292,16 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         cancelView.setOrientation(LinearLayout.HORIZONTAL);
         cancelView.setGravity(Gravity.CENTER_VERTICAL);
         pill(cancelView);
-        cancelLabel = text(context.getString(R.string.transition_cancel), 10.5f, INK);
+        cancelLabel = text(context.getString(R.string.transition_cancel), ACTION_SP, INK);
         cancelLabel.setTextColor(pillInk());
         cancelLabel.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         cancelLabel.setDuplicateParentStateEnabled(true);
         cancelView.addView(cancelLabel, wrap());
-        TextView keyHint = text(context.getString(R.string.transition_back_key_hint), 8, INK);
+        TextView keyHint = text(context.getString(R.string.transition_back_key_hint), 9.5f, INK);
         keyHint.setTextColor(pillInk());
         keyHint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         keyHint.setAlpha(.7f);
-        keyHint.setPadding(dp(4), dp(1), dp(4), dp(1));
+        keyHint.setPadding(dp(5), dp(1), dp(5), dp(1));
         GradientDrawable hintBorder = new GradientDrawable();
         hintBorder.setCornerRadius(dp(4));
         hintBorder.setStroke(Math.max(1, dp(.75f)), pillInk());
@@ -680,8 +673,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             return;
         }
         // A new presentation: its time counts from here.
-        model.restartClock(SystemClock.uptimeMillis());
-        elapsedView.setText(model.elapsed(SystemClock.uptimeMillis()));
+        model.newPresentation(SystemClock.elapsedRealtime());
+        elapsedView.setText(model.elapsed(SystemClock.elapsedRealtime()));
         revealGeneration++;
         frames.newPresentation();
         animate().cancel();
@@ -691,6 +684,13 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         bringToFront();
         if (!model.actions().isEmpty()) requestDefaultActionFocus();
         scheduleLoadingMessage();
+    }
+
+    /** UI thread: the shown transition began at the user's action, maybe in another window. */
+    public void setStartedAt(long startedAtElapsedMillis) {
+        if (stopped) return;
+        model.startedAt(startedAtElapsedMillis);
+        elapsedView.setText(model.elapsed(SystemClock.elapsedRealtime()));
     }
 
     public void stopAndHide() {
@@ -790,11 +790,15 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     private void applyLine() {
         lineView.setText(lineTarget);
-        lineView.setTextColor(lineIsNotice ? INK_SOFT : INK_FAINT);
-        lineView.setTypeface(lineIsNotice ? Typeface.DEFAULT
-                : Typeface.create("sans-serif-light", Typeface.ITALIC));
-        lineView.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                lineIsNotice ? dot(WARN) : null, null, null, null);
+        // Both read from the couch: the notice in full ink, the message a step softer.
+        lineView.setTextColor(lineIsNotice ? INK : INK_SOFT);
+        lineView.setTypeface(Typeface.DEFAULT, lineIsNotice ? Typeface.NORMAL : Typeface.ITALIC);
+        // The dot sits at the first line, not the middle of the area.
+        int firstLine = lineView.getLineHeight();
+        int top = (firstLine - dp(6)) / 2;
+        lineView.setCompoundDrawablesRelativeWithIntrinsicBounds(lineIsNotice
+                ? new InsetDrawable(dot(WARN), 0, top, 0, lineView.getLineHeight() * LINE_COUNT
+                        - top - dp(6)) : null, null, null, null);
         lineView.setCompoundDrawablePadding(dp(7));
     }
 
@@ -834,7 +838,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         defaultBackdrop.setVisibility(neutral || art || artwork.pending() ? GONE : VISIBLE);
         artworkView.setVisibility(!neutral && art ? VISIBLE : GONE);
         scrim.setVisibility(neutral ? GONE : VISIBLE);
-        hostChip.setVisibility(neutral || !hasHost ? GONE : VISIBLE);
+        clock.setVisibility(neutral ? GONE : VISIBLE);
         card.setVisibility(neutral ? GONE : VISIBLE);
     }
 
@@ -917,8 +921,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private void pill(View view) {
         view.setFocusable(true);
         view.setClickable(true);
-        view.setMinimumHeight(dp(30));
-        view.setPadding(dp(15), 0, dp(15), 0);
+        view.setMinimumHeight(dp(ACTION_HEIGHT_DP));
+        view.setPadding(dp(18), 0, dp(18), 0);
         StateListDrawable background = new StateListDrawable();
         GradientDrawable focused = new GradientDrawable();
         focused.setCornerRadius(dp(999));
@@ -933,7 +937,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     private TextView pillText(String value) {
-        TextView view = text(value, 10.5f, INK);
+        TextView view = text(value, ACTION_SP, INK);
         view.setTextColor(pillInk());
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         view.setGravity(Gravity.CENTER);
@@ -1029,8 +1033,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     private LinearLayout.LayoutParams actionParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(30));
-        params.rightMargin = dp(8);
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(ACTION_HEIGHT_DP));
+        params.rightMargin = dp(10);
         return params;
     }
 

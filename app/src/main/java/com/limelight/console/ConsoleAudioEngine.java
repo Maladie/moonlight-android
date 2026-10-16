@@ -32,6 +32,12 @@ final class ConsoleAudioEngine {
     private static final long NAVIGATION_THROTTLE_MS = 90L;
     private static final int FADE_STEPS = 18;
     private static final long FADE_STEP_MS = 35L;
+    /** Leaving a console (pause, release) ramps the music down this fast instead of cutting it. */
+    private static final int LEAVE_FADE_STEPS = 8;
+    /** A NAVIGATE tick answers a directional key pressed at most this long ago. */
+    static final long NAVIGATION_INPUT_WINDOW_MS = 320L;
+    /** Players outlive release() until the leave fade and the longest cue have played out. */
+    private static final long RELEASE_DELAY_MS = 800L;
     /** Ambience gain at stepper 1 and 10; the asset itself peaks at 0 dBFS (RMS about -15). */
     static final float AMBIENT_MIN_DB = -42f;
     static final float AMBIENT_MAX_DB = -10f;
@@ -63,6 +69,8 @@ final class ConsoleAudioEngine {
     private int fadeGeneration;
     private float ambientVolume;
     private long lastNavigationAt;
+    private long resumedAt;
+    private long lastDirectionalInputAt = Long.MIN_VALUE / 2;
 
     ConsoleAudioEngine(Context context) {
         this.context = context.getApplicationContext();
@@ -106,6 +114,7 @@ final class ConsoleAudioEngine {
     synchronized void resume() {
         if (released) return;
         resumed = true;
+        resumedAt = SystemClock.uptimeMillis();
         prepareIfNeeded();
         updateAmbient(false);
     }
@@ -115,11 +124,32 @@ final class ConsoleAudioEngine {
         updateAmbient(true);
     }
 
+    /** A directional key reached this console; {@code downTime} is its uptime press time. */
+    synchronized void noteDirectionalInput(long downTime) {
+        if (directionalInputCounts(resumed, resumedAt, downTime)) {
+            lastDirectionalInputAt = SystemClock.uptimeMillis();
+        }
+    }
+
+    /**
+     * Only a key pressed on this resumed console counts. A key held or queued from the stream,
+     * or another activity, across the return must not tick when focus is restored.
+     */
+    static boolean directionalInputCounts(boolean resumed, long resumedAt, long downTime) {
+        return resumed && downTime >= resumedAt;
+    }
+
+    /** NAVIGATE follows real directional input, throttled; programmatic focus stays silent. */
+    static boolean navigationCueDue(long now, long lastDirectionalInputAt, long lastNavigationAt) {
+        return now - lastDirectionalInputAt < NAVIGATION_INPUT_WINDOW_MS
+                && now - lastNavigationAt >= NAVIGATION_THROTTLE_MS;
+    }
+
     synchronized void play(ConsoleAudioSynthesis.Cue cue) {
         if (released || !effectsEnabled || soundPool == null) return;
         if (cue == ConsoleAudioSynthesis.Cue.NAVIGATE) {
             long now = SystemClock.uptimeMillis();
-            if (now - lastNavigationAt < NAVIGATION_THROTTLE_MS) return;
+            if (!navigationCueDue(now, lastDirectionalInputAt, lastNavigationAt)) return;
             lastNavigationAt = now;
         }
         Integer soundId = soundIds.get(cue);
@@ -144,8 +174,14 @@ final class ConsoleAudioEngine {
     synchronized void release() {
         if (released) return;
         released = true;
-        fadeGeneration++;
         preparationExecutor.shutdownNow();
+        // Let the music ramp down and a playing cue finish; releasing them now cuts mid-note.
+        if (ambientPlayer != null) fadeAmbient(0f, LEAVE_FADE_STEPS);
+        mainHandler.postDelayed(this::freePlayers, RELEASE_DELAY_MS);
+    }
+
+    private synchronized void freePlayers() {
+        fadeGeneration++;
         if (ambientEqualizer != null) {
             ambientEqualizer.release();
             ambientEqualizer = null;
@@ -242,33 +278,35 @@ final class ConsoleAudioEngine {
         ConsoleAudioSynthesis.writeWave(file, samples, SAMPLE_RATE, channels);
     }
 
-    private synchronized void updateAmbient(boolean immediate) {
+    /** {@code leaving}: this console is going away, so the music ramps down quickly. */
+    private synchronized void updateAmbient(boolean leaving) {
         if (released || ambientPlayer == null) return;
         float target = resumed && menuVisible && ambientEnabled
                 ? ambientGain(hostSelectionVisible ? hostSelectionVolume : menuVolume) : 0f;
-        int generation = ++fadeGeneration;
-        float start = ambientVolume;
         if (target > 0f && !ambientPlayer.isPlaying()) {
             ambientPlayer.seekTo(ambientPositionMs);
             ambientPlayer.start();
         }
-        if (immediate) {
-            setAmbientVolume(target);
-            if (target == 0f && ambientPlayer.isPlaying()) pauseAmbient();
-            return;
-        }
-        for (int step = 1; step <= FADE_STEPS; step++) {
+        fadeAmbient(target, leaving ? LEAVE_FADE_STEPS : FADE_STEPS);
+    }
+
+    /** Every gain change, including the stop, is a ramp; the player pauses only at silence. */
+    private void fadeAmbient(float target, int steps) {
+        int generation = ++fadeGeneration;
+        float start = ambientVolume;
+        for (int step = 1; step <= steps; step++) {
             int currentStep = step;
             mainHandler.postDelayed(() -> applyFadeStep(
-                    generation, start, target, currentStep), FADE_STEP_MS * step);
+                    generation, start, target, currentStep, steps), FADE_STEP_MS * step);
         }
     }
 
-    private synchronized void applyFadeStep(int generation, float start, float target, int step) {
-        if (released || generation != fadeGeneration || ambientPlayer == null) return;
-        float fraction = step / (float) FADE_STEPS;
+    private synchronized void applyFadeStep(int generation, float start, float target, int step,
+                                            int steps) {
+        if (generation != fadeGeneration || ambientPlayer == null) return;
+        float fraction = step / (float) steps;
         setAmbientVolume(start + (target - start) * fraction);
-        if (step == FADE_STEPS && target == 0f && ambientPlayer.isPlaying()) {
+        if (step == steps && target == 0f && ambientPlayer.isPlaying()) {
             pauseAmbient();
         }
     }

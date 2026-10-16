@@ -197,6 +197,47 @@ public class PlayniteTransitionGatewayTest {
                 "steam:123", PROCESS_TOKEN, 42);
     }
 
+    /**
+     * Relaunching Cuphead met control.operation_pending: the provider refused the close's stop
+     * (a received answer), the close reported it as uncertain, and the host held that until a
+     * hard close. Only an answer that may be lost is uncertain.
+     */
+    @Test public void answeredStopRefusalIsNotAnUncertainEffect() throws Exception {
+        RecordingClient client = new RecordingClient();
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(model, connection("parent"),
+                PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        com.limelight.gateway.ControlOperationClient.Permit permit =
+                permit("control-full-quit-1", "session-1", 2L, 3L);
+
+        assertTrue(gateway.stopGameWithinControl("steam:123", permit));
+        // The Gateway's 200 for a provider refusal, and its 409 fence before any effect.
+        client.stopAnswer = () -> new JSONObject().put("ok", false)
+                .put("error", "running_game_identity_changed")
+                .put("result", new JSONObject().put("accepted", false));
+        assertFalse(gateway.stopGameWithinControl("steam:123", permit));
+        client.stopAnswer = () -> {
+            throw new HostGatewayClient.GatewayException("control_operation_required", 409);
+        };
+        assertFalse(gateway.stopGameWithinControl("steam:123", permit));
+        // The provider's answer never reached the Gateway, or none reached the TV: uncertain.
+        for (IOException lost : new IOException[] {
+                new HostGatewayClient.GatewayException("provider_response_unavailable", 502),
+                new java.net.SocketTimeoutException("timeout")}) {
+            client.stopAnswer = () -> {
+                throw lost;
+            };
+            try {
+                gateway.stopGameWithinControl("steam:123", permit);
+                fail("A possibly lost stop answer must stay uncertain");
+            } catch (IOException expected) {
+                assertEquals(lost, expected);
+            }
+        }
+        String host = SourceText.main("stream/HostSessionTermination.java");
+        assertTrue(host.contains("if (!provider.stopGameWithinControl(exact, permit)) {\n"
+                + "                            gameLeftUnverified = true;"));
+    }
+
     @Test public void controlSnapshotExposesEvidenceOnlyForTheCallersExactPermit()
             throws Exception {
         RecordingClient client = new RecordingClient();
@@ -545,6 +586,10 @@ public class PlayniteTransitionGatewayTest {
         return count;
     }
 
+    private interface StopAnswer {
+        JSONObject answer() throws IOException, JSONException;
+    }
+
     private static final class RecordingClient extends HostGatewayClient {
         final List<String> requests = new ArrayList<>();
         final List<String> profiles = new ArrayList<>();
@@ -561,6 +606,8 @@ public class PlayniteTransitionGatewayTest {
         String gameId = "steam:123";
         int parsedObservations;
         IOException failure;
+        /** The stop-verified answer, or its failure; null answers a verified stop. */
+        StopAnswer stopAnswer;
 
         @Override SessionObservation getSessionObservation(
                 GatewayConnection connection, String executionProfileId,
@@ -636,6 +683,7 @@ public class PlayniteTransitionGatewayTest {
                                     .put("start_before_stream", false));
                 }
                 if ("/api/v1/game/stop-verified".equals(path)) {
+                    if (stopAnswer != null) return stopAnswer.answer();
                     assertEquals("steam:123", body.optString("game_id"));
                     assertEquals(PROCESS_TOKEN,
                             body.optString("expected_process_token"));

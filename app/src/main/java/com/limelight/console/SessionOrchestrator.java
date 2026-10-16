@@ -199,7 +199,7 @@ public final class SessionOrchestrator implements AutoCloseable {
          * stream Home still has its stream (one being replaced by the console does not).
          */
         boolean drivesQueue();
-        /** The queued Play ({@link #queued()}) changed: the game tiles render it again. */
+        /** Render the queued Play ({@link #queued()}): its cover and the game tiles. */
         void queueChanged();
         /** The queued {@code intent} was dropped for {@code reason}: shown, tiles rendered. */
         void queueDropped(PlayIntent intent, QueueDrop reason);
@@ -472,7 +472,12 @@ public final class SessionOrchestrator implements AutoCloseable {
         switch (queuedStep(effects.rendered(waiting.profileKey))) {
             case WAIT:
                 if (queueExpired(queue.since())) dropQueued(QueueDrop.CLOSE_UNCONFIRMED);
-                else armQueueTimeout();
+                else {
+                    // The screen driving the queue may have just taken it over: it renders the
+                    // queued cover on every step, not only when the queue itself changes.
+                    effects.queueChanged();
+                    armQueueTimeout();
+                }
                 return;
             case DROP_CLOSE_FAILED:
                 dropQueued(QueueDrop.CLOSE_FAILED);

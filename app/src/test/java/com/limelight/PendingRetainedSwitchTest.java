@@ -43,6 +43,6 @@ public class PendingRetainedSwitchTest {
 
     private static PendingRetainedSwitch target(String game) {
         return new PendingRetainedSwitch("host", "p", "p", false, 7, game, game,
-                "Desktop", "", "b".equals(game) ? 9L : 7L);
+                "Desktop", "", 0L, "b".equals(game) ? 9L : 7L);
     }
 }

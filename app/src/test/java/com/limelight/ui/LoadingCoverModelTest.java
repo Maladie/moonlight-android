@@ -62,8 +62,30 @@ public class LoadingCoverModelTest {
         assertEquals("0:00", model.elapsed(-5L));
         assertEquals("0:59", model.elapsed(59_999L));
         assertEquals("1:00:05", model.elapsed(3_605_000L));
-        model.restartClock(100_000L);
+        model.newPresentation(100_000L);
         assertEquals("0:02", model.elapsed(102_000L));
+    }
+
+    @Test public void aSwitchCoverCountsFromTheUsersPlayNotFromTheCoversOwnStart() {
+        // TV 2026-10-16: a hidden warm-up's cover (no start of its own) took over a Play.
+        LoadingCoverModel model = new LoadingCoverModel("Game", 0L);
+        model.step(3, "Starting the game", "");
+        model.startedAt(53_353_602L);
+        assertEquals("0:16", model.elapsed(53_369_602L));
+        assertEquals("steps are not a new presentation", 3, model.step());
+    }
+
+    @Test public void progressNeverGoesBackWithinOnePresentation() {
+        LoadingCoverModel model = new LoadingCoverModel("Game", 0L);
+        model.step(2, "Opening the stream", "");
+        // The stream's controller still reports PREPARING_SESSION (step 1).
+        model.step(1, "Preparing", "");
+        assertEquals(2, model.step());
+        assertEquals(DONE, model.stepState(0));
+        assertEquals("Preparing", model.stage());
+        model.newPresentation(1_000L);
+        model.step(1, "Preparing", "");
+        assertEquals(CURRENT, model.stepState(0));
     }
 
     @Test public void revealAvailableStillStartsWithItsNoticeAndRevealFirst() {

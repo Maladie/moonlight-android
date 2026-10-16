@@ -87,7 +87,7 @@ public class SessionModelAsyncTest {
         owner.completeSwitchInline = true;
         List<String> caller = new ArrayList<>();
         model.dispatch(new SessionEvent.SwitchRequested("host", "parent", "parent", false, 7,
-                "game-b", "B", "Stream", "", 0L, () -> false,
+                "game-b", "B", "Stream", "", 0L, 0L, () -> false,
                 (outcome, error) -> caller.add("completion:" + outcome)),
                 started -> caller.add("reply:" + started));
 
@@ -268,7 +268,7 @@ public class SessionModelAsyncTest {
         assertEquals(SessionModel.TerminationResult.NO_CONTROLLER,
                 new SessionEvent.TerminateRequested("s", "", null).failure());
         assertEquals(SessionModel.SwitchResult.NOT_ELIGIBLE, new SessionEvent.SwitchRequested(
-                "h", "p", "p", false, 1, "g", "", "", "", 0L, null, null).failure());
+                "h", "p", "p", false, 1, "g", "", "", "", 0L, 0L, null, null).failure());
     }
 
     @Test public void awaitingWorkerIsReleasedWhenTheTransitionThrows() throws Exception {

@@ -1,18 +1,21 @@
 package com.limelight.console;
 
+import java.util.HashSet;
 import java.util.Objects;
+import java.util.Set;
 
 /** Presents the remaining lease reported by the host using elapsed realtime. */
 public final class ChildSessionCountdown {
-    private static final int[] WARNING_MINUTES = {60, 30, 15, 10, 5, 1};
+    /** Below the last full hour; above it every full remaining hour is a warning. */
+    private static final int[] LAST_HOUR_WARNING_MINUTES = {30, 15, 10, 5, 1};
     private static final long MILLIS_PER_SECOND = 1_000L;
 
     private final String sessionId;
+    private final Set<Long> shownWarnings = new HashSet<>();
     private long deadlineElapsedMs;
     private long playableNowSeconds;
     private long lastReceivedElapsedMs;
     private long lastObservedRemainingSeconds;
-    private int shownWarnings;
     private boolean hasUpdate;
 
     public ChildSessionCountdown(String sessionId) {
@@ -46,18 +49,20 @@ public final class ChildSessionCountdown {
                 + (remainingMs % MILLIS_PER_SECOND == 0 ? 0 : 1);
     }
 
-    /** Returns one newly crossed warning in minutes, or -1 when there is none. */
-    public int crossedWarningMinutes(long nowElapsedMs) {
+    /**
+     * Returns the latest newly crossed warning in minutes (every full remaining hour, then 30,
+     * 15, 10, 5 and 1 minutes), or -1 when there is none. Each warning is shown once.
+     */
+    public long crossedWarningMinutes(long nowElapsedMs) {
         if (!hasUpdate) return -1;
         long current = remainingSeconds(nowElapsedMs);
-        int warning = -1;
-        for (int i = 0; i < WARNING_MINUTES.length; i++) {
-            long thresholdSeconds = WARNING_MINUTES[i] * 60L;
-            if (crossed(lastObservedRemainingSeconds, current, thresholdSeconds)
-                    && (shownWarnings & (1 << i)) == 0) {
-                shownWarnings |= 1 << i;
-                warning = WARNING_MINUTES[i];
-            }
+        long previous = lastObservedRemainingSeconds;
+        long warning = -1;
+        for (long hours = previous / 3_600L; hours >= 1; hours--) {
+            warning = mark(previous, current, hours * 60L, warning);
+        }
+        for (int minutes : LAST_HOUR_WARNING_MINUTES) {
+            warning = mark(previous, current, minutes, warning);
         }
         lastObservedRemainingSeconds = current;
         return warning;
@@ -65,6 +70,18 @@ public final class ChildSessionCountdown {
 
     public boolean isExpired(long nowElapsedMs) {
         return !hasUpdate || remainingSeconds(nowElapsedMs) == 0;
+    }
+
+    /** Minutes shown to the child: rounded up, so a started minute still counts. */
+    public static long displayMinutes(long remainingSeconds) {
+        return Math.max(1L, (remainingSeconds + 59L) / 60L);
+    }
+
+    private long mark(long previous, long current, long minutes, long latest) {
+        if (!crossed(previous, current, minutes * 60L) || !shownWarnings.add(minutes)) {
+            return latest;
+        }
+        return latest < 0 ? minutes : Math.min(latest, minutes);
     }
 
     private static boolean crossed(long previous, long current, long threshold) {

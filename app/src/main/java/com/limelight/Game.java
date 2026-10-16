@@ -78,6 +78,7 @@ import com.limelight.stream.StreamRuntime;
 import com.limelight.nvstream.StreamInput;
 import com.limelight.stream.HostSessionTermination;
 import com.limelight.stream.WholeSessionTermination;
+import com.limelight.console.ChildSessionCountdown;
 import com.limelight.console.ChildSessionLifecycle;
 import com.limelight.gateway.ChildSessionClient;
 import com.limelight.gateway.ControlOperationClient;
@@ -242,7 +243,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private ChildSessionLifecycle childLifecycle;
     private ChildSessionClient childSessionClient;
     private volatile GatewayConnection childGatewayConnection;
-    private TextView childCountdownView;
     private RetainedSwitch retainedSwitch;
     private boolean displayedFailureDialog = false;
     private boolean userInitiatedDisconnect = false;
@@ -513,7 +513,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Inflate the content
         setContentView(R.layout.activity_game);
-        createChildCountdownView();
 
         if (getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)) {
             transitionSpec = readTransitionSpec();
@@ -547,10 +546,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 streamEverRevealed = restoredRevealed;
             }
             launchStartedAtMillis = getIntent().getLongExtra(
-                    EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.uptimeMillis());
+                    EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.elapsedRealtime());
             consoleLoadingView = new ConsoleStreamLoadingView(
                     this,
-                    getIntent().getStringExtra(EXTRA_PC_NAME),
                     appDisplayName(getIntent().getStringExtra(EXTRA_APP_NAME)),
                     getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),
                     getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false),
@@ -3363,7 +3361,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     stopConnection();
                     return;
                 }
-                if (consoleLoadingView != null) {
+                // A transition's cover shows its controller's status only: the raw stages wrote
+                // a second text that alternated with it and blinked the stage line (TV 10-16).
+                if (consoleLoadingView != null && transitionController == null) {
                     consoleLoadingView.setStage(stage);
                 }
                 if (spinner != null) {
@@ -3552,6 +3552,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         transitionController.coverForUser(transitionSpec.id,
                 LaunchTransitionController.UserCover.SWITCH);
+        // Its time counts from the Play on the Home, not from this window's cover (a hidden
+        // warm-up's had no start of its own: TV 2026-10-16 showed the time since boot).
+        consoleLoadingView.setStartedAt(operation.request.coverStartedAtMillis);
     }
 
     /**
@@ -4157,7 +4160,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         if (!childSessionId.isEmpty()) startChildMonitoring();
-        if (isChildSession() && childCountdownView == null) createChildCountdownView();
         replacement.start();
         if (isTransportConnected()) {
             transitionController.streamConnected(next.id);
@@ -4273,7 +4275,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return;
             }
             if (!childSessionId.isEmpty()) startChildMonitoring();
-            if (isChildSession() && childCountdownView == null) createChildCountdownView();
             armAwaitedVideoFrame("retained-game-attempt");
             transitionCoordinator.start();
             if (isTransportConnected()) {
@@ -5359,17 +5360,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         dialogText += "\n\n" + getResources().getString(R.string.nettest_text_blocked);
                     }
 
+                    // A host's refusal is not a connection error.
+                    String title = getString(rejection != null
+                            ? R.string.control_rejected_title : R.string.conn_error_title);
                     if (rejection != null && rejection.offersHardTerminate()) {
                         // The host panel's hard close, one step from this error.
                         String hostId = getIntent().getStringExtra(EXTRA_PC_UUID);
                         ConsoleConfirmDialog.show(Game.this,
-                                getString(R.string.conn_error_title), dialogText,
+                                title, dialogText,
                                 getString(android.R.string.ok),
                                 getString(R.string.console_hard_terminate_session),
                                 () -> ConsoleActivity.offerHardTerminate(Game.this, hostId),
                                 0L, Game.this::finish);
                     } else {
-                        Dialog.displayDialog(Game.this, getResources().getString(R.string.conn_error_title), dialogText, true);
+                        Dialog.displayDialog(Game.this, title, dialogText, true);
                     }
                 }
             }
@@ -5686,7 +5690,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     /** A later attempt (switch, retry, observation) is its own request, started now. */
     private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
             LaunchTransitionSpec spec) {
-        return createTransitionCoordinator(spec, SystemClock.uptimeMillis());
+        return createTransitionCoordinator(spec, SystemClock.elapsedRealtime());
     }
 
     private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
@@ -6062,14 +6066,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionUiHandler.removeCallbacks(retainedRestoreWatchdog);
                 retainedRestoreWatchdog = null;
             }
-            if (!childSessionId.isEmpty() && childCountdownView != null) {
-                childCountdownView.setVisibility(View.VISIBLE);
-            }
             // With a controller, frames reach it only through its armed (id, edge) proof and
             // the cover follows its snapshots (a hidden warm-up's included).
             if (transitionController == null) {
                 if (consoleLoadingView != null) consoleLoadingView.revealStream("", null);
                 streamEverRevealed = true;
+                announceChildRemaining();
                 maybeArmStreamingAutopilotCalibration();
             }
         });
@@ -6095,7 +6097,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 || consoleLoadingView == null) return;
         if (isDestroyed()) {
             if (controllerHandler != null) controllerHandler.setInputSuppressed(true);
-            if (childCountdownView != null) childCountdownView.setVisibility(View.GONE);
             consoleLoadingView.showOpaque();
             return;
         }
@@ -6279,6 +6280,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             if (isFinishing() || isDestroyed()) return;
             manualRevealRequested = false;
             streamEverRevealed = true;
+            announceChildRemaining();
             maybeArmStreamingAutopilotCalibration();
             if (manualReveal) {
                 LimeLog.info("Manual stream reveal completed transition="
@@ -6734,7 +6736,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         retry.putExtra(EXTRA_TRANSITION_START_BEFORE_STREAM,
                 next.startProviderBeforeStream);
         // The new attempt is its own request: it never carries the failed one's start time.
-        retry.putExtra(EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.uptimeMillis());
+        retry.putExtra(EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.elapsedRealtime());
         retry.removeExtra(STATE_RETRY_TRANSITION_ID);
         // Retry lives on the controller's cover (SessionOrchestrator): it is already up.
         awaitCover(retryId, outcome -> {
@@ -7112,6 +7114,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         pendingSwitchCoverId = transitionSpec.id;
         transitionController.coverForUser(transitionSpec.id,
                 LaunchTransitionController.UserCover.SWITCH);
+        consoleLoadingView.setStartedAt(pending.coverStartedAtMillis);
     }
 
     /** The pending switch ended before its own cover took over: its cover comes off. */
@@ -7133,6 +7136,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 pending.executionProfileId, pending.targetProfileId,
                 pending.targetIsChild, pending.appId, pending.gameId,
                 pending.gameName, pending.streamTarget, pending.artwork,
+                pending.coverStartedAtMillis,
                 pending.orchestrationId,
                 () -> isFinishing() || isDestroyed(),
                 (outcome, error) -> runOnUiThread(() -> {
@@ -7166,7 +7170,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void logLaunchMilestone(String milestone) {
         if (transitionSpec == null) return;
         long elapsed = launchStartedAtMillis <= 0L
-                ? 0L : Math.max(0L, SystemClock.uptimeMillis() - launchStartedAtMillis);
+                ? 0L : Math.max(0L, SystemClock.elapsedRealtime() - launchStartedAtMillis);
         LimeLog.info("Launch timeline epoch=" + launchStartedAtMillis
                 + " transition=" + transitionSpec.id
                 + " host=" + transitionSpec.hostId
@@ -7775,6 +7779,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
         overlayMenuView.setBitrateKbps(runtimeBitrateKbps);
         overlayMenuView.setEndGameAvailable(canEndManagedGame());
+        String childRemaining = childRemainingText();
+        overlayMenuView.setChildRemainingTime(childRemaining == null ? null
+                : getString(R.string.child_session_remaining, childRemaining));
         overlayMenuView.show();
         if (discordOverlayController != null) discordOverlayController.onOverlayShown();
         controllerHandler.refreshControllerBatteryInfo(() -> {
@@ -8420,7 +8427,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         getIntent().removeExtra(EXTRA_CHILD_GAME_ID);
         getIntent().removeExtra(EXTRA_CHILD_DEADLINE_ELAPSED_MS);
         getIntent().removeExtra(EXTRA_CHILD_POLICY_REVISION);
-        if (childCountdownView != null) childCountdownView.setVisibility(View.GONE);
     }
 
     private boolean prepareChildSession() {
@@ -8492,22 +8498,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }, "MoonWaker-ValidateAllowance").start();
     }
 
-    private void createChildCountdownView() {
-        if (!isChildSession()) return;
-        childCountdownView = new TextView(this);
-        childCountdownView.setTextColor(0xFFFFFFFF);
-        childCountdownView.setTextSize(18);
-        childCountdownView.setGravity(Gravity.CENTER);
-        int padding = Math.round(12 * getResources().getDisplayMetrics().density);
-        childCountdownView.setPadding(padding, padding / 2, padding, padding / 2);
-        childCountdownView.setBackgroundColor(0x99000000);
-        childCountdownView.setVisibility(View.GONE);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.END);
-        int margin = Math.round(18 * getResources().getDisplayMetrics().density);
-        params.setMargins(margin, margin, margin, 0);
-        ((FrameLayout) findViewById(android.R.id.content)).addView(childCountdownView, params);
+    /** Time left is never on screen during play: a notice after the stream starts. */
+    private void announceChildRemaining() {
+        if (childLifecycle != null && !childSessionId.isEmpty()) childLifecycle.announce();
+    }
+
+    /** "1 h 25 min", "2 h" or "45 min"; null without a child limit. */
+    private String childRemainingText() {
+        long remaining = childLifecycle == null || childSessionId.isEmpty()
+                ? -1L : childLifecycle.remainingSeconds();
+        return remaining < 0L ? null : childRemainingText(remaining);
+    }
+
+    private String childRemainingText(long remainingSeconds) {
+        long minutes = ChildSessionCountdown.displayMinutes(remainingSeconds);
+        long hours = minutes / 60L;
+        minutes %= 60L;
+        if (hours == 0L) return getString(R.string.child_session_remaining_minutes, minutes);
+        if (minutes == 0L) return getString(R.string.child_session_remaining_hours, hours);
+        return getString(R.string.child_session_remaining_hours_minutes, hours, minutes);
     }
 
     private void startChildMonitoring() {
@@ -8538,15 +8547,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override public void render(long remaining) {
-                if (childCountdownView != null) childCountdownView.setText(getString(
-                        R.string.child_session_countdown,
-                        remaining / 60L, remaining % 60L));
+                if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) {
+                    overlayMenuView.setChildRemainingTime(getString(
+                            R.string.child_session_remaining, childRemainingText(remaining)));
+                }
             }
 
-            @Override public void warning(long remainingMinutes) {
-                Toast.makeText(Game.this,
-                        getString(R.string.child_session_warning, remainingMinutes),
-                        Toast.LENGTH_LONG).show();
+            @Override public void notice(long remainingSeconds) {
+                Toast.makeText(Game.this, getString(R.string.child_session_remaining,
+                        childRemainingText(remainingSeconds)), Toast.LENGTH_LONG).show();
             }
 
             @Override public void requestHeartbeat(

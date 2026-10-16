@@ -33,6 +33,17 @@ public class SessionResumeManagerTest {
         }
     }
 
+    @Test public void resumedCoverCountsFromTheResumeNotTheParkedStreamsStart() throws IOException {
+        String text = source();
+        String save = text.substring(text.indexOf("static void save("),
+                text.indexOf("public static Intent buildResumeIntent("));
+        String restore = text.substring(text.indexOf("public static Intent buildResumeIntent("),
+                text.indexOf("static boolean clearIfMatches("));
+        assertFalse(save.contains("EXTRA_CONSOLE_LOADING_EPOCH"));
+        assertTrue(restore.contains(
+                "putExtra(Game.EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.elapsedRealtime())"));
+    }
+
     private static Map<String, Object> record(String streamSessionId) {
         Map<String, Object> stored = new HashMap<>();
         stored.put("pending", true);

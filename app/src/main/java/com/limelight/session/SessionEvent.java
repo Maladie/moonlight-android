@@ -334,6 +334,8 @@ public abstract class SessionEvent<R> {
         private final boolean targetIsChild;
         private final int appId;
         private final String newGameId, newGameName, streamTargetName, artworkPath;
+        /** The user's Play that asked for the switch (elapsedRealtime): the cover counts from it. */
+        private final long coverStartedAtMillis;
         private final long orchestrationId;
         private final BooleanSupplier cancelled;
         private final SwitchCallback completion;
@@ -341,6 +343,7 @@ public abstract class SessionEvent<R> {
         public SwitchRequested(String hostId, String executionProfileId, String targetProfileId,
                                boolean targetIsChild, int appId, String newGameId,
                                String newGameName, String streamTargetName, String artworkPath,
+                               long coverStartedAtMillis,
                                long orchestrationId, BooleanSupplier cancelled,
                                SwitchCallback completion) {
             this.hostId = hostId;
@@ -352,6 +355,7 @@ public abstract class SessionEvent<R> {
             this.newGameName = newGameName;
             this.streamTargetName = streamTargetName;
             this.artworkPath = artworkPath;
+            this.coverStartedAtMillis = coverStartedAtMillis;
             this.orchestrationId = orchestrationId;
             this.cancelled = cancelled;
             this.completion = completion;
@@ -361,8 +365,8 @@ public abstract class SessionEvent<R> {
 
         @Override void apply(SessionModel m, Reply<SwitchResult> reply) {
             m.switchGame(hostId, executionProfileId, targetProfileId, targetIsChild, appId,
-                    newGameId, newGameName, streamTargetName, artworkPath, orchestrationId,
-                    cancelled, completion, reply);
+                    newGameId, newGameName, streamTargetName, artworkPath, coverStartedAtMillis,
+                    orchestrationId, cancelled, completion, reply);
         }
     }
 

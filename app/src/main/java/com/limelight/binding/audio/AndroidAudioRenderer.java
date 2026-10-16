@@ -20,12 +20,21 @@ public class AndroidAudioRenderer implements AudioRenderer {
     private final Context context;
     private final boolean enableAudioFx;
 
+    /**
+     * Every gain change and the teardown fade last this long: a step clicks, and 20 ms still
+     * sounded like a cut on the TV when leaving for the console. Calibrate by ear.
+     */
+    private static final int FADE_MS = 40;
+    private static final long CLEANUP_FADE_STEP_MS = 5L;
+    private static final int CLEANUP_FADE_STEPS = (int) (FADE_MS / CLEANUP_FADE_STEP_MS);
+
     private AudioTrack track;
+    private volatile PcmGainRamp gainRamp;
+    private int channelCount;
     private volatile float volume = 1f;
     private volatile long buffersReceived, nonzeroBuffers, samplesWritten;
     private volatile long lastBufferAt, lastSuccessfulWriteAt;
     private volatile int lastWriteResult = Integer.MIN_VALUE;
-    private volatile int lastVolumeResult = Integer.MIN_VALUE;
 
     public AndroidAudioRenderer(Context context, boolean enableAudioFx) {
         this.context = context;
@@ -101,6 +110,9 @@ public class AndroidAudioRenderer implements AudioRenderer {
         LimeLog.info("Audio channel config: "+String.format("0x%X", channelConfig));
 
         bytesPerFrame = audioConfiguration.channelCount * samplesPerFrame * 2;
+        channelCount = audioConfiguration.channelCount;
+        // Starts silent, so the stream also fades in.
+        gainRamp = new PcmGainRamp(sampleRate * FADE_MS / 1000, volume);
 
         // We're not supposed to request less than the minimum
         // buffer size for our buffer, but it appears that we can
@@ -167,7 +179,6 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
             try {
                 track = createAudioTrack(channelConfig, sampleRate, bufferSize, lowLatency);
-                lastVolumeResult = track.setVolume(volume);
                 track.play();
                 logAudioState("setup");
 
@@ -196,15 +207,8 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     public void setVolume(float volume) {
         this.volume = Math.max(0f, Math.min(1f, volume));
-        lastVolumeResult = Integer.MIN_VALUE;
-        AudioTrack current = track;
-        if (current != null) {
-            try {
-                lastVolumeResult = current.setVolume(this.volume);
-            } catch (IllegalStateException ignored) {
-                // The connection may have released the track while Home was closing.
-            }
-        }
+        PcmGainRamp ramp = gainRamp;
+        if (ramp != null) ramp.setTarget(this.volume);
         logAudioState("volume");
     }
 
@@ -218,6 +222,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
             // This will block until the write is completed. That can cause a backlog
             // of pending audio data, so we do the above check to be able to bound
             // latency at 40 ms in that situation.
+            gainRamp.apply(audioData, channelCount);
             lastWriteResult = track.write(audioData, 0, audioData.length);
             if (lastWriteResult > 0) {
                 samplesWritten += lastWriteResult;
@@ -257,7 +262,20 @@ public class AndroidAudioRenderer implements AudioRenderer {
     @Override
     public void cleanup() {
         logAudioState("cleanup");
-        // Immediately drop all pending data
+        // The decoder has stopped, so the PCM ramp no longer runs: fade the ~100 ms the track
+        // still holds at the mixer (it applies to queued audio), then pause and flush silence.
+        if (track.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+            for (int step = CLEANUP_FADE_STEPS - 1; step >= 0; step--) {
+                track.setVolume(step / (float) CLEANUP_FADE_STEPS);
+                try {
+                    Thread.sleep(CLEANUP_FADE_STEP_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        // Drop all pending data
         track.pause();
         track.flush();
 
@@ -284,7 +302,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
         long now = SystemClock.elapsedRealtime();
         MoonWakerDiagnostics.record("INFO", "android.audio", "audio.snapshot",
                 "reason", reason, "audio_renderer_id", System.identityHashCode(this),
-                "audio_volume", volume, "audio_volume_result", lastVolumeResult,
+                "audio_volume", volume,
                 "audio_track_state", state, "audio_play_state", playState,
                 "audio_session_id", session, "audio_play_head", playHead,
                 "audio_buffers", buffersReceived, "audio_nonzero_buffers", nonzeroBuffers,

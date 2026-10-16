@@ -143,7 +143,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         this(owners, transitionSpec, transitionController, adapt(gateway),
                 Executors.newFixedThreadPool(2),
                 PROVIDER_ACTIONS,
-                android.os.SystemClock::uptimeMillis,
+                android.os.SystemClock::elapsedRealtime,
                 launchStartedAtMillis, Thread::sleep, scheduler, callbacks);
     }
 
@@ -1217,10 +1217,13 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         return "";
     }
 
-    /** A launcher waiting for input or a window off the streamed display: reveal is the remedy. */
+    /**
+     * A launcher waiting for input: reveal is the remedy. A window off the streamed display is
+     * not: revealing shows that display without the game (TV 2026-10-16), so Reveal stays
+     * offered but never takes the focus.
+     */
     static boolean prefersReveal(String reason) {
         return "game_start_timeout".equals(reason)
-                || "target_on_wrong_display".equals(reason)
                 || "launcher_interaction_required".equals(reason);
     }
 

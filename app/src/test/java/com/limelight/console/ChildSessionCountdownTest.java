@@ -27,6 +27,28 @@ public class ChildSessionCountdownTest {
         assertEquals(-1, countdown.crossedWarningMinutes(15 * 60_000L));
     }
 
+    @Test public void warnsAtEveryFullHourThenInTheLastHour() {
+        ChildSessionCountdown countdown = new ChildSessionCountdown("session-a");
+        long start = 3 * 3_600L + 10 * 60L;
+        countdown.update("session-a", start, 0);
+        assertEquals(-1, countdown.crossedWarningMinutes(0));
+
+        java.util.List<Long> shown = new java.util.ArrayList<>();
+        for (long second = 1; second <= start; second++) {
+            long warning = countdown.crossedWarningMinutes(second * 1_000L);
+            if (warning > 0) shown.add(warning);
+        }
+
+        assertEquals(java.util.Arrays.asList(180L, 120L, 60L, 30L, 15L, 10L, 5L, 1L), shown);
+    }
+
+    @Test public void displayMinutesRoundUpAndNeverShowZero() {
+        assertEquals(1, ChildSessionCountdown.displayMinutes(1));
+        assertEquals(1, ChildSessionCountdown.displayMinutes(60));
+        assertEquals(2, ChildSessionCountdown.displayMinutes(61));
+        assertEquals(85, ChildSessionCountdown.displayMinutes(85 * 60L));
+    }
+
     @Test public void baselineSkipsPassedWarningUntilHostExtendsIt() {
         ChildSessionCountdown countdown = new ChildSessionCountdown("session-a");
 

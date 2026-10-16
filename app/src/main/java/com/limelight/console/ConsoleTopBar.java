@@ -20,9 +20,11 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.TextClock;
 import android.widget.TextView;
 
 import com.limelight.R;
+import com.limelight.ui.ConsoleClock;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -67,6 +69,7 @@ final class ConsoleTopBar extends FrameLayout {
     private final Icon profile;
     private final Icon settings;
     private final TextView label;
+    private final TextClock clock;
     private int belowId = View.NO_ID;
     private int discordStatusColor;
     private String discordDescription = "";
@@ -152,9 +155,12 @@ final class ConsoleTopBar extends FrameLayout {
         profile.setPadding(avatarInset, avatarInset, avatarInset, avatarInset);
         settings = icon(row, "global.settings", R.drawable.ic_console_settings,
                 R.string.console_settings_title, onSettings);
-        // Keeps the pre-6a icon centres: the last 48 dp target used to end at the content edge.
-        ((LinearLayout.LayoutParams) settings.getLayoutParams()).rightMargin =
-                -dp((ITEM_DP - 48) / 2);
+        // The same clock as the host and profile screens, after the icons.
+        clock = ConsoleClock.create(context);
+        LinearLayout.LayoutParams clockParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clockParams.leftMargin = dp(14);
+        row.addView(clock, clockParams);
         discord.setVisibility(View.GONE);
         microphone.setVisibility(View.GONE);
         profile.setVisibility(View.GONE);

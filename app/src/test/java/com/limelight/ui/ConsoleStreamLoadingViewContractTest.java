@@ -40,17 +40,19 @@ public class ConsoleStreamLoadingViewContractTest {
 
     /**
      * No state change moves the card: title, stage and the shared message/notice line are one
-     * ellipsized line each, the shared line at a fixed height whatever it shows.
+     * ellipsized line each, the shared line a fixed LINE_COUNT-line area whatever it shows.
      */
     @Test public void textLinesKeepOneFixedLineInEveryState() throws IOException {
         String text = source();
-        for (String view : new String[]{"titleView", "stageView", "lineView"}) {
+        for (String view : new String[]{"titleView", "stageView"}) {
             assertTrue(view, text.contains(view + ".setSingleLine(true);"));
             assertTrue(view, text.contains(view + ".setEllipsize(TextUtils.TruncateAt.END);"));
             assertFalse(view, text.contains(view + ".setMaxLines("));
             assertFalse(view, text.contains(view + ".setSingleLine(false"));
         }
-        assertTrue(text.contains("lineView.setHeight("));
+        assertTrue(text.contains("lineView.setLines(LINE_COUNT);"));
+        assertTrue(text.contains("lineView.setEllipsize(TextUtils.TruncateAt.END);"));
+        assertFalse(text.contains("lineView.setSingleLine("));
         // TV 2026-10-15: the standard backdrop never shows for a frame before the artwork.
         assertTrue(text.contains("neutral || art || artwork.pending() ? GONE : VISIBLE"));
         assertFalse(text.contains("append('\\n')"));
@@ -80,9 +82,10 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(console.contains("reducedMotion, streamLoadingEpoch);"));
         assertTrue(game.contains("getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false),\n"
                 + "                    launchStartedAtMillis);"));
-        // Both windows show the same host chip: the same first frame on the handoff.
-        assertTrue(game.contains("this,\n                    getIntent().getStringExtra(EXTRA_PC_NAME),"));
-        assertTrue(console.contains("new ConsoleStreamLoadingView(this, hostName,"));
+        assertTrue(game.contains("new ConsoleStreamLoadingView(\n                    this,\n"
+                + "                    appDisplayName(getIntent().getStringExtra(EXTRA_APP_NAME)),"));
+        assertTrue(console.contains("new ConsoleStreamLoadingView(this,\n"
+                + "                appDisplayName(appName), null,"));
     }
 
     @Test public void gameEndBypassesLaunchStepsAndRevealActions() throws IOException {
@@ -141,7 +144,7 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(opaque.contains("revealGeneration++"));
         assertTrue(opaque.contains("!revealRequested && getAlpha() == 1f"));
         // A new presentation counts its time from its own start.
-        assertTrue(opaque.contains("model.restartClock(SystemClock.uptimeMillis());"));
+        assertTrue(opaque.contains("model.newPresentation(SystemClock.elapsedRealtime());"));
         // A cancelled reveal never blocks a later one ("Reveal now") until showOpaque.
         SourceText.assertOrdered(reveal,
                 "if (!LaunchTransitionController.coverAllowsEffect(outcome)) {",
@@ -180,6 +183,53 @@ public class ConsoleStreamLoadingViewContractTest {
         String text = source();
         assertTrue(text.contains("public void setSeeThrough(boolean seeThrough) {\n"
                 + "        setBackgroundColor(seeThrough ? Color.TRANSPARENT : Color.BLACK);"));
+    }
+
+    /**
+     * TV 2026-10-16: a Play on the Home over a hidden warm-up showed the time since boot (the
+     * warm-up's cover had epoch 0 and the switch kept it). One time base (elapsedRealtime) and
+     * one start: the console stamps the user's action; every handoff carries that value.
+     */
+    @Test public void coverTimeCountsFromTheUsersActionOnOneTimeBase() throws IOException {
+        String view = source();
+        String game = gameSource();
+        String console = SourceText.main("console/ConsoleActivity.java");
+        String resume = SourceText.main("session/SessionResumeManager.java");
+        String coordinator = SourceText.main("console/ConsoleStreamTransitionCoordinator.java");
+        assertFalse(view.contains("uptimeMillis"));
+        assertFalse(resume.contains("uptimeMillis"));
+        assertTrue(coordinator.contains("android.os.SystemClock::elapsedRealtime,"));
+        assertFalse(console.contains("streamLoadingEpoch = SystemClock.uptimeMillis()"));
+        assertTrue(console.contains("streamLoadingEpoch = SystemClock.elapsedRealtime();"));
+        assertFalse(game.contains("EXTRA_CONSOLE_LOADING_EPOCH, SystemClock.uptimeMillis()"));
+        assertFalse(game.contains("createTransitionCoordinator(spec, SystemClock.uptimeMillis())"));
+        // A warm-up no one asked for starts at its launch, never at a stale or absent Play.
+        assertTrue(console.contains("autoWarmUp && pendingWarmUpGame == null\n"
+                + "                        ? SystemClock.elapsedRealtime() : streamLoadingEpoch"));
+        // A switch from the Home: in-process and by the attach intent, the Play's start goes.
+        assertTrue(console.contains("\"switch\"), streamLoadingEpoch, 0L,"));
+        assertTrue(console.contains(".putExtra(Game.EXTRA_CONSOLE_LOADING_EPOCH, streamLoadingEpoch);"));
+        assertTrue(SourceText.main("PendingRetainedSwitch.java").contains(
+                "intent.getLongExtra(Game.EXTRA_CONSOLE_LOADING_EPOCH, 0L)"));
+        assertTrue(game.contains("pending.coverStartedAtMillis,\n"));
+        // The switch cover takes it after the controller covered (a re-shown cover restarts).
+        int presentAt = game.indexOf("private void presentSwitchCover(");
+        String present = game.substring(presentAt, game.indexOf("/**", presentAt));
+        SourceText.assertOrdered(present, "UserCover.SWITCH);",
+                "consoleLoadingView.setStartedAt(operation.request.coverStartedAtMillis);");
+        String pending = game.substring(game.indexOf("private void coverPendingSwitch("),
+                game.indexOf("private void releasePendingSwitchCover()"));
+        SourceText.assertOrdered(pending, "UserCover.SWITCH);",
+                "consoleLoadingView.setStartedAt(pending.coverStartedAtMillis);");
+    }
+
+    /** The stage line has one writer while a transition owns the cover (TV 2026-10-16 blink). */
+    @Test public void transitionCoverStageIsTheControllersOnly() throws IOException {
+        String game = gameSource();
+        String stage = game.substring(game.indexOf("public void stageStarting(final String stage)"),
+                game.indexOf("public void stageComplete("));
+        assertTrue(stage.contains("if (consoleLoadingView != null && transitionController == null) {"
+                + "\n                    consoleLoadingView.setStage(stage);"));
     }
 
     private static String source() throws IOException {

@@ -320,7 +320,7 @@ public final class SessionModelDriver {
                                    String artwork, long orchestrationId,
                                    BooleanSupplier cancelled, SwitchCallback completion) {
         return call(new SessionEvent.SwitchRequested(hostId, executionProfileId,
-                targetProfileId, targetIsChild, appId, gameId, gameName, target, artwork,
+                targetProfileId, targetIsChild, appId, gameId, gameName, target, artwork, 0L,
                 orchestrationId, cancelled, completion));
     }
     public boolean updatePreparingSwitch(Controller owner, SwitchRequest request,

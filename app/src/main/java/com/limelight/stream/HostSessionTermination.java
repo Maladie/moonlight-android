@@ -183,7 +183,12 @@ public final class HostSessionTermination {
                 if (exact != null && !exact.isEmpty()) {
                     effectResultUncertain = true;
                     try {
-                        provider.stopGameWithinControl(exact, permit);
+                        // A stop the host answered with a refusal is no uncertain effect: the
+                        // game is left like an unverified one and the stream still closes.
+                        // Reported as uncertain, it held the host until a hard close.
+                        if (!provider.stopGameWithinControl(exact, permit)) {
+                            gameLeftUnverified = true;
+                        }
                     } catch (IOException lostResponse) {
                         try {
                             control.complete(gateway, permit, false);

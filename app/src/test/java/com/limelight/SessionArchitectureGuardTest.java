@@ -88,7 +88,7 @@ public class SessionArchitectureGuardTest {
     static {
         String table = "constant table, never written";
         for (String key : new String[] {"Game.java#RETRY_ACTIONS",
-                "console/ChildSessionCountdown.java#WARNING_MINUTES",
+                "console/ChildSessionCountdown.java#LAST_HOUR_WARNING_MINUTES",
                 "console/ConsoleActivity.java#HOST_KEYED_PREFERENCES",
                 "console/ConsoleChildProfileEditor.java#AVATAR_LABELS",
                 "console/ConsoleChildProfileEditor.java#AVATAR_SYMBOLS",

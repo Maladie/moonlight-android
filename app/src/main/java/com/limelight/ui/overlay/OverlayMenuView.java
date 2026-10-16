@@ -353,6 +353,8 @@ public class OverlayMenuView extends LinearLayout {
     private boolean updatingChatComposer;
     private boolean installationConfirmationAvailable;
     private boolean endGameAvailable;
+    private String childRemainingTime;
+    private OverlayMenuButton childRemainingChip;
     private boolean playStationButtons;
 
     public OverlayMenuView(Context context) {
@@ -390,11 +392,8 @@ public class OverlayMenuView extends LinearLayout {
         discordContainer.setPadding(0, 0, 0, 0);
         discordContainer.setMinimumWidth(dp(COMMUNITY_QUICK_WIDTH_DP));
         discordContainer.setVisibility(GONE);
-        GradientDrawable discordBackground = new GradientDrawable();
-        discordBackground.setShape(GradientDrawable.RECTANGLE);
-        discordBackground.setCornerRadius(dp(18));
-        discordBackground.setColor(0xEB10131C);
-        discordContainer.setBackground(discordBackground);
+        discordContainer.setBackground(OverlayMenuButton.surface(context, false,
+                OverlayMenuButton.CORNER_RADIUS_DP));
         addView(verticalContainer, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -428,10 +427,7 @@ public class OverlayMenuView extends LinearLayout {
         discordRail.setOrientation(LinearLayout.VERTICAL);
         discordRail.setGravity(Gravity.CENTER_HORIZONTAL);
         discordRail.setPadding(dp(10), dp(16), dp(10), dp(12));
-        GradientDrawable railBackground = new GradientDrawable();
-        railBackground.setColor(0x14000000);
-        railBackground.setStroke(dp(1), 0x18FFFFFF);
-        discordRail.setBackground(railBackground);
+        discordRail.setBackgroundColor(0x0FFFFFFF);
         View dot = new View(context);
         GradientDrawable dotBackground = new GradientDrawable();
         dotBackground.setShape(GradientDrawable.OVAL);
@@ -462,13 +458,11 @@ public class OverlayMenuView extends LinearLayout {
         discordContentScroll.setFocusable(false);
         discordContentScroll.setFocusableInTouchMode(false);
         discordContentScroll.setOnFocusChangeListener((ignored, focused) -> {
-            styleDiscordContentScroll(focused);
             if (focused && overlayMode == OverlayMode.COMMUNITY) {
                 communityFocus = CommunityFocus.LIST;
                 activeRegion = Region.DISCORD;
             }
         });
-        styleDiscordContentScroll(false);
         discordQuickMain.addView(discordContentScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0, 1f));
@@ -513,7 +507,7 @@ public class OverlayMenuView extends LinearLayout {
         discordQuickFooter.setOrientation(LinearLayout.HORIZONTAL);
         discordQuickFooter.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         discordQuickMain.addView(discordQuickFooter, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(18)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(24)));
         renderDiscordCommunityFooter();
         LinearLayout.LayoutParams discordParams = new LinearLayout.LayoutParams(
                 dp(COMMUNITY_QUICK_WIDTH_DP), dp(COMMUNITY_QUICK_HEIGHT_DP));
@@ -595,7 +589,18 @@ public class OverlayMenuView extends LinearLayout {
         // Add spacing between vertical column and horizontal row
         ((LinearLayout.LayoutParams) horizontalScrollView.getLayoutParams()).leftMargin = spacing;
 
-        // Horizontal row: custom commands then Close
+        // Horizontal row: child time left, battery, custom commands then Close
+        childRemainingChip = null;
+        if (childRemainingTime != null) {
+            childRemainingChip = OverlayMenuButton.create(getContext(),
+                    R.drawable.ic_console_clock, childRemainingTime);
+            childRemainingChip.setFocusable(false);
+            childRemainingChip.setClickable(false);
+            LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            chipParams.rightMargin = spacing;
+            horizontalContainer.addView(childRemainingChip, chipParams);
+        }
         horizontalContainer.addView(batteryContainer, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -718,8 +723,10 @@ public class OverlayMenuView extends LinearLayout {
                     LinearLayout.LayoutParams.WRAP_CONTENT));
             discordMuteButton = addDiscordButton(firstRow, R.drawable.ic_overlay_microphone,
                     discordMuteLabel(actionVoice.muted), ACTION_DISCORD_MUTE, spacing);
+            setDiscordShortcut(discordMuteButton, discordMuteShortcut);
             discordLeaveButton = addDiscordButton(firstRow, R.drawable.ic_overlay_close,
                     discordLeaveLabel(), ACTION_DISCORD_LEAVE, 0);
+            setDiscordShortcut(discordLeaveButton, discordLeaveShortcut);
             LinearLayout secondRow = new LinearLayout(getContext());
             secondRow.setOrientation(LinearLayout.HORIZONTAL);
             LinearLayout.LayoutParams secondRowParams = new LinearLayout.LayoutParams(
@@ -812,6 +819,7 @@ public class OverlayMenuView extends LinearLayout {
                 // Rail navigation changes the section immediately; Center is only an optional
                 // confirmation, never a prerequisite for a visible content update.
                 selectDiscordQuickSection(section);
+                styleDiscordRailIcon(icon, true, true);
                 communityFocus = CommunityFocus.RAIL;
                 activeRegion = Region.DISCORD;
             }
@@ -853,22 +861,19 @@ public class OverlayMenuView extends LinearLayout {
         }
     }
 
+    /** Rail icons take the menu buttons' focus (white fill, black ink); the section stays lit. */
     private void styleDiscordRailIcon(ImageButton icon, boolean selected, boolean focused) {
-        icon.setColorFilter(selected ? Color.WHITE : 0xFF9398AA);
+        icon.setColorFilter(focused ? OverlayMenuButton.INK
+                : selected ? OverlayMenuButton.TEXT : OverlayMenuButton.TEXT_SECONDARY);
+        if (focused) {
+            icon.setBackground(OverlayMenuButton.surface(getContext(), true,
+                    OverlayMenuButton.CORNER_RADIUS_DP));
+            return;
+        }
         GradientDrawable background = new GradientDrawable();
-        background.setCornerRadius(dp(12));
-        background.setColor(selected || focused ? 0x1FFFFFFF : Color.TRANSPARENT);
-        if (selected || focused) background.setStroke(dp(focused ? 2 : 1), 0xFF7CE4FF);
+        background.setCornerRadius(dp(OverlayMenuButton.CORNER_RADIUS_DP));
+        background.setColor(selected ? 0x26FFFFFF : Color.TRANSPARENT);
         icon.setBackground(background);
-    }
-
-    private void styleDiscordContentScroll(boolean focused) {
-        if (discordContentScroll == null) return;
-        GradientDrawable background = new GradientDrawable();
-        background.setCornerRadius(dp(10));
-        background.setColor(focused ? 0x102D5F78 : Color.TRANSPARENT);
-        background.setStroke(focused ? dp(1) : 0, focused ? 0xFF7CE4FF : Color.TRANSPARENT);
-        discordContentScroll.setBackground(background);
     }
 
     private void openCommunity() {
@@ -1149,6 +1154,12 @@ public class OverlayMenuView extends LinearLayout {
         suspendSessionAvailable = available;
     }
 
+    /** The child's time left, shown in the menu row; null when the stream has no child limit. */
+    public void setChildRemainingTime(String text) {
+        childRemainingTime = text;
+        if (childRemainingChip != null && text != null) childRemainingChip.setLabel(text);
+    }
+
     public void setEndGameAvailable(boolean available) {
         endGameAvailable = available;
     }
@@ -1339,21 +1350,21 @@ public class OverlayMenuView extends LinearLayout {
         TextView glyph = new TextView(getContext());
         glyph.setText(ControllerGlyphs.text(playStationButtons,
                 communityFooterButton(confirmAction, flipFaceButtons)));
-        glyph.setTextColor(0xFFAEB3C2);
-        glyph.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        glyph.setTextColor(OverlayMenuButton.TEXT);
+        glyph.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         glyph.setGravity(Gravity.CENTER);
         glyph.setTypeface(ControllerGlyphs.typeface(getContext()));
-        discordQuickFooter.addView(glyph, new LinearLayout.LayoutParams(dp(18), dp(18)));
+        discordQuickFooter.addView(glyph, new LinearLayout.LayoutParams(dp(24), dp(24)));
 
         TextView label = new TextView(getContext());
         label.setText(labelResource);
-        label.setTextColor(0xFFAEB3C2);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        label.setTextColor(OverlayMenuButton.TEXT);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         label.setGravity(Gravity.CENTER_VERTICAL);
         label.setSingleLine(true);
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, dp(18));
-        labelParams.leftMargin = dp(3);
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(24));
+        labelParams.leftMargin = dp(4);
         labelParams.rightMargin = rightMargin;
         discordQuickFooter.addView(label, labelParams);
     }
@@ -1639,8 +1650,11 @@ public class OverlayMenuView extends LinearLayout {
         TextView name = new TextView(getContext());
         name.setText(friend != null && friend.unread ? communityUnreadTitle(title) : title);
         name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        name.setTextColor(0xFFEDEAF5);
+        name.setTextColor(OverlayMenuButton.textColors(OverlayMenuButton.TEXT));
         name.setSingleLine(true);
+        name.setDuplicateParentStateEnabled(true);
+        titleRow.setDuplicateParentStateEnabled(true);
+        if (person) copy.setDuplicateParentStateEnabled(true);
         titleRow.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         copy.addView(titleRow, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -1648,9 +1662,11 @@ public class OverlayMenuView extends LinearLayout {
             TextView meta = new TextView(getContext());
             meta.setText(details);
             meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-            meta.setTextColor(friend != null && friend.presence == FriendPresence.OFFLINE
-                    ? 0xFF777C89 : 0xFF9FA3B2);
+            meta.setTextColor(OverlayMenuButton.textColors(
+                    friend != null && friend.presence == FriendPresence.OFFLINE
+                    ? 0xFF777C89 : OverlayMenuButton.TEXT_SECONDARY));
             meta.setSingleLine(true);
+            meta.setDuplicateParentStateEnabled(true);
             copy.addView(meta, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
         }
@@ -1705,11 +1721,16 @@ public class OverlayMenuView extends LinearLayout {
         return friend == null ? "" : friend.activity;
     }
 
+    /** Rows rest on the panel and take the menu buttons' white focus with black ink. */
     private void styleCommunityRow(View row, boolean focused) {
+        if (focused) {
+            row.setBackground(OverlayMenuButton.surface(getContext(), true,
+                    OverlayMenuButton.CORNER_RADIUS_DP));
+            return;
+        }
         GradientDrawable background = new GradientDrawable();
-        background.setCornerRadius(dp(9));
-        background.setColor(focused ? 0xFF1B5A78 : 0x142D5F78);
-        background.setStroke(focused ? dp(2) : dp(1), focused ? 0xFF7CE4FF : 0x20FFFFFF);
+        background.setCornerRadius(dp(OverlayMenuButton.CORNER_RADIUS_DP));
+        background.setColor(0x14FFFFFF);
         row.setBackground(background);
     }
 
@@ -1948,11 +1969,11 @@ public class OverlayMenuView extends LinearLayout {
         TextView bubble = new TextView(getContext());
         bubble.setText(value);
         bubble.setTextSize(TypedValue.COMPLEX_UNIT_SP, media ? 11 : 13);
-        bubble.setTextColor(media ? 0xFF7CE4FF : Color.WHITE);
+        bubble.setTextColor(media ? OverlayMenuButton.TEXT_SECONDARY : OverlayMenuButton.TEXT);
         bubble.setPadding(dp(10), dp(6), dp(10), dp(6));
         GradientDrawable background = new GradientDrawable();
-        background.setCornerRadius(dp(12));
-        background.setColor(self ? 0xFF1F6388 : 0xFF243041);
+        background.setCornerRadius(dp(OverlayMenuButton.CORNER_RADIUS_DP));
+        background.setColor(self ? 0x40FFFFFF : 0x1AFFFFFF);
         bubble.setBackground(background);
         if (media && !messageId.isEmpty()) {
             bubble.setFocusable(true);
@@ -1993,6 +2014,11 @@ public class OverlayMenuView extends LinearLayout {
             discordChatComposer.setHintTextColor(0xFFA2A9BB);
             discordChatComposer.setHint(R.string.discord_dm_placeholder);
             discordChatComposer.setSingleLine(true);
+            GradientDrawable composerBackground = new GradientDrawable();
+            composerBackground.setCornerRadius(dp(OverlayMenuButton.CORNER_RADIUS_DP));
+            composerBackground.setColor(0x1AFFFFFF);
+            discordChatComposer.setBackground(composerBackground);
+            discordChatComposer.setPadding(dp(12), 0, dp(12), 0);
             discordChatComposer.setShowSoftInputOnFocus(false);
             discordChatComposer.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2000)});
             discordChatComposer.addTextChangedListener(new TextWatcher() {
@@ -2321,10 +2347,12 @@ public class OverlayMenuView extends LinearLayout {
         boolean connected = actionVoice.connected;
         if (discordMuteButton != null) {
             discordMuteButton.setLabel(discordMuteLabel(actionVoice.muted));
+            setDiscordShortcut(discordMuteButton, discordMuteShortcut);
             discordMuteButton.setAlpha(connected ? 1f : 0.45f);
         }
         if (discordLeaveButton != null) {
             discordLeaveButton.setLabel(discordLeaveLabel());
+            setDiscordShortcut(discordLeaveButton, discordLeaveShortcut);
             discordLeaveButton.setAlpha(connected ? 1f : 0.45f);
         }
         if (discordRejoinButton != null) {
@@ -2361,9 +2389,8 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     private String discordMuteLabel(boolean muted) {
-        int stringId = muted ?
-                R.string.overlay_discord_unmute : R.string.overlay_discord_mute;
-        return getContext().getString(stringId) + shortcutSuffix(discordMuteShortcut);
+        return getContext().getString(muted
+                ? R.string.overlay_discord_unmute : R.string.overlay_discord_mute);
     }
 
     private DiscordActionVoiceState discordActionVoiceState() {
@@ -2399,8 +2426,7 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     private String discordLeaveLabel() {
-        return getContext().getString(R.string.overlay_discord_leave) +
-                shortcutSuffix(discordLeaveShortcut);
+        return getContext().getString(R.string.overlay_discord_leave);
     }
 
     private String discordRejoinLabel() {
@@ -2416,9 +2442,16 @@ public class OverlayMenuView extends LinearLayout {
                 ? R.string.overlay_discord_undock : R.string.overlay_discord_dock);
     }
 
-    private String shortcutSuffix(String shortcut) {
-        String label = discordShortcutLabel(shortcut);
-        return label.isEmpty() ? "" : " (" + label + ")";
+    /** Guide chords show their button as the same controller glyph the menu buttons use. */
+    private void setDiscordShortcut(OverlayMenuButton button, String shortcut) {
+        ControllerGlyphs.Button glyph = discordShortcutGlyph(shortcut);
+        if (glyph == null) {
+            button.clearShortcut();
+            return;
+        }
+        button.setGuideChordShortcut(getContext().getString(R.string.discord_shortcut_guide),
+                ControllerGlyphs.typeface(getContext()),
+                ControllerGlyphs.text(playStationButtons, glyph));
     }
 
     private static String normalizeDiscordShortcut(String value) {
@@ -2429,18 +2462,16 @@ public class OverlayMenuView extends LinearLayout {
         return "none";
     }
 
-    private String discordShortcutLabel(String value) {
-        String button;
+    static ControllerGlyphs.Button discordShortcutGlyph(String value) {
         switch (normalizeDiscordShortcut(value)) {
-            case "x": button = playStationButtons ? "□" : "X"; break;
-            case "y": button = playStationButtons ? "△" : "Y"; break;
-            case "l1": button = playStationButtons ? "L1" : "LB"; break;
-            case "r1": button = playStationButtons ? "R1" : "RB"; break;
-            case "l3": button = "L3"; break;
-            case "r3": button = "R3"; break;
-            default: return "";
+            case "x": return ControllerGlyphs.Button.WEST;
+            case "y": return ControllerGlyphs.Button.NORTH;
+            case "l1": return ControllerGlyphs.Button.LEFT_BUMPER;
+            case "r1": return ControllerGlyphs.Button.RIGHT_BUMPER;
+            case "l3": return ControllerGlyphs.Button.LEFT_STICK;
+            case "r3": return ControllerGlyphs.Button.RIGHT_STICK;
+            default: return null;
         }
-        return getContext().getString(R.string.discord_shortcut_guide, button);
     }
 
     private static int discordShortcutKeyCode(String value) {

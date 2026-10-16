@@ -48,9 +48,13 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("private void resumeSession(ComputerDetails host)"));
         assertFalse(preparation.contains("cancelQueuedPlay()"));
         assertTrue(source.contains("}, executor, mainHandler::post, PlayQueue.of(this));"));
-        String resume = source.substring(source.indexOf("protected void onResume() {"),
-                source.indexOf("String hardTerminateOffer"));
-        assertOrdered(resume, "renderQueue();", "sessionOrchestrator.sessionChanged();");
+        int resumeStart = source.indexOf("protected void onResume() {");
+        String resume = source.substring(resumeStart,
+                source.indexOf("hideSystemUi();", resumeStart));
+        // The stale-cover cleanup runs first: it never removes the cover the queue just drew.
+        assertOrdered(resume,
+                "if (loadingLayer != null && loadingLayer.getVisibility() == View.VISIBLE) showHome();",
+                "renderQueue();", "sessionOrchestrator.sessionChanged();");
         String drives = source.substring(source.indexOf("public boolean drivesQueue()"));
         assertOrdered(drives, "active && !isFinishing()", "initialHostSelectionResolved",
                 "!hostSelectionVisible && profileGateHostUuid == null", "isStreamHome()",

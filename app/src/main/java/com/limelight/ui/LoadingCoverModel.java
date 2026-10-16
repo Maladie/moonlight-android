@@ -70,16 +70,30 @@ public final class LoadingCoverModel {
         return true;
     }
 
-    /** A new presentation of the cover counts its time from {@code nowMillis}. */
-    public void restartClock(long nowMillis) {
+    /** A new presentation of the cover: its time counts from {@code nowMillis}, its steps anew. */
+    public void newPresentation(long nowMillis) {
         epochMillis = nowMillis;
+        step = 1;
     }
 
-    /** Progress to {@code value}: the stage is the real status, never a decorative message. */
+    /**
+     * The transition this cover shows began at {@code startedAtMillis} (the user's action, on
+     * {@link android.os.SystemClock#elapsedRealtime}), possibly in another window: a switch
+     * chosen on the Home, a warm-up's Play. Steps stay as they are.
+     */
+    public void startedAt(long startedAtMillis) {
+        epochMillis = startedAtMillis;
+    }
+
+    /**
+     * Progress to {@code value}: the stage is the real status, never a decorative message.
+     * Within one presentation progress never goes back (TV 2026-10-16: the console's step 2 and
+     * the stream's PREPARING_SESSION snapshots bounced the first segment between sweep and fill).
+     */
     public boolean step(int value, String status, String attention) {
         if (phase == Phase.CLOSING) return false;
         phase = Phase.LOADING;
-        step = Math.max(1, Math.min(STEPS, value));
+        step = Math.max(step, Math.min(STEPS, value));
         stage = status == null ? "" : status.trim();
         notice = attention == null ? "" : attention.trim();
         reasonCode = "";

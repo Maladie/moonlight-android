@@ -457,9 +457,23 @@ public final class PlayniteTransitionGateway {
         client.stopGame(connection, gameId, processToken);
     }
 
-    public void stopGameWithinControl(String gameId,
-                                      ControlOperationClient.Permit permit) throws IOException {
-        client.stopGameWithinControl(connection, gameId, permit);
+    /**
+     * False: the host answered and refused the stop (the provider's process changed or did not
+     * exit, or the Gateway fenced the request), so nothing of it is uncertain. An
+     * {@link IOException} is an answer that may be lost: the stop may still have taken effect.
+     */
+    public boolean stopGameWithinControl(String gameId,
+                                         ControlOperationClient.Permit permit) throws IOException {
+        try {
+            client.stopGameWithinControl(connection, gameId, permit);
+            return true;
+        } catch (HostGatewayClient.GatewayException answered) {
+            // 0: a received refusal; 4xx: refused before any effect. A 5xx (the provider's
+            // answer did not reach the Gateway) or an unreadable 2xx stays uncertain.
+            int status = answered.statusCode;
+            if (status != 0 && (status < 400 || status >= 500)) throw answered;
+            return false;
+        }
     }
 
     public Events awaitEvents(long after, String transitionId) throws IOException {

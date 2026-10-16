@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="child_session_countdown">%1$d:%2$02d</string>
-    <string name="child_session_warning">%1$d min remaining</string>
+    <string name="child_session_remaining">Time left: %1$s</string>
+    <string name="child_session_remaining_hours_minutes">%1$d h %2$d min</string>
+    <string name="child_session_remaining_hours">%1$d h</string>
+    <string name="child_session_remaining_minutes">%1$d min</string>
     <string name="child_session_time_expired_title">Time is up</string>
     <string name="child_session_time_expired_message">The child session has ended. Save your game before time runs out.</string>
     <string name="child_session_ended_title">Child session ended</string>

@@ -21,7 +21,8 @@ public final class ChildSessionLifecycle {
     public interface Listener {
         boolean active();
         void render(long remainingSeconds);
-        void warning(long remainingMinutes);
+        /** A transient remaining-time notice: after the stream starts and at each warning. */
+        void notice(long remainingSeconds);
         void requestHeartbeat(HeartbeatCallback callback);
         void requestGameStopState(HeartbeatCallback callback);
         boolean canRetainGameOnly();
@@ -52,8 +53,7 @@ public final class ChildSessionLifecycle {
                 listener.terminate("time_expired");
                 return;
             }
-            int warning = countdown.crossedWarningMinutes(now);
-            if (warning > 0) listener.warning(Math.max(1L, (remaining + 59L) / 60L));
+            if (countdown.crossedWarningMinutes(now) > 0) listener.notice(remaining);
             scheduler.postDelayed(this, countdownIntervalMs);
         }
     };
@@ -105,6 +105,18 @@ public final class ChildSessionLifecycle {
         running = true;
         scheduler.post(countdownTick);
         scheduler.post(heartbeatTick);
+    }
+
+    /** Seconds left now, or -1 before a session is configured. */
+    public long remainingSeconds() {
+        return countdown == null || sessionId.isEmpty() ? -1L : countdown.remainingSeconds(clock.now());
+    }
+
+    /** Shows the remaining time once the child sees the stream. */
+    public void announce() {
+        if (!running || !listener.active() || countdown == null) return;
+        long remaining = countdown.remainingSeconds(clock.now());
+        if (remaining > 0L) listener.notice(remaining);
     }
 
     public void stop() {

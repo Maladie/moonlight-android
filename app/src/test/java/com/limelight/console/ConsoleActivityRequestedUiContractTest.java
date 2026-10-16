@@ -250,7 +250,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains("descriptionParams.topMargin = dp(8)"));
         assertTrue(source.contains("selectedGameDescription.setLineSpacing(0, 1.25f)"));
         assertTrue(source.contains("expandedGameDescription.setLineSpacing(0, 1.25f)"));
-        assertTrue(source.contains("TextView pill = text(\"\", 10"));
+        assertTrue(source.contains("TextView pill = text(\"\", 11"));
         assertTrue(source.contains("pill.setMinHeight(dp(24))"));
         assertTrue(resource("drawable/ic_console_discord.xml").contains(
                 "android:fillColor=\"#FF9FAAB2\""));
@@ -291,8 +291,10 @@ public class ConsoleActivityRequestedUiContractTest {
         String artwork = source.substring(source.indexOf("private void applyPlayniteBitmap("),
                 source.indexOf("private BitmapDrawable filteredBitmapDrawable("));
 
-        assertTrue(source.contains("new RelativeSizeSpan(1.5f)"));
-        assertTrue(source.contains("playniteStateChipText(glyph, label, resumeSession)"));
+        assertFalse(source.contains("RelativeSizeSpan"));
+        assertTrue(source.contains("playniteStateChipText(glyph, label)"));
+        // A recovering session shows Resume on its card, never the library-only checkmark.
+        assertTrue(source.contains("|| sessionState == PlayniteSessionPresentation.State.RECOVERY_REQUIRED;"));
         assertFalse(resource("values/strings.xml").contains("name=\"console_resume\">RESUME  ›"));
         assertFalse(resource("values-pl/strings.xml").contains("name=\"console_resume\">WZNÓW  ›"));
         assertTrue(artwork.contains("boolean lowResolution = bitmap.getWidth() < targetWidth"));
@@ -414,7 +416,7 @@ public class ConsoleActivityRequestedUiContractTest {
 
         assertTrue(metadata.contains(
                 "portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT : dp(484)"));
-        assertTrue(metadata.contains("selectedGameDescription.setMaxLines(6)"));
+        assertTrue(metadata.contains("selectedGameDescription.setMaxLines(4)"));
         assertTrue(metadata.contains(
                 "dp(showCarouselGameDescription ? 140 : 36)"));
     }
@@ -491,12 +493,7 @@ public class ConsoleActivityRequestedUiContractTest {
         String stop = source.substring(source.indexOf("private void requestEndPlayniteGame("),
                 source.indexOf("private void showPlayniteGameDetails("));
 
-        assertTrue(card.contains("running.setTag(\"playnite.running\")"));
-        assertTrue(card.contains("running.setSingleLine(true)"));
-        assertTrue(card.contains("running.setTextSize(6)"));
-        assertTrue(card.contains("Gravity.TOP | Gravity.START"));
-        assertTrue(binding.contains("running.setVisibility(runningSession"));
-        assertTrue(binding.contains("R.string.playnite_running_badge_description"));
+        assertFalse(card.contains("playnite.running"));
         assertTrue(source.contains("private boolean isFreshExactRunningManagedGame("));
         assertTrue(menu.contains("isFreshExactRunningManagedGame(host, item)"));
         String gameCard = gameCardSource();

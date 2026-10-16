@@ -1584,6 +1584,29 @@ public class SessionOrchestratorTest {
         assertTrue(console.queueDrops.isEmpty());
     }
 
+    /** The queued cover died with the stream Home: the console redraws it while it waits. */
+    @Test public void screenTakingOverTheQueueRendersItsCoverWhileTheCloseRuns() {
+        Fake home = new Fake();
+        home.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator homeScreen = orchestrator(home);
+        homeScreen.play(game());
+        home.drivesQueue = false;
+
+        Fake console = new Fake();
+        console.queue = home.queue;
+        console.snapshot = snapshot(SessionSnapshot.State.TERMINATING, 42, "other");
+        SessionOrchestrator consoleScreen = orchestrator(console);
+        consoleScreen.sessionChanged();
+        assertTrue("the console renders the queued cover", console.queueChanges > 0);
+        assertEquals(0, console.launches);
+
+        console.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        consoleScreen.sessionChanged();
+        console.runDelayed();
+        assertEquals(1, console.launches);
+        assertEquals(0, home.launches);
+    }
+
     /**
      * TV 2026-10-15: the stream Home started the queued Play as its close was confirmed, then
      * paused for the console replacing it; the Play was cancelled with the queue already empty.

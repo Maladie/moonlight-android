@@ -1062,8 +1062,6 @@
     <string name="playnite_invalid_response">Niezgodna odpowiedź MoonWaker Host</string>
     <string name="playnite_server_error">Błąd usługi biblioteki gier MoonWaker Host</string>
     <string name="playnite_card_description">%1$s. %2$s. %3$s</string>
-    <string name="playnite_running_badge">URUCHOMIONA</string>
-    <string name="playnite_running_badge_description">Gra %1$s jest obecnie uruchomiona</string>
     <string name="playnite_end_game_success">Gra została zakończona. Inne gry i stream nie zostały zamknięte.</string>
     <string name="playnite_ending_game">Kończenie gry…</string>
     <string name="playnite_end_game_confirmation">Zakończyć tę grę? Inne gry i stream nie zostaną zamknięte.</string>
@@ -1105,6 +1103,7 @@
     <string name="control_state_changed">Stan sesji na hoście zmienił się podczas uruchamiania. Spróbuj ponownie.</string>
     <string name="control_rejected">Host odrzucił uruchomienie tego streamu. Spróbuj ponownie za chwilę.</string>
     <string name="control_operation_pending">Na hoście trwa niedokończona operacja, której host nie rozstrzygnął sam. Spróbuj ponownie za chwilę albo użyj twardego zamknięcia, aby zresetować sesję hosta.</string>
+    <string name="control_rejected_title">Host nie uruchomił streamu</string>
     <string name="console_session_uncertain_title">Stan sesji jest jeszcze sprawdzany</string>
     <string name="console_session_uncertain_details">MoonWaker nie potwierdził jeszcze, która gra działa. Poczekaj chwilę i spróbuj ponownie. Żadna gra ani stream nie zostały uruchomione ani zatrzymane.</string>
     <string name="console_presentation_launch_failed_title">Nie udało się wyświetlić streamu</string>
@@ -1165,9 +1164,9 @@
     <string name="transition_previous_game_running_child">Zamiast wybranej gry działa gra z wcześniejszego uruchomienia. Odsłoń ją albo anuluj.</string>
     <string name="transition_switch_authorization_pending">Poprzednia gra została zamknięta, ale host jeszcze nie potwierdził gotowości. Spróbuj ponownie.</string>
     <string name="transition_host_session_locked_title">Sesja Windows jest zablokowana</string>
-    <string name="transition_host_session_locked">Sesja Windows na hoście jest zablokowana. Wybierz „Odsłoń teraz”, aby odblokować ją na ekranie. Aby odblokowanie działało automatycznie, sprawdź zapisane dane logowania i uprawnienie tego urządzenia do zdalnego logowania w Host Control.</string>
+    <string name="transition_host_session_locked">Sesja Windows na hoście jest zablokowana. „Odsłoń teraz” odblokuje ją na ekranie. Aby odblokowywała się sama, sprawdź dane logowania i uprawnienie zdalnego logowania w Host Control.</string>
     <string name="transition_stream_display_not_configured">Wyświetlacz streamowany przez host nie jest skonfigurowany</string>
-    <string name="transition_target_wrong_display">Okno gry jest poza streamowanym ekranem. Obraz pozostaje ukryty.</string>
+    <string name="transition_target_wrong_display">Okno gry jest poza streamowanym ekranem. Odsłonięcie pokaże ten ekran bez gry.</string>
     <string name="console_provider_stop_waiting_for_process">Gra nadal się uruchamia i nie ma jeszcze procesu, który można zamknąć. Poczekaj chwilę i spróbuj ponownie.</string>
     <string name="transition_kicker_starting">Uruchamianie</string>
     <string name="transition_kicker_running">Gra działa</string>

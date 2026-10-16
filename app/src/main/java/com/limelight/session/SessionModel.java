@@ -107,6 +107,8 @@ public final class SessionModel {
         public final String newGameName;
         public final String streamTargetName;
         public final String artworkPath;
+        /** The user's Play that asked for the switch (elapsedRealtime): the cover counts from it. */
+        public final long coverStartedAtMillis;
         /** The model's preparing operation the switch started on (0 outside PREPARING). */
         public final long preparingOperation;
         public final boolean preparing;
@@ -120,7 +122,8 @@ public final class SessionModel {
                       String executionProfileId, String targetProfileId,
                       boolean targetIsChild,
                       int appId, String oldGameId, String newGameId, String newGameName,
-                      String streamTargetName, String artworkPath, long preparingOperation,
+                      String streamTargetName, String artworkPath, long coverStartedAtMillis,
+                      long preparingOperation,
                       boolean preparing, long orchestrationId, long operationId,
                       BooleanSupplier cancelled) {
             this.streamSessionId = normalize(streamSessionId);
@@ -135,6 +138,7 @@ public final class SessionModel {
             this.newGameName = normalize(newGameName);
             this.streamTargetName = normalize(streamTargetName);
             this.artworkPath = normalize(artworkPath);
+            this.coverStartedAtMillis = coverStartedAtMillis;
             this.preparingOperation = preparingOperation;
             this.preparing = preparing;
             this.orchestrationId = orchestrationId;
@@ -1310,8 +1314,9 @@ public final class SessionModel {
     void switchGame(String expectedHostId, String expectedExecutionProfileId,
                     String targetProfileId, boolean targetIsChild, int expectedAppId,
                     String newGameId, String newGameName, String streamTargetName,
-                    String artworkPath, long orchestrationId, BooleanSupplier cancelled,
-                    SwitchCallback completion, Reply<SwitchResult> reply) {
+                    String artworkPath, long coverStartedAtMillis, long orchestrationId,
+                    BooleanSupplier cancelled, SwitchCallback completion,
+                    Reply<SwitchResult> reply) {
         Controller owner = state == State.PREPARING ? controller
                 : (state == State.HOME_LIVE || state == State.PARKED_LIVE)
                 ? liveControllerLocked() : null;
@@ -1326,7 +1331,8 @@ public final class SessionModel {
         SwitchRequest request = new SwitchRequest(streamSessionId, hostId, profileId,
                 executionProfileId, targetProfileId, targetIsChild, appId,
                 playniteGameId, newGameId, newGameName, streamTargetName,
-                artworkPath, state == State.PREPARING ? preparingOperation : 0L,
+                artworkPath, coverStartedAtMillis,
+                state == State.PREPARING ? preparingOperation : 0L,
                 state == State.PREPARING, orchestrationId, operation, cancelled);
         switchOwner = owner;
         switchOperation = operation;
