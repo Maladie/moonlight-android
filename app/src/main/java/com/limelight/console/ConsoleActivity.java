@@ -9857,7 +9857,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         badge.setTag("playnite.badge");
         badge.setSingleLine(true);
         badge.setFontFeatureSettings("tnum");
-        badge.setElevation(dp(2));
         badge.setVisibility(View.GONE);
         badge.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         artworkFrame.addView(badge, new FrameLayout.LayoutParams(
@@ -9890,6 +9889,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void renderTileBadge(PlayniteCardViews views, boolean focused) {
         ConsoleTileBadge model = views.badgeModel;
         boolean compact = views.layout == TileLayout.CAROUSEL && !focused;
+        // Focus moves rebind two cards per step while scrolling: touch the views (each setter
+        // can request a layout) only when what they show actually changed.
+        String key = model.kind.name() + '|' + model.percent() + '|' + model.progress + '|'
+                + model.fillColor() + '|' + compact + '|' + views.layout + '|' + reducedMotion;
+        if (key.equals(views.badgeKey)) return;
+        views.badgeKey = key;
         TextView badge = views.badge;
         if (!model.visible()) {
             badge.setVisibility(View.GONE);
@@ -10150,6 +10155,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         final ImageView backdrop;
         final TileLayout layout;
         ConsoleTileProgressBar progress;
+        /** What the badge and bar last rendered (see renderTileBadge). */
+        String badgeKey = "";
         ConsoleTileBadge badgeModel;
         PlayniteDashboardItem item;
         String hostUuid;
