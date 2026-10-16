@@ -353,7 +353,8 @@ class StreamDisplayResolver:
         try:
             self.cached = self.stream_display(self.active_displays())
         except (OSError, AttributeError, ValueError):
-            pass
+            # A failed enumeration proves no display; a kept name may be a renumbered one.
+            self.cached = ""
         return self.cached
 
 

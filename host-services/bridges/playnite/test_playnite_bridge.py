@@ -4219,11 +4219,11 @@ class BridgeStateTest(unittest.TestCase):
                 with mock.patch.object(StreamDisplayResolver, "active_displays",
                                        return_value=displays):
                     self.assertEqual(expected, resolver.resolve())
-            # A failed enumeration keeps the last answer instead of dropping the display.
+            # A failed enumeration drops the last answer: displays may have been renumbered.
             resolver.last_check, resolver.cached = 0.0, r"\\.\DISPLAY15"
             with mock.patch.object(StreamDisplayResolver, "active_displays",
                                    side_effect=OSError("enumeration failed")):
-                self.assertEqual(r"\\.\DISPLAY15", resolver.resolve())
+                self.assertEqual("", resolver.resolve())
 
     def test_stream_display_resolver_marks_vibepollo_virtual_adapters(self):
         self.assertEqual({r"root\sunshinevirtualdisplay", r"root\sudomaker\sudovda"},
