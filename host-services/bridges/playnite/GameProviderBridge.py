@@ -3193,7 +3193,7 @@ class BridgeState:
             self.readiness = {
                 "ready": False, "reason": "game_updating", "target_kind": "game",
                 "game_id": game_id, "launch_task_id": task_id, "stable_samples": 0,
-                "update_progress": -1,
+                "update_progress": -1, "update_phase": "downloading",
             }
             self._last_window_signature = None
             self._publish_locked("game-updating", {"id": game_id})
@@ -3225,11 +3225,13 @@ class BridgeState:
                 return
             if update is not None and (update["pending"] or not update["installed"]):
                 self.readiness.update({
-                    "reason": "game_updating", "update_progress": update["progress"]})
+                    "reason": "game_updating", "update_progress": update["progress"],
+                    "update_phase": update["phase"]})
                 return
             self.current.pop("updating", None)
             self.current["launchRequestedAt"] = self.clock()
             self.readiness.pop("update_progress", None)
+            self.readiness.pop("update_phase", None)
             self.readiness.update({"reason": "game_starting", "stable_samples": 0})
             attempt = self.current
         try:
@@ -3475,7 +3477,9 @@ class BridgeState:
             game = self.library.get(normalized)
             if game is None:
                 raise FileNotFoundError("Game record was not found.")
-            if bool(game.get("installed") or game.get("isInstalled")):
+            update = self.game_operations.update_sample(dict(game))
+            if bool(game.get("installed") or game.get("isInstalled")) \
+                    and not (update is not None and update["pending"]):
                 raise ValueError("Playnite game is already installed.")
             if bool(game.get("installing") or game.get("isInstalling")):
                 return {"accepted": True, "command": "install", "already_installing": True}
@@ -3814,6 +3818,8 @@ class BridgeState:
                     state = "uninstalling"
                 elif phase == "verifying":
                     state = "verifying"
+                elif phase == "patching":
+                    state = "patching"
                 elif sample.get("progress") is not None:
                     state = "downloading"
                 else:
@@ -4620,7 +4626,9 @@ class BridgeState:
         or the previous request's game (the user may stop it by its exact token)."""
         targets: dict[str, Any] = {}
         if self.readiness.get("reason") == "game_updating":
-            targets["update"] = {"progress": int(self.readiness.get("update_progress", -1))}
+            targets["update"] = {
+                "phase": str(self.readiness.get("update_phase") or "downloading"),
+                "progress": int(self.readiness.get("update_progress", -1))}
         if self.readiness.get("reason") == "launcher_interaction_required":
             targets["launcher"] = {
                 "detail": str(self.readiness.get("launcher_detail") or ""),
@@ -4790,6 +4798,11 @@ class BridgeState:
                 return {"accepted": False, "command": "hard-reset", "force": True,
                         "reason": "running_game_inventory_unavailable"}
 
+            if self.current.get("updating") \
+                    and str(self.current.get("state") or "").casefold() == "starting":
+                # An update phase has no process to stop: the reset ends the start itself
+                # (Steam keeps updating) so the update cannot launch the game afterwards.
+                self._complete_game_stop_locked()
             current_state = str(self.current.get("state") or "").casefold()
             current_id = str(self.current.get("id") or "")
             trace_id = str((self._active_game_trace or {}).get("game_id") or "")
@@ -5441,12 +5454,20 @@ class BridgeState:
         if catalog_revision is not None and (
                 not isinstance(catalog_revision, str) or len(catalog_revision) > 128):
             raise ValueError("Invalid catalog revision.")
+        updates = self.game_operations.steam.update_states() if any(
+            game.get("provider") == "steam" for game in list(self.library.values())) else {}
         with self.lock:
             if catalog_revision is not None and catalog_revision != self.library_revision:
                 raise StaleCatalogRevision("The catalog revision is stale.")
             games = sorted(self._filtered_games_locked(allowed_game_ids),
                            key=lambda game: str(game.get("name", "")).casefold())
             page = games[offset:offset + limit]
+            # A pending update is Steam's live fact, not part of the cached catalog record.
+            page = [dict(game, updateState=updates[str(game.get("providerGameId") or "")]["state"],
+                         updateProgress=updates[str(game.get("providerGameId") or "")]["progress"])
+                    if str(game.get("provider") or "") == "steam"
+                    and str(game.get("providerGameId") or "") in updates else game
+                    for game in page]
             next_offset = offset + len(page)
             counts: dict[tuple[str, str, str], int] = {}
             for game in games:
@@ -5578,9 +5599,17 @@ class WindowReadinessWorker:
                     self.state._launcher_postcondition_failed_locked()
                 launch_requested_at = float(current.get("launchRequestedAt") or 0.0)
                 screensaver_wake_requested_at = self.state._screensaver_wake_requested_at
-            if current.get("updating"):
+            if current.get("updating") and \
+                    str(current.get("state") or "").casefold() == "starting":
                 # Phase 0: no window, launcher or timeout heuristic applies to an update.
                 self.state.advance_update(str(current.get("launchTaskId") or ""))
+                # The running scan keeps process evidence fresh: without it a close cannot
+                # prove that the start has no process (retained_process_unconfirmed).
+                since_scan = time.monotonic() - last_running_scan
+                if since_scan >= 5.0 or (since_scan >= 1.0
+                                         and self.state.running_scan_outdated()):
+                    self.state.refresh_running_games()
+                    last_running_scan = time.monotonic()
                 time.sleep(UPDATE_POLL_SECONDS)
                 continue
             target_kind = str(readiness.get("target_kind", "playnite"))

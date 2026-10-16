@@ -71,6 +71,8 @@ public final class PlayniteTransitionGateway {
         public final String previousLaunchName;
         /** Progress (0-100) of the game update the start waits on, -1 without byte counts. */
         public final int updateProgress;
+        /** The update is in its patching phase (after the download). */
+        public final boolean updatePatching;
         /**
          * How long the host's current state episode had lasted when it was observed
          * ({@code observed_at - state_since}, host clock only); -1 when unknown.
@@ -119,6 +121,18 @@ public final class PlayniteTransitionGateway {
                  String processToken, String previousLaunchGameId,
                  String previousLaunchProcessToken, String previousLaunchName,
                  long stateAgeMs, int updateProgress) {
+            this(gatewayReady, connectorReady, gameState, gameId, processId, windowReady,
+                    targetKind, stableSamples, reason, hostGuideAllowed, processToken,
+                    previousLaunchGameId, previousLaunchProcessToken, previousLaunchName,
+                    stateAgeMs, updateProgress, false);
+        }
+
+        Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
+                 String gameId, int processId, boolean windowReady, String targetKind,
+                 int stableSamples, String reason, boolean hostGuideAllowed,
+                 String processToken, String previousLaunchGameId,
+                 String previousLaunchProcessToken, String previousLaunchName,
+                 long stateAgeMs, int updateProgress, boolean updatePatching) {
             this.gatewayReady = gatewayReady;
             this.connectorReady = connectorReady;
             this.gameState = gameState;
@@ -140,6 +154,7 @@ public final class PlayniteTransitionGateway {
             this.previousLaunchName = previousLaunchName;
             this.stateAgeMs = stateAgeMs;
             this.updateProgress = updateProgress;
+            this.updatePatching = updatePatching;
             this.sessionSnapshot = null;
         }
 
@@ -171,6 +186,7 @@ public final class PlayniteTransitionGateway {
             this.previousLaunchName = fenced.previousLaunchGameName;
             this.stateAgeMs = fenced.observedAtUnixMs - fenced.stateSinceUnixMs;
             this.updateProgress = fenced.updateProgress;
+            this.updatePatching = fenced.updatePatching;
             this.sessionSnapshot = projected;
         }
 
@@ -204,6 +220,7 @@ public final class PlayniteTransitionGateway {
             this.stateAgeMs = observation == null
                     ? -1L : observation.observedAtUnixMs - observation.stateSinceUnixMs;
             this.updateProgress = observation == null ? -1 : observation.updateProgress;
+            this.updatePatching = observation != null && observation.updatePatching;
             this.sessionSnapshot = projected;
         }
 

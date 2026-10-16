@@ -116,7 +116,9 @@ final class PlayniteLibraryCache {
                             exactIdentity && value.optBoolean("can_uninstall", true),
                             value.optBoolean("requires_connector",
                                     !value.optString("playnite_game_id", "").isEmpty()),
-                            value.optBoolean("start_before_stream", false)));
+                            value.optBoolean("start_before_stream", false))
+                            .withUpdate(value.optString("update_state", ""),
+                                    value.optInt("update_progress", -1)));
                 }
             }
             Entry entry = new Entry(games, root.optLong("saved_at", file.lastModified()),
@@ -171,6 +173,8 @@ final class PlayniteLibraryCache {
                 value.put("requires_connector", game.requiresConnector);
                 value.put("start_before_stream", game.startBeforeStream);
                 value.put("genres", game.genres);
+                value.put("update_state", game.updateState);
+                value.put("update_progress", game.updateProgress);
                 value.put("install_requires_attention", game.installRequiresAttention);
                 value.put("install_attention_reason", game.installAttentionReason);
                 value.put("install_window_title", game.installWindowTitle);

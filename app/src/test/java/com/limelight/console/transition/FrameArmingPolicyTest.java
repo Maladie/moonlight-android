@@ -15,7 +15,7 @@ public class FrameArmingPolicyTest {
         return new LaunchTransitionSnapshot(spec, LaunchTransitionState.GAME_READY, 4,
                 overlayVisible, overlayVisible, false, false, false, false, "", false, false,
                 "", false, awaitingVideoFrame, edge, LaunchTransitionController.UserCover.NONE,
-                false, -1, 0L);
+                false, -1, false, 0L);
     }
 
     private static LaunchTransitionSnapshot awaiting(String id, long edge) {

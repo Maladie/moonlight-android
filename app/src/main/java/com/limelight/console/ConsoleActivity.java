@@ -9623,6 +9623,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         int payload = 0;
         if (!old.game.name.equals(item.game.name) || old.game.installed != item.game.installed ||
                 old.game.installing != item.game.installing ||
+                !old.game.updateState.equals(item.game.updateState) ||
+                old.game.updateProgress != item.game.updateProgress ||
                 old.game.installRequiresAttention != item.game.installRequiresAttention ||
                 old.game.operationProgress != item.game.operationProgress ||
                 old.game.uninstalling != item.game.uninstalling ||
@@ -9892,11 +9894,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             poster.setColorFilter(muted);
             if (backdrop != null) backdrop.setColorFilter(muted);
         }
-        ProgressBar installProgress = playniteInstallProgress(views, installing);
+        boolean updating = !installing && item.game.installed && item.game.updateActive();
+        int barProgress = installing ? operation.progress : item.game.updateProgress;
+        ProgressBar installProgress = playniteInstallProgress(views, installing || updating);
         if (installProgress != null) {
-            installProgress.setVisibility(installing ? View.VISIBLE : View.GONE);
-            installProgress.setIndeterminate(installing && operation.progress < 0);
-            if (operation.progress >= 0) installProgress.setProgress(operation.progress);
+            installProgress.setVisibility(installing || updating ? View.VISIBLE : View.GONE);
+            installProgress.setIndeterminate((installing || updating) && barProgress < 0);
+            if (barProgress >= 0) installProgress.setProgress(barProgress);
         }
         String playtimeText = (payload & PlayniteLibraryDiff.TEXT) != 0
                 ? formatPlayniteTime(item.game.playtimeSeconds) : null;
@@ -10503,15 +10507,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return getString(R.string.playnite_uninstalling);
         }
         if (operation.installActive) {
-            String label = getString(R.string.playnite_installing);
+            String label = getString(item.game.installed ? operation.phase
+                    == GameOperationsController.Phase.PATCHING
+                    ? R.string.playnite_update_patching : R.string.playnite_update_downloading
+                    : R.string.playnite_installing);
             return operation.progress >= 0
                     ? label + " " + operation.progress + "%" : label;
         }
         if (!item.game.installed) return getString(R.string.playnite_not_installed);
+        if (item.game.updateRequired()) return updateLabel(item.game);
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             return getString(R.string.playnite_game_installed);
         }
         return getString(R.string.playnite_launch_not_configured);
+    }
+
+    /** Steam's pending update of a tile: required, downloading or patching, with its percent. */
+    private String updateLabel(PlayniteLibraryGame game) {
+        if (!game.updateActive()) return getString(R.string.playnite_update_required);
+        String label = getString("patching".equals(game.updateState)
+                ? R.string.playnite_update_patching : R.string.playnite_update_downloading);
+        return game.updateProgress >= 0 ? label + " " + game.updateProgress + "%" : label;
     }
 
     private String playniteStateGlyph(String hostUuid, PlayniteDashboardItem item,
@@ -10524,6 +10540,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (operation.uninstallActive) return "↓";
         if (operation.installActive) return "↓";
         if (!item.game.installed) return "↓";
+        if (item.game.updateRequired()) return "↻";
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) return "✓";
         return "!";
     }
@@ -10541,13 +10558,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return getString(R.string.playnite_uninstalling);
         }
         if (operation.installActive) {
-            String label = getString(R.string.playnite_installing);
+            String label = getString(item.game.installed ? operation.phase
+                    == GameOperationsController.Phase.PATCHING
+                    ? R.string.playnite_update_patching : R.string.playnite_update_downloading
+                    : R.string.playnite_installing);
             return operation.progress >= 0
                     ? CONSOLE_UI_V2 ? operation.progress + "%"
                     : label + " " + operation.progress + "%" : label;
         }
         if (!item.game.installed) return CONSOLE_UI_V2 ? ""
                 : getString(R.string.playnite_install_action_short);
+        if (item.game.updateRequired()) {
+            return item.game.updateActive() && item.game.updateProgress >= 0
+                    ? item.game.updateProgress + "%"
+                    : getString(R.string.playnite_update_short);
+        }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             return CONSOLE_UI_V2 ? "" : getString(R.string.playnite_ready_short);
         }
@@ -10563,7 +10588,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                         boolean resumeSession) {
         GameOperationsController.Presentation operation =
                 gameOperationsController.presentation(hostUuid, item.game);
-        boolean installing = operation.installActive || operation.uninstallActive;
+        boolean installing = operation.installActive || operation.uninstallActive
+                || item.game.installed && item.game.updateRequired();
         boolean unavailable = item.game.installed
                 && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED;
         int textColor;
@@ -11208,6 +11234,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         facts.canInstall = item.game.canInstall;
         facts.canUninstall = item.game.canUninstall;
         facts.installing = operation.installActive;
+        facts.canUpdate = item.game.canInstall && item.game.updateRequired()
+                && !item.game.updateActive() && !operation.installActive
+                && !operation.uninstallActive;
         facts.installNeedsAttention = operation.attentionRequired;
         facts.attentionOnPc = "secure_desktop".equals(operation.attentionReason);
         facts.gameRunning = isFreshExactRunningManagedGame(host, item);
@@ -11248,6 +11277,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         case INSTALL:
                             hideSidePanel();
                             startPlayniteInstallation(host, item);
+                            break;
+                        case UPDATE:
+                            hideSidePanel();
+                            startPlayniteUpdate(host, item);
                             break;
                         case END_GAME: confirmEndPlayniteGame(host, item); break;
                         case CLOSE_GAME_AND_STREAM:
@@ -11522,6 +11555,33 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         playPlayniteGame(host, PlayniteTargetResolver.resolveNeutralStream(apps), item.game);
+    }
+
+    private void startPlayniteUpdate(ComputerDetails host, PlayniteDashboardItem item) {
+        if (host == null || item == null || !item.game.canInstall) return;
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        GatewayConnection connection = hostGatewayStore.loadForHost(
+                host.uuid, address, selectedProfileId(host.uuid));
+        if (connection == null) {
+            ConsoleUiFeedback.makeText(this, R.string.playnite_gateway_not_configured,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        gameOperationsController.requestUpdate(host.uuid, item.game, connection, success -> {
+            if (success) {
+                if (active && host.uuid.equals(selectedHostUuid)) {
+                    requestPlayniteRefresh(currentHost(host.uuid), false);
+                }
+            } else {
+                if (consoleAudioEngine != null) {
+                    consoleAudioEngine.play(ConsoleAudioSynthesis.Cue.ERROR);
+                }
+                ConsoleUiFeedback.makeText(this, getString(R.string.playnite_update_failed,
+                        item.game.name), Toast.LENGTH_LONG).show();
+            }
+        });
+        ConsoleUiFeedback.makeText(this, getString(R.string.playnite_update_starting,
+                item.game.name), Toast.LENGTH_LONG).show();
     }
 
     private void startPlayniteInstallation(ComputerDetails host,

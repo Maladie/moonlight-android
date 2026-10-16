@@ -36,6 +36,62 @@ final class PlayniteLibraryGame {
     final String operationState;
     final int operationProgress;
     final boolean uninstalling;
+    /** "" (none), "required", "downloading" or "patching": Steam's pending update. */
+    final String updateState;
+    /** Progress 0-100 of that update, -1 when unknown. */
+    final int updateProgress;
+
+    private PlayniteLibraryGame(PlayniteLibraryGame base, String updateState,
+                                int updateProgress) {
+        this.playniteGameId = base.playniteGameId;
+        this.name = base.name;
+        this.installed = base.installed;
+        this.installing = base.installing;
+        this.hidden = base.hidden;
+        this.playtimeSeconds = base.playtimeSeconds;
+        this.lastActivity = base.lastActivity;
+        this.activityEpoch = base.activityEpoch;
+        this.coverKey = base.coverKey;
+        this.backgroundKey = base.backgroundKey;
+        this.heroKey = base.heroKey;
+        this.description = base.description;
+        this.playCount = base.playCount;
+        this.source = base.source;
+        this.provider = base.provider;
+        this.providerGameId = base.providerGameId;
+        this.metadataPlayniteGameId = base.metadataPlayniteGameId;
+        this.libraryKey = base.libraryKey;
+        this.libraryName = base.libraryName;
+        this.canLaunch = base.canLaunch;
+        this.canInstall = base.canInstall;
+        this.canUninstall = base.canUninstall;
+        this.requiresConnector = base.requiresConnector;
+        this.startBeforeStream = base.startBeforeStream;
+        this.genres = base.genres;
+        this.installRequiresAttention = base.installRequiresAttention;
+        this.installAttentionReason = base.installAttentionReason;
+        this.installWindowTitle = base.installWindowTitle;
+        this.installLauncher = base.installLauncher;
+        this.operationState = base.operationState;
+        this.operationProgress = base.operationProgress;
+        this.uninstalling = base.uninstalling;
+        this.updateState = updateState == null ? "" : updateState;
+        this.updateProgress = updateProgress;
+    }
+
+    /** The same game with Steam's pending update (library listing / cache). */
+    PlayniteLibraryGame withUpdate(String state, int progress) {
+        return new PlayniteLibraryGame(this, state, progress);
+    }
+
+    /** The update is running or paused-with-bytes: a state to show, not only a requirement. */
+    boolean updateActive() {
+        return "downloading".equals(updateState) || "patching".equals(updateState);
+    }
+
+    boolean updateRequired() {
+        return !updateState.isEmpty();
+    }
 
     PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
                         boolean hidden, long playtimeSeconds, String lastActivity,
@@ -192,6 +248,8 @@ final class PlayniteLibraryGame {
         this.operationState = text(operationState);
         this.operationProgress = operationProgress;
         this.uninstalling = uninstalling;
+        this.updateState = "";
+        this.updateProgress = -1;
     }
 
     @Override public boolean equals(Object value) {
@@ -219,7 +277,8 @@ final class PlayniteLibraryGame {
                 installAttentionReason.equals(game.installAttentionReason) &&
                 installWindowTitle.equals(game.installWindowTitle) &&
                 installLauncher.equals(game.installLauncher) &&
-                operationState.equals(game.operationState);
+                operationState.equals(game.operationState) &&
+                updateState.equals(game.updateState) && updateProgress == game.updateProgress;
     }
 
     @Override public int hashCode() {
@@ -230,7 +289,7 @@ final class PlayniteLibraryGame {
                 installLauncher, operationState, operationProgress, uninstalling,
                 provider, providerGameId, metadataPlayniteGameId,
                 libraryKey, libraryName, canLaunch, canInstall, canUninstall,
-                requiresConnector, startBeforeStream);
+                requiresConnector, startBeforeStream, updateState, updateProgress);
     }
 
     private static String text(String value) { return value == null ? "" : value.trim(); }

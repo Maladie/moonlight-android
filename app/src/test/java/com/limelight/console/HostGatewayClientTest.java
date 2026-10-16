@@ -94,9 +94,12 @@ public class HostGatewayClientTest {
         value.put("window", new JSONObject().put("evidence", "PENDING")
                 .put("ready", false).put("target_kind", "game").put("stable_samples", 0)
                 .put("reason", "game_updating")
-                .put("update", new JSONObject().put("progress", 42)));
+                .put("update", new JSONObject().put("phase", "patching")
+                        .put("progress", 42)));
         assertEquals(42, HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7,
                 now + 100).updateProgress);
+        assertTrue(HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7,
+                now + 100).updatePatching);
 
         value.getJSONObject("window").getJSONObject("update").put("progress", -1);
         assertEquals("no byte counts: indeterminate", -1,

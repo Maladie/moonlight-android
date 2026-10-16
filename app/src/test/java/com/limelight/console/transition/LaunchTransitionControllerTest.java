@@ -303,7 +303,7 @@ public class LaunchTransitionControllerTest {
     public void gameUpdatingKeepsTheCoverOffersRevealAndContinuesAsALaunch() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         transportReady(controller);
-        controller.gameUpdating("transition-1", HOST, 40);
+        controller.gameUpdating("transition-1", HOST, 40, false);
 
         LaunchTransitionSnapshot updating = controller.snapshot();
         assertEquals(LaunchTransitionState.GAME_UPDATING, updating.state);
@@ -314,7 +314,8 @@ public class LaunchTransitionControllerTest {
         assertTrue("the user can always reveal Big Picture", updating.manualRevealAvailable);
         assertFalse(updating.startTakingLonger);
 
-        controller.gameUpdating("transition-1", HOST, -1);
+        controller.gameUpdating("transition-1", HOST, -1, true);
+        assertTrue(controller.snapshot().updatePatching);
         assertEquals(-1, controller.snapshot().updateProgress);
 
         controller.gameUpdateFinished("transition-1");
@@ -326,13 +327,13 @@ public class LaunchTransitionControllerTest {
     public void gameUpdatingIgnoresOtherTransitionsAndNeverCoversARevealedStream() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         transportReady(controller);
-        controller.gameUpdating("stale-transition", HOST, 10);
-        controller.gameUpdating("transition-1", "other-host", 10);
+        controller.gameUpdating("stale-transition", HOST, 10, false);
+        controller.gameUpdating("transition-1", "other-host", 10, false);
         assertFalse(controller.snapshot().state == LaunchTransitionState.GAME_UPDATING);
 
         controller.showStreamAnyway("transition-1");
         assertTrue(controller.snapshot().revealAuthorized);
-        controller.gameUpdating("transition-1", HOST, 10);
+        controller.gameUpdating("transition-1", HOST, 10, false);
         assertFalse("after a reveal the cover does not return",
                 controller.snapshot().state == LaunchTransitionState.GAME_UPDATING);
     }

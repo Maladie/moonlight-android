@@ -830,6 +830,7 @@ class SteamProvider(GenericPlayniteProvider):
             "manifest_present": False, "manifest_readable": False,
             "download_present": False, "manifest_signature": None,
             "bytes_downloaded": 0, "bytes_total": 0, "state_flags": 0,
+            "bytes_staged": 0, "bytes_to_stage": 0,
             "install_directory": "", "manifest_complete": False,
             "installed": False, "update_pending": False,
         }
@@ -856,6 +857,8 @@ class SteamProvider(GenericPlayniteProvider):
                     downloaded = self._number(values, "bytesdownloaded")
                     total = self._number(values, "bytestodownload")
                     flags = self._number(values, "stateflags")
+                    staged = self._number(values, "bytesstaged")
+                    to_stage = self._number(values, "bytestostage")
                     install_name = str(values.get("installdir") or "").strip()
                     install_directory = steamapps / "common" / install_name \
                         if install_name else None
@@ -864,13 +867,15 @@ class SteamProvider(GenericPlayniteProvider):
                     signature = (
                         str(manifest), int(manifest_stat.st_mtime_ns),
                         int(manifest_stat.st_size), downloaded, total, flags,
-                        install_name,
+                        install_name, staged, to_stage,
                     )
                     result.update({
                         "manifest_readable": True,
                         "manifest_signature": signature,
                         "bytes_downloaded": downloaded,
                         "bytes_total": total,
+                        "bytes_staged": staged,
+                        "bytes_to_stage": to_stage,
                         "state_flags": flags,
                         "install_directory": str(install_directory or ""),
                         "manifest_complete": flags == 4 and directory_ready,
@@ -920,6 +925,53 @@ class SteamProvider(GenericPlayniteProvider):
         found = self.UPDATE_ERROR.search(state)
         return found.group(0).casefold().replace(" ", "_") if found else ""
 
+    @staticmethod
+    def update_phase(snapshot: dict[str, Any]) -> tuple[str, int]:
+        """("downloading" | "patching", progress 0-100 or -1) of a pending update.
+
+        Steam downloads first; once the download is done it patches (stages and commits) the
+        files, which has its own byte counts. Committing has none: indeterminate (-1)."""
+        total = int(snapshot.get("bytes_total") or 0)
+        downloaded = int(snapshot.get("bytes_downloaded") or 0)
+        staged = int(snapshot.get("bytes_staged") or 0)
+        to_stage = int(snapshot.get("bytes_to_stage") or 0)
+        if (total <= 0 or downloaded >= total) and to_stage > 0:
+            return "patching", min(100, staged * 100 // to_stage) if staged < to_stage else -1
+        return "downloading", min(100, downloaded * 100 // total) if total > 0 else -1
+
+    def update_states(self) -> dict[str, dict[str, Any]]:
+        """Pending updates of every installed game by app id (library tiles); cached briefly."""
+        now = time.monotonic()
+        cached = getattr(self, "_update_states_cache", None)
+        if cached is not None and now - cached[0] < 3.0:
+            return cached[1]
+        states: dict[str, dict[str, Any]] = {}
+        discovery = self._library_discovery()
+        for library in discovery["libraries"]:
+            try:
+                manifests = list((library / "steamapps").glob("appmanifest_*.acf"))
+            except OSError:
+                continue
+            for manifest in manifests:
+                match = re.fullmatch(r"appmanifest_([0-9]+)\.acf", manifest.name, re.IGNORECASE)
+                values = self._values(manifest) if match else None
+                if not values:
+                    continue
+                flags = self._number(values, "stateflags")
+                if not (flags & 4 and flags & self.UPDATE_FLAGS):
+                    continue
+                snapshot = {
+                    "bytes_total": self._number(values, "bytestodownload"),
+                    "bytes_downloaded": self._number(values, "bytesdownloaded"),
+                    "bytes_staged": self._number(values, "bytesstaged"),
+                    "bytes_to_stage": self._number(values, "bytestostage")}
+                phase, progress = self.update_phase(snapshot)
+                running = bool(flags & (256 | 1024))
+                states[match.group(1)] = {
+                    "state": phase if running else "required", "progress": progress}
+        self._update_states_cache = (now, states)
+        return states
+
     def update_sample(self, game: dict[str, Any]) -> dict[str, Any]:
         """The state of an update a start waits on. `progress` is 0-100, -1 without bytes;
         `error` is set only on log evidence; `nudge` asks the caller to send the command
@@ -927,11 +979,10 @@ class SteamProvider(GenericPlayniteProvider):
         snapshot = self.scan(game)
         app_id = str(snapshot.get("app_id") or "")
         pending = bool(snapshot.get("update_pending"))
-        total = int(snapshot.get("bytes_total") or 0)
-        downloaded = int(snapshot.get("bytes_downloaded") or 0)
+        phase, progress = self.update_phase(snapshot) if pending else ("downloading", -1)
         result = {
             "pending": pending, "installed": bool(snapshot.get("installed")),
-            "progress": min(100, downloaded * 100 // total) if pending and total > 0 else -1,
+            "phase": phase, "progress": progress,
             "error": self._update_error(app_id) if pending else "", "nudge": False,
         }
         if not pending:
@@ -996,12 +1047,18 @@ class SteamProvider(GenericPlayniteProvider):
             downloaded = int(snapshot.get("bytes_downloaded") or 0)
             total = int(snapshot.get("bytes_total") or 0)
             progress = min(100, downloaded * 100 // total) if total else None
-            verifying = total > 0 and downloaded >= total
+            patch_phase, patch_progress = self.update_phase(snapshot)
+            patching = patch_phase == "patching"
+            verifying = total > 0 and downloaded >= total and not patching
+            if patching:
+                progress = patch_progress if patch_progress >= 0 else None
             return {
                 **common, "started": True,
-                "phase": "verifying" if verifying else "active_install",
+                "phase": "patching" if patching else "verifying" if verifying
+                else "active_install",
                 "requires_attention": False,
-                "reason": "steam_verifying" if verifying else "steam_downloading",
+                "reason": "steam_patching" if patching else "steam_verifying" if verifying
+                else "steam_downloading",
                 "progress": progress,
                 "stalled": self._verify_stalled(
                     str(snapshot.get("app_id")), snapshot.get("manifest_signature"),

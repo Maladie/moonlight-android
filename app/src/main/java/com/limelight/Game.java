@@ -6399,6 +6399,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return snapshot.detail.isEmpty()
                         ? getString(R.string.transition_waiting_fullscreen) : snapshot.detail;
             case GAME_UPDATING:
+                if (snapshot.updatePatching) {
+                    return snapshot.updateProgress < 0
+                            ? getString(R.string.transition_patching_game)
+                            : getString(R.string.transition_patching_game_percent,
+                            snapshot.updateProgress);
+                }
                 return snapshot.updateProgress < 0
                         ? getString(R.string.transition_updating_game)
                         : getString(R.string.transition_updating_game_percent,

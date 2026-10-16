@@ -179,8 +179,8 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(card.contains("copy.setVisibility(expandedCard"));
         assertTrue(card.contains("shine.setTag(\"playnite.shine\")"));
         assertTrue(card.contains("new int[]{0x00FFFFFF, 0x5CFFFFFF, 0x00FFFFFF}"));
-        assertTrue(binding.contains("installProgress.setVisibility(installing"));
-        assertTrue(binding.contains("installProgress.setProgress(operation.progress)"));
+        assertTrue(binding.contains("installProgress.setVisibility(installing || updating"));
+        assertTrue(binding.contains("installProgress.setProgress(barProgress)"));
         assertTrue(binding.contains("playniteCardAlpha(item, operation"));
         assertTrue(source.contains("return focused || resumeSession ? 1f : .93f"));
         assertTrue(source.contains("ordinaryReady && !focused ? .48f : 1f"));

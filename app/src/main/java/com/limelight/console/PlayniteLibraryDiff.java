@@ -45,6 +45,8 @@ final class PlayniteLibraryDiff {
             if (!old.game.name.equals(next.game.name) ||
                     old.game.installed != next.game.installed ||
                     old.game.installing != next.game.installing ||
+                    !old.game.updateState.equals(next.game.updateState) ||
+                    old.game.updateProgress != next.game.updateProgress ||
                     old.game.playtimeSeconds != next.game.playtimeSeconds ||
                     old.game.playCount != next.game.playCount ||
                     !old.game.lastActivity.equals(next.game.lastActivity) ||

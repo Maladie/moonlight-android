@@ -39,6 +39,8 @@ public final class LaunchTransitionSnapshot {
     public final boolean userCoverReleased;
     /** Progress (0-100) of the game update this start waits on; -1 when the host has no bytes. */
     public final int updateProgress;
+    /** The update is past its download: Steam patches (stages and commits) the files. */
+    public final boolean updatePatching;
     /** The controller's publish order; a later publish carries a larger value. */
     public final long sequence;
 
@@ -65,7 +67,8 @@ public final class LaunchTransitionSnapshot {
                              String notice, boolean manuallyRevealed,
                              boolean awaitingVideoFrame, long frameEdge,
                              LaunchTransitionController.UserCover userCover,
-                             boolean userCoverReleased, int updateProgress, long sequence) {
+                             boolean userCoverReleased, int updateProgress,
+                             boolean updatePatching, long sequence) {
         this.spec = spec;
         this.state = state;
         this.step = step;
@@ -85,6 +88,7 @@ public final class LaunchTransitionSnapshot {
         this.userCover = userCover;
         this.userCoverReleased = userCoverReleased;
         this.updateProgress = updateProgress;
+        this.updatePatching = updatePatching;
         this.sequence = sequence;
     }
 

@@ -1054,7 +1054,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if (updating) {
             updateSeenAtMillis = clock.now();
             transitionController.gameUpdating(transitionSpec.id, transitionSpec.hostId,
-                    snapshot.updateProgress);
+                    snapshot.updateProgress, snapshot.updatePatching);
             return;
         }
         transitionController.gameUpdateFinished(transitionSpec.id);

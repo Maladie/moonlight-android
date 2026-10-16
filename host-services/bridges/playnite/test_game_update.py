@@ -32,11 +32,14 @@ class UpdateStartTest(unittest.TestCase):
             "id": "steam:10", "provider": "steam", "providerGameId": APP, "name": "Game"}}
         self.manifest(6, downloaded=25, total=100)
 
-    def manifest(self, flags, downloaded=0, total=0):
+    def manifest(self, flags, downloaded=0, total=0, staged=0, to_stage=0):
         (self.root / "steamapps" / f"appmanifest_{APP}.acf").write_text(
-            '"AppState"\n{\n"appid" "10"\n"installdir" "Game"\n'
-            f'"StateFlags" "{flags}"\n"BytesDownloaded" "{downloaded}"\n'
-            f'"BytesToDownload" "{total}"\n}}\n', encoding="utf-8")
+            chr(10).join(["\"AppState\"", "{", "\"appid\" \"10\"", "\"installdir\" \"Game\"",
+                       f'"StateFlags" "{flags}"',
+                       f'"BytesDownloaded" "{downloaded}"',
+                       f'"BytesToDownload" "{total}"',
+                       f'"BytesStaged" "{staged}"',
+                       f'"BytesToStage" "{to_stage}"', "}", ""]), encoding="utf-8")
 
     def start(self):
         result = self.state.start_game("steam:10")
@@ -66,11 +69,68 @@ class UpdateStartTest(unittest.TestCase):
         self.assertTrue(self.state.current["updating"])
         observation = self.state.observation_snapshot()
         self.assertEqual("game_updating", observation["window"]["reason"])
-        self.assertEqual({"progress": 25}, observation["window"]["update"])
+        self.assertEqual({"phase": "downloading", "progress": 25},
+                         observation["window"]["update"])
         self.manifest(1030, 0, 0)  # no bytes: indeterminate, not frozen
         self.state.advance_update(task)
-        self.assertEqual({"progress": -1},
+        self.assertEqual({"phase": "downloading", "progress": -1},
                          self.state.observation_snapshot()["window"]["update"])
+
+    def test_patching_follows_the_download_with_its_own_progress(self):
+        task = self.start()
+        self.manifest(1030, 100, 100, staged=300, to_stage=1200)
+        self.state.advance_update(task)
+        self.assertEqual({"phase": "patching", "progress": 25},
+                         self.state.observation_snapshot()["window"]["update"])
+        self.manifest(1030, 100, 100, staged=1200, to_stage=1200)  # committing
+        self.state.advance_update(task)
+        self.assertEqual({"phase": "patching", "progress": -1},
+                         self.state.observation_snapshot()["window"]["update"])
+        self.assertEqual([], self.launches())
+
+    def test_cancel_proves_no_process_so_a_close_is_allowed(self):
+        task = self.start()
+        probe = mock.Mock()
+        probe.scan_running_processes.return_value = ([], "complete")
+        self.state.running_process_probe = probe
+        self.state.refresh_running_games()
+        observation = self.state.observation_snapshot()
+        self.assertEqual("complete", observation["process"]["running_scan_status"])
+        self.assertEqual("PENDING", observation["process"]["evidence"])
+        self.assertEqual("starting", observation["game"]["state"])
+        self.state.abandon_start("steam:10")
+        self.manifest(4)
+        self.state.advance_update(task)
+        self.assertEqual("idle", self.state.current["state"])
+        self.assertEqual([], self.launches())
+
+    def test_hard_reset_ends_an_update_start_and_it_never_launches_later(self):
+        task = self.start()
+        probe = mock.Mock()
+        probe.scan_running_processes.return_value = ([], "complete")
+        self.state.running_process_probe = probe
+        result = self.state.hard_reset_session()
+        self.assertTrue(result["accepted"], result)
+        self.assertEqual("idle", self.state.current["state"])
+        self.manifest(4)
+        self.state.advance_update(task)
+        self.assertEqual([], self.launches())
+
+    def test_library_tiles_carry_the_pending_update_and_it_can_be_started(self):
+        page = self.state.library_page("0", 10)["games"]
+        self.assertEqual(("required", 25), (page[0]["updateState"], page[0]["updateProgress"]) )
+        self.manifest(1030, 100, 100, staged=300, to_stage=1200)
+        self.state.game_operations.steam._update_states_cache = None
+        page = self.state.library_page("0", 10)["games"]
+        self.assertEqual(("patching", 25), (page[0]["updateState"], page[0]["updateProgress"]))
+        self.state.library["steam:10"]["installed"] = True
+        result = self.state.install_game("steam:10")
+        self.assertTrue(result["accepted"], result)
+        self.manifest(4)
+        self.state.game_operations.steam._update_states_cache = None
+        self.assertNotIn("updateState", self.state.library_page("0", 10)["games"][0])
+        with self.assertRaises(ValueError):
+            self.state.install_game("steam:10")
 
     def test_launch_starts_only_when_the_update_is_done(self):
         task = self.start()

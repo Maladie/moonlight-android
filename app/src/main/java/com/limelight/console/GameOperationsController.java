@@ -36,6 +36,7 @@ final class GameOperationsController {
         PREPARING,
         DOWNLOADING,
         INSTALLING,
+        PATCHING,
         UNINSTALLING,
         ATTENTION_REQUIRED,
         VERIFYING,
@@ -173,6 +174,35 @@ final class GameOperationsController {
     Presentation requestInstall(String hostId, PlayniteLibraryGame game,
                                 GatewayConnection connection, Callback callback) {
         return request(Kind.INSTALL, hostId, game, connection, callback);
+    }
+
+    /**
+     * Starts the update of an installed game. The host's operation state is the only record of
+     * it (the tile shows it through {@link #presentation}); nothing is pending here, so the
+     * installed game is never reported as a finished installation.
+     */
+    void requestUpdate(String hostId, PlayniteLibraryGame game, GatewayConnection connection,
+                       Callback callback) {
+        if (closed) return;
+        final long token = ++nextToken;
+        Key key = new Key(hostId, game.playniteGameId);
+        diagnostic("INFO", "game_operation.requested", token, key.hostId, key.gameId, "UPDATE");
+        executor.execute(() -> {
+            boolean success;
+            try {
+                gateway.install(connection, game.playniteGameId);
+                success = true;
+            } catch (IOException | RuntimeException error) {
+                success = false;
+                diagnostic("WARN", "game_operation.request_failed", token,
+                        key.hostId, key.gameId, "UPDATE",
+                        "error_type", error.getClass().getName());
+            }
+            final boolean result = success;
+            dispatcher.post(() -> {
+                if (!closed) callback.onResult(result);
+            });
+        });
     }
 
     Presentation requestUninstall(String hostId, PlayniteLibraryGame game,
@@ -417,6 +447,7 @@ final class GameOperationsController {
             case "preparing": return Phase.PREPARING;
             case "downloading": return Phase.DOWNLOADING;
             case "installing": return Phase.INSTALLING;
+            case "patching": return Phase.PATCHING;
             case "uninstalling": return Phase.UNINSTALLING;
             case "attention_required": return Phase.ATTENTION_REQUIRED;
             case "verifying": return Phase.VERIFYING;

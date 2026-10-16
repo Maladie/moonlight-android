@@ -65,6 +65,7 @@ public final class LaunchTransitionController {
     private boolean uncertain;
     private boolean startTakingLonger;
     private int updateProgress = -1;
+    private boolean updatePatching;
     /** The host reported this attempt's game window ready at least once: its start finished. */
     private boolean gameReadyConfirmed;
     private boolean revealPreferred;
@@ -617,7 +618,8 @@ public final class LaunchTransitionController {
      * byte counts). Nothing expires here; only readiness, cancel or a host failure end it. After
      * a reveal the cover never returns.
      */
-    public synchronized void gameUpdating(String transitionId, String hostId, int progress) {
+    public synchronized void gameUpdating(String transitionId, String hostId, int progress,
+                                          boolean patching) {
         if (!accept(transitionId, hostId) || currentTarget != LaunchTransitionType.GAME
                 || revealAuthorized || revealCompleted || rejectsLateTargetSignal()) return;
         overlayVisible = true;
@@ -625,6 +627,7 @@ public final class LaunchTransitionController {
         targetWindowReady = false;
         startTakingLonger = false;
         updateProgress = Math.max(-1, Math.min(100, progress));
+        updatePatching = patching;
         state = LaunchTransitionState.GAME_UPDATING;
         evaluateReady();
     }
@@ -633,6 +636,7 @@ public final class LaunchTransitionController {
     public synchronized void gameUpdateFinished(String transitionId) {
         if (!accept(transitionId, null) || state != LaunchTransitionState.GAME_UPDATING) return;
         updateProgress = -1;
+        updatePatching = false;
         state = LaunchTransitionState.GAME_STARTING;
         evaluateReady();
     }
@@ -983,7 +987,9 @@ public final class LaunchTransitionController {
                 covered && !freshFrameAfterEdge && !rejectsLateTargetSignal()
                         && state != LaunchTransitionState.CANCELLED, frameEdge, userCover,
                 uncoverAwaitsFrame, state == LaunchTransitionState.GAME_UPDATING
-                        ? updateProgress : -1, publishSequence);
+                        ? updateProgress : -1,
+                state == LaunchTransitionState.GAME_UPDATING && updatePatching,
+                publishSequence);
     }
 
     static int stepForState(LaunchTransitionState state) {

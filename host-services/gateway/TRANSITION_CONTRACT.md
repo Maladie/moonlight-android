@@ -19,9 +19,11 @@ A Steam game whose `appmanifest` is installed (`StateFlags` bit 4) and carries a
 bit (`UpdateRequired` 2, `UpdateRunning` 256, `UpdatePaused` 512, `UpdateStarted` 1024; not
 `AppRunning`) starts in phase 0, before the 90 s phase 1. `/game/start` answers
 `accepted=true`, `command=update`; the Bridge keeps the start `starting` with
-`window.reason=game_updating` and `window.update.progress`, an integer 0-100 from
-`BytesDownloaded / BytesToDownload`, or `-1` while the manifest has no byte counts (the
-client then shows an indeterminate bar, never a frozen one). `window.update` exists exactly
+`window.reason=game_updating` and `window.update` = `{phase, progress}`. `phase` is
+`downloading` (`BytesDownloaded / BytesToDownload`) and, once the download is done, `patching`
+(`BytesStaged / BytesToStage`; Steam stages and commits the files, committing has no bytes).
+`progress` is an integer 0-100, or `-1` without byte counts (the client then shows an
+indeterminate bar, never a frozen one). `window.update` exists exactly
 while that reason does; the client requires it then. `schema_version` stays 2.
 
 Nothing in phase 0 expires: not the Bridge (the 90 s `game_start_timeout` counts from the
@@ -33,8 +35,18 @@ after a reveal it never returns, and an update the user finishes in Big Picture 
 the same way), or by log evidence: Steam's `content_log.txt` last state of the app names
 `Disk write failure`, `Not enough disk space` or `Disk read failure`; the start then fails as
 `steam_update_<evidence>`. A manifest that stands still for 120 s makes the Bridge send the
-update command again (Steam closed or stuck at 100%); that never ends the update. Epic has no
-update phase: nothing in Legendary's output was verified as evidence.
+update command again (Steam closed or stuck at 100%); that never ends the update. A close during phase 0 (cancel, `full_quit`, hard reset) needs no process: the Bridge keeps
+its running scan fresh while updating, so the observation proves the start has no process
+(`process.evidence` PENDING with `running_scan_status` complete) and the Gateway's
+launch-without-process rule lets the close abandon the start; a hard reset ends an update
+start itself. Steam keeps updating, and the ended start never launches the game afterwards.
+Epic has no update phase: Legendary has `list-installed --check-updates` and `update`, but
+nothing of its output was verified as evidence yet.
+
+Library records carry Steam's live pending update for tiles: `updateState` (`required`,
+`downloading` or `patching`; absent when none) and `updateProgress`. An update started from a
+tile's card is the existing `/game/install` of an installed game with a pending update; its
+operation journal uses the state `patching` next to `downloading`.
 
 ### Durations (display only)
 

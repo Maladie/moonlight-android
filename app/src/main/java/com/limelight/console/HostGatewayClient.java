@@ -312,6 +312,9 @@ public class HostGatewayClient {
         final String operationState;
         final int operationProgress;
         final boolean uninstalling;
+        /** {@code updateState}/{@code updateProgress}: Steam's pending update, "" / -1 if none. */
+        String updateState = "";
+        int updateProgress = -1;
         final long playtimeSeconds;
         /** Compatibility view for older console code. New code uses seconds. */
         final long playtimeMinutes;
@@ -537,6 +540,8 @@ public class HostGatewayClient {
         String previousLaunchGameName = "";
         /** {@code window.update.progress} of a game update (0-100), -1 without byte counts. */
         int updateProgress = -1;
+        /** {@code window.update.phase} is "patching" (Steam stages and commits the files). */
+        boolean updatePatching;
         /**
          * Host wall clock (same clock as {@link #observedAtUnixMs}) starts, display only:
          * {@code correlation.stream_started_unix_ms} of this actor's stream and
@@ -1842,11 +1847,16 @@ public class HostGatewayClient {
             }
         }
         int updateProgress = -1;
+        boolean updatePatching = false;
         if ("game_updating".equals(windowReason)) {
-            updateProgress = requiredInt(requiredObject(window, "update"), "progress");
-            if (updateProgress < -1 || updateProgress > 100) {
+            JSONObject update = requiredObject(window, "update");
+            updateProgress = requiredInt(update, "progress");
+            String phase = requiredString(update, "phase");
+            if (updateProgress < -1 || updateProgress > 100
+                    || !("downloading".equals(phase) || "patching".equals(phase))) {
                 throw new IOException("invalid_observation_progress");
             }
+            updatePatching = "patching".equals(phase);
         }
         SessionObservation parsed = new SessionObservation(boot, revision, observedAt, freshFor,
                 episode, stateSince, actor, execution, ordinal,
@@ -1866,6 +1876,7 @@ public class HostGatewayClient {
         parsed.previousLaunchProcessToken = previousToken;
         parsed.previousLaunchGameName = previousName;
         parsed.updateProgress = updateProgress;
+        parsed.updatePatching = updatePatching;
         parsed.streamStartedUnixMs = streamStarted;
         parsed.processStartedUnixMs = processStarted;
         return parsed;
@@ -2228,7 +2239,7 @@ public class HostGatewayClient {
                 boolean startBeforeStream = providerCapabilities != null
                         && providerCapabilities.optBoolean("startBeforeStream",
                         providerCapabilities.optBoolean("start_before_stream", false));
-                games.add(new PlayniteGame(normalizedId, name,
+                PlayniteGame parsedGame = new PlayniteGame(normalizedId, name,
                         value.optBoolean("installed", value.optBoolean("isInstalled", false)),
                         value.optBoolean("installing", value.optBoolean("isInstalling", false)),
                         value.optBoolean("hidden", value.optBoolean("isHidden", false)),
@@ -2267,7 +2278,11 @@ public class HostGatewayClient {
                         capability(value, "launch", exactIdentity),
                         capability(value, "install", exactIdentity),
                         capability(value, "uninstall", exactIdentity),
-                        requiresConnector, startBeforeStream));
+                        requiresConnector, startBeforeStream);
+                parsedGame.updateState = value.optString("updateState", "").trim();
+                parsedGame.updateProgress = value.isNull("updateProgress") ? -1
+                        : value.optInt("updateProgress", -1);
+                games.add(parsedGame);
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),

@@ -1106,6 +1106,13 @@
     <string name="playnite_game_details_body">Status: %1$s\nLast played: %2$s\nTime played: %3$s\nLibrary: %4$s\nGenres: %5$s\n\n%6$s</string>
     <string name="playnite_ready_short">Ready</string>
     <string name="playnite_configuration_short">Setup needed</string>
+    <string name="playnite_update_required">Update required</string>
+    <string name="playnite_update_short">Update</string>
+    <string name="playnite_update_downloading">Updating…</string>
+    <string name="playnite_update_patching">Patching…</string>
+    <string name="playnite_update_action">Update game</string>
+    <string name="playnite_update_starting">Starting the update of “%1$s”…</string>
+    <string name="playnite_update_failed">Could not start the update of “%1$s”.</string>
     <string name="playnite_install_starting">Starting installation of “%1$s”…</string>
     <string name="playnite_install_in_progress">“%1$s” is already being installed.</string>
     <string name="playnite_install_complete">“%1$s” has been installed.</string>
@@ -1245,6 +1252,8 @@
     <string name="transition_launcher_waiting_title">The launcher is waiting for you</string>
     <string name="transition_updating_game">Updating the game…</string>
     <string name="transition_updating_game_percent">Updating the game… %1$d%%</string>
+    <string name="transition_patching_game">Patching the game…</string>
+    <string name="transition_patching_game_percent">Patching the game… %1$d%%</string>
     <string name="transition_game_update_failed">The game could not be updated. Check the disk space on the PC and try again — you can also reveal Steam and finish the update there.</string>
     <string name="transition_game_start_timeout">The game did not start. The launcher may be waiting for you — you can reveal it.</string>
     <string name="transition_previous_game_running_title">The previously selected game started</string>

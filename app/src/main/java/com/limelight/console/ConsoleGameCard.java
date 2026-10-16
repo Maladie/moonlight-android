@@ -12,6 +12,7 @@ final class ConsoleGameCard {
         LAUNCH(R.drawable.ic_console_play), RESUME(R.drawable.ic_console_play),
         CONTINUE_INSTALL(R.drawable.ic_console_download),
         INSTALLING(R.drawable.ic_console_download), INSTALL(R.drawable.ic_console_download),
+        UPDATE(R.drawable.ic_console_download),
         END_GAME(R.drawable.ic_console_stop), CLOSE_GAME_AND_STREAM(R.drawable.ic_console_stop),
         STREAM_SETTINGS(R.drawable.ic_console_sliders),
         OPTIMIZE_STREAMING(R.drawable.ic_console_pulse),
@@ -33,6 +34,8 @@ final class ConsoleGameCard {
         boolean canInstall;
         boolean canUninstall;
         boolean installing;
+        /** Steam reports a pending update that nothing is running yet. */
+        boolean canUpdate;
         boolean installNeedsAttention;
         /** The attention prompt can only be answered on the PC itself. */
         boolean attentionOnPc;
@@ -64,6 +67,9 @@ final class ConsoleGameCard {
             menu.add(Action.INSTALLING, R.string.playnite_installing, false);
         } else if (facts.canInstall) {
             menu.add(Action.INSTALL, R.string.playnite_install_action_short, true);
+        }
+        if (facts.installed && facts.canUpdate) {
+            menu.add(Action.UPDATE, R.string.playnite_update_action, true);
         }
         menu.group(R.string.console_section_session);
         if (facts.installed && facts.gameRunning) {

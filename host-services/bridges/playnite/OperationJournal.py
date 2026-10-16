@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-ACTIVE_STATES = {"queued", "preparing", "downloading", "installing",
+ACTIVE_STATES = {"queued", "preparing", "downloading", "installing", "patching",
                  "uninstalling", "attention_required", "verifying"}
 
 
