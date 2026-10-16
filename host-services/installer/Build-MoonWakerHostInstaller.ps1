@@ -92,6 +92,7 @@ try {
         "host-services/gateway/Test-MoonWakerGatewayService.ps1",
         "host-services/gateway/Uninstall-MoonWakerGatewayService.ps1",
         "host-services/install/Uninstall-MoonWakerHostServices.ps1",
+        "host-services/install/Stop-MoonWakerInstalledProcesses.ps1",
         "host-services/updater/MoonWakerHotUpdaterService.cs",
         "host-services/updater/Build-MoonWakerHotUpdater.ps1",
         "host-services/updater/Apply-MoonWakerHotUpdate.ps1",

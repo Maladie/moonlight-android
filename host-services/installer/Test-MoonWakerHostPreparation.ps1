@@ -140,11 +140,12 @@ foreach ($unsafeLaunch in @("taskkill.exe", "Start-Process")) {
         throw "Elevated host install starts or kills mutable runtime code: $unsafeLaunch"
     }
 }
-# The only process the install stops is the tray running from the protected control directory.
-if (([regex]::Matches($sources.Host, "Stop-Process")).Count -ne 1) {
-    throw "Elevated host install stops processes other than the Host Control trays."
+# Processes are stopped only by the shared script, which proves membership by path.
+if ($sources.Host.Contains("Stop-Process")) {
+    throw "Elevated host install stops processes itself instead of Stop-MoonWakerInstalledProcesses.ps1."
 }
-Assert-Contains "Host" @('$controlPrefix = (Join-Path $InstallDirectory "control") + "\"')
+Assert-Contains "Host" @('Stop-MoonWakerInstalledProcesses.ps1") -Root $InstallDirectory')
+Assert-Contains "Uninstall" @('Stop-MoonWakerInstalledProcesses.ps1") -Root $root')
 
 Assert-Contains "Gateway" @(
     '$lockPath = "$configPath.lock"',

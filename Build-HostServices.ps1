@@ -37,6 +37,7 @@ if (-not $SkipTests) {
     & (Join-Path $hostServices "gateway\Test-MoonWakerGatewayService.ps1")
     & (Join-Path $hostServices "windows-login\login-broker\Test-MoonWakerLoginBroker.ps1")
     & (Join-Path $hostServices "control\Test-MoonWakerHostControl.ps1")
+    & (Join-Path $hostServices "install\Test-Stop-MoonWakerInstalledProcesses.ps1")
 }
 
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ("moonwaker-host-build-" + [guid]::NewGuid().ToString("N"))

@@ -85,6 +85,7 @@ try {
             "host-services/install/Invoke-MoonWakerMachineInstall.ps1",
             "host-services/install/Prepare-MoonWakerHost.ps1",
             "host-services/install/Uninstall-MoonWakerHostServices.ps1",
+            "host-services/install/Stop-MoonWakerInstalledProcesses.ps1",
             "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1",
             "host-services/gateway/control_operation_policy.py",
             "host-services/gateway/child_terminal_operation.py",

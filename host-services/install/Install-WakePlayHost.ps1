@@ -60,19 +60,10 @@ foreach ($required in @($packagedProviderUninstall)) {
 }
 
 function Assert-MoonWakerProcessesStopped {
-    # The trays of every session have no exit: close them here (their Job Objects end the
-    # hosted Agents and Discord Bridges). They come back at each account's next sign-in.
-    $controlPrefix = (Join-Path $InstallDirectory "control") + "\"
-    $trays = @(Get-CimInstance Win32_Process -Filter "Name='MoonWakerHostControl.exe'" -ErrorAction Stop |
-        Where-Object { ([string]$_.ExecutablePath).StartsWith($controlPrefix,
-            [StringComparison]::OrdinalIgnoreCase) })
-    foreach ($tray in $trays) {
-        Stop-Process -Id ([int]$tray.ProcessId) -Force -ErrorAction SilentlyContinue
-    }
-    if ($trays.Count -gt 0) {
-        Wait-Process -Id @($trays | ForEach-Object { [int]$_.ProcessId }) -Timeout 10 `
-            -ErrorAction SilentlyContinue
-    }
+    # Everything that runs from the installation, in every account (the trays have no exit;
+    # Agents, bridges and supervisors may even outlive them). They come back at each
+    # account's next sign-in.
+    & (Join-Path $PSScriptRoot "Stop-MoonWakerInstalledProcesses.ps1") -Root $InstallDirectory
     $runningControl = @(Get-Process -Name "MoonWakerHostControl", "MoonWakerHostConfigurator" `
         -ErrorAction SilentlyContinue)
     if ($runningControl.Count -gt 0) {

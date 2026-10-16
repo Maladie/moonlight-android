@@ -50,6 +50,8 @@ if (Test-Path -LiteralPath $brokerUninstall -PathType Leaf) {
     & $brokerUninstall -InstallDirectory (Split-Path -Parent $brokerUninstall)
 }
 if ($RemoveFiles) {
+    # Trays, Agents, bridges and their supervisors hold files of the installation.
+    & (Join-Path $PSScriptRoot "Stop-MoonWakerInstalledProcesses.ps1") -Root $root
     Remove-Item -LiteralPath $root -Recurse -Force
     Write-Host "MoonWaker services, profiles, credentials, and installation files were removed."
 } elseif ($PurgeCredentials) {

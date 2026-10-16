@@ -8432,7 +8432,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         List<PlayniteLibraryGame> sourceFiltered = PlayniteLibrarySources.filter(
                 visibleLibraryGames, hostGatewayStore.playniteLibrarySources(host.uuid));
-        boolean appListAuthoritative = ConsoleActionCatalog.isOnline(host);
+        // A host always lists MoonWaker Stream: an empty list is "not fetched yet" (just paired).
+        boolean appListAuthoritative = ConsoleActionCatalog.isOnline(host) && !apps.isEmpty();
         Map<String, PlayniteDashboardItem> resolvedById = new LinkedHashMap<>();
         Map<String, Long> localActivity = new LinkedHashMap<>();
         List<PlayniteDashboardItem> unfilteredItems = new ArrayList<>();
