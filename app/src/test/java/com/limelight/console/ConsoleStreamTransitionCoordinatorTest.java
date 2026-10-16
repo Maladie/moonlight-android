@@ -1034,6 +1034,17 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void failedEpicGameUpdateHasTheSameMessage() {
+        Harness harness = new Harness(LaunchTransitionType.GAME, gatewayWith(
+                snapshot(true, true, "failed", GAME, 0, false, "game", 0,
+                        "epic_update_failed")));
+
+        harness.runObservation();
+
+        assertEquals("update failed", harness.controller.snapshot().detail);
+    }
+
+    @Test
     public void timeoutRestartsWhenObservedControllerStateChanges() {
         FakeClock clock = new FakeClock();
         List<Long> timeoutTimes = new ArrayList<>();

@@ -40,11 +40,20 @@ its running scan fresh while updating, so the observation proves the start has n
 (`process.evidence` PENDING with `running_scan_status` complete) and the Gateway's
 launch-without-process rule lets the close abandon the start; a hard reset ends an update
 start itself. Steam keeps updating, and the ended start never launches the game afterwards.
-Epic has no update phase: Legendary has `list-installed --check-updates` and `update`, but
-nothing of its output was verified as evidence yet.
+An Epic game installed through Legendary has the same phase 0. Its update is pending when
+Legendary's `installed.json` `version` differs from the `assets.json` `build_version` of its
+platform, exactly what `legendary launch` checks before it refuses an out-of-date game. A
+start first refreshes the assets (`list-installed --check-updates`); the catalog's `legendary
+list` keeps them fresh for tiles. The update is a Bridge-tracked `legendary -y install <app>
+--update-only` process: `phase` is always `downloading`, `progress` comes from its
+`= Progress:` lines (-1 before the first one). Its exit code is the evidence: non-zero, or a
+start that fails, ends the start as `epic_update_failed`; exit 0 with the update still pending
+as `epic_update_incomplete`. Legendary writes and patches files in one pass and keeps a resume
+file, so a close during phase 0 leaves Legendary updating in the background, as Steam does.
 
-Library records carry Steam's live pending update for tiles: `updateState` (`required`,
-`downloading` or `patching`; absent when none) and `updateProgress`. An update started from a
+Library records carry the provider's live pending update for tiles: `updateState`
+(`required`, `downloading` or `patching`, the last only for Steam; absent when none) and
+`updateProgress`. An update started from a
 tile's card is the existing `/game/install` of an installed game with a pending update; its
 operation journal uses the state `patching` next to `downloading`.
 

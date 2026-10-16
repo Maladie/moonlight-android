@@ -312,7 +312,7 @@ public class HostGatewayClient {
         final String operationState;
         final int operationProgress;
         final boolean uninstalling;
-        /** {@code updateState}/{@code updateProgress}: Steam's pending update, "" / -1 if none. */
+        /** {@code updateState}/{@code updateProgress}: the provider's (Steam, Epic) pending update, "" / -1 if none. */
         String updateState = "";
         int updateProgress = -1;
         final long playtimeSeconds;

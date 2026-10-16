@@ -3254,7 +3254,7 @@ class BridgeState:
         """A start of a game that needs an update: phase 0, before the 90 s phase 1.
 
         The start stays "starting" with `updating` set; the readiness worker advances it
-        (`advance_update`) and launches once Steam reports the update done. Nothing here
+        (`advance_update`) and launches once the provider reports the update done. Nothing here
         or there has a timeout."""
         with self.lock:
             self.current = {
@@ -3299,7 +3299,7 @@ class BridgeState:
             if current_update() is None:
                 return
             if update is not None and update["error"]:
-                self._fail_start_locked("steam_update_" + update["error"])
+                self._fail_start_locked(update["error"])
                 return
             if update is not None and (update["pending"] or not update["installed"]):
                 self.readiness.update({
@@ -3395,7 +3395,7 @@ class BridgeState:
                 self._unfinished_launch = None  # This request owns A's processes now.
         if provider in {self.game_operations.epic, self.game_operations.steam}:
             task_id = f"{normalized}:launch:{time.time_ns()}"
-            update = self.game_operations.update_sample(dict(game))
+            update = self.game_operations.update_sample(dict(game), refresh=True)
             if update is not None and update["pending"]:
                 return self._begin_update(normalized, game, task_id)
             with self.lock:
@@ -4897,8 +4897,8 @@ class BridgeState:
 
             if self.current.get("updating") \
                     and str(self.current.get("state") or "").casefold() == "starting":
-                # An update phase has no process to stop: the reset ends the start itself
-                # (Steam keeps updating) so the update cannot launch the game afterwards.
+                # An update phase has no game process to stop: the reset ends the start itself
+                # (the provider keeps updating) so the update cannot launch the game afterwards.
                 self._complete_game_stop_locked()
             current_state = str(self.current.get("state") or "").casefold()
             current_id = str(self.current.get("id") or "")
@@ -5552,19 +5552,18 @@ class BridgeState:
         if catalog_revision is not None and (
                 not isinstance(catalog_revision, str) or len(catalog_revision) > 128):
             raise ValueError("Invalid catalog revision.")
-        updates = self.game_operations.steam.update_states() if any(
-            game.get("provider") == "steam" for game in list(self.library.values())) else {}
+        updates = self.game_operations.update_states(
+            {str(game.get("provider") or "") for game in list(self.library.values())})
         with self.lock:
             if catalog_revision is not None and catalog_revision != self.library_revision:
                 raise StaleCatalogRevision("The catalog revision is stale.")
             games = sorted(self._filtered_games_locked(allowed_game_ids),
                            key=lambda game: str(game.get("name", "")).casefold())
             page = games[offset:offset + limit]
-            # A pending update is Steam's live fact, not part of the cached catalog record.
-            page = [dict(game, updateState=updates[str(game.get("providerGameId") or "")]["state"],
-                         updateProgress=updates[str(game.get("providerGameId") or "")]["progress"])
-                    if str(game.get("provider") or "") == "steam"
-                    and str(game.get("providerGameId") or "") in updates else game
+            # A pending update is the provider's live fact, not part of the cached catalog record.
+            page = [dict(game, updateState=update["state"], updateProgress=update["progress"])
+                    if (update := updates.get((str(game.get("provider") or ""),
+                                               str(game.get("providerGameId") or "")))) else game
                     for game in page]
             next_offset = offset + len(page)
             counts: dict[tuple[str, str, str], int] = {}

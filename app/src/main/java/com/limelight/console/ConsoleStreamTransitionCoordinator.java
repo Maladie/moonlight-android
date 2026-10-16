@@ -1199,7 +1199,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if ("game_start_timeout".equals(reason)) {
             return callbacks.gameStartTimeoutMessage();
         }
-        if (reason != null && reason.startsWith("steam_update_")) {
+        if (reason != null && (reason.startsWith("steam_update_")
+                || reason.startsWith("epic_update_"))) {
             return callbacks.gameUpdateFailedMessage();
         }
         String pending = readinessPendingMessage(reason);

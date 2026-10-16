@@ -1027,7 +1027,7 @@ class SteamProvider(GenericPlayniteProvider):
         result = {
             "pending": pending, "installed": bool(snapshot.get("installed")),
             "phase": phase, "progress": progress,
-            "error": error, "nudge": False,
+            "error": "steam_update_" + error if error else "", "nudge": False,
         }
         if not pending:
             self._verify_seen.pop(app_id, None)
@@ -1188,6 +1188,7 @@ class EpicProvider(GenericPlayniteProvider):
             artwork_cache_path, web_opener or urllib.request.urlopen) \
             if artwork_cache_path is not None else None
         self.process_registry = process_registry or OperationProcessRegistry()
+        self._update_errors: dict[str, str] = {}
 
     @staticmethod
     def _epic_image(metadata: dict[str, Any], *types: str) -> str:
@@ -1592,9 +1593,91 @@ class EpicProvider(GenericPlayniteProvider):
         return {"provider": tracked.provider, "launched": True,
                 "reason": "legendary_launch_completed", "exit_code": 0}
 
+    def _legendary_state(self, name: str) -> Any:
+        """One of Legendary's per-profile JSON files, or None when absent or unreadable."""
+        if self.legendary_state_path is None:
+            return None
+        try:
+            return json.loads((self.legendary_state_path / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
 
+    def _pending_updates(self) -> set[str] | None:
+        """App names whose installed version differs from the latest build Legendary knows;
+        None when that is unknown. `legendary launch` compares exactly these (installed.json
+        `version`, assets.json `build_version`) and refuses an out-of-date game; the catalog's
+        `legendary list` refreshes the assets."""
+        if self._legendary() is None:
+            return None
+        installed = self._legendary_state("installed.json")
+        assets = self._legendary_state("assets.json")
+        if not isinstance(installed, dict) or not isinstance(assets, dict):
+            return None
+        latest = {(platform, str(asset.get("app_name") or "")): str(asset.get("build_version") or "")
+                  for platform, items in assets.items() if isinstance(items, list)
+                  for asset in items if isinstance(asset, dict)}
+        return {app for app, item in installed.items() if isinstance(item, dict)
+                and latest.get((str(item.get("platform") or "Windows"), app))
+                not in (None, "", str(item.get("version") or ""))}
 
+    def update_states(self) -> dict[str, dict[str, Any]]:
+        """Pending updates by app name (library tiles): `required`, or `downloading` while a
+        Legendary update process runs."""
+        states = {app: {"state": "required", "progress": -1}
+                  for app in self._pending_updates() or set()}
+        with self.process_registry.lock:
+            for tracked in self.process_registry.by_task.values():
+                if tracked.provider == "epic" and tracked.phase == "update" \
+                        and tracked.process.poll() is None:
+                    states[tracked.app_name] = {
+                        "state": "downloading",
+                        "progress": -1 if tracked.progress is None else tracked.progress}
+        return states
 
+    def update_sample(self, game: dict[str, Any], refresh: bool = False) -> dict[str, Any]:
+        """The state of an update a start waits on (as SteamProvider.update_sample). The update
+        is a tracked `legendary install --update-only` process: it reports the progress and
+        its exit code is the evidence. `refresh` first asks Epic for the latest builds, as
+        `legendary launch` would. Nothing here times out."""
+        app_name = str(game.get("providerGameId") or "").strip()
+        game_id = str(game.get("id") or app_name)
+        result = {"pending": False, "installed": True, "phase": "downloading",
+                  "progress": -1, "error": "", "nudge": False}
+        finished = None
+        with self.process_registry.lock:
+            tracked = self.process_registry.active(game_id)
+            if tracked is not None and tracked.phase == "update":
+                if tracked.finalizing or tracked.process.poll() is None:
+                    return {**result, "pending": True,
+                            "progress": -1 if tracked.progress is None else tracked.progress}
+                if tracked.operation_type == "update":
+                    self.process_registry.remove(tracked)
+                    finished = tracked
+        error = self._update_errors.pop(game_id, "")
+        if finished is not None:
+            self._finish_output_collection(finished)
+            if finished.process.returncode != 0:
+                error = "epic_update_failed"
+        if error:
+            return {**result, "error": error}
+        if refresh:
+            self._legendary_json(["list-installed", "--check-updates", "--json"])
+        pending = app_name in (self._pending_updates() or set())
+        if pending and finished is not None:
+            return {**result, "error": "epic_update_incomplete"}
+        # No update process runs: a pending update asks the caller to start one.
+        return {**result, "pending": pending, "nudge": pending}
+
+    def dispatch_update(self, game: dict[str, Any]) -> dict[str, Any]:
+        """Start the update of an installed game; a start that fails is the update's error."""
+        direct = self._start_legendary(game, "update")
+        if direct is not None:
+            return direct
+        if self._dispatch_reason != "operation_busy":
+            self._update_errors[str(game.get("id") or game.get("providerGameId") or "")] = \
+                "epic_update_failed"
+        return {"accepted": False, "command": "update", "provider": "epic",
+                "dispatch": "none", "reason": self._dispatch_reason or "legendary_process_failed"}
 
     def _egl_manifest_item(self, game: dict[str, Any]) -> dict[str, Any] | None:
         provider_id = str(game.get("providerGameId") or "").strip()
@@ -1745,12 +1828,18 @@ class EpicProvider(GenericPlayniteProvider):
         if not listed:
             self._dispatch_reason = "legendary_verification_failed"
             return None
-        if operation == "install" and installed is not None:
+        # An install of an installed game with a pending update is that update (tile action).
+        update = operation == "update" or (operation == "install" and installed is not None)
+        if update and installed is None:
+            self._dispatch_reason = "legendary_not_installed"
+            return None
+        if operation == "install" and update \
+                and app_name not in (self._pending_updates() or set()):
             return {"accepted": True, "command": "install", "provider": "epic",
                     "dispatch": "legendary_preinstalled", "app_name": app_name,
                     "install_directory": installed["install_directory"]}
         migration = self._migration_candidate(game, app_name) \
-            if operation == "install" else None
+            if operation == "install" and not update else None
         if operation == "uninstall" and installed is None:
             return {"accepted": True, "command": "uninstall", "provider": "epic",
                     "dispatch": "already_absent", "app_name": app_name}
@@ -1758,9 +1847,12 @@ class EpicProvider(GenericPlayniteProvider):
             arguments = [str(executable), "-y", "import", app_name,
                          str(migration["install_directory"]),
                          "--platform", "Windows", "--skip-dlcs"]
+        elif update:
+            arguments = [str(executable), "-y", "install", app_name, "--update-only",
+                         "--skip-dlcs", "--skip-sdl"]
         else:
             arguments = [str(executable), "-y", operation, app_name]
-        if operation == "install" and migration is None:
+        if operation == "install" and migration is None and not update:
             arguments += ["--platform", "Windows", "--skip-dlcs", "--skip-sdl",
                           "--base-path", str(self._install_root())]
         game_id = str(game.get("id") or app_name)
@@ -1779,8 +1871,8 @@ class EpicProvider(GenericPlayniteProvider):
         tracked = TrackedOperationProcess(
             task_id=task_id, game_id=game_id, provider="epic",
             operation_type=operation,
-            process_type="import" if migration is not None else operation,
-            phase="import" if migration is not None else operation,
+            process_type="import" if migration is not None else "update" if update else operation,
+            phase="import" if migration is not None else "update" if update else operation,
             process=process, app_name=app_name, executable=executable,
             environment=environment)
         if not self.process_registry.register(tracked):
@@ -1792,7 +1884,8 @@ class EpicProvider(GenericPlayniteProvider):
             return None
         self._collect_legendary_output(tracked)
         return {"accepted": True, "command": operation, "provider": "epic",
-                "dispatch": "legendary_import" if migration is not None else "legendary",
+                "dispatch": "legendary_import" if migration is not None
+                else "legendary_update" if update else "legendary",
                 "app_name": app_name, "task_id": task_id}
 
     def _collect_legendary_output(self, tracked: TrackedOperationProcess) -> None:
@@ -2014,13 +2107,25 @@ class GameOperationsService:
             return self.steam.operation_baseline(game)
         return None
 
-    def update_sample(self, game: dict[str, Any]) -> dict[str, Any] | None:
-        """The pending update of a Steam game, or None for a provider without one."""
-        return self.steam.update_sample(game) \
-            if self.provider_for(game) is self.steam else None
+    def update_sample(self, game: dict[str, Any],
+                      refresh: bool = False) -> dict[str, Any] | None:
+        """The pending update of a Steam or Epic game, or None for a provider without one.
+        `refresh` asks the provider for its latest builds first (a start, not a poll)."""
+        provider = self.provider_for(game)
+        if provider is self.steam:
+            return self.steam.update_sample(game)
+        return self.epic.update_sample(game, refresh) if provider is self.epic else None
+
+    def update_states(self, providers: set[str]) -> dict[tuple[str, str], dict[str, Any]]:
+        """Pending updates of installed games by (provider, provider game id), for tiles."""
+        return {(label, key): state
+                for label, provider in (("steam", self.steam), ("epic", self.epic))
+                if label in providers for key, state in provider.update_states().items()}
 
     def dispatch_update(self, game: dict[str, Any]) -> dict[str, Any]:
-        return self.steam.dispatch_update(game)
+        provider = self.provider_for(game)
+        return self.epic.dispatch_update(game) if provider is self.epic \
+            else self.steam.dispatch_update(game)
 
     def manual_attention(self, game: dict[str, Any],
                          operation: str) -> dict[str, Any] | None:
