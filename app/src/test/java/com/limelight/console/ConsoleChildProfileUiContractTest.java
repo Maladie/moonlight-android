@@ -201,20 +201,31 @@ public class ConsoleChildProfileUiContractTest {
         assertTrue(ConsoleChildProfileEditor.validSchedule(0, 1440, 1440));
     }
 
-    @Test public void childEditorShowsIdentityAndScheduleTogether() throws Exception {
-        String editor = source("src/main/java/com/limelight/console/"
-                + "ConsoleChildProfileEditor.java");
+    @Test public void childDayKeepsItsLimitInsideTheWindow() {
+        ConsoleChildProfileEditor.Day hour = new ConsoleChildProfileEditor.Day(
+                true, 960, 1140, 60 * 60);
+        assertEquals(40, hour.withWindow(960, 1000).limitMinutes());
+        assertEquals(60, hour.withWindow(900, 1140).limitMinutes());
+        ConsoleChildProfileEditor.Day whole = new ConsoleChildProfileEditor.Day(
+                true, 960, 1140, 180 * 60);
+        assertTrue(whole.unlimited());
+        assertEquals(240, whole.withWindow(900, 1140).limitMinutes());
+        ConsoleChildProfileEditor.Day opened =
+                ConsoleChildProfileEditor.Day.disabled().withEnabled(true);
+        assertTrue(opened.enabled && opened.unlimited());
+        assertTrue(ConsoleChildProfileEditor.validSchedule(opened.startMinute,
+                opened.endMinute, opened.limitMinutes()));
+        assertEquals("19:05", ConsoleChildProfileEditor.clock(1145));
+        assertEquals("24:00", ConsoleChildProfileEditor.clock(1440));
+    }
+
+    @Test public void parentPinUsesThePinPage() throws Exception {
         String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
-        assertTrue(editor.contains("identityStep.setVisibility(VISIBLE)"));
-        assertTrue(editor.contains("scheduleStep.setVisibility(VISIBLE)"));
-        assertTrue(editor.contains("console_child_profile_step_schedule"));
-        assertTrue(editor.contains("if (!editor.enabled.isChecked())"));
-        assertTrue(editor.contains("input.setSelectAllOnFocus(true)"));
-        assertTrue(editor.contains("hours == 24 && minutes != 0"));
-        assertTrue(editor.contains("setAfterEditorFocus"));
-        assertTrue(activity.contains("outerActions.add(editor)"));
-        assertTrue(activity.contains("editor.setAfterEditorFocus(delete)"));
-        assertFalse(activity.contains("sidePanel.addView(editor,"));
+        String authorize = between(activity, "private void reauthorizeChildManagementFor(",
+                "private void beginChildManagement(");
+        assertTrue(authorize.contains("showPinPage(R.string.console_child_management_pin_title"));
+        assertTrue(authorize.contains("pinEntryView.showInvalid()"));
+        assertFalse(authorize.contains("consoleFeedback.showInput("));
     }
 
     @Test public void onlyChildAuthorizationFailuresDropReusableLease() {

@@ -125,6 +125,10 @@ final class ConsoleSettingsScreen {
     private int pages;
     private final Rebuild rebuild = new Rebuild();
     private boolean reducedMotion;
+    /** Runs after Back closes the window (not on {@link #dismiss}), e.g. to save a draft. */
+    private Runnable onClose;
+    /** Legend for Back on the visible sub-page; null: "Back No change". */
+    private String pageBack;
 
     ConsoleSettingsScreen(Activity activity, boolean reducedMotion, boolean overStream) {
         this.activity = activity;
@@ -244,6 +248,13 @@ final class ConsoleSettingsScreen {
     /** Opens a top-level screen (e.g. a game's overrides); Back from it closes the window. */
     void show(String crumb, String title, String eyebrow, List<Category> categories,
               int category) {
+        show(crumb, title, eyebrow, categories, category, null);
+    }
+
+    /** As above; {@code onClose} runs once Back has closed the window. */
+    void show(String crumb, String title, String eyebrow, List<Category> categories,
+              int category, Runnable onClose) {
+        this.onClose = onClose;
         parents.clear();
         enter(new Level(crumb, title, eyebrow, categories), category, -1);
     }
@@ -314,6 +325,11 @@ final class ConsoleSettingsScreen {
         select(Math.max(0, Math.min(category, next.categories.size() - 1)));
     }
 
+    /** Renames the screen shown, e.g. after its object was renamed. */
+    void setTitle(String text) {
+        title.setText(text);
+    }
+
     /** Re-renders the shown category (e.g. after a dependency changed) keeping the focus. */
     void refresh() {
         if (pageOrigin >= 0 || selected < 0) return;
@@ -359,7 +375,13 @@ final class ConsoleSettingsScreen {
 
     /** A sub-page of the current category (choices, a numeric entry); Back returns. */
     void showPage(String title, CharSequence details, View[] rows, int focus) {
+        showPage(title, details, rows, focus, null);
+    }
+
+    /** A sub-page whose rows apply at once; {@code back} names where Back goes. */
+    void showPage(String title, CharSequence details, View[] rows, int focus, String back) {
         pages++;
+        pageBack = back;
         if (pageOrigin < 0) pageOrigin = Math.max(0, focusedContentChild());
         renderContent(level.categories.get(selected).title, title, details, rows);
         contentScroll.scrollTo(0, 0);
@@ -413,6 +435,9 @@ final class ConsoleSettingsScreen {
             columns.animate().cancel();
             columns.setAlpha(1f);
             dialog.dismiss();
+            Runnable closed = onClose;
+            onClose = null;
+            if (closed != null) closed.run();
         }
     }
 
@@ -474,7 +499,8 @@ final class ConsoleSettingsScreen {
         int child = focusedContentChild();
         String back;
         if (pageOrigin >= 0) {
-            back = activity.getString(R.string.console_legend_back_unchanged);
+            back = pageBack != null ? activity.getString(R.string.console_legend_back_to, pageBack)
+                    : activity.getString(R.string.console_legend_back_unchanged);
         } else if (child >= 0 && level.categories.size() > 1) {
             back = activity.getString(R.string.console_legend_back_categories);
         } else if (!parents.isEmpty()) {

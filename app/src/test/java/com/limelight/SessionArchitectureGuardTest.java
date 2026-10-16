@@ -91,7 +91,6 @@ public class SessionArchitectureGuardTest {
                 "console/ChildSessionCountdown.java#LAST_HOUR_WARNING_MINUTES",
                 "console/ConsoleActivity.java#HOST_KEYED_PREFERENCES",
                 "console/ConsoleChildProfileEditor.java#AVATAR_LABELS",
-                "console/ConsoleChildProfileEditor.java#AVATAR_SYMBOLS",
                 "console/ConsoleChildProfileEditor.java#AVATAR_VALUES",
                 "console/ConsoleChildProfileEditor.java#DAY_LABELS",
                 "console/ConsoleEntryShell.java#SPOTS", "console/ConsoleIntroView.java#BOKEH",

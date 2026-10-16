@@ -197,7 +197,6 @@ final class ConsolePinEntryView extends FrameLayout {
         ring = new Ring(context);
 
         title = text(22, ConsoleEntryShell.TEXT, medium);
-        title.setText(R.string.console_pin_title);
         addAt(title, TITLE_BASELINE_DP);
         subtitle = text(13, ConsoleEntryShell.TEXT_SECONDARY, Typeface.DEFAULT);
         addAt(subtitle, SUBTITLE_BASELINE_DP);
@@ -239,10 +238,12 @@ final class ConsolePinEntryView extends FrameLayout {
     }
 
     /**
-     * Opens the screen for {@code profile}: the shell as it is now becomes the blurred backdrop,
-     * and the profile's avatar, when the profile row shows it, moves up into place.
+     * Opens the screen titled {@code title} for {@code profile}, subtitled with its name and
+     * {@code context} (the host, or what the PIN unlocks): the shell as it is now becomes the
+     * blurred backdrop, and the profile's avatar, when the profile row shows it, moves up into
+     * place.
      */
-    void show(String hostName, HostGatewayClient.IntegrationProfile profile,
+    void show(int title, String context, HostGatewayClient.IntegrationProfile profile,
               boolean playStationButtons, boolean controllerInput, boolean reducedMotion,
               Listener listener) {
         this.listener = listener;
@@ -278,8 +279,9 @@ final class ConsolePinEntryView extends FrameLayout {
         // Mockup order: avatar, ring, then the badge over the ring.
         avatar.addView(ring, match());
         avatar.addView(badge(), badgeParams());
-        subtitle.setText(hostName == null || hostName.trim().isEmpty()
-                ? name : name + " · " + hostName.trim());
+        this.title.setText(title);
+        subtitle.setText(context == null || context.trim().isEmpty()
+                ? name : name + " · " + context.trim());
         for (int digit = 0; digit < cellGlyphs.length; digit++) {
             cellGlyphs[digit].setText(ControllerGlyphs.text(playStation, buttonForDigit(digit)));
         }

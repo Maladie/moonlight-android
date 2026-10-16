@@ -260,6 +260,29 @@ przejścia `flow-host-to-carousel-v4.webp` (osobno `intro-v4.webp`).
   Smuga, znak i drobiny powstają raz na proces w tle; kolory to stała fioletowa paleta
   makiety, niezależna od profilu.
 
+### 3.9 Panel rodzica (profile dzieci)
+
+Odniesienie: makiety `20a-parent-pin-v4.png` … `20f-child-unsaved-v4.png` (folder makiet,
+`20-parent-panel-v4.html`); decyzje właściciela z 2026-10-16.
+
+- **PIN rodzica** na ekranie PIN z 3.7 (awatar rodzica, „PIN rodzica”, „<rodzic> · Profile
+  dzieci”, kropki, pasek pada / klawiatura pilota, drganie, blokada, `FLAG_SECURE`), nigdy
+  w polu tekstowym. Wstecz wraca do menu profilu.
+- **Lista dzieci** w panelu bocznym: wiersz na dziecko z kropką w kolorze awatara i dzisiejszym
+  planem („Dziś 16:00–19:00 · 1 godz.”, „Dziś niedozwolone”, „Wyłączony”), dalej „Dodaj profil
+  dziecka” i „Odśwież profile”.
+- **Edytor** na ekranie ustawień (3.2): kategorie „Profil” (imię przez okno wpisywania,
+  awatar ◄ ►, „Profil włączony”, przy nowym „Pokaż na tym telewizorze”, czerwone „Usuń profil”)
+  i „Czas gry” (wiersz na dzień → strona dnia).
+- **Strona dnia:** „Gra dozwolona”, „Od”, „Do”, „Limit dzienny” jako kroki **co 5 min**;
+  granice idą za pozostałymi wartościami, więc nie da się ustawić błędnego dnia. Limit równy
+  całemu oknu to „bez limitu” i rośnie razem z oknem. „Kopiuj ustawienia” na dni robocze albo na
+  cały tydzień.
+- **Zapis automatyczny** po wyjściu z edytora (Wstecz), tylko gdy coś się zmieniło; nowe
+  dziecko powstaje dopiero z imieniem. Nieudany zapis zostawia szkic: „Spróbuj ponownie”,
+  „Wróć do edycji”, „Odrzuć zmiany”. Konflikt wersji pokazuje listę z wersją hosta.
+- **Udostępnij grę dziecku:** przełącznik na dziecko, zapis 5 s po zmianie albo przy zamknięciu.
+
 ## 4. Język wizualny (v4)
 
 Źródła: wytyczne Android TV / Compose for TV (układ, system fokusu, kolory, immersive

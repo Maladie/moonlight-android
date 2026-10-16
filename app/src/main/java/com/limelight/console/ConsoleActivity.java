@@ -137,6 +137,7 @@ import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -1417,11 +1418,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     : pinEntry.handle(event.getAction(), event.getKeyCode(), sources);
             if (action != ConsolePinEntry.Action.IGNORED) {
                 if (action == ConsolePinEntry.Action.CHANGED) renderPinEntry("");
-                else if (action == ConsolePinEntry.Action.SUBMIT) submitProfilePin();
-                else if (action == ConsolePinEntry.Action.BACK) {
-                    ComputerDetails host = currentHost(profileGateHostUuid);
-                    if (host != null) showProfileGate(host, pinFocusApps, pinPrepareHost);
-                }
+                else if (action == ConsolePinEntry.Action.SUBMIT) submitPin();
+                else if (action == ConsolePinEntry.Action.BACK) leavePin();
                 return true;
             }
         }
@@ -1964,9 +1962,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     public void onBackPressed() {
         if (pinProfileId != null) {
-            ComputerDetails host = currentHost(profileGateHostUuid);
-            if (host != null) showProfileGate(host, pinFocusApps, pinPrepareHost);
-            else closeProfileGate();
+            leavePin();
         } else if (profileGateHostUuid != null) {
             closeProfileGate();
         } else if (sideDialog != null && sideDialog.isShowing()) {
@@ -3480,25 +3476,55 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostProfileKey gatedLibraryKey = new HostProfileKey(host.uuid, profile.id);
         Locale sortLocale = getResources().getConfiguration().getLocales().get(0);
         playniteExecutor.execute(() -> readCachedLibrary(host, gatedLibraryKey, sortLocale));
+        showPinPage(R.string.console_pin_title, host.name, profile);
+        // The entry intro this PIN leads to is built while it is typed.
+        if (introView != null && completeHostEntry) introView.prepare(profile);
+    }
+
+    /**
+     * The PIN page of the entry shell for {@code profile}: the profile row stays beneath as its
+     * blurred backdrop, or, opened from Home, the shell's own background. The window is secure
+     * until the page is gone.
+     */
+    private void showPinPage(int title, String context,
+                             HostGatewayClient.IntegrationProfile profile) {
         if ((getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) == 0) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
             pinSecureFlagAdded = true;
         }
         boolean playStationButtons = hasLastControllerInput
                 ? lastControllerPlayStation : ControllerGlyphs.hasPlayStationController();
-        // A page of the entry shell: the profile row stays beneath as its blurred backdrop.
-        pinEntryView.show(host.name, profile, playStationButtons,
-                lastInputWasController && hasLastControllerInput, reducedMotion, digit -> {
-            if (pinProfileId == null || pinSubmitting
-                    || SystemClock.elapsedRealtime() < pinCooldownUntil) return;
-            ConsolePinEntry.Action action = digit == ConsolePinEntryView.DELETE
-                    ? pinEntry.deleteLast() : pinEntry.appendDigit(digit);
-            renderPinEntry("");
-            if (action == ConsolePinEntry.Action.SUBMIT) submitProfilePin();
-        });
+        pinEntryView.show(title, context, profile, playStationButtons,
+                lastInputWasController && hasLastControllerInput, reducedMotion,
+                this::onPinDigit);
         renderPinEntry("");
-        // The entry intro this PIN leads to is built while it is typed.
-        if (introView != null && completeHostEntry) introView.prepare(profile);
+    }
+
+    private void onPinDigit(int digit) {
+        if (pinProfileId == null || pinSubmitting
+                || SystemClock.elapsedRealtime() < pinCooldownUntil) return;
+        ConsolePinEntry.Action action = digit == ConsolePinEntryView.DELETE
+                ? pinEntry.deleteLast() : pinEntry.appendDigit(digit);
+        renderPinEntry("");
+        if (action == ConsolePinEntry.Action.SUBMIT) submitPin();
+    }
+
+    private void submitPin() {
+        if (parentPin != null) submitParentPin();
+        else submitProfilePin();
+    }
+
+    /** Back on the PIN page: the parent's PIN is cancelled, a profile's returns to the gate. */
+    private void leavePin() {
+        if (parentPin != null) {
+            ParentPinRequest request = parentPin;
+            closeParentPin();
+            if (request.onCancel != null) request.onCancel.run();
+            return;
+        }
+        ComputerDetails host = currentHost(profileGateHostUuid);
+        if (host != null) showProfileGate(host, pinFocusApps, pinPrepareHost);
+        else closeProfileGate();
     }
 
     private void submitProfilePin() {
@@ -5184,6 +5210,29 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         void onAuthorized(ChildManagementLease lease, int token);
     }
 
+    /** The parent's PIN the PIN page asks for to manage children (mockup 20a). */
+    private static final class ParentPinRequest {
+        final ComputerDetails host;
+        final String parentProfileId;
+        final GatewayConnection connection;
+        final int token;
+        final ChildAuthorizationCallback callback;
+        final Runnable onCancel;
+
+        ParentPinRequest(ComputerDetails host, String parentProfileId,
+                         GatewayConnection connection, int token,
+                         ChildAuthorizationCallback callback, Runnable onCancel) {
+            this.host = host;
+            this.parentProfileId = parentProfileId;
+            this.connection = connection;
+            this.token = token;
+            this.callback = callback;
+            this.onCancel = onCancel;
+        }
+    }
+
+    private ParentPinRequest parentPin;
+
     private void invalidateChildManagementPresentation() {
         childManagementGeneration.incrementAndGet();
         childMutationRetry = null;
@@ -5261,31 +5310,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void authorizeChildManagementFor(ComputerDetails host,
-                                             ChildAuthorizationCallback callback) {
-        if (host == null) return;
-        authorizeChildManagementFor(host, childManagementGeneration.incrementAndGet(), true,
-                callback, null);
-    }
-
-    private void authorizeChildManagementFor(ComputerDetails host,
                                              ChildAuthorizationCallback callback,
                                              Runnable onFailure) {
         if (host == null) {
             if (onFailure != null) onFailure.run();
             return;
         }
-        authorizeChildManagementFor(host, childManagementGeneration.incrementAndGet(), true,
+        authorizeChildManagementFor(host, childManagementGeneration.incrementAndGet(),
                 callback, onFailure);
     }
 
     private void reauthorizeChildManagementFor(ComputerDetails host, int token,
                                                ChildAuthorizationCallback callback,
                                                Runnable onFailure) {
-        authorizeChildManagementFor(host, token, false, callback, onFailure);
+        authorizeChildManagementFor(host, token, callback, onFailure);
     }
 
+    /**
+     * Calls back with the current lease, or asks for the parent's PIN on the PIN page first;
+     * {@code onFailure} runs when management is unavailable or the PIN is cancelled.
+     */
     private void authorizeChildManagementFor(ComputerDetails host, int token,
-                                             boolean showBusy,
                                              ChildAuthorizationCallback callback,
                                              Runnable onFailure) {
         if (host == null) {
@@ -5302,7 +5347,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         String parentProfileId = selectedProfileId(host.uuid);
         GatewayConnection connection = childConnection(host, parentProfileId);
-        if (connection == null || consoleFeedback == null) {
+        if (connection == null) {
             ConsoleUiFeedback.makeText(this,
                     R.string.console_child_management_authorize_failed,
                     Toast.LENGTH_LONG).show();
@@ -5315,68 +5360,89 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             callback.onAuthorized(existingLease, token);
             return;
         }
-        final boolean[] submitted = {false};
-        consoleFeedback.showInput(
-                getString(R.string.console_child_management_pin_title),
-                getString(R.string.console_child_management_pin_message), "",
-                getString(R.string.console_child_management_pin_hint),
-                InputType.TYPE_CLASS_NUMBER, 4,
-                getString(android.R.string.cancel), null, null,
-                getString(R.string.console_child_management_pin_title), value -> {
-                    if (!value.matches("[0-9]{4}")) {
-                        return getString(R.string.console_child_management_pin_invalid);
-                    }
-                    submitted[0] = true;
-                    if (showBusy) {
-                        showSidePanelBusy(getString(R.string.console_child_management_title),
-                                host.name, getString(R.string.console_child_management_authorizing));
-                    }
-                    executor.execute(() -> {
-                        HostGatewayClient.ChildManagementAuthorization authorization = null;
-                        IOException failure = null;
-                        try {
-                            authorization = hostGatewayClient.authorizeChildManagement(
-                                    connection, parentProfileId, value);
-                        } catch (IOException | RuntimeException error) {
-                            failure = error instanceof IOException
-                                    ? (IOException) error : new IOException(error);
-                        }
-                        HostGatewayClient.ChildManagementAuthorization result = authorization;
-                        IOException error = failure;
-                        mainHandler.post(() -> {
-                            if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
-                            if (error != null || result == null) {
-                                ConsoleUiFeedback.makeText(this,
-                                        R.string.console_child_management_authorize_failed,
-                                        Toast.LENGTH_LONG).show();
-                                if (onFailure != null) onFailure.run();
-                                return;
-                            }
-                            if (!parentProfileId.equals(result.parentProfileId)
-                                    || result.authorizationId.isEmpty()) {
-                                ConsoleUiFeedback.makeText(this,
-                                        R.string.console_child_management_authorize_failed,
-                                        Toast.LENGTH_LONG).show();
-                                if (onFailure != null) onFailure.run();
-                                return;
-                            }
-                            childManagementLease = new ChildManagementLease(host.uuid,
-                                    parentProfileId, connection, result.authorizationId,
-                                    result.expiresInSeconds);
-                            callback.onAuthorized(childManagementLease, token);
-                        });
-                    });
-                    return null;
-                }, () -> {
-                    if (!submitted[0] && onFailure != null) onFailure.run();
-                });
+        // The PIN page lives in this window, under the side panel's dialog; closing the panel
+        // retires the token, so the request carries the one current after it.
+        hideSidePanelImmediately();
+        pinEntry.clear();
+        pinSubmitting = false;
+        pinCooldownUntil = 0L;
+        parentPin = new ParentPinRequest(host, parentProfileId, connection,
+                childManagementGeneration.get(), callback, onFailure);
+        pinProfileId = parentProfileId;
+        showPinPage(R.string.console_child_management_pin_title,
+                getString(R.string.console_child_management_title), profile);
+    }
+
+    private void submitParentPin() {
+        ParentPinRequest request = parentPin;
+        if (request == null || pinSubmitting || pinEntry.length() != 4) return;
+        if (SystemClock.elapsedRealtime() < pinCooldownUntil) {
+            renderPinCooldown();
+            return;
+        }
+        String pin = pinEntry.takeAndClear();
+        pinSubmitting = true;
+        renderPinEntry(getString(R.string.console_child_management_authorizing));
+        executor.execute(() -> {
+            HostGatewayClient.ChildManagementAuthorization authorization = null;
+            IOException failure = null;
+            try {
+                authorization = hostGatewayClient.authorizeChildManagement(
+                        request.connection, request.parentProfileId, pin);
+            } catch (IOException | RuntimeException error) {
+                failure = error instanceof IOException
+                        ? (IOException) error : new IOException(error);
+            }
+            HostGatewayClient.ChildManagementAuthorization result = authorization;
+            IOException error = failure;
+            mainHandler.post(() -> finishParentPin(request, result, error));
+        });
+    }
+
+    /** A wrong PIN shakes and locks like a profile's; other failures stay on the page. */
+    private void finishParentPin(ParentPinRequest request,
+                                 HostGatewayClient.ChildManagementAuthorization result,
+                                 IOException error) {
+        if (parentPin != request) return;
+        pinSubmitting = false;
+        ComputerDetails host = request.host;
+        if (!isCurrentChildContext(host.uuid, request.parentProfileId, request.token)) {
+            closeParentPin();
+            return;
+        }
+        if (error == null && result != null
+                && request.parentProfileId.equals(result.parentProfileId)
+                && !result.authorizationId.isEmpty()) {
+            closeParentPin();
+            childManagementLease = new ChildManagementLease(host.uuid, request.parentProfileId,
+                    request.connection, result.authorizationId, result.expiresInSeconds);
+            request.callback.onAuthorized(childManagementLease, request.token);
+            return;
+        }
+        HostGatewayClient.GatewayException gatewayError =
+                error instanceof HostGatewayClient.GatewayException
+                        ? (HostGatewayClient.GatewayException) error : null;
+        String reason = gatewayError == null ? "" : gatewayError.getMessage();
+        int seconds = ConsolePinEntry.retryDelaySeconds(reason,
+                gatewayError == null ? 0 : gatewayError.retryAfterSeconds);
+        if (seconds > 0) {
+            pinCooldownUntil = SystemClock.elapsedRealtime() + seconds * 1_000L;
+            if ("invalid_pin".equals(reason)) pinEntryView.showInvalid();
+            renderPinCooldown();
+        } else {
+            renderPinEntry(getString(R.string.console_child_management_authorize_failed));
+        }
+    }
+
+    private void closeParentPin() {
+        parentPin = null;
+        clearPinEntry();
     }
 
     private void beginChildManagement(ComputerDetails host) {
         childMutationRetry = null;
         authorizeChildManagementFor(host, (lease, token) ->
-                loadChildProfiles(host, token, false),
-                () -> showChildManagementFailure(host, childManagementGeneration.get()));
+                loadChildProfiles(host, token, false), () -> showProfileSelection(host));
     }
 
     private void loadChildProfiles(ComputerDetails host, int token, boolean replaceHistory) {
@@ -5426,6 +5492,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 getString(R.string.console_child_management_authorize_failed), retry, close);
     }
 
+    /** Mockup 20b: a row per child with today's plan, then "Add". */
     private void renderChildManagement(ComputerDetails host,
                                        HostGatewayClient.ChildProfiles profiles,
                                        int token, boolean replaceHistory) {
@@ -5436,94 +5503,87 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             sidePanelTransient = true;
         }
         List<View> actions = new ArrayList<>();
-        TextView add = consolePanel.action(getString(R.string.console_child_management_add));
-        add.setOnClickListener(view -> showChildEditor(host, null, profiles.revision, token));
-        actions.add(add);
-        if (profiles.children.isEmpty()) {
-            TextView empty = text(getString(R.string.console_child_management_empty),
-                    14, 0xFFC1C5D6, false);
-            empty.setFocusable(false);
-            actions.add(empty);
-        } else {
-            for (HostGatewayClient.ChildProfile child : profiles.children) {
-                if (child == null || !parentProfileId.equals(child.parentProfileId)) continue;
-                String name = child.name.isEmpty()
-                        ? getString(R.string.console_child_profile_title) : child.name;
-                TextView edit = consolePanel.action(name);
-                edit.setContentDescription(getString(R.string.console_child_management_edit)
-                        + ": " + name);
-                edit.setOnClickListener(view ->
-                        showChildEditor(host, child, profiles.revision, token));
-                actions.add(edit);
-            }
+        // Calendar weeks start on Sunday (1); the host's start on Monday (0).
+        int today = (Calendar.getInstance().get(Calendar.DAY_OF_WEEK) + 5) % 7;
+        for (HostGatewayClient.ChildProfile child : profiles.children) {
+            if (child == null || !parentProfileId.equals(child.parentProfileId)) continue;
+            ConsoleChildProfileEditor.Draft draft = childDraft(child, profiles.revision);
+            LinearLayout row = consolePanel.value(draft.name.isEmpty()
+                            ? getString(R.string.console_child_profile_title) : draft.name,
+                    ConsoleChildProfileEditor.todaySummary(this, draft, today));
+            ConsoleChildProfileEditor.paintAvatar((TextView) row.getChildAt(0), draft.avatar);
+            row.setOnClickListener(view -> showChildEditor(host, draft, false, token));
+            actions.add(row);
         }
+        if (actions.isEmpty()) {
+            actions.add(consolePanel.note(getString(R.string.console_child_management_empty)));
+        }
+        TextView add = consolePanel.icon(consolePanel.action(
+                getString(R.string.console_child_management_add)), R.drawable.ic_console_add);
+        add.setOnClickListener(view -> showChildEditor(host,
+                ConsoleChildProfileEditor.Draft.newChild(profiles.revision), false, token));
+        actions.add(add);
         TextView refresh = consolePanel.action(getString(R.string.console_child_management_refresh));
         refresh.setOnClickListener(view -> loadChildProfiles(host, token, false));
         actions.add(refresh);
-        showSidePanel(getString(R.string.console_child_management_title), host.name,
-                getString(R.string.console_child_management_details),
+        showSidePanel(getString(R.string.console_child_management_eyebrow), getString(
+                        R.string.console_child_management_title),
+                getString(R.string.console_child_profile_shared_info),
                 actions.toArray(new View[0]));
     }
 
     private ConsoleChildProfileEditor.Draft childDraft(
             HostGatewayClient.ChildProfile child, int revision) {
-        if (child == null) return ConsoleChildProfileEditor.Draft.newChild(revision);
         List<ConsoleChildProfileEditor.Day> days = child.weekdays;
         if (days == null || days.size() != 7) {
             days = new ArrayList<>();
             for (int index = 0; index < 7; index++) {
-                days.add(new ConsoleChildProfileEditor.Day(false, 0, 1440, 0));
+                days.add(ConsoleChildProfileEditor.Day.disabled());
             }
         }
-        return new ConsoleChildProfileEditor.Draft(child.id, child.name, child.avatarId,
+        return new ConsoleChildProfileEditor.Draft(child.id, child.name,
+                ConsoleChildProfileEditor.isKnownAvatar(child.avatarId) ? child.avatarId : "default",
                 child.enabled, days, Collections.emptyList(), revision, false);
     }
 
-    private void showChildEditor(ComputerDetails host, HostGatewayClient.ChildProfile child,
-                                 int expectedRevision, int token) {
-        String parentProfileId = selectedProfileId(host.uuid);
-        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
-        ConsoleChildProfileEditor editor = new ConsoleChildProfileEditor(this);
-        TextView refresh = consolePanel.action(getString(R.string.console_child_management_refresh));
-        refresh.setVisibility(View.GONE);
-        refresh.setOnClickListener(view -> loadChildProfiles(host, token, false));
-        TextView delete = null;
-        editor.show(childDraft(child, expectedRevision),
-                (draft, completion) -> saveChildDraft(host, token, draft, refresh, completion),
-                this::handlePanelBack);
-        List<View> outerActions = new ArrayList<>();
-        // Keep the complete editor at the top of the scroll content.  The editor
-        // owns identity, schedule, and Save/Cancel; management actions follow it.
-        outerActions.add(editor);
-        if (child != null) {
-            delete = consolePanel.action(getString(R.string.console_child_management_delete));
-            consolePanel.destructive(delete);
-            delete.setOnClickListener(view -> confirmDeleteChild(host, child,
-                    expectedRevision, token));
-            outerActions.add(delete);
-        }
-        outerActions.add(refresh);
-        showSidePanel(getString(R.string.console_child_management_title),
-                getString(R.string.console_child_profile_title),
-                getString(R.string.console_child_management_details),
-                outerActions.toArray(new View[0]));
-        if (delete != null) editor.setAfterEditorFocus(delete);
-        wireModalFocusTrap(true);
-    }
+    /**
+     * Mockups 20c-20e on the settings screen; Back saves a changed draft. {@code unsaved}: the
+     * draft is one whose save failed, so closing saves it even unchanged.
+     */
+    private void showChildEditor(ComputerDetails host, ConsoleChildProfileEditor.Draft draft,
+                                 boolean unsaved, int token) {
+        if (!isCurrentChildContext(host.uuid, selectedProfileId(host.uuid), token)) return;
+        // Closing the panel retires its token; the editor works with the one after it.
+        hideSidePanelImmediately();
+        int editorToken = childManagementGeneration.get();
+        new ConsoleChildProfileEditor(this, settingsScreen, new ConsoleChildProfileEditor.Host() {
+            @Override public void editName(String current, Consumer<String> onName) {
+                consoleFeedback.showInput(getString(R.string.console_child_profile_name), null,
+                        current, getString(R.string.console_child_profile_name_missing),
+                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS, 80,
+                        getString(android.R.string.cancel), null, null,
+                        getString(android.R.string.ok), value -> {
+                            String name = value.trim();
+                            if (name.isEmpty()) return getString(R.string.console_input_required);
+                            onName.accept(name);
+                            return null;
+                        }, null);
+            }
 
-    private String childDraftSignature(String operation, String childId,
-                                       ConsoleChildProfileEditor.Draft draft) {
-        StringBuilder signature = new StringBuilder(operation).append('|')
-                .append(childId == null ? "" : childId).append('|')
-                .append(draft.expectedRevision).append('|').append(draft.name).append('|')
-                .append(draft.avatar).append('|').append(draft.enabled).append('|')
-                .append(draft.grantCurrentDevice);
-        for (ConsoleChildProfileEditor.Day day : draft.weekdays) {
-            signature.append('|').append(day.enabled).append(':').append(day.startMinute)
-                    .append(':').append(day.endMinute).append(':')
-                    .append(day.dailyLimitSeconds);
-        }
-        return signature.toString();
+            @Override public void delete(ConsoleChildProfileEditor.Draft current) {
+                confirmDeleteChild(host, current, editorToken);
+            }
+
+            @Override public void closed(ConsoleChildProfileEditor.Draft current,
+                                         boolean changed) {
+                // A child is only created once it has a name.
+                if (changed && !current.name.isEmpty()) {
+                    saveChildDraft(host, editorToken, current);
+                } else {
+                    loadChildProfiles(host, editorToken, true);
+                }
+            }
+        }).open(draft, unsaved);
     }
 
     private String childRequestId(String hostId, String parentProfileId, String operation,
@@ -5538,29 +5598,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void saveChildDraft(ComputerDetails host, int token,
-                                 ConsoleChildProfileEditor.Draft draft,
-                                 TextView refresh, ConsoleChildProfileEditor.Completion completion) {
+                                ConsoleChildProfileEditor.Draft draft) {
         String parentProfileId = selectedProfileId(host.uuid);
-        ChildManagementLease lease = currentChildLease(host, parentProfileId);
         if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
-        String operation = draft.profileId.isEmpty() ? "create" : "update";
-        String childId = draft.profileId;
-        String signature = childDraftSignature(operation, childId, draft);
+        ChildManagementLease lease = currentChildLease(host, parentProfileId);
         if (lease == null) {
             reauthorizeChildManagementFor(host, token,
-                    (fresh, freshToken) -> saveChildDraft(host, freshToken, draft,
-                            refresh, completion), () -> completion.onFailed(
-                            getString(R.string.console_child_management_authorize_failed),
-                            false));
+                    (fresh, freshToken) -> saveChildDraft(host, freshToken, draft),
+                    () -> showChildSaveFailure(host, childManagementGeneration.get(), draft));
             return;
         }
-        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) {
-            completion.onFailed(getString(R.string.console_child_management_authorize_failed),
-                    false);
-            return;
-        }
+        String operation = draft.profileId.isEmpty() ? "create" : "update";
+        String childId = draft.profileId;
         String requestId = childRequestId(host.uuid, parentProfileId, operation, childId,
-                "", signature);
+                "", draft.signature());
+        showSidePanelBusy(getString(R.string.console_child_management_title), draft.name,
+                getString(R.string.console_child_profile_saving));
         executor.execute(() -> {
             HostGatewayClient.ChildMutationResult result = null;
             IOException failure = null;
@@ -5587,14 +5640,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     clearRejectedChildManagementLease(error);
                     boolean conflict = error instanceof HostGatewayClient.GatewayException
                             && ((HostGatewayClient.GatewayException) error).statusCode == 409;
-                    completion.onFailed(getString(conflict
-                                    ? R.string.console_child_profile_save_conflict
-                                    : R.string.console_child_profile_save_failed), conflict);
-                    if (conflict) refresh.setVisibility(View.VISIBLE);
+                    if (conflict) {
+                        // Changed elsewhere: the list shows the host's version to edit again.
+                        ConsoleUiFeedback.makeText(this,
+                                R.string.console_child_profile_save_conflict,
+                                Toast.LENGTH_LONG).show();
+                        loadChildProfiles(host, token, true);
+                    } else {
+                        showChildSaveFailure(host, token, draft);
+                    }
                     return;
                 }
                 childMutationRetry = null;
-                completion.onSaved();
                 ConsoleUiFeedback.makeText(this,
                         R.string.console_child_management_saved,
                         Toast.LENGTH_SHORT).show();
@@ -5604,34 +5661,49 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
     }
 
-    private void confirmDeleteChild(ComputerDetails host,
-                                    HostGatewayClient.ChildProfile child,
-                                    int expectedRevision, int token) {
-        if (host == null || child == null) return;
-        consoleFeedback.showConfirm(getString(R.string.console_child_management_delete),
-                getString(R.string.console_child_management_delete_confirm,
-                        child.name.isEmpty() ? getString(R.string.console_child_profile_title)
-                                : child.name),
-                getString(R.string.console_cancel),
-                getString(R.string.console_child_management_delete), true,
-                () -> deleteChild(host, child, expectedRevision, token));
+    /** A save that failed keeps its draft: retry, edit it further or drop it. */
+    private void showChildSaveFailure(ComputerDetails host, int token,
+                                      ConsoleChildProfileEditor.Draft draft) {
+        if (!isCurrentChildContext(host.uuid, selectedProfileId(host.uuid), token)) return;
+        TextView retry = consolePanel.action(getString(R.string.console_child_profile_save_retry));
+        retry.setOnClickListener(view -> saveChildDraft(host, token, draft));
+        TextView edit = consolePanel.action(getString(R.string.console_child_profile_save_edit));
+        edit.setOnClickListener(view -> showChildEditor(host, draft, true, token));
+        TextView discard = consolePanel.destructive(consolePanel.action(
+                getString(R.string.console_child_profile_save_discard)));
+        discard.setOnClickListener(view -> loadChildProfiles(host, token, true));
+        showSidePanel(getString(R.string.console_child_management_title), draft.name,
+                getString(R.string.console_child_profile_save_failed), retry, edit, discard);
     }
 
-    private void deleteChild(ComputerDetails host, HostGatewayClient.ChildProfile child,
-                             int expectedRevision, int token) {
+    private void confirmDeleteChild(ComputerDetails host, ConsoleChildProfileEditor.Draft child,
+                                    int token) {
+        String name = child.name.isEmpty()
+                ? getString(R.string.console_child_profile_title) : child.name;
+        consoleFeedback.showConfirm(getString(R.string.console_child_management_delete),
+                getString(R.string.console_child_management_delete_confirm, name),
+                getString(R.string.console_cancel),
+                getString(R.string.console_child_management_delete), true, () -> {
+                    // Out of the editor without saving its draft.
+                    settingsScreen.dismiss();
+                    deleteChild(host, child.profileId, child.expectedRevision, token);
+                });
+    }
+
+    private void deleteChild(ComputerDetails host, String childId, int expectedRevision,
+                             int token) {
         String parentProfileId = selectedProfileId(host.uuid);
         if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
         ChildManagementLease lease = currentChildLease(host, parentProfileId);
-        String signature = "delete|" + child.id + "|" + expectedRevision;
+        String signature = "delete|" + childId + "|" + expectedRevision;
         if (lease == null) {
             reauthorizeChildManagementFor(host, token,
-                    (fresh, freshToken) -> deleteChild(host, child, expectedRevision, freshToken),
-                    () -> ConsoleUiFeedback.makeText(this,
-                            R.string.console_child_management_authorize_failed,
-                            Toast.LENGTH_LONG).show());
+                    (fresh, freshToken) -> deleteChild(host, childId, expectedRevision,
+                            freshToken),
+                    () -> loadChildProfiles(host, childManagementGeneration.get(), true));
             return;
         }
-        String requestId = childRequestId(host.uuid, parentProfileId, "delete", child.id,
+        String requestId = childRequestId(host.uuid, parentProfileId, "delete", childId,
                 "", signature);
         showSidePanelBusy(getString(R.string.console_child_management_title), host.name,
                 getString(R.string.console_child_management_loading));
@@ -5640,7 +5712,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             HostGatewayClient.ChildMutationResult result = null;
             try {
                 result = hostGatewayClient.deleteChildProfile(lease.connection,
-                        parentProfileId, lease.authorizationId, child.id, requestId,
+                        parentProfileId, lease.authorizationId, childId, requestId,
                         expectedRevision);
             } catch (IOException | RuntimeException error) {
                 failure = error instanceof IOException
@@ -5656,6 +5728,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ConsoleUiFeedback.makeText(this,
                             R.string.console_child_profile_save_failed,
                             Toast.LENGTH_LONG).show();
+                    loadChildProfiles(host, token, true);
                     return;
                 }
                 childMutationRetry = null;
@@ -5753,7 +5826,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                     HostGatewayClient.ChildSharing sharing, int token) {
         String parentProfileId = selectedProfileId(host.uuid);
         if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
-        ConsoleChildGameSharingPanel panel = new ConsoleChildGameSharingPanel(this);
+        ConsoleChildGameSharingPanel panel = new ConsoleChildGameSharingPanel(this, consolePanel);
         List<ConsoleChildGameSharingPanel.ChildOption> options = new ArrayList<>();
         for (HostGatewayClient.ChildShare child : sharing.children) {
             if (child == null || child.id.isEmpty()) continue;
@@ -5762,10 +5835,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         ChildSharingOriginContext origin = new ChildSharingOriginContext(
                 token, currentChildLease(host, parentProfileId));
-        panel.show(item.game.name, options, sharing.revision,
+        panel.show(options, sharing.revision,
                 (draft, completion) -> saveChildSharing(host, item, panel,
-                        parentProfileId, origin, draft, completion),
-                this::handlePanelBack);
+                        parentProfileId, origin, draft, completion));
         panel.setRefreshCallback(() -> {
             ChildManagementLease lease = currentChildLease(host, parentProfileId);
             if (lease != null) {

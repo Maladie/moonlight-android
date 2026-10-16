@@ -9,9 +9,5 @@
     <string name="child_session_ended_title">Child session ended</string>
     <string name="child_session_ended_message">The child session has ended.</string>
     <string name="child_session_game_access_revoked_message">Parent removed access to this game.</string>
-    <string name="console_child_picker_hours">Hours</string>
-    <string name="console_child_picker_minutes">Minutes</string>
-    <string name="console_child_picker_hint">Hours · minutes. Available values depend on the playing window.</string>
-    <string name="console_child_limit_adjusted">The daily limit was reduced to fit the playing window.</string>
     <string name="child_session_retry_from_library">The stream is disconnected. Return to the library and start the game again.</string>
 </resources>

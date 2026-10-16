@@ -17,9 +17,9 @@ public class ConsoleIntroEntranceContractTest {
     @Test public void theIntroIsBuiltOnThePinScreenAndReleasedWithIt() throws IOException {
         String activity = source("ConsoleActivity.java");
         String show = between(activity, "private void showPinEntry(",
-                "private void submitProfilePin()");
+                "private void showPinPage(");
         // After the screen is shown, and only for a PIN that ends in a host entry.
-        assertTrue(show.indexOf("pinEntryView.show(")
+        assertTrue(show.indexOf("showPinPage(")
                 < show.indexOf("if (introView != null && completeHostEntry) introView.prepare(profile);"));
         // Every way the PIN screen closes goes through here: cancel, another profile, the gate.
         String clear = between(activity, "private void clearPinEntry()",

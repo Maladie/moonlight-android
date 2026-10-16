@@ -9,9 +9,5 @@
     <string name="child_session_ended_title">Sesja dziecka zakończona</string>
     <string name="child_session_ended_message">Sesja dziecka została zakończona.</string>
     <string name="child_session_game_access_revoked_message">Rodzic odebrał dostęp do tej gry.</string>
-    <string name="console_child_picker_hours">Godziny</string>
-    <string name="console_child_picker_minutes">Minuty</string>
-    <string name="console_child_picker_hint">Godziny · minuty. Dostępne wartości zależą od przedziału gry.</string>
-    <string name="console_child_limit_adjusted">Limit dzienny został zmniejszony do długości przedziału gry.</string>
     <string name="child_session_retry_from_library">Połączenie ze strumieniem zostało przerwane. Wróć do biblioteki i uruchom grę ponownie.</string>
 </resources>
