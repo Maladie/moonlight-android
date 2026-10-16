@@ -15,9 +15,9 @@ using System.Web.Script.Serialization;
 using Microsoft.Win32;
 using MoonWaker.HostControl;
 
-[assembly: System.Reflection.AssemblyVersion("0.7.143.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.7.143.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.7.143+2026.10.16-chernobylite")]
+[assembly: System.Reflection.AssemblyVersion("0.7.144.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.7.144.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.7.144+2026.10.16-window-placement")]
 // WPF follows the per-monitor DPI of the manifest only for a .NET Framework 4.6.2+ target.
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 

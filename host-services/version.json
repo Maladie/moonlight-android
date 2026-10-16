@@ -1,6 +1,6 @@
 {
   "product": "MoonWaker Host",
-  "version": "0.7.143",
-  "build": "2026.10.16-chernobylite",
+  "version": "0.7.144",
+  "build": "2026.10.16-window-placement",
   "protocol_version": 7
 }
