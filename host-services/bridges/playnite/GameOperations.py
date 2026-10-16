@@ -834,7 +834,7 @@ class SteamProvider(GenericPlayniteProvider):
             "download_present": False, "manifest_signature": None,
             "bytes_downloaded": 0, "bytes_total": 0, "state_flags": 0,
             "bytes_staged": 0, "bytes_to_stage": 0,
-            "install_directory": "", "manifest_complete": False,
+            "install_directory": "",
             "installed": False, "update_pending": False,
         }
         if not re.fullmatch(r"[0-9]+", app_id):
@@ -881,7 +881,6 @@ class SteamProvider(GenericPlayniteProvider):
                         "bytes_to_stage": to_stage,
                         "state_flags": flags,
                         "install_directory": str(install_directory or ""),
-                        "manifest_complete": flags == 4 and directory_ready,
                         "installed": bool(flags & 4) and directory_ready,
                         "update_pending": bool(flags & 4) and directory_ready
                         and bool(flags & self.UPDATE_FLAGS),
@@ -1047,7 +1046,9 @@ class SteamProvider(GenericPlayniteProvider):
             "manifest_present": bool(snapshot["manifest_present"]),
             "steam_snapshot": snapshot,
         }
-        if operation == "install" and snapshot.get("manifest_complete"):
+        # FullyInstalled (bit 4) outlives an update: a game that is installed is an install
+        # that is done, even when Steam can never finish its pending update (no licence).
+        if operation == "install" and snapshot.get("installed"):
             return {
                 **common, "installed": True, "started": True,
                 "phase": "completed_install", "progress": 100,

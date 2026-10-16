@@ -354,16 +354,22 @@ class GameOperationsTest(unittest.TestCase):
         self.assertEqual(0, self.service.aggregate_catalog([metadata], library)["library"]
                          ["steam:10"]["playtimeMinutes"])
 
-    def test_steam_update_flags_keep_game_installed_and_stalled_verify_asks_attention(self):
+    def test_steam_update_flags_keep_game_installed_and_finish_an_install_operation(self):
         with tempfile.TemporaryDirectory() as raw:
             steamapps = Path(raw) / "steamapps"
             (steamapps / "common" / "Game").mkdir(parents=True)
-            (steamapps / "appmanifest_7.acf").write_text(
-                '"AppState"\n{\n"appid" "7"\n"StateFlags" "1030"\n"installdir" "Game"\n'
-                '"BytesToDownload" "10"\n"BytesDownloaded" "10"\n}\n', encoding="utf-8")
+            manifest = steamapps / "appmanifest_7.acf"
+            body = ('"AppState"\n{\n"appid" "7"\n"StateFlags" "%d"\n"installdir" "Game"\n'
+                    '"BytesToDownload" "10"\n"BytesDownloaded" "10"\n}\n')
+            manifest.write_text(body % 1030, encoding="utf-8")
             provider = SteamProvider(roots=[Path(raw)])
-            self.assertTrue(provider._installed_catalog()["by_id"]["7"]["installed"])
             game = {"providerGameId": "7"}
+            self.assertTrue(provider._installed_catalog()["by_id"]["7"]["installed"])
+            # An installed game with a pending update is an install that is done.
+            self.assertEqual("completed_install", provider.sample(game, "install")["phase"])
+            # A first install (no FullyInstalled bit) whose finished download stands still
+            # asks for attention instead of showing 100% forever.
+            manifest.write_text(body % 1026, encoding="utf-8")
             first = provider.sample(game, "install")
             self.assertEqual("verifying", first["phase"])
             self.assertFalse(first["stalled"])
