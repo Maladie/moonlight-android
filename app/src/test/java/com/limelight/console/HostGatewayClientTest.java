@@ -146,6 +146,30 @@ public class HostGatewayClientTest {
         assertObservationRejected(value, "inconsistent_observation_evidence", now);
     }
 
+    @Test public void streamerAppTellsUnknownFromNoApp() throws Exception {
+        long now = 1_700_000_000_000L;
+        JSONObject value = observation(now, "boot-a", 2, 7);
+        assertEquals(42, HostGatewayClient.parseSessionObservation(
+                value, "kid", "parent", 7, now + 100).streamerAppId);
+        value.put("streamer", new JSONObject().put("evidence", "ABSENT").put("app_id", 0));
+        assertEquals(0, HostGatewayClient.parseSessionObservation(
+                value, "kid", "parent", 7, now + 100).streamerAppId);
+        value.put("streamer", new JSONObject().put("evidence", "UNAVAILABLE").put("app_id", 0));
+        assertEquals(SessionSnapshot.STREAMER_APP_UNKNOWN, HostGatewayClient
+                .parseSessionObservation(value, "kid", "parent", 7, now + 100).streamerAppId);
+
+        for (JSONObject inconsistent : new JSONObject[] {
+                new JSONObject().put("evidence", "VERIFIED").put("app_id", 0),
+                new JSONObject().put("evidence", "ABSENT").put("app_id", 7),
+                new JSONObject().put("evidence", "UNAVAILABLE").put("app_id", 7),
+                new JSONObject().put("evidence", "PENDING").put("app_id", 0)}) {
+            value.put("streamer", inconsistent);
+            assertObservationRejected(value, "inconsistent_observation_evidence", now);
+        }
+        value.remove("streamer");
+        assertObservationRejected(value, "missing_observation_streamer", now);
+    }
+
     @Test public void missingOrWronglyTypedCorrelationIsRejected() throws Exception {
         long now = 1_700_000_000_000L;
         JSONObject value = observation(now, "boot-a", 2, 7);
@@ -194,6 +218,7 @@ public class HostGatewayClientTest {
                         .put("stream_session_id", "session-a")
                         .put("control_generation", 4).put("actor_lease_epoch", 5)
                         .put("stream_started_unix_ms", 0))
+                .put("streamer", new JSONObject().put("evidence", "VERIFIED").put("app_id", 42))
                 .put("provider", new JSONObject().put("state", "running")
                         .put("connector_evidence", "VERIFIED").put("reason", "none"))
                 .put("game", new JSONObject().put("state", "running")

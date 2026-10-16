@@ -603,6 +603,22 @@ class VibepolloClient:
         snapshot = build_control_snapshot({name: value for name, value, _row in rows}, probe)
         return any(row["outcome"] == "ok" for row in probe.values()), snapshot
 
+    def running_app_id(self, timeout: float = CONTROL_SOURCE_TIMEOUT_SECONDS) -> int | None:
+        """The numeric id (the GameStream app id clients launch) of the application the
+        streamer runs, 0 when it runs none; None when one bounded `/api/apps` read cannot tell
+        (unavailable, malformed, or a current application without exactly one listed id)."""
+        try:
+            response = self.call("GET", CONTROL_PATHS["apps"], timeout=timeout)
+        except VibepolloError:
+            return None
+        current = _first(response, "current_app")
+        if not isinstance(_first(response, "apps"), list) or not isinstance(current, str):
+            return None
+        if not current:
+            return 0
+        running = [app["app_id"] for app in _normalize_apps(response) if app["running"]]
+        return running[0] if len(running) == 1 and running[0] > 0 else None
+
     def close_app(self, timeout: float = 8.0) -> tuple[bool, dict[str, Any]]:
         try:
             return True, {"result": self.call("POST", "/api/apps/close", {}, timeout=timeout)}

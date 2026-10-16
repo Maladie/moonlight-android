@@ -936,7 +936,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 // Behind a screen saver the focus request of a reconnect is what makes the
                 // Bridge close the saver; a start is covered by the Bridge's own launch.
                 // Waking the saver has its own budget so it cannot use up the real focus attempts.
-                boolean focusRequired = "target_not_foreground".equals(readinessReason);
+                // A window that left fullscreen is maximized by the Bridge's focus remedy.
+                boolean focusRequired = "target_not_foreground".equals(readinessReason)
+                        || "target_not_fullscreen".equals(readinessReason);
                 boolean wakeRequired = "host_screensaver_active".equals(readinessReason)
                         && "running".equalsIgnoreCase(snapshot.gameState);
                 if (snapshot.gatewayReady && "game".equalsIgnoreCase(snapshot.targetKind)

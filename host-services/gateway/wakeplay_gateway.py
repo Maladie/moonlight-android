@@ -115,6 +115,9 @@ CONTROL_START_SILENT_GRACE_SECONDS = 60.0
 # 20 s acquire budget; the client gives up after 30 s.
 CONTROL_START_PROOF_RESERVE_SECONDS = 10.0
 CONTROL_ABANDON_RETRY_SECONDS = 1.0
+# How often a fresh child start re-reads an unreadable provider within its acquire budget.
+CHILD_START_PROVIDER_RETRY_SECONDS = 0.5
+PROVIDER_OBSERVATION_TIMEOUT_SECONDS = 3.0
 CHILD_TIME_USAGE_FILE = "child-time-usage.json"
 CLIENT_LAST_SEEN_WRITE_SECONDS = 5 * 60
 PIN_FAILURE_WINDOW_SECONDS = 5 * 60
@@ -149,6 +152,10 @@ CHILD_GAME_EVENT_KINDS = {
     "privacy-gate-closed", "target-window-ready", "session-hard-reset",
 }
 CHILD_TIME_SESSION_ID_PATTERN = PROFILE_SESSION_ID_PATTERN
+# Child-session ends that release only the time lease and leave the managed stream retained:
+# the client's verified stop, the host's own observed game end and the two actor handoffs.
+CHILD_LEASE_ONLY_REASONS = frozenset({
+    "game_stopped", "game_ended", "actor_replaced", "replacement"})
 CHILD_VIBEPOOLLO_UUID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 DIAGNOSTIC_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._:$-]{1,256}$")
 DIAGNOSTIC_ROUTE_PATTERN = re.compile(r"^/[A-Za-z0-9._:{}/-]{0,255}$")
@@ -693,6 +700,10 @@ class ControlProbes:
             return failed
         self.queued = (name, key, probe, 1 if taken is None else taken[2] + 1)
         return self.PENDING
+
+    def forget(self, name: str) -> None:
+        """Drop a result so the next `read` probes again (a wait for the probed state)."""
+        self.results.pop(name, None)
 
     def run(self) -> None:
         if self.queued is not None:
@@ -4156,7 +4167,8 @@ class GatewayState:
         if token and target_pid > 0:
             path += "?" + urllib.parse.urlencode({"target_process_id": target_pid,
                                                   "target_process_token": token})
-        ok, result = self.proxy("game_provider", path, timeout=3.0,
+        ok, result = self.proxy("game_provider", path,
+                                timeout=PROVIDER_OBSERVATION_TIMEOUT_SECONDS,
                                 profile_id=parent_profile_id)
         exact = {"target_token": token, "target_status": "unknown"}
         if not ok or not isinstance(result, dict):
@@ -4203,13 +4215,17 @@ class GatewayState:
                     "identity": identity, "running_games": identities,
                     "running_scan_status": running_scan_status, **exact,
                     "snapshot": result}
-        if game_evidence == "ABSENT" and process_evidence == "ABSENT" \
-                and current_state == "idle" and not current_id \
-                and running_scan_status == "complete" and target_retired:
+        idle = game_evidence == "ABSENT" and current_state == "idle" \
+            and not current_id and target_retired
+        if idle and process_evidence == "ABSENT" and running_scan_status == "complete":
             return {"kind": "idle", "game_id": "", "identity": None,
                     "running_games": [], "running_scan_status": running_scan_status,
                     **exact, "snapshot": result}
-        return {"kind": "unavailable", **exact, "snapshot": result}
+        # Idle but for a fresh partial scan that verified no game: only a fresh child start
+        # reads it, with the scan's unverified games (`_control_child_start_refusal`);
+        # closes and verdicts still need a complete scan.
+        return {"kind": "unavailable", **exact, "snapshot": result,
+                "partial_idle": idle and running_scan_status == "partial" and not running}
 
     @staticmethod
     def _child_time_running_verdict(session: dict[str, Any],
@@ -4874,9 +4890,9 @@ class GatewayState:
                             "client_id", "execution_profile_id", "stream_session_id", "sunshine_app_id"))
                     previous_child = str((stream or {}).get("child_session_id") or "")
                     previous_ended = self.child_time_completed.get(previous_child, {})
+                    # A lease-only release leaves the stream retained for the next actor.
                     if not exact or previous_child and previous_child != child_session_id \
-                            and previous_ended.get("reason") not in {
-                                "game_stopped", "actor_replaced", "replacement"}:
+                            and previous_ended.get("reason") not in CHILD_LEASE_ONLY_REASONS:
                         return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                      "reason": "retained_owner_unconfirmed"}
                     target = stream if self._child_time_process_token(stream) \
@@ -4894,11 +4910,8 @@ class GatewayState:
                     current_identity = current.get("identity")
                     current_token = self._child_time_process_token(current_identity)
                     target_time = self.child_time_session
-                    child_game_matches = not child_session_id or (
-                        isinstance(target_time, dict)
-                        and target_time.get("session_id") == child_session_id
-                        and self._child_time_provider_game(target_time)
-                        == self._child_time_normalize_game_id(current_game_id))
+                    child_game_matches = self._control_child_game_entitled(
+                        child_session_id, current_game_id)
                     provider_idle = current.get("kind") == "idle"
                     stream_token = self._child_time_process_token(stream)
                     target_token = self._child_time_process_token(target_time) \
@@ -4973,6 +4986,14 @@ class GatewayState:
                                 "ok": False, "state": "blocked",
                                 "reason": "retained_process_unconfirmed",
                             }
+                        # A stream that names no game would otherwise carry on whatever the
+                        # provider runs, e.g. the parent's own game on the shared profile.
+                        if not self._control_child_game_entitled(
+                                child_session_id, retained["provider_game_id"]):
+                            return HTTPStatus.CONFLICT, {
+                                "ok": False, "state": "blocked",
+                                "reason": "child_game_not_entitled",
+                            }
                         del retained["provider_idle_confirmed"]
                         proposed.update(retained)
                 elif intent in {"resume", "reconnect"} and not idle_restart:
@@ -4985,6 +5006,37 @@ class GatewayState:
                         == observed_app_id):
                     return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                  "reason": "unmanaged_stream"}
+                if direction == "start" and child_session_id \
+                        and "provider_game_id" not in proposed:
+                    # A fresh child start (launch, replacement, warm-up or Retry without a
+                    # retained game proof): the session's game was checked only when it
+                    # began, and the parent may have started its own game since.
+                    current = probes.read(
+                        "child_start_game", self._control_probe_key_locked(),
+                        lambda stream=dict(stream) if isinstance(stream, dict) else None:
+                            self._child_time_current_game(execution_id, stream),
+                        {"kind": "unavailable"})
+                    if current is probes.PENDING:
+                        continue
+                    refusal = self._control_child_start_refusal(child_session_id, current)
+                    process = (current.get("snapshot") or {}).get("process")
+                    if refusal == "game_state_unverified" \
+                            and current.get("kind") == "unavailable" \
+                            and (not isinstance(process, dict) or
+                                 process.get("running_scan_status") == "unavailable") \
+                            and deadline - time.monotonic() > \
+                            PROVIDER_OBSERVATION_TIMEOUT_SECONDS \
+                            + CHILD_START_PROVIDER_RETRY_SECONDS:
+                        # An offline provider or a stale scan (the Bridge rescans at least
+                        # every 5 s): re-read it within this request's budget, leaving the
+                        # last read room to finish by the deadline. Any other unproven
+                        # state (starting, stopping, a partial scan) is answered at once.
+                        probes.forget("child_start_game")
+                        self.control_condition.wait(CHILD_START_PROVIDER_RETRY_SECONDS)
+                        continue
+                    if refusal:
+                        return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                     "reason": refusal}
                 if direction == "transition":
                     generation = int(stream.get("generation") or 0)
                     actor_epoch = int(stream.get("actor_lease_epoch") or 0)
@@ -5029,15 +5081,16 @@ class GatewayState:
     def _control_child_entitled(self, intent: str, child_session_id: str, client_id: str,
                                 actor_id: str, execution_id: str) -> bool:
         """The child-session entitlement gate: a child-attached operation needs its live
-        session (or, for child_terminal, its exact game_stopped retained stream); a child
-        actor without one may only close."""
+        session (or, for child_terminal, its exact retained stream after a lease-only end);
+        a child actor without one may only close. Which game a start may carry is
+        `_control_child_game_entitled`."""
         if child_session_id:
             child = self.child_time_session
             completed_child = self.child_time_completed.get(child_session_id)
             stream = self.control_state.get("stream")
             retained_terminal = intent == "child_terminal" and \
                 isinstance(completed_child, dict) and \
-                completed_child.get("reason") == "game_stopped" and \
+                completed_child.get("reason") in CHILD_LEASE_ONLY_REASONS and \
                 all(completed_child.get(key) == value for key, value in (
                     ("client_id", client_id),
                     ("actor_profile_id", actor_id),
@@ -5054,6 +5107,46 @@ class GatewayState:
                     actor_id == child.get("actor_profile_id") and
                     execution_id == child.get("execution_profile_id")) or retained_terminal
         return not self.is_child_profile(actor_id) or intent in {"full_quit", "hard_reset"}
+
+    def _control_child_game_entitled(self, child_session_id: str, game_id: Any) -> bool:
+        """A child-attached start may carry only its live session's game: the one the host
+        granted at session start from the parent's sharing and the time rules. No game (idle)
+        grants nothing; an operation without a child session is not child-attached (a child
+        actor without one may only close, see `_control_child_entitled`)."""
+        session = self.child_time_session
+        game = self._child_time_normalize_game_id(game_id)
+        return not child_session_id or not game or (
+            isinstance(session, dict) and session.get("session_id") == child_session_id
+            and self._child_time_provider_game(session) == game)
+
+    def _control_child_start_refusal(self, child_session_id: str,
+                                     current: dict[str, Any]) -> str:
+        """Why a fresh child start may not begin, or "": it needs the provider's positive
+        evidence of idle or of only this child session's own game (starting or running).
+        A partial scan's unverified games (seen, e.g. as several processes or behind an
+        ambiguous exe, but not verified) count like running ones. An unreadable provider is
+        a retry, not a verdict."""
+        kind = current.get("kind")
+        if kind == "idle":
+            return ""
+        process = (current.get("snapshot") or {}).get("process")
+        unverified = process.get("unverified_running_games") \
+            if isinstance(process, dict) else None
+        if not isinstance(unverified, list) \
+                or not all(isinstance(game, str) and game for game in unverified):
+            return "game_state_unverified"
+        games = {self._child_time_normalize_game_id(game) for game in unverified}
+        if kind == "active":
+            games |= {self._child_time_normalize_game_id(item.get("game_id"))
+                      for item in current.get("running_games") or []}
+            games.add(self._child_time_normalize_game_id(current.get("game_id")))
+        elif not (current.get("partial_idle") and games):
+            # ponytail: a partial scan naming no game (an unreadable process whose path is
+            # unreadable too) stays unverified, so the child is refused until it ends;
+            # accepting it is the owner's product/security boundary call.
+            return "game_state_unverified"
+        return "" if all(self._control_child_game_entitled(child_session_id, game)
+                         for game in games) else "child_game_not_entitled"
 
     def _control_finish_child_stream(self, client: dict[str, Any],
                                      proposed: dict[str, Any],
@@ -6070,6 +6163,9 @@ class GatewayState:
                 current.get("identity")) != token:
             if self._child_time_process_absent(current, token):
                 return True, "none"
+            if not token and not exact and isinstance(permit, dict) \
+                    and self._child_time_abandon_unbound_game(session, permit, current):
+                return True, "none"
             return False, "cleanup_required"
         payload = {
             "game_id": str(session.get("game_id") or ""),
@@ -6120,6 +6216,37 @@ class GatewayState:
                            reason=str(observed.get("target_status") or ""),
                            child_session_id=str(session.get("session_id") or ""))
         return False, "cleanup_required"
+
+    def _child_time_abandon_unbound_game(self, session: dict[str, Any], permit: dict[str, Any],
+                                         current: dict[str, Any]) -> bool:
+        """A session never bound to a process while the provider positively runs another game
+        (e.g. the parent's own on the shared profile): its current game is that other one with
+        a verified process, and the complete scan lists none of this session's game. That
+        other game is not this session's to stop. The permit records this session's game as
+        abandoned, so on success the Bridge drops a start of it still in flight and its effect
+        fence rejects a late one.
+
+        ponytail: an exe-less game the scan cannot match and that never became the provider's
+        current game is invisible here; only a verified process identity could stop it anyway.
+        """
+        game = self._child_time_provider_game(session)
+        if not game or current.get("kind") != "active" \
+                or self._child_time_normalize_game_id(current.get("game_id")) in {"", game} \
+                or not self._child_time_process_token(current.get("identity")) \
+                or current.get("running_scan_status") != "complete" \
+                or any(self._child_time_normalize_game_id(item.get("game_id")) == game
+                       for item in current.get("running_games") or []):
+            return False
+        with self.control_condition:
+            active = self.control_state.get("active")
+            identity = tuple(str(session.get(key) or "") for key in (
+                "client_id", "actor_profile_id", "execution_profile_id"))
+            if not ControlOperationPolicy.supplied_matches(active, permit, identity) \
+                    or active.get("child_session_id") != session.get("session_id"):
+                return False
+            active["abandoned_start_game_id"] = game
+            self._control_save_locked()
+        return True
 
     def _child_time_control_call(self, session: dict[str, Any], operation: Any) -> Any:
         keys = ("profile_id", "actor_profile_id", "execution_profile_id")
@@ -6253,24 +6380,36 @@ class GatewayState:
                     or not isinstance(stream, dict) \
                     or stream.get("child_session_id") != session.get("session_id"):
                 return False, "stale_session"
-            close_trace: dict[str, Any] = {}
+            stream = dict(stream)
+        # The streamer close runs outside the Gateway lock: an unreachable Vibepollo would
+        # otherwise stall every request for the length of its timeouts. The held permit is
+        # the in-flight marker (no other operation acquires the host meanwhile), and the
+        # completion below applies only while that exact permit is still active. A hard reset
+        # meanwhile files this permit as a failed `superseded_by_hard_reset` receipt: the late
+        # completion then reads that receipt (HTTP 200, state failed) and changes nothing;
+        # against any other newer permit it is refused as `stale_operation`.
+        close_trace: dict[str, Any] = {}
+        try:
             # The Gateway holds a child's terminal operation on its own record: a session
             # no client is attributed to must not keep an enforced limit's stream open.
             closed, close_reason = StreamerControlOperation.close(
                 self.vibepollo, stream, trace=close_trace, host_held=True)
-            DIAGNOSTICS.record(
-                "child-terminal-streamer-close", level="INFO" if closed else "WARN",
-                operation_id=operation_id, generation=permit["generation"],
-                actor_lease_epoch=permit["actor_lease_epoch"],
-                child_session_id=str(session.get("session_id") or ""),
-                stream_session_id=str(stream.get("stream_session_id") or ""),
-                execution_profile_id=str(session.get("execution_profile_id") or ""),
-                **close_trace)
-            terminal_status, terminal = self._child_time_control_call(session, lambda:
-                self.control_operation_complete(client, {
-                    "operation_id": operation_id, "generation": permit["generation"],
-                    "actor_lease_epoch": permit["actor_lease_epoch"],
-                    "succeeded": bool(closed)}, operation_id))
+        except Exception as error:
+            closed, close_reason = False, "streamer_close_failed"
+            close_trace["error"] = repr(error)
+        DIAGNOSTICS.record(
+            "child-terminal-streamer-close", level="INFO" if closed else "WARN",
+            operation_id=operation_id, generation=permit["generation"],
+            actor_lease_epoch=permit["actor_lease_epoch"],
+            child_session_id=str(session.get("session_id") or ""),
+            stream_session_id=str(stream.get("stream_session_id") or ""),
+            execution_profile_id=str(session.get("execution_profile_id") or ""),
+            **close_trace)
+        terminal_status, terminal = self._child_time_control_call(session, lambda:
+            self.control_operation_complete(client, {
+                "operation_id": operation_id, "generation": permit["generation"],
+                "actor_lease_epoch": permit["actor_lease_epoch"],
+                "succeeded": bool(closed)}, operation_id))
         return (terminal_status == HTTPStatus.OK and terminal.get("state") == "succeeded",
                 "none" if closed else close_reason)
 
@@ -8000,6 +8139,16 @@ class GatewayState:
                 stream.get("stream_started_unix_ms") or 0) if own else 0,
         }
 
+    def _observation_streamer(self) -> dict[str, Any]:
+        """The streamer's running application, one bounded Vibepollo read made outside the
+        Gateway lock: VERIFIED with its app id, ABSENT (app_id 0) when it runs none, or
+        UNAVAILABLE (app_id 0) when the read cannot tell. Not scoped: Sunshine's serverinfo
+        already reports the same running app id to every paired client."""
+        app_id = self.vibepollo.running_app_id()
+        if app_id is None:
+            return {"evidence": "UNAVAILABLE", "app_id": 0}
+        return {"evidence": "VERIFIED" if app_id else "ABSENT", "app_id": app_id}
+
     def _record_slow_observation(self, started: float, locked: float, proxied: float,
                                  relocked: float, in_flight: int) -> None:
         """Phases of a slow observation read; the Android client gives up after 5 s."""
@@ -8034,9 +8183,12 @@ class GatewayState:
             self.observation_inflight += 1
             in_flight = self.observation_inflight
         proxied = relocked = locked
+        streamer = {"evidence": "UNAVAILABLE", "app_id": 0}
         try:
             ok, provider = self.proxy("game_provider", "/observation", timeout=3.0,
                                       profile_id=execution_id)
+            if ok and isinstance(provider, dict):
+                streamer = self._observation_streamer()
             proxied = time.monotonic()
             with self.lock:
                 relocked = time.monotonic()
@@ -8056,7 +8208,7 @@ class GatewayState:
         if before != after:
             return HTTPStatus.OK, {
                 **provider, "ok": False, "scope": scope,
-                "correlation": correlation,
+                "correlation": correlation, "streamer": streamer,
                 "provider": {"state": "unknown",
                              "connector_evidence": "UNAVAILABLE",
                              "reason": "control_correlation_changed"},
@@ -8082,7 +8234,7 @@ class GatewayState:
             if not own_game:
                 provider = {**provider, "process": {**process, "started_unix_ms": 0}}
         return HTTPStatus.OK, {**provider, "ok": True, "scope": scope,
-                              "correlation": correlation}
+                              "correlation": correlation, "streamer": streamer}
 
     def playnite_library(self, cursor: Any, limit: Any,
                          client: dict[str, Any] | None = None,

@@ -529,12 +529,25 @@ public class ConsoleActivityEnsureContractTest {
         String actions = source.substring(source.indexOf("private void showPlayniteGameActions("),
                 source.indexOf("private void confirmPlayniteUninstall("));
 
-        assertTrue(confirm.contains("session.hostRunningAppId == 0"));
+        assertTrue(confirm.contains("session.streamerAppId == 0"));
         assertTrue(confirm.contains("SessionSnapshot.State.ACTIVE"));
         assertTrue(actions.contains("session.state == SessionSnapshot.State.ACTIVE"));
         assertTrue(actions.contains("session.playniteGameId"));
         assertFalse(actions.contains("resumePlayniteGameId)\n"
                 + "                    && host.runningGameId != 0"));
+    }
+
+    @Test public void unknownStreamerKeepsTheSleepResumeRecordAndRendersBadgeChanges()
+            throws IOException {
+        String source = consoleActivitySource();
+        String sleep = source.substring(source.indexOf("private void requestHostSleep("),
+                source.indexOf("renderHostSelection();", source.indexOf(
+                        "private void requestHostSleep(")));
+        assertOrdered(sleep, "session.streamerAppId == SessionSnapshot.STREAMER_APP_UNKNOWN",
+                "? session.hostGameAppId : session.streamerAppId;", "if (runningAppId > 0) {");
+        String key = source.substring(source.indexOf("private String sessionPresentationKey("),
+                source.indexOf("private void resumeSelectedSession("));
+        assertTrue(key.contains("snapshot.streamerAppId"));
     }
 
     @Test public void retainedSwitchSkipsWakeAndRequiresPreparedNeutralTarget()

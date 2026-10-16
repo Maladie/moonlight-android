@@ -2411,5 +2411,140 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertIsNone(self.state.child_time_session)
 
 
+    def _end_with_blocking_close(self, outcome):
+        """End a running child session in a thread whose streamer close waits on the test."""
+        session_id = self.start_running()
+        entered, release = threading.Event(), threading.Event()
+        original_close = wakeplay_gateway.StreamerControlOperation.close
+
+        def blocking_close(streamer, stream, trace=None, host_held=False):
+            del streamer, stream, trace, host_held
+            entered.set()
+            release.wait(10)
+            return outcome()
+
+        wakeplay_gateway.StreamerControlOperation.close = staticmethod(blocking_close)
+        self.addCleanup(setattr, wakeplay_gateway.StreamerControlOperation, "close",
+                        original_close)
+        result = {}
+        worker = threading.Thread(target=lambda: result.update(end=
+            self.state.child_time_session_end(
+                self.client, "kid", session_id, "client_closed")))
+        worker.start()
+        self.addCleanup(worker.join, 10)
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(10))
+        return release, worker, result
+
+    def test_streamer_close_does_not_hold_the_gateway_lock(self):
+        release, worker, result = self._end_with_blocking_close(
+            lambda: (True, "streamer_idle_after_close"))
+        # Any other request (heartbeat, observation, library) takes this lock meanwhile.
+        acquired = self.state.lock.acquire(timeout=2.0)
+        self.assertTrue(acquired, "the streamer close holds the Gateway lock")
+        try:
+            in_flight = self.state.control_state["active"]
+            self.assertTrue(in_flight["operation_id"].startswith("child-terminal:"))
+            self.assertEqual("permitted", in_flight["state"])
+        finally:
+            self.state.lock.release()
+        release.set()
+        worker.join(10)
+        self.assertEqual(200, result["end"][0], result["end"][1])
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_late_streamer_close_does_not_touch_a_newer_generation(self):
+        release, worker, result = self._end_with_blocking_close(
+            lambda: (True, "streamer_idle_after_close"))
+        self.assertTrue(self.state.lock.acquire(timeout=2.0),
+                        "the streamer close holds the Gateway lock")
+        try:
+            # A newer owner (e.g. a hard reset) replaced the permit and the stream.
+            generation = int(self.state.control_state["generation"]) + 1
+            newer = {**self.state.control_state["active"],
+                     "operation_id": "hard-reset:newer", "generation": generation}
+            newer_stream = {**self.state.control_state["stream"],
+                            "stream_session_id": "stream-newer", "generation": generation}
+            self.state.control_state.update(
+                generation=generation, active=newer, stream=newer_stream)
+            terminal_id = "child-terminal:" + self.state.child_time_session["session_id"]
+        finally:
+            self.state.lock.release()
+        release.set()
+        worker.join(10)
+        self.assertEqual(409, result["end"][0], result["end"][1])
+        self.assertTrue(result["end"][1]["cleanup_required"])
+        self.assertIs(newer, self.state.control_state["active"])
+        self.assertEqual("permitted", newer["state"])
+        self.assertIs(newer_stream, self.state.control_state["stream"])
+        self.assertEqual("stream-newer", newer_stream["stream_session_id"])
+        self.assertNotIn(terminal_id, self.state.control_state.get("completed", {}))
+
+    def test_hard_reset_during_the_streamer_close_survives_the_late_completion(self):
+        release, worker, result = self._end_with_blocking_close(
+            lambda: (True, "streamer_idle_after_close"))
+        session_id = self.state.child_time_session["session_id"]
+        terminal_id = "child-terminal:" + session_id
+        # The reset's own streamer close must not wait on the blocked one.
+        wakeplay_gateway.StreamerControlOperation.close = staticmethod(
+            lambda *_args, **_kwargs: (True, "streamer_idle_after_close"))
+        status, reset = self.state.hard_reset_session({"force": True})
+        self.assertEqual(200, status, reset)
+        generation = self.state.control_state["generation"]
+        epoch = self.state.control_state["actor_lease_epoch"]
+        reset_id = "hard-reset:%d:%d" % (generation, epoch)
+        completed = self.state.control_state["completed"]
+        reset_receipt = dict(completed[reset_id])
+        self.assertEqual(("failed", "superseded_by_hard_reset"), (
+            completed[terminal_id]["state"], completed[terminal_id]["reason"]))
+
+        release.set()
+        worker.join(10)
+        # The late completion reads the superseded receipt and changes nothing.
+        self.assertEqual(409, result["end"][0], result["end"][1])
+        self.assertTrue(result["end"][1]["cleanup_required"])
+        self.assertEqual(("failed", "superseded_by_hard_reset"), (
+            completed[terminal_id]["state"], completed[terminal_id]["reason"]))
+        self.assertEqual(reset_receipt, completed[reset_id])
+        self.assertEqual((generation, epoch), (
+            self.state.control_state["generation"],
+            self.state.control_state["actor_lease_epoch"]))
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIsNone(self.state.child_time_session)
+        self.assertEqual("hard_reset", self.state.child_time_completed[session_id]["reason"])
+
+    def test_failed_streamer_close_leaves_a_recoverable_permit(self):
+        session_id = self.start_running()
+        original_close = wakeplay_gateway.StreamerControlOperation.close
+        attempts = []
+
+        def failing_close(streamer, stream, trace=None, host_held=False):
+            del streamer, stream, trace, host_held
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise OSError("Vibepollo unreachable")
+            return True, "streamer_idle_after_close"
+
+        wakeplay_gateway.StreamerControlOperation.close = staticmethod(failing_close)
+        self.addCleanup(setattr, wakeplay_gateway.StreamerControlOperation, "close",
+                        original_close)
+        status, first = self.state.child_time_session_end(
+            self.client, "kid", session_id, "client_closed")
+        self.assertEqual(409, status, first)
+        self.assertTrue(first["cleanup_required"])
+        self.assertEqual("uncertain", self.state.control_state["active"]["state"])
+        self.assertTrue(self.state.lock.acquire(timeout=0))
+        self.state.lock.release()
+
+        status, retried = self.state.child_time_session_end(
+            self.client, "kid", session_id, "client_closed")
+        self.assertEqual(200, status, retried)
+        self.assertEqual(2, len(attempts))
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIsNone(self.state.child_time_session)
+
 if __name__ == "__main__":
     unittest.main()

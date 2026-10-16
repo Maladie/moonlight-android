@@ -31,7 +31,7 @@ public class ConsoleChildPairingTest {
     @Test public void childPairingFailureOffersExplicitHostRepair() throws IOException {
         String source = SourceText.main("console/ConsoleActivity.java");
         String failure = between(source, "private String childLaunchFailureMessage(",
-                "private void refreshWarmUpObservation(");
+                "private boolean refreshObservationNow(");
         String pairHost = between(source, "private void pairHost(ComputerDetails host)",
                 "private void pairGatewayAndStream(");
         String automatic = between(source,

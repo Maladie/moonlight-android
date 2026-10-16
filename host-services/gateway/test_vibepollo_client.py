@@ -90,6 +90,23 @@ class ControlSnapshotTest(unittest.TestCase):
         self.assertEqual(["apps"], snapshot["control_unavailable_sources"])
 
 
+    def test_running_app_id_tells_unknown_from_no_app(self):
+        client = VibepolloClient(Path("unused-settings.json"), Path("unused-export"))
+        apps = [{"uuid": "a", "id": "7", "name": "Stream"}, {"uuid": "b", "id": "x"}]
+        for response, expected in (
+                ({"current_app": "a", "apps": apps}, 7),
+                ({"current_app": "", "apps": apps}, 0),
+                ({"current_app": "b", "apps": apps}, None),          # no numeric id
+                ({"current_app": "missing", "apps": apps}, None),    # not listed
+                ({"current_app": None, "apps": apps}, None),
+                ({"current_app": "", "apps": {"uuid": "a"}}, None)):
+            with self.subTest(response=response), \
+                    mock.patch.object(client, "call", return_value=response):
+                self.assertEqual(expected, client.running_app_id())
+        with mock.patch.object(client, "call", side_effect=VibepolloError("down")):
+            self.assertIsNone(client.running_app_id())
+
+
 class SettingsTest(unittest.TestCase):
     def test_api_must_stay_on_local_https(self):
         self.assertEqual("https://127.0.0.1:47990", local_base_url("https://127.0.0.1:47990/"))

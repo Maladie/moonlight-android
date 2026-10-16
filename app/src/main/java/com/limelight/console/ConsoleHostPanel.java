@@ -45,7 +45,9 @@ final class ConsoleHostPanel {
 
     static ConsoleActionMenu<Action> menu(Facts facts) {
         ConsoleActionMenu<Action> menu = new ConsoleActionMenu<>();
-        boolean closeSession = facts.online && facts.paired && facts.streamRunning;
+        // An active session can be closed even while the streamer's app is unknown.
+        boolean closeSession = facts.online && facts.paired
+                && (facts.streamRunning || facts.sessionActive);
         if (facts.sessionActive) {
             menu.add(Action.RESUME, R.string.console_return_to_stream, facts.resumeAvailable)
                     .add(Action.CLOSE_SESSION, R.string.console_close_session, closeSession);

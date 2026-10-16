@@ -423,7 +423,7 @@ public class SessionModelHostTest {
                         session.records.suspendedForExecution(host, "parent"),
                         session.records.recentlyEndedForExecution(host, "parent"),
                         session.records.pending, sleep != null,
-                        sleep != null && sleep.sleepObservedAt > 0L, false, 0), m.now);
+                        sleep != null && sleep.sleepObservedAt > 0L, false), m.now);
     }
 
     /** Writes a reconnect record as Game stores it, then lets the model read its stores. */

@@ -24,32 +24,16 @@ import static org.junit.Assert.assertTrue;
 public class SessionArchitectureGuardTest {
     /**
      * Host-reported running app/game reads left in ConsoleActivity, per method. Game reads none.
-     * K5 owner decision 8: the four decision reads move to the Gateway's observation once the
-     * Gateway reports the Sunshine app id (host 0.7.134); until then they stay. The rest only
-     * feed the model or display.
+     * The streamer's running app is the Gateway observation's fact, read only as the
+     * projection's {@code streamerAppId} (K5 owner decision 8, backlog #1b); the serverinfo
+     * poll's {@code runningGameId} feeds only the session model.
      */
     private static final Map<String, Integer> ALLOWED_RUNNING_READS = new TreeMap<>();
     static {
-        // Decision 8 (until host 0.7.134): close-session offer on the host tile.
-        ALLOWED_RUNNING_READS.put("showHostSelectionOptions", 1);
-        // Decision 8: close-session in quick launch.
-        ALLOWED_RUNNING_READS.put("showQuickLaunchItemActions", 1);
-        // Decision 8: saving the suspended session before host sleep.
-        ALLOWED_RUNNING_READS.put("requestHostSleep", 1);
-        // Decision 8: confirmTerminateSession guard.
-        ALLOWED_RUNNING_READS.put("confirmTerminateSession", 1);
-        // Display: pairing failure message names an in-game host.
-        ALLOWED_RUNNING_READS.put("pairHostManually", 1);
-        // Display: running badge on Sunshine app cards.
-        ALLOWED_RUNNING_READS.put("renderApps", 1);
-        // Display: which app actions an app card shows.
-        ALLOWED_RUNNING_READS.put("showAppActions", 2);
         // Display: running game named in the host status (projection's display fact).
         ALLOWED_RUNNING_READS.put("hostStatus", 2);
         // Model input: the poll is reported to SessionModel (decision 3: 0 = transport lost).
         ALLOWED_RUNNING_READS.put("reportHostPoll", 1);
-        // Model input: the poll's value handed to the session projection.
-        ALLOWED_RUNNING_READS.put("projectSession", 1);
         // Display: "End game" entry needs the item's exact process proof.
         ALLOWED_RUNNING_READS.put("isExactRunningManagedGame", 1);
         // Display: library re-render signature.

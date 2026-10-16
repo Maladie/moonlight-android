@@ -319,6 +319,7 @@ class ControlOperationTest(unittest.TestCase):
             "session_id": child_session_id, "client_id": "tv",
             "actor_profile_id": "kid", "execution_profile_id": "parent"}
         self.state.authorize_child_profile(self.client, "kid")
+        self.observe_provider_idle()  # a fresh child start needs the provider's proof
 
         status, replacement = self.state.control_operation_acquire(self.client, {
             "operation_id": "child-replacement", "intent": "replacement",
@@ -1648,6 +1649,7 @@ class ControlOperationTest(unittest.TestCase):
                    "actor_profile_id": "kid", "execution_profile_id": "parent"}
 
         def child_start(operation_id):
+            self.observe_provider_idle()  # a fresh child start needs the provider's proof
             self.state.child_time_session = session
             self.state.authorize_child_profile(self.client, "kid")
             body = {**self.request(operation_id), "child_session_id": child_session_id}
@@ -2365,6 +2367,7 @@ class ControlOperationTest(unittest.TestCase):
             "session_id": child_session_id, "client_id": "tv",
             "actor_profile_id": "kid", "execution_profile_id": "parent"}
         self.state.authorize_child_profile(self.client, "kid")
+        self.observe_provider_idle()  # a fresh child start needs the provider's proof
         status, replacement = self.state.control_operation_acquire(self.client, {
             "operation_id": "child-replacement", "intent": "replacement",
             "stream_session_id": "child-stream", "sunshine_app_id": 7,

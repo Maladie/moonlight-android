@@ -4805,6 +4805,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 + '|' + snapshot.state + '|' + snapshot.observationState
                 + '|' + snapshot.playniteGameId + '|' + snapshot.processEvidence
                 + '|' + snapshot.processId + '|' + snapshot.processToken
+                // Not projection identity, but the app cards' running badge reads it.
+                + '|' + snapshot.streamerAppId
                 + '|' + consoleHostState(host, snapshot)
                 + '|' + hostStatus(host, snapshot, false)
                 + '|' + queuedPlayniteGameId(host.uuid);
@@ -4910,7 +4912,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         SessionStateResolver.LocalFacts local = new SessionStateResolver.LocalFacts(suspended,
                 records.recentlyEndedForExecution(host.uuid, executionProfileId), pending,
                 sleep != null, sleep != null && sleep.sleepObservedAt > 0L,
-                neutralStreamTarget, host.runningGameId);
+                neutralStreamTarget);
         return SessionStateResolver.render(retained, host.uuid, profileKey.profileId,
                 executionProfileId, local, SystemClock.uptimeMillis());
     }
@@ -5205,7 +5207,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 host.uuid, address, selectedProfileId(host.uuid)) != null;
         facts.canWake = !terminating && ConsoleHostPresentation.canWake(host)
                 && !hostStateController.isWaking(host.uuid);
-        facts.streamRunning = session.hostRunningAppId != 0;
+        facts.streamRunning = session.streamerAppId > 0;
         facts.inHost = !hostSelectionVisible;
         facts.sessionActive = facts.online && facts.paired && session.hasActiveSession();
         facts.resumeAvailable = session.isResumeAvailable() && session.hostGameAppId != 0;
@@ -6339,7 +6341,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             });
             actions.add(right);
         }
-        if (host != null && session.hostRunningAppId == item.appId) {
+        if (host != null && session.streamerAppId == item.appId) {
             TextView quit = consolePanel.action(getString(R.string.console_close_session));
             consolePanel.destructive(quit);
             quit.setOnClickListener(view -> confirmTerminateSession(host));
@@ -7131,7 +7133,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     } else if (state == PairingManager.PairState.ALREADY_IN_PROGRESS) {
                         message = getString(R.string.pair_already_in_progress);
                     } else {
-                        message = getString(resolveSessionSnapshot(host).hostRunningAppId != 0
+                        message = getString(resolveSessionSnapshot(host).streamerAppId > 0
                                 ? R.string.pair_pc_ingame : R.string.pair_fail);
                     }
                 }
@@ -7247,8 +7249,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                   GatewayConnection connection) {
         final SuspendedSessionStore.Session suspendedRequest;
         final long sleepRequestedAt;
-        int runningAppId = resolveSessionSnapshot(host).hostRunningAppId;
-        if (runningAppId != 0) {
+        SessionSnapshot session = resolveSessionSnapshot(host);
+        // Recoverable over refusal: with the streamer unknown the session this client knows of
+        // (its retained, suspended or reconnect app) is saved anyway; a stale resume record is
+        // recoverable, a lost one is not. With none known there is no app to resume.
+        int runningAppId = session.streamerAppId == SessionSnapshot.STREAMER_APP_UNKNOWN
+                ? session.hostGameAppId : session.streamerAppId;
+        if (runningAppId > 0) {
             String gameId = uniquePlayniteGameIdForRunningApp(host, runningAppId);
             if (gameId.isEmpty()) {
                 gameId = preferences.getString("selected_playnite." + host.uuid, "");
@@ -7380,7 +7387,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         SessionSnapshot session = renderedSessionSnapshot(host);
         if (host == null || host.state != ComputerDetails.State.ONLINE
                 || (session.state != SessionSnapshot.State.ACTIVE
-                && session.hostRunningAppId == 0)
+                && session.streamerAppId == 0)
                 || managerBinder == null) return;
         TextView cancel = consolePanel.action(getString(R.string.console_cancel));
         TextView terminate = consolePanel.action(getString(R.string.console_close_session));
@@ -11800,7 +11807,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (selectedProfileIsChild(host == null ? null : host.uuid)) {
             apps = Collections.emptyList();
         }
-        int runningAppId = renderedSessionSnapshot(host).hostRunningAppId;
+        int runningAppId = renderedSessionSnapshot(host).streamerAppId;
         // One preferences handle per render: the signature and every card read it in memory.
         SharedPreferences appSettings = getSharedPreferences(
                 AppPreferences.APP_PREFERENCES_FILE, MODE_PRIVATE);
@@ -12099,8 +12106,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         boolean online = ConsoleActionCatalog.isOnline(host);
         boolean paired = ConsoleActionCatalog.isPaired(host);
-        boolean thisAppRunning = session.hostRunningAppId == app.getAppId();
-        boolean anotherAppRunning = session.hostRunningAppId != 0 && !thisAppRunning;
+        boolean thisAppRunning = session.streamerAppId == app.getAppId();
+        boolean anotherAppRunning = session.streamerAppId > 0 && !thisAppRunning;
         Set<String> hidden = new HashSet<>(getSharedPreferences(
                 AppView.HIDDEN_APPS_PREF_FILENAME, MODE_PRIVATE)
                 .getStringSet(host.uuid, Collections.emptySet()));
@@ -12729,20 +12736,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     /**
-     * One fresh host observation into the session projection before the warm-up launches. The
-     * warm-up reads its game from that projection when it launches, never from this read.
+     * Reads the host's observation now; whether the model accepted this read's own
+     * observation. The projection records what the read observed (or that it was unavailable).
      */
-    private void refreshWarmUpObservation(ComputerDetails host, String profileId) {
+    private boolean refreshObservationNow(ComputerDetails host, String profileId) {
         String address = host.activeAddress == null ? null : host.activeAddress.address;
         GatewayConnection gateway = hostGatewayStore.loadForHost(
                 host.uuid, address, profileId);
-        if (gateway == null) return;
+        if (gateway == null) return false;
         try {
-            new PlayniteTransitionGateway(sessionModel, host.uuid, gateway,
+            return new PlayniteTransitionGateway(sessionModel, host.uuid, gateway,
                     gatewayActorContext(host.uuid, profileId), hostGatewayClient,
-                    SystemClock::uptimeMillis).snapshot();
+                    SystemClock::uptimeMillis).snapshot().observationAccepted;
         } catch (IOException | RuntimeException unavailable) {
-            // The projection records what the read observed (or that it was unavailable).
+            return false;
         }
     }
 
@@ -13197,8 +13204,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
                     return null;
                 }
-                SessionSnapshot readyProjection = resolveSessionSnapshot(ready, intent.profileId);
-                refreshWarmUpObservation(ready, intent.profileId);
+                // The streamer's app is the observation's fact: observe before deciding on it.
+                boolean observed = refreshObservationNow(ready, intent.profileId);
+                SessionSnapshot readyProjection = SessionOrchestrator.preLaunchProjection(
+                        resolveSessionSnapshot(ready, intent.profileId), observed);
                 return new SessionOrchestrator.PreparedWarmUp(
                         result.target, ready, intent.profileKey, readyProjection);
             }
@@ -13389,7 +13398,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 }
             }
             if (ready != null && SessionOrchestrator.anotherAppRuns(
-                    resolveSessionSnapshot(ready, transitionProfileId), app.getAppId())
+                    SessionOrchestrator.preLaunchProjection(
+                            resolveSessionSnapshot(ready, transitionProfileId),
+                            refreshObservationNow(ready, transitionProfileId)), app.getAppId())
                     && !terminateKnownControlPlane(ready, transitionProfileId,
                     knownProviderGameId(ready)).closed()) {
                 mainHandler.post(() -> {

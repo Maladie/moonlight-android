@@ -165,7 +165,7 @@ Extract vertical slices into their own classes; do not grow the Activity.
 
 Inputs include:
 
-- `ComputerDetails.runningGameId`;
+- the Gateway observation (including `streamer`, the Sunshine app the host's streamer runs; the serverinfo `ComputerDetails.runningGameId` feeds only `SessionModel`);
 - resolved Playnite game ID;
 - the session model's state (`SessionModel`);
 - `SuspendedSessionStore`;

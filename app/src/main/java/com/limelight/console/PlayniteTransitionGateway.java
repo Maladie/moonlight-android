@@ -79,6 +79,8 @@ public final class PlayniteTransitionGateway {
          */
         public final long stateAgeMs;
         final SessionSnapshot sessionSnapshot;
+        /** The model accepted this read's own observation (not a rejected or failed read). */
+        final boolean observationAccepted;
 
         Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
                  String gameId, int processId, boolean windowReady, String targetKind,
@@ -156,11 +158,14 @@ public final class PlayniteTransitionGateway {
             this.updateProgress = updateProgress;
             this.updatePatching = updatePatching;
             this.sessionSnapshot = null;
+            this.observationAccepted = false;
         }
 
         /** Provider evidence of one observation already fenced by the caller's own control permit. */
         private Snapshot(SessionSnapshot projected,
-                         HostGatewayClient.SessionObservation fenced) {
+                         HostGatewayClient.SessionObservation fenced,
+                         boolean observationAccepted) {
+            this.observationAccepted = observationAccepted;
             this.gatewayReady = true;
             this.connectorReady = fenced.connectorEvidence == HostGatewayClient.Evidence.VERIFIED
                     || !fenced.requiresConnector;
@@ -192,7 +197,8 @@ public final class PlayniteTransitionGateway {
 
         private Snapshot(SessionSnapshot projected,
                          HostGatewayClient.SessionObservation observation,
-                         boolean gatewayReady) {
+                         boolean gatewayReady, boolean observationAccepted) {
+            this.observationAccepted = observationAccepted;
             this.gatewayReady = gatewayReady;
             this.connectorReady = observation != null
                     && (observation.connectorEvidence == HostGatewayClient.Evidence.VERIFIED
@@ -361,16 +367,16 @@ public final class PlayniteTransitionGateway {
                     if (attempt < SNAPSHOT_DISPATCH_ATTEMPTS && result.lostDispatchOrdering) {
                         continue;
                     }
-                    return new Snapshot(result.projection,
-                            null, false);
+                    return new Snapshot(result.projection, null, false, false);
                 }
                 boolean correlated = result.accepted.observationCorrelated;
-                return new Snapshot(result.accepted, correlated ? observation : null, correlated);
+                return new Snapshot(result.accepted, correlated ? observation : null, correlated,
+                        true);
             } catch (IOException unavailable) {
                 // A cancelled read (interrupt restored by the transport) observed nothing.
                 if (Thread.currentThread().isInterrupted()) throw unavailable;
                 return new Snapshot(unavailable(request.ordinal, unavailable.getMessage()),
-                        null, false);
+                        null, false, false);
             }
         }
     }
@@ -426,7 +432,7 @@ public final class PlayniteTransitionGateway {
         } catch (IOException unavailable) {
             if (Thread.currentThread().isInterrupted()) throw unavailable;
             return new Snapshot(unavailable(request.ordinal, unavailable.getMessage()),
-                    null, false);
+                    null, false, false);
         }
         // The model returns the projection of this exact observation, never a newer one.
         com.limelight.session.SessionModel.ObservationResult result = observed(observation);
@@ -438,7 +444,9 @@ public final class PlayniteTransitionGateway {
                 && !permit.streamSessionId.isEmpty()
                 && permit.streamSessionId.equals(observation.streamSessionId)
                 && permit.actorLeaseEpoch == observation.actorLeaseEpoch;
-        if (permitted && result.accepted != null) return new Snapshot(result.accepted, observation);
+        if (permitted && result.accepted != null) {
+            return new Snapshot(result.accepted, observation, true);
+        }
         // A read that lost only the dispatch ordering may still name the exact running
         // process for the permit/token-checked stop. It never proves absence: a newer
         // accepted observation may show the game running, so idle or unverified evidence
@@ -447,8 +455,7 @@ public final class PlayniteTransitionGateway {
                 && observation.gameEvidence == HostGatewayClient.Evidence.VERIFIED
                 && observation.processEvidence == HostGatewayClient.Evidence.VERIFIED
                 && observation.processToken != null && !observation.processToken.isEmpty()) {
-            return new Snapshot(result.projection,
-                    observation);
+            return new Snapshot(result.projection, observation, false);
         }
         // Outside the caller's exact permit nothing proves the stop target: fail closed.
         return new Snapshot(false, false, "unknown", "", 0, false, "playnite", 0,

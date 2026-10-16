@@ -494,6 +494,46 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual(0, started("kid", "steam:123", 6))
         self.state.child_time_session = None
 
+    def test_observation_carries_the_streamers_running_app_unscoped(self):
+        self.state.vibepollo = mock.Mock()
+        self.state.proxy = mock.Mock(return_value=(True, {"game": {"state": "idle"}}))
+        ordinal = 0
+        for actor, app_id, expected in (
+                ("parent", 7, {"evidence": "VERIFIED", "app_id": 7}),
+                # Not scoped: Sunshine's serverinfo tells every paired client the same id.
+                ("kid", 7, {"evidence": "VERIFIED", "app_id": 7}),
+                ("parent", 0, {"evidence": "ABSENT", "app_id": 0}),
+                ("parent", None, {"evidence": "UNAVAILABLE", "app_id": 0})):
+            ordinal += 1
+            self.state.request_context.actor_profile_id = actor
+            self.state.request_context.execution_profile_id = "parent"
+            self.state.vibepollo.running_app_id.return_value = app_id
+            status, observation = self.state.playnite_observation(ordinal, "")
+            self.assertEqual(200, status)
+            self.assertEqual(expected, observation["streamer"])
+        # The streamer is read outside the Gateway lock: another thread can take it.
+        free = []
+
+        def probe():
+            def take():
+                if self.state.lock.acquire(blocking=False):
+                    free.append(True)
+                    self.state.lock.release()
+            other = threading.Thread(target=take)
+            other.start()
+            other.join()
+            return 3
+        self.state.vibepollo.running_app_id.side_effect = probe
+        status, observation = self.state.playnite_observation(ordinal + 1, "")
+        self.assertEqual(3, observation["streamer"]["app_id"])
+        self.assertEqual([True], free)
+        # A failed provider read answers 503 without reading the streamer.
+        self.state.vibepollo.running_app_id.reset_mock()
+        self.state.proxy.return_value = (False, {})
+        status, _ = self.state.playnite_observation(ordinal + 2, "")
+        self.assertEqual(503, status)
+        self.state.vibepollo.running_app_id.assert_not_called()
+
     def test_start_phase_reasons_reach_the_client_unchanged(self):
         # Start reasons are not mapped by the Gateway: the observation and the
         # shared game's lifecycle event carry the provider reason verbatim.

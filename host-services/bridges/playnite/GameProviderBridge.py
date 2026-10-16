@@ -353,7 +353,8 @@ class StreamDisplayResolver:
         try:
             self.cached = self.stream_display(self.active_displays())
         except (OSError, AttributeError, ValueError):
-            pass
+            # A failed enumeration proves no display; a kept name may be a renumbered one.
+            self.cached = ""
         return self.cached
 
 
@@ -369,6 +370,10 @@ class WindowProbe:
     UOI_NAME = 2
     WM_CLOSE = 0x0010
     SW_RESTORE = 9
+    SW_MAXIMIZE = 3
+    GWL_STYLE = -16
+    WS_THICKFRAME = 0x00040000
+    WS_MAXIMIZEBOX = 0x00010000
     TH32CS_SNAPPROCESS = 0x00000002
     STILL_ACTIVE = 259
 
@@ -450,6 +455,10 @@ class WindowProbe:
             self.user32.PostMessageW.restype = wintypes.BOOL
             self.user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
             self.user32.ShowWindow.restype = wintypes.BOOL
+            self.user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+            self.user32.GetWindowLongW.restype = wintypes.LONG
+            self.user32.IsZoomed.argtypes = [wintypes.HWND]
+            self.user32.IsZoomed.restype = wintypes.BOOL
             self.user32.SetForegroundWindow.argtypes = [wintypes.HWND]
             self.user32.SetForegroundWindow.restype = wintypes.BOOL
             self.user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -585,8 +594,9 @@ class WindowProbe:
         A process whose owner is unreadable can be a game only through the matcher's two
         routes: a visible window on this desktop or the image name of an exact game
         executable (``game_images``, casefolded). Its image path, when readable, decides:
-        only a path ``catalog_path`` accepts can still be a game. It never joins the
-        result, so owner/session checks stay strict.
+        only a path ``catalog_path`` accepts can still be a game. Such a process joins the
+        result without owner evidence (no ``user_sid``), so the matcher can name the game it
+        may be but never verifies it.
         """
         own = self.process_identity(os.getpid(), include_owner=True)
         if own is None or not self.user32:
@@ -624,6 +634,9 @@ class WindowProbe:
                             if found == "alive" else ""
                         if found != "gone" and (not path or catalog_path(path)):
                             status = "partial"
+                            if path:
+                                result.append({"process_id": pid, "process_path": path,
+                                               "visible_window": pid in visible_pids})
                 elif identity["user_sid"] == own["user_sid"] \
                         and identity["session_id"] == own["session_id"]:
                     identity["visible_window"] = pid in visible_pids
@@ -1149,7 +1162,19 @@ class WindowProbe:
         if not self.fills_monitor(
                 list(sample.get("bounds") or []),
                 list(sample.get("monitor_bounds") or [])):
-            raise RuntimeError("The game window does not fill the streamed display.")
+            # Only a resizable window that offers its own maximize button: a fixed-size
+            # or borderless game keeps its intended mode. Maximize stays on this monitor.
+            style = int(self.user32.GetWindowLongW(hwnd, self.GWL_STYLE)) & 0xFFFFFFFF
+            resizable = self.WS_THICKFRAME | self.WS_MAXIMIZEBOX
+            if style & resizable != resizable or self.user32.IsZoomed(hwnd):
+                raise RuntimeError("The game window does not fill the streamed display.")
+            self.user32.ShowWindow(hwnd, self.SW_MAXIMIZE)
+            sample = self.sample("game", process_id, expected_display, install_directory)
+            if int(sample.get("hwnd") or 0) != hwnd or str(
+                    sample.get("display", "")).casefold() != expected_display.casefold() \
+                    or not self.fills_monitor(list(sample.get("bounds") or []),
+                                              list(sample.get("monitor_bounds") or [])):
+                raise RuntimeError("The game window does not fill the streamed display.")
         current_thread = int(self.kernel32.GetCurrentThreadId())
         target_thread = int(self.user32.GetWindowThreadProcessId(hwnd, None))
         foreground = int(self.user32.GetForegroundWindow() or 0)
@@ -1161,7 +1186,7 @@ class WindowProbe:
                     current_thread, thread_id, True):
                 attached.append(thread_id)
         try:
-            self.user32.ShowWindow(hwnd, self.SW_RESTORE)
+            # No SW_RESTORE: it would un-maximize the window that just passed the gate.
             self.user32.BringWindowToTop(hwnd)
             self.user32.SetActiveWindow(hwnd)
             self.user32.SetFocus(hwnd)
@@ -1789,6 +1814,8 @@ class BridgeState:
         self.running_process_probe: WindowProbe | None = None
         self._running_games: list[dict[str, Any]] = []
         self._running_scan_status = "unavailable"
+        self._running_scan_reason = "scan_stale"
+        self._running_unverified_games: list[str] = []
         self._minted_process_identities: dict[str, tuple[Any, ...]] = {}
         self._running_scan_revision = ""
         self._running_scan_at = 0.0
@@ -4333,8 +4360,11 @@ class BridgeState:
             and int(matches[0].get("process_id") or 0) == process_id
 
     def _verified_running_games(self, budget: float
-                                ) -> tuple[list[dict[str, Any]], str, str, str]:
-        """Verified games, scan status, library revision and a diagnostic reason category."""
+                                ) -> tuple[list[dict[str, Any]], str, str, str, list[str]]:
+        """Verified games, scan status, library revision, a diagnostic reason category and
+        the unverified candidates: catalog games a partial scan saw but could not verify
+        (an exe matching several games, an unconfirmed emulator, missing owner evidence,
+        several processes of one game)."""
         with self.lock:
             games = [dict(game) for game in self.library.values()]
             revision = self.library_revision
@@ -4342,7 +4372,7 @@ class BridgeState:
             current = dict(self.current)
             native_confirmation = self._native_reconciliation_confirmation if self.connected else None
         if probe is None:
-            return [], "unavailable", revision, "probe_missing"
+            return [], "unavailable", revision, "probe_missing", []
         exact_paths = set()
         for game in games:
             executable = str(game.get("exe") or game.get("executable") or "").strip()
@@ -4357,6 +4387,7 @@ class BridgeState:
             budget)
         scan_status = status
         matches: dict[str, list[dict[str, Any]]] = {}
+        unverified: set[str] = set()
         for identity in identities:
             path = self._normalized_process_path(identity.get("process_path"))
             if not identity.get("visible_window") and path not in exact_paths:
@@ -4374,6 +4405,7 @@ class BridgeState:
             if len(candidates) != 1:
                 if candidates:
                     status = "partial"
+                    unverified.update(str(game["id"]) for game in candidates)
                 continue
             game_id = str(candidates[0]["id"])
             if str(candidates[0].get("provider") or "playnite").casefold() == "playnite":
@@ -4386,11 +4418,13 @@ class BridgeState:
                         or int(current.get("processStartedFiletime") or 0) != \
                         identity.get("process_started_filetime"):
                     status = "partial"
+                    unverified.add(game_id)
                     continue
             value = {**identity, "process_path": path, "game_id": game_id}
             if not value.get("user_sid") or int(value.get("process_id") or 0) <= 0 \
                     or int(value.get("process_started_filetime") or 0) <= 0:
                 status = "partial"
+                unverified.add(game_id)
                 continue
             value["process_token"] = self._process_token(game_id, value)
             matches.setdefault(game_id, []).append(value)
@@ -4423,6 +4457,7 @@ class BridgeState:
             # An unreadable live emulator (e.g. elevated) may still be this game.
             if fresh is None and probe.process_identity_status(current_pid)[0] != "gone":
                 status = scan_status = "partial"
+                unverified.add(current_id)
             if own is not None and fresh is not None \
                     and fresh.get("user_sid") == own.get("user_sid") \
                     and int(fresh.get("session_id") or 0) == int(
@@ -4436,14 +4471,15 @@ class BridgeState:
                         value["process_token"] = self._process_token(current_id, value)
                         matches.setdefault(current_id, []).append(value)
         verified = []
-        for values in matches.values():
+        for game_id, values in matches.items():
             if len(values) == 1:
                 verified.extend(values)
             else:
                 status = "partial"
+                unverified.add(game_id)
         reason = {"complete": "verified", "unavailable": "process_scan_unavailable"}.get(
             status, "process_unreadable" if scan_status == "partial" else "match_unconfirmed")
-        return verified, status, revision, reason
+        return verified, status, revision, reason, sorted(unverified)
 
     def _apply_epic_playtime_locked(self) -> None:
         for game_id, game in self.library.items():
@@ -4551,10 +4587,10 @@ class BridgeState:
         with self.lock:
             observed_current = self.current
         try:
-            games, status, revision, reason = self._verified_running_games(
+            games, status, revision, reason, unverified = self._verified_running_games(
                 RUNNING_SCAN_DEADLINE)
         except Exception:
-            games, status, revision, reason = [], "unavailable", "", "scan_error"
+            games, status, revision, reason, unverified = [], "unavailable", "", "scan_error", []
         with self.lock:
             if revision != self.library_revision or self.current is not observed_current \
                     or self._running_scan_at > started:
@@ -4563,7 +4599,7 @@ class BridgeState:
                 return
             self._sample_epic_playtime_locked(
                 games if status != "unavailable" else [], time.monotonic())
-            previous = self._record_running_scan_locked(games, status)
+            previous = self._record_running_scan_locked(games, status, reason, unverified)
             self._apply_start_process_evidence_locked(games, status)
         elapsed = time.monotonic() - started
         if status != previous:
@@ -4574,10 +4610,13 @@ class BridgeState:
         if elapsed > 0.2:
             logging.warning("Running game scan took %.0fms (%s)", elapsed * 1000, status)
 
-    def _record_running_scan_locked(self, games: list[dict[str, Any]], status: str) -> str:
+    def _record_running_scan_locked(self, games: list[dict[str, Any]], status: str,
+                                    reason: str, unverified: list[str]) -> str:
         """Publish a running-game inventory as fresh now; returns the previous status."""
         self._running_games = [{key: game[key] for key in (
             "game_id", "process_id", "process_token")} for game in games]
+        self._running_unverified_games = list(unverified)
+        self._running_scan_reason = reason
         previous = self._running_scan_status
         self._running_scan_status = status
         self._running_scan_revision = self.library_revision
@@ -4587,10 +4626,10 @@ class BridgeState:
     def _rescan_after_stop_locked(self) -> None:
         """A verified stop ends with a fresh inventory, so a reauthorization right after it
         sees the game gone instead of an inventory up to one background interval old."""
-        games, status, revision, _reason = self._verified_running_games(
+        games, status, revision, reason, unverified = self._verified_running_games(
             LOCKED_RUNNING_SCAN_DEADLINE)
         if status != "unavailable" and revision == self.library_revision:
-            self._record_running_scan_locked(games, status)
+            self._record_running_scan_locked(games, status, reason, unverified)
 
     def current_snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -4619,6 +4658,9 @@ class BridgeState:
                     "host_guide_allowed": host_guide_allowed,
                     "running_games": [dict(game) for game in self._running_games] if fresh else [],
                     "running_scan_status": self._running_scan_status if fresh else "unavailable",
+                    "running_scan_reason": self._running_scan_reason if fresh else "scan_stale",
+                    "unverified_running_games": list(
+                        self._running_unverified_games) if fresh else [],
                     "running_scan_revision": self._running_scan_revision if fresh else self.library_revision}
 
     def _window_targets_locked(self) -> dict[str, Any]:
@@ -4733,7 +4775,11 @@ class BridgeState:
                             "running_games": [dict(game) for game in current.get(
                                 "running_games", [])],
                             "running_scan_status": str(current.get(
-                                "running_scan_status") or "unavailable")},
+                                "running_scan_status") or "unavailable"),
+                            "running_scan_reason": str(current.get(
+                                "running_scan_reason") or "scan_stale"),
+                            "unverified_running_games": list(current.get(
+                                "unverified_running_games", []))},
                 "window": {"evidence": window_evidence, "ready": ready,
                            "target_kind": str(self.readiness.get(
                                "target_kind") or "playnite"),
@@ -4754,7 +4800,7 @@ class BridgeState:
         normalized = self.resolve_game_id(game_id)
         failed = {"accepted": False, "command": "stop", "force": False,
                   "reason": "running_game_identity_changed"}
-        games, status, revision, _reason = self._verified_running_games(
+        games, status, revision, _reason, _unverified = self._verified_running_games(
             LOCKED_RUNNING_SCAN_DEADLINE)
         expected = next((game for game in games if game["game_id"] == normalized
                          and game["process_token"] == token), None)
@@ -4789,7 +4835,7 @@ class BridgeState:
             games: list[dict[str, Any]] = []
             status = "unavailable"
             for _attempt in range(2):
-                games, status, _revision, _reason = self._verified_running_games(
+                games, status, _revision, reason, unverified = self._verified_running_games(
                     LOCKED_RUNNING_SCAN_DEADLINE)
                 if status != "unavailable":
                     break
@@ -4870,7 +4916,8 @@ class BridgeState:
 
             self._complete_game_stop_locked()
             self.readiness["reason"] = "session_hard_reset"
-            self._record_running_scan_locked([], status)  # Every scanned game was killed.
+            # Every verified game was killed; the unverified ones were never touched.
+            self._record_running_scan_locked([], status, reason, unverified)
             self._publish_locked("session-hard-reset", {
                 "stopped_count": len(stopped),
             })
@@ -4907,7 +4954,7 @@ class BridgeState:
                     return
                 if identity_state == "gone":
                     if self.current.get("connectorStopPending") is True:
-                        games, status, _revision, _reason = self._verified_running_games(
+                        games, status, _revision, _reason, _unverified = self._verified_running_games(
                             LOCKED_RUNNING_SCAN_DEADLINE)
                         if status == "complete" and not games:
                             self._complete_game_stop_locked()

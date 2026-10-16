@@ -77,6 +77,21 @@ for readiness, Play or close, and neither opens a new `state_episode`.
   game for its status line only with a non-zero start, so it reads "Online" beside a game
   its parent runs.
 
+### Streamer application
+
+`streamer` (Gateway, required): the Sunshine/Vibepollo application the streamer runs, as
+`{"evidence", "app_id"}`. `app_id` is the GameStream app id clients launch (Vibepollo's
+`/api/apps` `id` of `current_app`). `VERIFIED` with `app_id > 0`: it runs that app. `ABSENT`
+with `app_id` `0`: it runs none. `UNAVAILABLE` with `app_id` `0`: the read could not tell
+(Vibepollo unavailable, malformed, or a current app without exactly one listed id); `0` is
+then not "none", and a client decides on unknown explicitly. The Gateway reads it once per
+successful provider read, outside the Gateway lock, bounded by Vibepollo's per-source budget
+(0.6 s); a failed provider read answers `503` without it. It is host-global and not scoped:
+Sunshine's serverinfo already reports the same running app id to every paired client. The
+client's session projection holds it from the last accepted observation for 15 s
+(`OBSERVATION_LIVENESS_MS`) and retires it at a termination boundary; it replaced the client's
+serverinfo `runningGameId` for close, host-sleep, warm-up and app-card decisions.
+
 ## Current lifecycle events
 
 The Bridge currently publishes:
@@ -243,6 +258,51 @@ another TV's or execution profile's) means no record of this TV; anything else i
 and changes nothing. Status never answers `stream_generation_superseded`; a newer stream of
 another actor on this TV is answered as `owned` with that actor, which retires this actor's
 own local record of an older stream and is never adopted by it.
+
+## A child's start and the game it may stream
+
+A child-attached start (`child_session_id` set) may carry or stream only the game of that
+child's live time session, the one the host granted at session start from the parent's
+sharing and the time rules; that session is the only entitlement source. A refused start
+grants nothing and leaves the record and its generation as they were.
+
+- `resume`, `reconnect` or `warm_up` on the child's retained stream: a retained process
+  proof that names another game - possible when the record names no game yet and the
+  parent's own game runs on the shared Windows profile - is refused with
+  `409 child_game_not_entitled`. An idle provider carries no game and stays allowed.
+- `reauthorize` applies the same rule and names it `retained_process_unconfirmed`.
+- A fresh start (`launch`, `replacement`, or `warm_up` without a retained record): the
+  session's game was checked only when the session began, and the parent may have started
+  its own game since. The Gateway reads the provider before it grants and needs
+  positive evidence: idle, or only the session's own game (starting or running) as the
+  current and every running game. A `partial` running scan publishes in
+  `/observation` (`process.unverified_running_games`, `process.running_scan_reason`) the
+  catalog games it saw but could not verify: an exe matching several games, an
+  unconfirmed emulator, a process without owner evidence (including an owner-unreadable
+  process whose path lies in the catalog), or several processes of one game. These count
+  like running games, so a partial scan with an idle top level is granted only when every
+  game it names is the session's own. Any other game is `409 child_game_not_entitled`.
+  Known limit: a partial scan naming no game (an unreadable process whose path is
+  unreadable too) stays `409 game_state_unverified` until that process ends; accepting it
+  is left to the owner. Only an offline provider or a stale scan is re-read, every 0.5 s
+  within the acquire's wait budget while a full 3 s read still fits before the deadline
+  (the Bridge rescans at least every 5 s); then it is `409 game_state_unverified`, and the
+  next Play is granted once the Bridge answers. Other unproven states (starting,
+  stopping, a live retained target) are answered at once.
+
+Closing is not gaining control: the child's `full_quit` and `hard_reset` of the same stream
+stay allowed. A child time session never bound to a process is ended as stopped only on
+positive evidence that its game does not run: the provider's current game is another one
+with a verified process, and the complete scan lists none of the session's game. The other
+game is left running, and the terminal permit records the session's game as
+`abandoned_start_game_id`, so on success the Bridge drops a start of it still in flight and
+its effect fence rejects a late one. Without that evidence (another game still starting, an
+incomplete scan) the close stays `child_cleanup_required` and is retried.
+
+The lease-only child-session ends (`game_stopped`, `game_ended`, `actor_replaced`,
+`replacement`; `CHILD_LEASE_ONLY_REASONS`) release only the time lease and keep the stream
+retained. After one of them another actor may `reauthorize` the stream, and the ended
+session's own late `child_terminal` may still close the stream that is still bound to it.
 
 ## Retry after a lost transport
 

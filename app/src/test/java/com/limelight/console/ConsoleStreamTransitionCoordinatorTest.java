@@ -775,6 +775,21 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void notFullscreenGameRequestsTheBoundedFocusRemedy() {
+        PlayniteTransitionGateway.Snapshot windowed = snapshot(true, true, "running", GAME,
+                42, false, "game", 0, "target_not_fullscreen");
+        FakeGateway gateway = gatewayWith(windowed, windowed, windowed, windowed, windowed);
+        FakeClock clock = new FakeClock();
+        gateway.snapshotAction = () -> clock.value += 3_000L;
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals(Arrays.asList(3_000L, 6_000L, 9_000L), gateway.focusTimes);
+    }
+
+    @Test
     public void screensaverWakeDoesNotSpendTheGameFocusAttempts() {
         PlayniteTransitionGateway.Snapshot saver = snapshot(true, true, "running", GAME,
                 42, false, "game", 0, "host_screensaver_active");

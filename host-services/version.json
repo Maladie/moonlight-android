@@ -1,6 +1,6 @@
 {
   "product": "MoonWaker Host",
-  "version": "0.7.140",
-  "build": "2026.10.16-installer-icons",
+  "version": "0.7.141",
+  "build": "2026.10.16-host-p1",
   "protocol_version": 7
 }

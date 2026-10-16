@@ -3191,7 +3191,8 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
                              "evidence": game_evidence},
                     "process": {"evidence": "VERIFIED" if running else "ABSENT",
                                 "running_games": running,
-                                "running_scan_status": scan_status},
+                                "running_scan_status": scan_status,
+                                "unverified_running_games": []},
                 }
             if name == "vibepollo" and path == "/snapshot?force=1":
                 return True, {**control_evidence(int(self.streamer_active),

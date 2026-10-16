@@ -145,7 +145,7 @@ public final class SessionStateResolver {
 
     public static final class LocalFacts {
         public static final LocalFacts NONE = new LocalFacts(null, false, null,
-                false, false, false, 0);
+                false, false, false);
 
         final SuspendedSessionStore.Session suspended;
         final boolean recentlyEnded;
@@ -153,26 +153,17 @@ public final class SessionStateResolver {
         final boolean hostSleepRequested;
         final boolean hostSleepObserved;
         final boolean neutralStreamTarget;
-        /**
-         * Sunshine's running app of the host's poll, carried unchanged into the projection.
-         * Not display-only: {@code ConsoleActivity} still decides on it (~:4990, 6077, 6976,
-         * 7109, 12682, 12786, 13033, 13202; the reads ~:6860, 11565, 11861 only render) — the
-         * {@code Effects} reads move in K5.2, the others wait for an owner decision. The
-         * model's own decisions on it are in {@code SessionModel.hostPolled}.
-         */
-        final int hostRunningAppId;
 
         LocalFacts(SuspendedSessionStore.Session suspended, boolean recentlyEnded,
                    SessionResumeManager.PendingSession pending,
                    boolean hostSleepRequested, boolean hostSleepObserved,
-                   boolean neutralStreamTarget, int hostRunningAppId) {
+                   boolean neutralStreamTarget) {
             this.suspended = suspended;
             this.recentlyEnded = recentlyEnded;
             this.pending = pending;
             this.hostSleepRequested = hostSleepRequested;
             this.hostSleepObserved = hostSleepObserved;
             this.neutralStreamTarget = neutralStreamTarget;
-            this.hostRunningAppId = hostRunningAppId;
         }
     }
 
@@ -678,6 +669,11 @@ public final class SessionStateResolver {
             int appId = matchingTransport ? retained.appId
                     : suspended ? local.suspended.sunshineAppId
                     : pending ? local.pending.appId : 0;
+            // The streamer's app is host-global: the last accepted observation tells it while
+            // live, correlated or not; a termination boundary retires it with the observation.
+            int streamerAppId = observed != null
+                    && nowMs - observationAcceptedAtMs <= OBSERVATION_LIVENESS_MS
+                    ? observed.streamerAppId : SessionSnapshot.STREAMER_APP_UNKNOWN;
             String reason = !unavailableReason.isEmpty() ? unavailableReason
                     : current != null && !correlationMatches
                     ? "observation_correlation_mismatch"
@@ -701,7 +697,7 @@ public final class SessionStateResolver {
                     evidence == null ? 0 : evidence.processId,
                     evidence == null ? "" : evidence.processToken,
                     evidence == null ? "UNAVAILABLE" : evidence.windowEvidence.name(),
-                    reason, local.hostRunningAppId, endingGame,
+                    reason, streamerAppId, endingGame,
                     display(retained, matchingTransport, nowMs), terminationUnconfirmed,
                     closeFailed);
         }
