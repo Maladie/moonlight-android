@@ -64,6 +64,7 @@ public final class LaunchTransitionController {
     private boolean streamWasRevealedBeforeClosing;
     private boolean uncertain;
     private boolean startTakingLonger;
+    private int updateProgress = -1;
     /** The host reported this attempt's game window ready at least once: its start finished. */
     private boolean gameReadyConfirmed;
     private boolean revealPreferred;
@@ -611,6 +612,31 @@ public final class LaunchTransitionController {
         publish();
     }
 
+    /**
+     * The host updates this transition's game before starting it (progress 0-100, -1 without
+     * byte counts). Nothing expires here; only readiness, cancel or a host failure end it. After
+     * a reveal the cover never returns.
+     */
+    public synchronized void gameUpdating(String transitionId, String hostId, int progress) {
+        if (!accept(transitionId, hostId) || currentTarget != LaunchTransitionType.GAME
+                || revealAuthorized || revealCompleted || rejectsLateTargetSignal()) return;
+        overlayVisible = true;
+        inputBlocked = true;
+        targetWindowReady = false;
+        startTakingLonger = false;
+        updateProgress = Math.max(-1, Math.min(100, progress));
+        state = LaunchTransitionState.GAME_UPDATING;
+        evaluateReady();
+    }
+
+    /** A host observation that does not report an update: the start continues as a launch. */
+    public synchronized void gameUpdateFinished(String transitionId) {
+        if (!accept(transitionId, null) || state != LaunchTransitionState.GAME_UPDATING) return;
+        updateProgress = -1;
+        state = LaunchTransitionState.GAME_STARTING;
+        evaluateReady();
+    }
+
     public synchronized void hostSessionLocked(
             String transitionId, String hostId, LaunchTransitionType kind,
             String gameId, String reason) {
@@ -956,7 +982,8 @@ public final class LaunchTransitionController {
                 manualRevealOverride,
                 covered && !freshFrameAfterEdge && !rejectsLateTargetSignal()
                         && state != LaunchTransitionState.CANCELLED, frameEdge, userCover,
-                uncoverAwaitsFrame, publishSequence);
+                uncoverAwaitsFrame, state == LaunchTransitionState.GAME_UPDATING
+                        ? updateProgress : -1, publishSequence);
     }
 
     static int stepForState(LaunchTransitionState state) {
@@ -968,6 +995,7 @@ public final class LaunchTransitionController {
                 return 2;
             case PLAYNITE_STARTING:
             case PLAYNITE_PROCESS_RUNNING:
+            case GAME_UPDATING:
             case GAME_START_REQUESTED:
             case GAME_STARTING:
             case GAME_PROCESS_RUNNING:

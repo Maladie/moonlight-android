@@ -37,6 +37,8 @@ public final class LaunchTransitionSnapshot {
      * fresh frame (or that frame's deadline): nothing on it is a launch to cancel.
      */
     public final boolean userCoverReleased;
+    /** Progress (0-100) of the game update this start waits on; -1 when the host has no bytes. */
+    public final int updateProgress;
     /** The controller's publish order; a later publish carries a larger value. */
     public final long sequence;
 
@@ -63,7 +65,7 @@ public final class LaunchTransitionSnapshot {
                              String notice, boolean manuallyRevealed,
                              boolean awaitingVideoFrame, long frameEdge,
                              LaunchTransitionController.UserCover userCover,
-                             boolean userCoverReleased, long sequence) {
+                             boolean userCoverReleased, int updateProgress, long sequence) {
         this.spec = spec;
         this.state = state;
         this.step = step;
@@ -82,6 +84,7 @@ public final class LaunchTransitionSnapshot {
         this.frameEdge = frameEdge;
         this.userCover = userCover;
         this.userCoverReleased = userCoverReleased;
+        this.updateProgress = updateProgress;
         this.sequence = sequence;
     }
 

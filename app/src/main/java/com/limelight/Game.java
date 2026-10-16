@@ -5779,6 +5779,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         return getString(R.string.transition_game_start_timeout);
                     }
 
+                    @Override public String gameUpdateFailedMessage() {
+                        return getString(R.string.transition_game_update_failed);
+                    }
+
                     @Override public String previousGameRunningMessage() {
                         return getString(isChildSession()
                                 ? R.string.transition_previous_game_running_child
@@ -6152,7 +6156,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // Notice only; Cancel and an available manual reveal stay as they are.
                 consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot),
                         snapshot.startTakingLonger
-                                ? getString(R.string.transition_start_taking_longer) : "");
+                                ? getString(R.string.transition_start_taking_longer) : "",
+                        snapshot.updateProgress);
                 consoleLoadingView.setManualRevealAvailable(
                         !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             }
@@ -6393,6 +6398,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             case PLAYNITE_FULLSCREEN_STARTING:
                 return snapshot.detail.isEmpty()
                         ? getString(R.string.transition_waiting_fullscreen) : snapshot.detail;
+            case GAME_UPDATING:
+                return snapshot.updateProgress < 0
+                        ? getString(R.string.transition_updating_game)
+                        : getString(R.string.transition_updating_game_percent,
+                        snapshot.updateProgress);
             case GAME_START_REQUESTED:
             case GAME_STARTING:
                 return getString(R.string.transition_starting_game);

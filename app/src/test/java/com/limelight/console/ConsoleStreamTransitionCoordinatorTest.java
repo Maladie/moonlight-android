@@ -944,6 +944,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(45_000L, timeout(LaunchTransitionState.PLAYNITE_PROCESS_RUNNING));
         assertEquals(30_000L, timeout(LaunchTransitionState.PLAYNITE_FULLSCREEN_STARTING));
         // Game start readiness has no client bound: the host fails phase 1 itself.
+        assertEquals(0L, timeout(LaunchTransitionState.GAME_UPDATING));
         assertEquals(0L, timeout(LaunchTransitionState.GAME_START_REQUESTED));
         assertEquals(0L, timeout(LaunchTransitionState.GAME_STARTING));
         assertEquals(0L, timeout(LaunchTransitionState.GAME_PROCESS_RUNNING));
@@ -953,6 +954,52 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(15_000L, timeout(LaunchTransitionState.PLAYNITE_STOPPING));
         assertEquals(15_000L, timeout(LaunchTransitionState.CLOSING_STREAM));
         assertEquals(0L, timeout(LaunchTransitionState.GAME_READY));
+    }
+
+    @Test
+    public void gameUpdateNeverExpiresAndContinuesAsALaunchOnlyWhenTheHostSaysSo() {
+        FakeClock clock = new FakeClock();
+        long tenHours = 10L * 60L * 60L * 1000L;
+        FakeGateway gateway = gatewayWith(updating(25), updating(-1), updating(90),
+                snapshot(true, true, "starting", GAME, 0, false, "game", 0, "game_starting"));
+        for (int i = 0; i < 3; i++) gateway.snapshotActions.add(() -> clock.value += tenHours);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        int firstUpdate = harness.states.indexOf(LaunchTransitionState.GAME_UPDATING);
+        assertTrue(firstUpdate >= 0);
+        assertFalse(harness.states.contains(LaunchTransitionState.TIMED_OUT));
+        assertFalse(harness.states.contains(LaunchTransitionState.ERROR));
+        assertTrue("a start that stopped updating continues as a launch",
+                harness.states.lastIndexOf(LaunchTransitionState.GAME_STARTING) > firstUpdate);
+        assertFalse(harness.controller.snapshot().startTakingLonger);
+    }
+
+    @Test
+    public void gameUpdateIsShownWithItsProgressAndNeverAsStartTakingLonger() {
+        Harness harness = new Harness(LaunchTransitionType.GAME, gatewayWith(updating(42)));
+
+        harness.runObservation();
+
+        LaunchTransitionSnapshot shown = harness.controller.snapshot();
+        assertEquals(LaunchTransitionState.GAME_UPDATING, shown.state);
+        assertEquals(42, shown.updateProgress);
+        assertTrue(shown.overlayVisible);
+        assertTrue(shown.inputBlocked);
+    }
+
+    @Test
+    public void failedGameUpdateIsAnErrorWithItsOwnMessage() {
+        Harness harness = new Harness(LaunchTransitionType.GAME, gatewayWith(
+                snapshot(true, true, "failed", GAME, 0, false, "game", 0,
+                        "steam_update_disk_write_failure")));
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.ERROR, harness.controller.snapshot().state);
+        assertEquals("update failed", harness.controller.snapshot().detail);
     }
 
     @Test
@@ -2849,6 +2896,12 @@ public class ConsoleStreamTransitionCoordinatorTest {
         return new PlayniteTransitionGateway.Events(Arrays.asList(values), latest);
     }
 
+    /** The host updates the game before starting it. */
+    private static PlayniteTransitionGateway.Snapshot updating(int progress) {
+        return new PlayniteTransitionGateway.Snapshot(true, true, "starting", GAME, 0,
+                false, "game", 0, "game_updating", false, "", "", "", "", 0L, progress);
+    }
+
     /** A game observation whose host state episode had lasted {@code ageMs} when observed. */
     private static PlayniteTransitionGateway.Snapshot aged(String gameState, String gameId,
                                                           int processId, String reason,
@@ -3080,6 +3133,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         @Override public String launcherInteractionRequiredMessage() { return "reveal launcher"; }
         @Override public String windowStabilizingMessage() { return "stabilizing"; }
         @Override public String gameStartTimeoutMessage() { return "start timeout"; }
+        @Override public String gameUpdateFailedMessage() { return "update failed"; }
         @Override public String previousGameRunningMessage() { return "previous game"; }
         @Override public String previousGameStopFailedMessage() { return "previous stop failed"; }
         @Override public boolean isPendingInstallation(String hostId, String gameId) {

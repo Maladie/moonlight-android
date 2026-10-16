@@ -354,6 +354,22 @@ class GameOperationsTest(unittest.TestCase):
         self.assertEqual(0, self.service.aggregate_catalog([metadata], library)["library"]
                          ["steam:10"]["playtimeMinutes"])
 
+    def test_steam_update_flags_keep_game_installed_and_stalled_verify_asks_attention(self):
+        with tempfile.TemporaryDirectory() as raw:
+            steamapps = Path(raw) / "steamapps"
+            (steamapps / "common" / "Game").mkdir(parents=True)
+            (steamapps / "appmanifest_7.acf").write_text(
+                '"AppState"\n{\n"appid" "7"\n"StateFlags" "1030"\n"installdir" "Game"\n'
+                '"BytesToDownload" "10"\n"BytesDownloaded" "10"\n}\n', encoding="utf-8")
+            provider = SteamProvider(roots=[Path(raw)])
+            self.assertTrue(provider._installed_catalog()["by_id"]["7"]["installed"])
+            game = {"providerGameId": "7"}
+            first = provider.sample(game, "install")
+            self.assertEqual("verifying", first["phase"])
+            self.assertFalse(first["stalled"])
+            provider._verify_seen["7"] = (provider._verify_seen["7"][0], 0.0)
+            self.assertTrue(provider.sample(game, "install")["stalled"])
+
     def test_steam_launch_uses_authoritative_manifest_and_exact_process_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

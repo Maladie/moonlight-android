@@ -13,6 +13,29 @@ or Playnite Fullscreen owns a visible foreground window on the configured
 streamed display with stable geometry for three consecutive samples. For games
 this is strong technical readiness, not proof that a main menu is visible.
 
+### Game update before a start
+
+A Steam game whose `appmanifest` is installed (`StateFlags` bit 4) and carries an update
+bit (`UpdateRequired` 2, `UpdateRunning` 256, `UpdatePaused` 512, `UpdateStarted` 1024; not
+`AppRunning`) starts in phase 0, before the 90 s phase 1. `/game/start` answers
+`accepted=true`, `command=update`; the Bridge keeps the start `starting` with
+`window.reason=game_updating` and `window.update.progress`, an integer 0-100 from
+`BytesDownloaded / BytesToDownload`, or `-1` while the manifest has no byte counts (the
+client then shows an indeterminate bar, never a frozen one). `window.update` exists exactly
+while that reason does; the client requires it then. `schema_version` stays 2.
+
+Nothing in phase 0 expires: not the Bridge (the 90 s `game_start_timeout` counts from the
+launch that follows), not the Gateway, not the client (`GAME_UPDATING` has no timeout and no
+"taking longer" notice; that notice counts from the last update observation). It ends only by
+the manifest losing the update bits (the Bridge then launches the game: `launchRequestedAt`
+restarts, reason `game_starting`), by the user's cancel or reveal (the cover stays cosmetic;
+after a reveal it never returns, and an update the user finishes in Big Picture is recognised
+the same way), or by log evidence: Steam's `content_log.txt` last state of the app names
+`Disk write failure`, `Not enough disk space` or `Disk read failure`; the start then fails as
+`steam_update_<evidence>`. A manifest that stands still for 120 s makes the Bridge send the
+update command again (Steam closed or stuck at 100%); that never ends the update. Epic has no
+update phase: nothing in Legendary's output was verified as evidence.
+
 ### Durations (display only)
 
 The host owns how long a stream and a game have run; the observation carries both starts on

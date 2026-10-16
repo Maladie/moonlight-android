@@ -74,6 +74,8 @@ LOCKED_RUNNING_SCAN_DEADLINE = 0.25
 # Phase 1 of a start: from the request until a verified process of the game exists.
 # Phase 2 (process verified, waiting for its window) has no limit while that process lives.
 GAME_START_TIMEOUT = 90.0
+# A start that waits on a game update (phase 0, before phase 1) has no limit at all.
+UPDATE_POLL_SECONDS = 1.0
 # A start that ended without a game process may still be launched late by its launcher
 # (an unanswered Steam ShowInterstitials took 9 minutes on the TV). Its game starting within
 # this window of that request is reported as the previous launch; later it is the user's own.
@@ -3169,6 +3171,89 @@ class BridgeState:
         return self.game_operations.launch(
             game, task_id, send_command, prepare_nonsteam=prepare, launch_allowed=allowed)
 
+    def _begin_update(self, game_id: str, game: dict[str, Any],
+                                  task_id: str) -> dict[str, Any]:
+        """A start of a game that needs an update: phase 0, before the 90 s phase 1.
+
+        The start stays "starting" with `updating` set; the readiness worker advances it
+        (`advance_update`) and launches once Steam reports the update done. Nothing here
+        or there has a timeout."""
+        with self.lock:
+            self.current = {
+                "state": "starting", "id": game_id, "updating": True,
+                "title": str(game.get("name") or ""),
+                "installDir": str(game.get("installDir") or game.get("install_dir") or ""),
+                "exe": str(game.get("exe") or game.get("executable") or ""),
+                "source": str(game.get("libraryName") or ""),
+                "provider": str(game.get("provider") or ""),
+                "providerGameId": str(game.get("providerGameId") or ""),
+                "launchTaskId": task_id,
+                "launchRequestedAt": self.clock(),
+            }
+            self.readiness = {
+                "ready": False, "reason": "game_updating", "target_kind": "game",
+                "game_id": game_id, "launch_task_id": task_id, "stable_samples": 0,
+                "update_progress": -1,
+            }
+            self._last_window_signature = None
+            self._publish_locked("game-updating", {"id": game_id})
+        result = self.game_operations.dispatch_update(dict(game))
+        return {"accepted": True, "command": "update",
+                "provider": str(game.get("provider") or ""),
+                "dispatch": str(result.get("dispatch") or "none")}
+
+    def advance_update(self, task_id: str) -> None:
+        """One step of an update phase; launches the game once the update is done."""
+        def current_update() -> dict[str, Any] | None:
+            if self.current.get("launchTaskId") != task_id or not self.current.get("updating") \
+                    or str(self.current.get("state") or "").casefold() != "starting":
+                return None
+            return dict(self.library.get(str(self.current.get("id") or "")) or {})
+
+        with self.lock:
+            game = current_update()
+        if game is None:
+            return
+        update = self.game_operations.update_sample(game)
+        if update is not None and update["nudge"]:
+            self.game_operations.dispatch_update(game)
+        with self.lock:
+            if current_update() is None:
+                return
+            if update is not None and update["error"]:
+                self._fail_start_locked("steam_update_" + update["error"])
+                return
+            if update is not None and (update["pending"] or not update["installed"]):
+                self.readiness.update({
+                    "reason": "game_updating", "update_progress": update["progress"]})
+                return
+            self.current.pop("updating", None)
+            self.current["launchRequestedAt"] = self.clock()
+            self.readiness.pop("update_progress", None)
+            self.readiness.update({"reason": "game_starting", "stable_samples": 0})
+            attempt = self.current
+        try:
+            result = self._launch_provider(game, attempt, task_id)
+        except Exception:
+            result = {"accepted": False, "reason": "provider_launch_failed"}
+        with self.lock:
+            if self.current is not attempt:
+                return
+            self.current.update({
+                "installDir": str(result.get("install_directory") or
+                                  self.current.get("installDir") or ""),
+                "exe": str(result.get("executable") or self.current.get("exe") or ""),
+            })
+            if not result.get("accepted"):
+                if self.current.get("state") == "stopping":
+                    self._complete_game_stop_locked()
+                elif self.current.get("state") == "starting":
+                    self._fail_start_locked(str(result.get("reason") or "provider_launch_failed"))
+            elif self.current.get("state") == "starting":
+                self._publish_locked("game-starting", {
+                    "id": str(attempt.get("id") or ""),
+                    "source": str(result.get("dispatch") or "direct")})
+
     def start_game(self, game_id: Any) -> dict[str, Any]:
         normalized = self.resolve_game_id(game_id)
         with self.lock:
@@ -3230,6 +3315,9 @@ class BridgeState:
                 self._unfinished_launch = None  # This request owns A's processes now.
         if provider in {self.game_operations.epic, self.game_operations.steam}:
             task_id = f"{normalized}:launch:{time.time_ns()}"
+            update = self.game_operations.update_sample(dict(game))
+            if update is not None and update["pending"]:
+                return self._begin_update(normalized, game, task_id)
             with self.lock:
                 self.current = {
                     "state": "starting", "id": normalized,
@@ -3703,6 +3791,12 @@ class BridgeState:
             operation = str(session.get("operation") or "install")
             game_copy = dict(game)
             if sample.get("started"):
+                if sample.get("stalled"):
+                    if not session.get("requires_attention"):
+                        self._mark_manual_confirmation(game_id, {
+                            "reason": "steam_update_stalled", "launcher": "steam.exe",
+                        }, token)
+                    return True
                 if session.get("cancellation_token") == token:
                     session["cancellation_observed_at"] = self.clock()
                     session["cancellation_inactive_samples"] = 0
@@ -4525,6 +4619,8 @@ class BridgeState:
         """The surface a non-ready start waits on: a launcher prompt the user must answer,
         or the previous request's game (the user may stop it by its exact token)."""
         targets: dict[str, Any] = {}
+        if self.readiness.get("reason") == "game_updating":
+            targets["update"] = {"progress": int(self.readiness.get("update_progress", -1))}
         if self.readiness.get("reason") == "launcher_interaction_required":
             targets["launcher"] = {
                 "detail": str(self.readiness.get("launcher_detail") or ""),
@@ -5482,6 +5578,11 @@ class WindowReadinessWorker:
                     self.state._launcher_postcondition_failed_locked()
                 launch_requested_at = float(current.get("launchRequestedAt") or 0.0)
                 screensaver_wake_requested_at = self.state._screensaver_wake_requested_at
+            if current.get("updating"):
+                # Phase 0: no window, launcher or timeout heuristic applies to an update.
+                self.state.advance_update(str(current.get("launchTaskId") or ""))
+                time.sleep(UPDATE_POLL_SECONDS)
+                continue
             target_kind = str(readiness.get("target_kind", "playnite"))
             launch_in_progress = target_kind == "game" and \
                 str(current.get("state") or "").casefold() == "starting"

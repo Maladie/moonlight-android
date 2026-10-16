@@ -32,6 +32,8 @@ public final class LoadingCoverModel {
     private int step = 1;
     private String stage = "";
     private String notice = "";
+    /** How much of the current step is done (0-1); -1 when unknown, the step then sweeps. */
+    private float fraction = -1f;
     private String reasonCode = "";
     private boolean retry;
     private boolean reveal;
@@ -51,6 +53,7 @@ public final class LoadingCoverModel {
     public String from() { return from; }
     public Phase phase() { return phase; }
     public int step() { return step; }
+    public float stepFraction() { return fraction; }
     public String stage() { return stage; }
     /** One attention line under the stage (amber dot); empty when there is none. */
     public String notice() { return notice; }
@@ -91,7 +94,13 @@ public final class LoadingCoverModel {
      * the stream's PREPARING_SESSION snapshots bounced the first segment between sweep and fill).
      */
     public boolean step(int value, String status, String attention) {
+        return step(value, status, attention, -1);
+    }
+
+    /** {@code percent} 0-100 fills the current step in proportion; below 0 it sweeps. */
+    public boolean step(int value, String status, String attention, int percent) {
         if (phase == Phase.CLOSING) return false;
+        fraction = percent < 0 ? -1f : Math.min(100, percent) / 100f;
         phase = Phase.LOADING;
         step = Math.max(step, Math.min(STEPS, value));
         stage = status == null ? "" : status.trim();

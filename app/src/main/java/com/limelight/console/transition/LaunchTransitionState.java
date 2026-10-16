@@ -9,6 +9,8 @@ public enum LaunchTransitionState {
     PLAYNITE_PROCESS_RUNNING,
     PLAYNITE_FULLSCREEN_STARTING,
     PLAYNITE_FULLSCREEN_READY,
+    /** The host updates the game before it starts it: no timeout, no soft notice. */
+    GAME_UPDATING,
     GAME_START_REQUESTED,
     GAME_STARTING,
     GAME_PROCESS_RUNNING,

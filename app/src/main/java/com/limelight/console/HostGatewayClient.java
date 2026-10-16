@@ -535,6 +535,8 @@ public class HostGatewayClient {
         String previousLaunchProcessToken = "";
         /** Optional {@code window.previous_launch.name}: display text only, never an identity. */
         String previousLaunchGameName = "";
+        /** {@code window.update.progress} of a game update (0-100), -1 without byte counts. */
+        int updateProgress = -1;
         /**
          * Host wall clock (same clock as {@link #observedAtUnixMs}) starts, display only:
          * {@code correlation.stream_started_unix_ms} of this actor's stream and
@@ -1839,6 +1841,13 @@ public class HostGatewayClient {
                 throw new IOException("inconsistent_observation_evidence");
             }
         }
+        int updateProgress = -1;
+        if ("game_updating".equals(windowReason)) {
+            updateProgress = requiredInt(requiredObject(window, "update"), "progress");
+            if (updateProgress < -1 || updateProgress > 100) {
+                throw new IOException("invalid_observation_progress");
+            }
+        }
         SessionObservation parsed = new SessionObservation(boot, revision, observedAt, freshFor,
                 episode, stateSince, actor, execution, ordinal,
                 operation, streamSession, controlGeneration, actorLeaseEpoch,
@@ -1856,6 +1865,7 @@ public class HostGatewayClient {
         parsed.previousLaunchGameId = previousGameId;
         parsed.previousLaunchProcessToken = previousToken;
         parsed.previousLaunchGameName = previousName;
+        parsed.updateProgress = updateProgress;
         parsed.streamStartedUnixMs = streamStarted;
         parsed.processStartedUnixMs = processStarted;
         return parsed;

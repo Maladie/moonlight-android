@@ -74,6 +74,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String launcherInteractionRequiredMessage();
         String windowStabilizingMessage();
         String gameStartTimeoutMessage();
+        String gameUpdateFailedMessage();
         String previousGameRunningMessage();
         String previousGameStopFailedMessage();
 
@@ -108,6 +109,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private final long launchStartedAtMillis;
     /** The local Play of this exact request; the soft start threshold counts from it. */
     private final long requestStartedAtMillis;
+    /** Last time the host reported a game update; the launch's soft notice counts from then. */
+    private long updateSeenAtMillis;
     private final Sleeper sleeper;
     private final Scheduler scheduler;
     private final Callbacks callbacks;
@@ -989,7 +992,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 LaunchTransitionSnapshot current = transitionController.snapshot();
                 if (transitionSpec.type == LaunchTransitionType.GAME
                         && LaunchTransitionController.isGameStartPending(current.state)
-                        && clock.now() - requestStartedAtMillis >= START_TAKING_LONGER_MS
+                        && clock.now() - Math.max(requestStartedAtMillis, updateSeenAtMillis)
+                        >= START_TAKING_LONGER_MS
                         && isCurrent(runEpoch)) {
                     transitionController.startTakingLonger(transitionSpec.id);
                 }
@@ -1044,6 +1048,16 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             return;
         }
         if (!snapshot.connectorReady) return;
+        boolean updating = kind == LaunchTransitionType.GAME
+                && "game_updating".equals(snapshot.reason)
+                && snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId);
+        if (updating) {
+            updateSeenAtMillis = clock.now();
+            transitionController.gameUpdating(transitionSpec.id, transitionSpec.hostId,
+                    snapshot.updateProgress);
+            return;
+        }
+        transitionController.gameUpdateFinished(transitionSpec.id);
         String previousLaunch = SessionSnapshot.normalize(snapshot.previousLaunchGameId);
         if (kind == LaunchTransitionType.GAME
                 && "previous_launch_game_running".equals(snapshot.reason)
@@ -1180,6 +1194,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if ("game_start_timeout".equals(reason)) {
             return callbacks.gameStartTimeoutMessage();
         }
+        if (reason != null && reason.startsWith("steam_update_")) {
+            return callbacks.gameUpdateFailedMessage();
+        }
         String pending = readinessPendingMessage(reason);
         if (!pending.isEmpty()) return pending;
         return callbacks.readinessUnconfirmedMessage();
@@ -1245,8 +1262,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 return 45_000L;
             case PLAYNITE_FULLSCREEN_STARTING:
                 return 30_000L;
-            // GAME_START_REQUESTED, GAME_STARTING, GAME_PROCESS_RUNNING and
-            // GAME_WINDOW_STABILIZING have no client bound: the host fails phase 1 and does not
+            // GAME_UPDATING, GAME_START_REQUESTED, GAME_STARTING, GAME_PROCESS_RUNNING and
+            // GAME_WINDOW_STABILIZING have no client bound (an update never expires): the host fails phase 1 and does not
             // bound phase 2, so the client shows a soft notice instead (START_TAKING_LONGER_MS).
             case PLAYNITE_RETURNING:
                 return 45_000L;

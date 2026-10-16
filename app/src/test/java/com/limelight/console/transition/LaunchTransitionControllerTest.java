@@ -300,6 +300,44 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void gameUpdatingKeepsTheCoverOffersRevealAndContinuesAsALaunch() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        controller.gameUpdating("transition-1", HOST, 40);
+
+        LaunchTransitionSnapshot updating = controller.snapshot();
+        assertEquals(LaunchTransitionState.GAME_UPDATING, updating.state);
+        assertEquals(40, updating.updateProgress);
+        assertEquals(3, updating.step);
+        assertTrue(updating.overlayVisible);
+        assertTrue(updating.inputBlocked);
+        assertTrue("the user can always reveal Big Picture", updating.manualRevealAvailable);
+        assertFalse(updating.startTakingLonger);
+
+        controller.gameUpdating("transition-1", HOST, -1);
+        assertEquals(-1, controller.snapshot().updateProgress);
+
+        controller.gameUpdateFinished("transition-1");
+        assertEquals(LaunchTransitionState.GAME_STARTING, controller.snapshot().state);
+        assertEquals(-1, controller.snapshot().updateProgress);
+    }
+
+    @Test
+    public void gameUpdatingIgnoresOtherTransitionsAndNeverCoversARevealedStream() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        controller.gameUpdating("stale-transition", HOST, 10);
+        controller.gameUpdating("transition-1", "other-host", 10);
+        assertFalse(controller.snapshot().state == LaunchTransitionState.GAME_UPDATING);
+
+        controller.showStreamAnyway("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
+        controller.gameUpdating("transition-1", HOST, 10);
+        assertFalse("after a reveal the cover does not return",
+                controller.snapshot().state == LaunchTransitionState.GAME_UPDATING);
+    }
+
+    @Test
     public void explicitRevealIsAvailableAfterTransportButBeforeHostReadiness() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         controller.showStreamAnyway("transition-1");

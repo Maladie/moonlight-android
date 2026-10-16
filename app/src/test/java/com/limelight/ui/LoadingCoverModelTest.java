@@ -27,6 +27,19 @@ import static org.junit.Assert.assertTrue;
  * step segments, the real stage with elapsed time, the notice and the actions in display order.
  */
 public class LoadingCoverModelTest {
+    @Test public void percentFillsTheCurrentStepAndNoPercentSweeps() {
+        LoadingCoverModel model = new LoadingCoverModel("Halo", 0L);
+        assertTrue(model.step(3, "Updating the game 40%", "", 40));
+        assertEquals(.4f, model.stepFraction(), 0f);
+        assertEquals(CURRENT, model.stepState(2));
+        assertTrue(model.step(3, "Updating the game", "", -1));
+        assertEquals("indeterminate, not frozen", -1f, model.stepFraction(), 0f);
+        assertTrue(model.step(3, "Starting the game", ""));
+        assertEquals(-1f, model.stepFraction(), 0f);
+        assertTrue(model.step(3, "done", "", 250));
+        assertEquals(1f, model.stepFraction(), 0f);
+    }
+
     @Test public void startShowsKickerTitleCurrentSegmentStageElapsedAndCancel() {
         LoadingCoverModel model = new LoadingCoverModel("  Halo  ", 10_000L);
         assertTrue(model.step(3, "Starting the game", ""));

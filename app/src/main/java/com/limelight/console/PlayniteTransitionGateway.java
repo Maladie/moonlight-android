@@ -69,6 +69,8 @@ public final class PlayniteTransitionGateway {
         public final String previousLaunchProcessToken;
         /** Optional display name of that earlier launch's game; empty when the host omits it. */
         public final String previousLaunchName;
+        /** Progress (0-100) of the game update the start waits on, -1 without byte counts. */
+        public final int updateProgress;
         /**
          * How long the host's current state episode had lasted when it was observed
          * ({@code observed_at - state_since}, host clock only); -1 when unknown.
@@ -105,6 +107,18 @@ public final class PlayniteTransitionGateway {
                  String processToken, String previousLaunchGameId,
                  String previousLaunchProcessToken, String previousLaunchName,
                  long stateAgeMs) {
+            this(gatewayReady, connectorReady, gameState, gameId, processId, windowReady,
+                    targetKind, stableSamples, reason, hostGuideAllowed, processToken,
+                    previousLaunchGameId, previousLaunchProcessToken, previousLaunchName,
+                    stateAgeMs, -1);
+        }
+
+        Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
+                 String gameId, int processId, boolean windowReady, String targetKind,
+                 int stableSamples, String reason, boolean hostGuideAllowed,
+                 String processToken, String previousLaunchGameId,
+                 String previousLaunchProcessToken, String previousLaunchName,
+                 long stateAgeMs, int updateProgress) {
             this.gatewayReady = gatewayReady;
             this.connectorReady = connectorReady;
             this.gameState = gameState;
@@ -125,6 +139,7 @@ public final class PlayniteTransitionGateway {
             this.previousLaunchProcessToken = previousLaunchProcessToken;
             this.previousLaunchName = previousLaunchName;
             this.stateAgeMs = stateAgeMs;
+            this.updateProgress = updateProgress;
             this.sessionSnapshot = null;
         }
 
@@ -155,6 +170,7 @@ public final class PlayniteTransitionGateway {
             this.previousLaunchProcessToken = fenced.previousLaunchProcessToken;
             this.previousLaunchName = fenced.previousLaunchGameName;
             this.stateAgeMs = fenced.observedAtUnixMs - fenced.stateSinceUnixMs;
+            this.updateProgress = fenced.updateProgress;
             this.sessionSnapshot = projected;
         }
 
@@ -187,6 +203,7 @@ public final class PlayniteTransitionGateway {
                     ? "" : observation.previousLaunchGameName;
             this.stateAgeMs = observation == null
                     ? -1L : observation.observedAtUnixMs - observation.stateSinceUnixMs;
+            this.updateProgress = observation == null ? -1 : observation.updateProgress;
             this.sessionSnapshot = projected;
         }
 

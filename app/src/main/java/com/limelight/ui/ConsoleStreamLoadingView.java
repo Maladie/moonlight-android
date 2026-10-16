@@ -428,14 +428,19 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     /** {@code notice}: one attention line under the stage (e.g. "taking longer"), or empty. */
     public void setStep(int step, String status, String notice) {
+        setStep(step, status, notice, -1);
+    }
+
+    /** {@code percent} 0-100 fills the current step's segment in proportion; below 0 it sweeps. */
+    public void setStep(int step, String status, String notice, int percent) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post(() -> setStep(step, status, notice));
+            handler.post(() -> setStep(step, status, notice, percent));
             return;
         }
         if (stopped) return;
         if (!model.step(step, status == null || status.trim().isEmpty()
                 ? getContext().getString(R.string.transition_preparing_session) : status,
-                notice)) {
+                notice, percent)) {
             return;
         }
         render();
@@ -1130,6 +1135,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         private final ValueAnimator[] grow = new ValueAnimator[LoadingCoverModel.STEPS];
         private int currentIndex = -1;
         private ValueAnimator sweep;
+        /** How much of the current segment is done; negative: unknown, the segment sweeps. */
+        private float progress = -1f;
 
         Segments(Context context) {
             super(context);
@@ -1154,8 +1161,9 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             // The next segment's sweep starts from its left edge, never mid-way.
             if (current != currentIndex) stopSweep();
             currentIndex = current;
-            boolean animate = current >= 0 && model.stepsVisible() && !reducedMotion && !stopped
-                    && ValueAnimator.areAnimatorsEnabled();
+            progress = model.stepFraction();
+            boolean animate = current >= 0 && progress < 0f && model.stepsVisible()
+                    && !reducedMotion && !stopped && ValueAnimator.areAnimatorsEnabled();
             if (animate && sweep == null) {
                 sweep = ValueAnimator.ofFloat(0f, 1f);
                 sweep.setDuration(1400L);
@@ -1230,6 +1238,11 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
                 }
                 if (state != LoadingCoverModel.StepState.CURRENT) continue;
                 paint.setColor(INK);
+                if (progress >= 0f) {
+                    rect.right = left + width * progress;
+                    canvas.drawRoundRect(rect, radius, radius, paint);
+                    continue;
+                }
                 if (sweep == null) {
                     paint.setAlpha(128);
                     canvas.drawRoundRect(rect, radius, radius, paint);

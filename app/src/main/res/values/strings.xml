@@ -1243,6 +1243,9 @@
     <string name="transition_readiness_unconfirmed">Readiness could not be confirmed</string>
     <string name="transition_launcher_interaction_required">The game launcher needs your attention. Reveal the stream to continue, or go back to end it.</string>
     <string name="transition_launcher_waiting_title">The launcher is waiting for you</string>
+    <string name="transition_updating_game">Updating the game…</string>
+    <string name="transition_updating_game_percent">Updating the game… %1$d%%</string>
+    <string name="transition_game_update_failed">The game could not be updated. Check the disk space on the PC and try again — you can also reveal Steam and finish the update there.</string>
     <string name="transition_game_start_timeout">The game did not start. The launcher may be waiting for you — you can reveal it.</string>
     <string name="transition_previous_game_running_title">The previously selected game started</string>
     <string name="transition_previous_game_running">A game from an earlier launch is running instead of the one you chose. Reveal it, or end it to keep starting your game.</string>

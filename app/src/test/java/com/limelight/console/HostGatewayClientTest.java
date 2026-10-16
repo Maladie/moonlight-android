@@ -85,6 +85,33 @@ public class HostGatewayClientTest {
         assertObservationRejected(value, "missing_observation_previous_launch", now);
     }
 
+    @Test public void gameUpdateProgressIsRequiredAndBoundedOnlyWhileUpdating() throws Exception {
+        long now = 1_700_000_000_000L;
+        JSONObject value = observation(now, "boot-a", 2, 7);
+        value.getJSONObject("game").put("state", "starting").put("id", "steam:456");
+        value.put("process", new JSONObject().put("evidence", "ABSENT")
+                .put("process_id", 0).put("process_token", "").put("started_unix_ms", 0));
+        value.put("window", new JSONObject().put("evidence", "PENDING")
+                .put("ready", false).put("target_kind", "game").put("stable_samples", 0)
+                .put("reason", "game_updating")
+                .put("update", new JSONObject().put("progress", 42)));
+        assertEquals(42, HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7,
+                now + 100).updateProgress);
+
+        value.getJSONObject("window").getJSONObject("update").put("progress", -1);
+        assertEquals("no byte counts: indeterminate", -1,
+                HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7,
+                        now + 100).updateProgress);
+
+        value.getJSONObject("window").getJSONObject("update").put("progress", 101);
+        assertObservationRejected(value, "invalid_observation_progress", now);
+        value.getJSONObject("window").remove("update");
+        assertObservationRejected(value, "missing_observation_update", now);
+
+        assertEquals(-1, HostGatewayClient.parseSessionObservation(
+                observation(now, "boot-a", 2, 7), "kid", "parent", 7, now + 100).updateProgress);
+    }
+
     @Test public void streamAndProcessStartsAreRequiredAndZeroMeansUnknown() throws Exception {
         long now = 1_700_000_000_000L;
         JSONObject value = observation(now, "boot-a", 2, 7);

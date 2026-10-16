@@ -1155,6 +1155,9 @@
     <string name="transition_readiness_unconfirmed">Nie udało się potwierdzić gotowości</string>
     <string name="transition_launcher_interaction_required">Launcher gry wymaga Twojej uwagi. Odsłoń stream, aby kontynuować, albo wróć, aby go zakończyć.</string>
     <string name="transition_launcher_waiting_title">Launcher czeka na odpowiedź</string>
+    <string name="transition_updating_game">Aktualizowanie gry…</string>
+    <string name="transition_updating_game_percent">Aktualizowanie gry… %1$d%%</string>
+    <string name="transition_game_update_failed">Nie udało się zaktualizować gry. Sprawdź miejsce na dysku komputera i spróbuj ponownie — możesz też odsłonić Steama i dokończyć aktualizację ręcznie.</string>
     <string name="transition_game_start_timeout">Gra nie uruchomiła się. Sprawdź, czy launcher nie czeka na odpowiedź — możesz go odsłonić.</string>
     <string name="transition_previous_game_running_title">Uruchomiła się poprzednio wybrana gra</string>
     <string name="transition_previous_game_running">Zamiast wybranej gry działa gra z wcześniejszego uruchomienia. Odsłoń ją albo zakończ, aby kontynuować uruchamianie wybranej gry.</string>

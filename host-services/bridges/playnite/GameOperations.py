@@ -238,10 +238,21 @@ class GenericPlayniteProvider:
 class SteamProvider(GenericPlayniteProvider):
     KEY_VALUE = re.compile(r'^\s*"([^"]+)"\s+"([^"]*)"\s*$')
     LAUNCH_LOG_GRACE = 2.0
+    VERIFY_STALL_SECONDS = 120.0
     OPERATIONS = {
         "install": "+app_install",
         "uninstall": "+app_uninstall",
     }
+    # appmanifest StateFlags (SteamKit EAppState): UpdateRequired, UpdateRunning,
+    # UpdatePaused, UpdateStarted. AppRunning (64) is not an update.
+    UPDATE_FLAGS = 2 | 256 | 512 | 1024
+    # An update whose manifest does not move for this long (Steam closed or stuck on
+    # 100%) gets its command sent again; it never ends the update.
+    UPDATE_NUDGE_SECONDS = 120.0
+    # content_log.txt state text that proves Steam gave up on the update.
+    UPDATE_STATE = re.compile(r'AppID (\d+) state changed : (.*)$')
+    UPDATE_ERROR = re.compile(
+        r'Disk write failure|Not enough disk space|Disk read failure', re.IGNORECASE)
 
     def __init__(self, automation_path: Path | None = None,
                  roots: list[Path] | None = None,
@@ -265,6 +276,20 @@ class SteamProvider(GenericPlayniteProvider):
         self.process_registry = process_registry or OperationProcessRegistry()
         self.launch_preflight = launch_preflight
         self._dispatch_reason = ""
+        self._verify_seen: dict[str, tuple[Any, float]] = {}
+
+    def _verify_stalled(self, app_id: str, signature: Any, verifying: bool) -> bool:
+        """True when a finished download sits unchanged in `verifying` (Steam was closed
+        mid-update), so the operation asks for attention instead of showing 100% forever."""
+        if not verifying:
+            self._verify_seen.pop(app_id, None)
+            return False
+        now = time.monotonic()
+        seen = self._verify_seen.get(app_id)
+        if seen is None or seen[0] != signature:
+            self._verify_seen[app_id] = (signature, now)
+            return False
+        return now - seen[1] >= self.VERIFY_STALL_SECONDS
 
     def _json_request(self, request: urllib.request.Request) -> Any:
         with self.web_opener(request, timeout=8) as response:
@@ -530,7 +555,8 @@ class SteamProvider(GenericPlayniteProvider):
                     continue
                 install_name = str(values.get("installdir") or "").strip()
                 directory = steamapps / "common" / install_name if install_name else None
-                ready = self._number(values, "stateflags") == 4 and directory is not None \
+                # FullyInstalled (4) stays set while an update is pending or running.
+                ready = bool(self._number(values, "stateflags") & 4) and directory is not None \
                     and self._path_state(directory)[0] == "directory"
                 result[app_id] = {
                     "name": str(values.get("name") or f"Steam App {app_id}"),
@@ -668,7 +694,7 @@ class SteamProvider(GenericPlayniteProvider):
         if executable is None:
             return {"accepted": False, "command": "launch", "provider": "steam",
                     "reason": "steam_unavailable"}
-        if not snapshot.get("manifest_complete"):
+        if not snapshot.get("installed"):
             return {"accepted": False, "command": "launch", "provider": "steam",
                     "reason": "steam_game_not_installed"}
         arguments = [str(executable), f"steam://launch/{app_id}/Dialog"]
@@ -805,6 +831,7 @@ class SteamProvider(GenericPlayniteProvider):
             "download_present": False, "manifest_signature": None,
             "bytes_downloaded": 0, "bytes_total": 0, "state_flags": 0,
             "install_directory": "", "manifest_complete": False,
+            "installed": False, "update_pending": False,
         }
         if not re.fullmatch(r"[0-9]+", app_id):
             return result
@@ -847,6 +874,9 @@ class SteamProvider(GenericPlayniteProvider):
                         "state_flags": flags,
                         "install_directory": str(install_directory or ""),
                         "manifest_complete": flags == 4 and directory_ready,
+                        "installed": bool(flags & 4) and directory_ready,
+                        "update_pending": bool(flags & 4) and directory_ready
+                        and bool(flags & self.UPDATE_FLAGS),
                     })
             elif manifest_state != "absent":
                 result["scan_complete"] = False
@@ -863,6 +893,59 @@ class SteamProvider(GenericPlayniteProvider):
 
     def operation_baseline(self, game: dict[str, Any]) -> dict[str, Any]:
         return self.scan(game)
+
+    def dispatch_update(self, game: dict[str, Any]) -> dict[str, Any]:
+        """Queue the update of an installed game through Steam's own install command."""
+        return self._direct_dispatch(game, "install") or {
+            "accepted": False, "command": "update", "provider": "steam",
+            "dispatch": "none", "reason": "steam_direct_dispatch_failed"}
+
+    def _update_error(self, app_id: str) -> str:
+        """The error Steam last logged for the app's state, or "" when its last state is fine."""
+        root = self._root()
+        if root is None:
+            return ""
+        try:
+            with (root / "logs" / "content_log.txt").open("rb") as log:
+                log.seek(0, os.SEEK_END)
+                log.seek(max(0, log.tell() - self.LAUNCH_LOG_TAIL_BYTES))
+                lines = log.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            return ""
+        state = ""
+        for line in lines:
+            match = self.UPDATE_STATE.search(line)
+            if match is not None and match.group(1) == app_id:
+                state = match.group(2)
+        found = self.UPDATE_ERROR.search(state)
+        return found.group(0).casefold().replace(" ", "_") if found else ""
+
+    def update_sample(self, game: dict[str, Any]) -> dict[str, Any]:
+        """The state of an update a start waits on. `progress` is 0-100, -1 without bytes;
+        `error` is set only on log evidence; `nudge` asks the caller to send the command
+        again because the manifest stood still. Nothing here ever times out."""
+        snapshot = self.scan(game)
+        app_id = str(snapshot.get("app_id") or "")
+        pending = bool(snapshot.get("update_pending"))
+        total = int(snapshot.get("bytes_total") or 0)
+        downloaded = int(snapshot.get("bytes_downloaded") or 0)
+        result = {
+            "pending": pending, "installed": bool(snapshot.get("installed")),
+            "progress": min(100, downloaded * 100 // total) if pending and total > 0 else -1,
+            "error": self._update_error(app_id) if pending else "", "nudge": False,
+        }
+        if not pending:
+            self._verify_seen.pop(app_id, None)
+            return result
+        now = time.monotonic()
+        seen = self._verify_seen.get(app_id)
+        signature = snapshot.get("manifest_signature")
+        if seen is None or seen[0] != signature:
+            self._verify_seen[app_id] = (signature, now)
+        elif now - seen[1] >= self.UPDATE_NUDGE_SECONDS:
+            self._verify_seen[app_id] = (signature, now)
+            result["nudge"] = True
+        return result
 
     @staticmethod
     def _started(snapshot: dict[str, Any], _baseline: dict[str, Any],
@@ -920,6 +1003,9 @@ class SteamProvider(GenericPlayniteProvider):
                 "requires_attention": False,
                 "reason": "steam_verifying" if verifying else "steam_downloading",
                 "progress": progress,
+                "stalled": self._verify_stalled(
+                    str(snapshot.get("app_id")), snapshot.get("manifest_signature"),
+                    verifying and operation == "install"),
             }
         if not snapshot.get("scan_available"):
             return {
@@ -1816,6 +1902,14 @@ class GameOperationsService:
         if self.provider_for(game) is self.steam:
             return self.steam.operation_baseline(game)
         return None
+
+    def update_sample(self, game: dict[str, Any]) -> dict[str, Any] | None:
+        """The pending update of a Steam game, or None for a provider without one."""
+        return self.steam.update_sample(game) \
+            if self.provider_for(game) is self.steam else None
+
+    def dispatch_update(self, game: dict[str, Any]) -> dict[str, Any]:
+        return self.steam.dispatch_update(game)
 
     def manual_attention(self, game: dict[str, Any],
                          operation: str) -> dict[str, Any] | None:

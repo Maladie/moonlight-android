@@ -27,7 +27,7 @@ public class ConsoleStreamLoadingViewContractTest {
         String background = text.substring(text.indexOf("private void applyBackground()"),
                 text.indexOf("private void showArtwork("));
         assertFalse(background.contains("stageView") || background.contains("titleView"));
-        for (String method : new String[]{"public void setStep(int step, String status, String",
+        for (String method : new String[]{"public void setStep(int step, String status, String notice, int percent)",
                 "private void showFailure(", "public void showLauncherInteraction(",
                 "public void showWarning(", "public void showCancelling()",
                 "public void showClosing(", "public void setManualRevealAvailable(",
