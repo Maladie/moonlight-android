@@ -270,7 +270,6 @@
     <string name="console_status_sleeping_suspended_game">Asleep. Suspended: %1$s</string>
     <string name="console_status_suspending_short">Going to sleep</string>
     <string name="console_status_suspended_short">Asleep · %1$s</string>
-    <string name="console_resume_suspended">Resume</string>
     <string name="console_game">Game</string>
     <string name="overlay_menu_toggle_stats">Stats</string>
     <string name="overlay_menu_mouse_emulation">Mouse</string>
@@ -1083,9 +1082,10 @@
     <string name="playnite_hours_short">hr</string>
     <string name="playnite_minutes_short">min</string>
     <string name="playnite_not_installed">Not installed</string>
+    <string name="playnite_session_running">Game running, resume</string>
+    <string name="playnite_session_suspended">Session suspended, resume</string>
     <string name="playnite_installing">Installing…</string>
     <string name="playnite_install_attention">Installation requires confirmation</string>
-    <string name="playnite_install_attention_short">Confirm</string>
     <string name="playnite_install_attention_details">“%1$s” is waiting for your input. Open its window to continue.</string>
     <string name="playnite_install_attention_details_pc">“%1$s” is waiting on a secure Windows screen and must be confirmed on the PC.</string>
     <string name="playnite_install_continue">Finish installation</string>
@@ -1100,10 +1100,7 @@
     <string name="playnite_game_details">Game details</string>
     <string name="playnite_metadata_unknown">Unknown</string>
     <string name="playnite_game_details_body">Status: %1$s\nLast played: %2$s\nTime played: %3$s\nLibrary: %4$s\nGenres: %5$s\n\n%6$s</string>
-    <string name="playnite_ready_short">Ready</string>
-    <string name="playnite_configuration_short">Setup needed</string>
     <string name="playnite_update_required">Update required</string>
-    <string name="playnite_update_short">Update</string>
     <string name="playnite_update_downloading">Updating…</string>
     <string name="playnite_update_patching">Patching…</string>
     <string name="playnite_update_action">Update game</string>

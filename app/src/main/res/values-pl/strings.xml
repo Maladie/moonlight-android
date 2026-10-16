@@ -237,7 +237,6 @@
     <string name="console_status_sleeping_suspended_game">Uśpiony. Wstrzymano: %1$s</string>
     <string name="console_status_suspending_short">Usypianie</string>
     <string name="console_status_suspended_short">Uśpiony · %1$s</string>
-    <string name="console_resume_suspended">Wznów</string>
     <string name="console_game">Gra</string>
     <string name="overlay_menu_toggle_stats">Statystyki</string>
     <string name="overlay_menu_mouse_emulation">Mysz</string>
@@ -995,9 +994,10 @@
     <string name="playnite_hours_short">godz.</string>
     <string name="playnite_minutes_short">min</string>
     <string name="playnite_not_installed">Niezainstalowana</string>
+    <string name="playnite_session_running">Gra uruchomiona, wznów</string>
+    <string name="playnite_session_suspended">Sesja zawieszona, wznów</string>
     <string name="playnite_installing">Instalowanie…</string>
     <string name="playnite_install_attention">Instalacja wymaga potwierdzenia</string>
-    <string name="playnite_install_attention_short">Potwierdź</string>
     <string name="playnite_install_attention_details">„%1$s” czeka na Twoją odpowiedź. Otwórz jego okno, aby kontynuować.</string>
     <string name="playnite_install_attention_details_pc">„%1$s” czeka na zabezpieczonym ekranie Windows i musi zostać potwierdzony na komputerze.</string>
     <string name="playnite_install_continue">Dokończ instalację</string>
@@ -1012,10 +1012,7 @@
     <string name="playnite_game_details">Szczegóły gry</string>
     <string name="playnite_metadata_unknown">Brak danych</string>
     <string name="playnite_game_details_body">Status: %1$s\nOstatnio grana: %2$s\nCzas w grze: %3$s\nBiblioteka: %4$s\nGatunki: %5$s\n\n%6$s</string>
-    <string name="playnite_ready_short">Gotowa</string>
-    <string name="playnite_configuration_short">Konfiguracja</string>
     <string name="playnite_update_required">Wymaga aktualizacji</string>
-    <string name="playnite_update_short">Aktualizacja</string>
     <string name="playnite_update_downloading">Aktualizowanie…</string>
     <string name="playnite_update_patching">Łatanie…</string>
     <string name="playnite_update_action">Aktualizuj grę</string>

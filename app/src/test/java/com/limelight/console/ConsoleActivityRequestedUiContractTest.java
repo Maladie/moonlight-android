@@ -161,38 +161,46 @@ public class ConsoleActivityRequestedUiContractTest {
                 source.indexOf("private LinearLayout.LayoutParams matchLinearWidth("));
         String binding = source.substring(source.indexOf("private void bindPlayniteCard("),
                 source.indexOf("private void schedulePlayniteSelectionSave("));
-        String state = source.substring(source.indexOf("private String playniteStateChipLabel("),
-                source.indexOf("private void stylePlayniteStateChip("));
-        String stateStyle = source.substring(source.indexOf("private void stylePlayniteStateChip("),
-                source.indexOf("private String playniteInstallKey(String hostUuid, PlayniteDashboardItem"));
+        String render = source.substring(source.indexOf("private void renderTileBadge("),
+                source.indexOf("private LinearLayout.LayoutParams matchLinearWidth("));
         String expanded = source.substring(source.indexOf("expandedGameDescription = text("),
                 source.indexOf("details.addView(expandedGameTitle"));
 
         assertTrue(card.contains("debugCarousel ? CAROUSEL_CARD_HEIGHT_DP : 190"));
-        assertTrue(card.contains("state.setTag(\"playnite.state\")"));
-        assertTrue(card.contains("Gravity.BOTTOM | Gravity.END"));
-        assertTrue(card.contains("stateParams.rightMargin = dp(8)"));
-        assertTrue(card.contains("stateParams.bottomMargin = dp(8)"));
-        assertTrue(card.contains("playnite.install.progress"));
+        // tile-badges-v2: the badge sits top-right, the bar inset from the sides.
+        assertTrue(card.contains("badge.setTag(\"playnite.badge\")"));
+        assertTrue(card.contains("Gravity.TOP | Gravity.END"));
+        assertTrue(render.contains("int height = dp(compact ? 16 : 20)"));
+        assertTrue(render.contains("int icon = dp(compact ? 10 : 12)"));
+        assertTrue(render.contains("badge.setTextSize(compact ? 9 : 11)"));
+        assertTrue(render.contains("params.topMargin = dp(compact ? 4 : 6)"));
+        assertTrue(render.contains("params.width = percent.isEmpty() ? height"));
+        assertTrue(render.contains("background.setCornerRadius(height / 2f)"));
+        assertTrue(render.contains("params.height = dp(library || compact ? 3 : 4)"));
+        assertTrue(render.contains("params.leftMargin = dp(library ? 10 : compact ? 6 : 8)"));
+        assertTrue(render.contains("params.bottomMargin = dp(library ? 36 : compact ? 5 : 6)"));
+        assertTrue(render.contains("progress.setProgress(model.progress, reducedMotion)"));
+        assertTrue(card.contains("new ConsoleTileProgressBar(this)"));
         assertTrue(card.contains("expandedCard ? CAROUSEL_FOCUSED_CARD_HEIGHT_DP"));
         assertTrue(card.contains("new int[]{0x00000000, 0xE6000000}"));
         assertTrue(card.contains("copy.setVisibility(expandedCard"));
         assertTrue(card.contains("shine.setTag(\"playnite.shine\")"));
         assertTrue(card.contains("new int[]{0x00FFFFFF, 0x5CFFFFFF, 0x00FFFFFF}"));
-        assertTrue(binding.contains("installProgress.setVisibility(installing || updating"));
-        assertTrue(binding.contains("installProgress.setProgress(barProgress)"));
+        assertTrue(binding.contains("renderTileBadge(views, card.hasFocus())"));
+        assertTrue(binding.contains("if (card.hasFocus()) showSelectedGameStatus(views.badgeModel)"));
         assertTrue(binding.contains("playniteCardAlpha(item, operation"));
         assertTrue(source.contains("return focused || resumeSession ? 1f : .93f"));
-        assertTrue(source.contains("ordinaryReady && !focused ? .48f : 1f"));
-        assertTrue(source.contains(
-                "state.setVisibility(homeCarousel && ordinaryReady ? View.GONE : View.VISIBLE)"));
-        assertTrue(source.contains("isDescendant(appRow, state)"));
+        // A ready game has no badge in either view: no checkmark, no hidden-in-carousel rule.
+        assertFalse(source.contains("stylePlayniteStateEmphasis("));
+        assertTrue(render.contains("if (!model.visible()) {"));
         assertTrue(binding.contains("saturationFilter(.25f)"));
         assertTrue(binding.contains("backdrop.setColorFilter(muted)"));
-        assertTrue(stateStyle.contains("fill = 0xE014241B"));
-        assertTrue(stateStyle.contains("state.setShadowLayer"));
-        assertTrue(state.contains("CONSOLE_UI_V2 ? operation.progress + \"%\""));
-        assertTrue(state.contains("CONSOLE_UI_V2 ? \"\""));
+        assertFalse(source.contains("playniteStateGlyph("));
+        assertFalse(source.contains("stylePlayniteStateChip("));
+        // The full status goes beside the selected game: carousel pill, library line.
+        assertTrue(source.contains("selectedGameFactsRow.addView(selectedGameStatusPill, statusPillParams)"));
+        assertTrue(source.contains("new LinearLayout.LayoutParams(dp(40), dp(4))"));
+        assertTrue(source.contains("facts.addView(expandedGameStatus, matchLinearWidth())"));
         String grid = source("src/main/java/com/limelight/console/ExpandedLibraryGrid.java");
         assertTrue(grid.contains("CELL_HEIGHT_DP = 123"));
         assertTrue(grid.contains("CELL_MARGIN_DP = 4"));
@@ -292,7 +300,7 @@ public class ConsoleActivityRequestedUiContractTest {
                 source.indexOf("private BitmapDrawable filteredBitmapDrawable("));
 
         assertFalse(source.contains("RelativeSizeSpan"));
-        assertTrue(source.contains("playniteStateChipText(glyph, label)"));
+        assertFalse(source.contains("playniteStateChipText("));
         // A recovering session shows Resume on its card, never the library-only checkmark.
         assertTrue(source.contains("|| sessionState == PlayniteSessionPresentation.State.RECOVERY_REQUIRED;"));
         assertFalse(resource("values/strings.xml").contains("name=\"console_resume\">RESUME  ›"));
@@ -432,7 +440,7 @@ public class ConsoleActivityRequestedUiContractTest {
     @Test public void closingSessionLeavesEveryGameTileLit() throws IOException {
         String source = consoleActivitySource();
         String binding = source.substring(source.indexOf("private void bindPlayniteCard("),
-                source.indexOf("private void stylePlayniteStateEmphasis("));
+                source.indexOf("private void schedulePlayniteSelectionSave("));
         assertFalse(binding.contains("closingStatus("));
         assertFalse(binding.contains("closingBlocks("));
         assertFalse(binding.contains("isSessionClosing("));
@@ -440,7 +448,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(binding.contains("return childBlocked ? Math.min(alpha, .46f) : alpha;"));
         // The closing tile and the queued one still say what they are.
         assertTrue(source.contains(
-                "if (isQueuedPlayniteItem(hostUuid, item)) return getString(R.string.console_queued);"));
+                "return ConsoleTileBadge.of(sessionState, isQueuedPlayniteItem(hostUuid, item),"));
         assertTrue(source.contains(
                 "if (snapshot.endingGame) return getString(R.string.playnite_ending_game);"));
     }

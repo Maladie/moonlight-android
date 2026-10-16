@@ -679,6 +679,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private LinearLayout selectedGameFactsRow;
     private TextView selectedGameLastPlayedPill;
     private TextView selectedGamePlaytimePill;
+    /** The selected game's full status: the first pill of the carousel's facts row. */
+    private LinearLayout selectedGameStatusPill;
+    private ImageView selectedGameStatusIcon;
+    private TextView selectedGameStatusText;
+    private ConsoleTileProgressBar selectedGameStatusBar;
+    /** The selected game's full status: the first, coloured line of the library's facts. */
+    private TextView expandedGameStatus;
     private TextView selectedGameDescription;
     private LinearLayout expandedLibrary;
     private LibraryFilterBar libraryFilterBar;
@@ -2260,6 +2267,28 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             selectedGameFacts.setVisibility(View.GONE);
             selectedGameFactsRow = horizontalRow();
             selectedGameFactsRow.setGravity(Gravity.CENTER_VERTICAL);
+            selectedGameStatusPill = horizontalRow();
+            selectedGameStatusPill.setGravity(Gravity.CENTER_VERTICAL);
+            selectedGameStatusPill.setPadding(dp(8), 0, dp(8), 0);
+            selectedGameStatusPill.setVisibility(View.GONE);
+            selectedGameStatusIcon = new ImageView(this);
+            selectedGameStatusPill.addView(selectedGameStatusIcon,
+                    new LinearLayout.LayoutParams(dp(13), dp(13)));
+            selectedGameStatusText = text("", 11, 0xFFF0F5F8, true);
+            selectedGameStatusText.setSingleLine(true);
+            selectedGameStatusText.setFontFeatureSettings("tnum");
+            LinearLayout.LayoutParams statusTextParams = wrapLinear();
+            statusTextParams.leftMargin = dp(5);
+            selectedGameStatusPill.addView(selectedGameStatusText, statusTextParams);
+            selectedGameStatusBar = new ConsoleTileProgressBar(this);
+            LinearLayout.LayoutParams statusBarParams =
+                    new LinearLayout.LayoutParams(dp(40), dp(4));
+            statusBarParams.leftMargin = dp(5);
+            selectedGameStatusPill.addView(selectedGameStatusBar, statusBarParams);
+            LinearLayout.LayoutParams statusPillParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(24));
+            statusPillParams.rightMargin = dp(12);
+            selectedGameFactsRow.addView(selectedGameStatusPill, statusPillParams);
             selectedGameLastPlayedPill = metadataPill();
             selectedGamePlaytimePill = metadataPill();
             selectedGamePlaytimePill.setCompoundDrawablesWithIntrinsicBounds(
@@ -3941,10 +3970,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         expandedGameDescription = text("", 14, 0xFFE0E5EA, false);
         expandedGameDescription.setLineSpacing(0, 1.25f);
         expandedGameDescription.setPadding(0, 0, 0, dp(20));
+        expandedGameStatus = text("", 12, 0xFFF0F5F8, true);
+        expandedGameStatus.setSingleLine(true);
+        expandedGameStatus.setEllipsize(TextUtils.TruncateAt.END);
+        expandedGameStatus.setCompoundDrawablePadding(dp(5));
+        expandedGameStatus.setVisibility(View.GONE);
         details.addView(expandedGameTitle, matchLinearWidth());
+        LinearLayout facts = new LinearLayout(this);
+        facts.setOrientation(LinearLayout.VERTICAL);
+        facts.addView(expandedGameStatus, matchLinearWidth());
+        facts.addView(expandedGameFacts, matchLinearWidth());
         LinearLayout.LayoutParams expandedFactsParams = matchLinearWidth();
         expandedFactsParams.topMargin = dp(12);
-        details.addView(expandedGameFacts, expandedFactsParams);
+        details.addView(facts, expandedFactsParams);
         View divider = new View(this);
         divider.setBackgroundColor(0x6073D7FF);
         LinearLayout.LayoutParams dividerParams =
@@ -9773,19 +9811,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         source.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         source.setPadding(dp(2), dp(2), dp(2), dp(2));
         source.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        TextView state = text("", debugCarousel ? 8 : 10, 0xFF929BAD, false);
-        state.setTag("playnite.state");
-        state.setSingleLine(true);
-        state.setMaxWidth(dp(debugCarousel ? 70 : expandedCard ? 118 : 170));
-        state.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        if (debugCarousel) {
-            FrameLayout.LayoutParams stateParams = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM | Gravity.END);
-            stateParams.rightMargin = dp(8);
-            stateParams.bottomMargin = dp(8);
-            artworkFrame.addView(state, stateParams);
-        }
+        card.setTag(R.id.playnite_tile_layout, !debugCarousel ? TileLayout.PORTRAIT
+                : expandedCard ? TileLayout.LIBRARY : TileLayout.CAROUSEL);
         View copyScrim = new View(this);
         copyScrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0x00000000, 0xE6000000}));
@@ -9812,11 +9839,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         playtime.setTag("playnite.playtime");
         playtime.setVisibility(View.GONE);
         copy.addView(playtime, matchLinearWidth());
-        if (!debugCarousel) {
-            LinearLayout.LayoutParams stateParams = wrapLinear();
-            stateParams.topMargin = dp(5);
-            copy.addView(state, stateParams);
-        }
         if (debugCarousel) {
             copy.setVisibility(expandedCard ? View.VISIBLE : View.GONE);
             artworkFrame.addView(copy, new FrameLayout.LayoutParams(
@@ -9829,32 +9851,96 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             card.addView(copy, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         }
+        // Top-right status badge (mockups/tile-badges-v2.html); the bottom stays the provider's.
+        TextView badge = text("", 11, Color.WHITE, true);
+        badge.setTag("playnite.badge");
+        badge.setSingleLine(true);
+        badge.setFontFeatureSettings("tnum");
+        badge.setElevation(dp(2));
+        badge.setVisibility(View.GONE);
+        badge.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        artworkFrame.addView(badge, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(20), Gravity.TOP | Gravity.END));
         return card;
     }
 
-    /** The install bar exists only on cards that have shown an install or uninstall. */
-    private ProgressBar playniteInstallProgress(PlayniteCardViews views, boolean needed) {
-        if (views.installProgress != null || !needed) return views.installProgress;
-        ProgressBar installProgress = new ProgressBar(this, null,
-                android.R.attr.progressBarStyleHorizontal);
-        installProgress.setTag("playnite.install.progress");
-        installProgress.setMax(100);
-        installProgress.setProgressTintList(android.content.res.ColorStateList.valueOf(
-                0xFFE4B34B));
-        installProgress.setProgressBackgroundTintList(
-                android.content.res.ColorStateList.valueOf(0x70404950));
-        installProgress.setIndeterminateTintList(
-                android.content.res.ColorStateList.valueOf(0xFFE4B34B));
-        installProgress.setVisibility(View.GONE);
-        installProgress.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        FrameLayout.LayoutParams progressParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(3), Gravity.BOTTOM);
+    /** How a card lays out its badge and bar: a carousel card is compact until focused. */
+    private enum TileLayout { CAROUSEL, LIBRARY, PORTRAIT }
+
+    /** The work bar exists only on cards that have shown work in progress. */
+    private ConsoleTileProgressBar tileProgressBar(PlayniteCardViews views, boolean needed) {
+        if (views.progress != null || !needed) return views.progress;
+        ConsoleTileProgressBar progress = new ConsoleTileProgressBar(this);
+        progress.setVisibility(View.GONE);
         ViewGroup artworkFrame = (ViewGroup) views.poster.getParent();
-        // Above the artwork, below the caption scrim.
-        artworkFrame.addView(installProgress, artworkFrame.indexOfChild(views.poster) + 1,
-                progressParams);
-        views.installProgress = installProgress;
-        return installProgress;
+        // Under the badge, over the artwork and the library's title scrim.
+        artworkFrame.addView(progress, artworkFrame.indexOfChild(views.badge),
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3),
+                        Gravity.BOTTOM));
+        views.progress = progress;
+        return progress;
+    }
+
+    /**
+     * Shows the card's badge and bar at the size its layout and focus give: a resting carousel
+     * card 16 dp / 10 dp icon / 9 sp, 4 dp in; a focused or library card 20 / 12 / 11 sp, 6 dp
+     * in. The bar is inset from the sides, and sits on the library card's title strip.
+     */
+    private void renderTileBadge(PlayniteCardViews views, boolean focused) {
+        ConsoleTileBadge model = views.badgeModel;
+        boolean compact = views.layout == TileLayout.CAROUSEL && !focused;
+        TextView badge = views.badge;
+        if (!model.visible()) {
+            badge.setVisibility(View.GONE);
+        } else {
+            int height = dp(compact ? 16 : 20);
+            int icon = dp(compact ? 10 : 12);
+            String percent = model.percent();
+            badge.setVisibility(View.VISIBLE);
+            if (!percent.contentEquals(badge.getText())) badge.setText(percent);
+            badge.setTextSize(compact ? 9 : 11);
+            badge.setTextColor(model.contentColor());
+            badge.setMaxWidth(dp(compact ? 58 : 80));
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) badge.getLayoutParams();
+            params.height = height;
+            params.width = percent.isEmpty() ? height : ViewGroup.LayoutParams.WRAP_CONTENT;
+            params.topMargin = dp(compact ? 4 : 6);
+            params.rightMargin = params.topMargin;
+            badge.setLayoutParams(params);
+            badge.setMinWidth(height);
+            if (percent.isEmpty()) {
+                // An icon-only badge is a circle with its icon centred.
+                badge.setPadding((height - icon) / 2, 0, 0, 0);
+                badge.setCompoundDrawablePadding(0);
+            } else {
+                int side = dp(compact ? 4 : 5);
+                badge.setPadding(side, 0, side, 0);
+                badge.setCompoundDrawablePadding(dp(compact ? 2 : 3));
+            }
+            android.graphics.drawable.Drawable glyph = getDrawable(model.kind.icon).mutate();
+            glyph.setBounds(0, 0, icon, icon);
+            badge.setCompoundDrawables(glyph, null, null, null);
+            badge.setCompoundDrawableTintList(
+                    android.content.res.ColorStateList.valueOf(model.contentColor()));
+            GradientDrawable background = badge.getBackground() instanceof GradientDrawable
+                    ? (GradientDrawable) badge.getBackground() : new GradientDrawable();
+            background.setColor(model.fillColor());
+            background.setStroke(dp(1), model.kind.color);
+            background.setCornerRadius(height / 2f);
+            badge.setBackground(background);
+        }
+        ConsoleTileProgressBar progress = tileProgressBar(views, model.kind.bar);
+        if (progress == null) return;
+        progress.setVisibility(model.kind.bar ? View.VISIBLE : View.GONE);
+        if (!model.kind.bar) return;
+        progress.setProgress(model.progress, reducedMotion);
+        boolean library = views.layout == TileLayout.LIBRARY;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) progress.getLayoutParams();
+        params.height = dp(library || compact ? 3 : 4);
+        params.leftMargin = dp(library ? 10 : compact ? 6 : 8);
+        params.rightMargin = params.leftMargin;
+        params.bottomMargin = dp(library ? 36 : compact ? 5 : 6);
+        progress.setLayoutParams(params);
     }
 
     private LinearLayout.LayoutParams matchLinearWidth() {
@@ -9933,7 +10019,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         TextView name = views.name;
         TextView playtime = views.playtime;
-        TextView state = views.state;
         ImageView source = views.source;
         ImageView poster = views.poster;
         ImageView backdrop = views.backdrop;
@@ -9966,14 +10051,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             poster.setColorFilter(muted);
             if (backdrop != null) backdrop.setColorFilter(muted);
         }
-        boolean updating = !installing && item.game.installed && item.game.updateActive();
-        int barProgress = installing ? operation.progress : item.game.updateProgress;
-        ProgressBar installProgress = playniteInstallProgress(views, installing || updating);
-        if (installProgress != null) {
-            installProgress.setVisibility(installing || updating ? View.VISIBLE : View.GONE);
-            installProgress.setIndeterminate((installing || updating) && barProgress < 0);
-            if (barProgress >= 0) installProgress.setProgress(barProgress);
-        }
+        views.badgeModel = tileBadge(host.uuid, item, sessionState, operation, childGameBlocked);
+        renderTileBadge(views, card.hasFocus());
+        // The selected game's panel follows its live status; selecting it binds the panel.
+        if (card.hasFocus()) showSelectedGameStatus(views.badgeModel);
         String playtimeText = (payload & PlayniteLibraryDiff.TEXT) != 0
                 ? formatPlayniteTime(item.game.playtimeSeconds) : null;
         if ((payload & PlayniteLibraryDiff.TEXT) != 0) {
@@ -9996,32 +10077,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 source.setBackground(sourceBackground);
             }
         }
-        if ((payload & (PlayniteLibraryDiff.TEXT | PlayniteLibraryDiff.LAUNCH)) != 0) {
-            boolean sessionChip = resumeSession || suspendedSession;
-            // A resumable game shows an icon and its label, not a glyph character resized in text.
-            String glyph = sessionChip ? ""
-                    : playniteStateGlyph(host.uuid, item, resumeSession);
-            String label = suspendedSession ? getString(R.string.console_resume)
-                    : playniteStateChipLabel(host.uuid, item, resumeSession);
-            CharSequence chip = playniteStateChipText(glyph, label);
-            if (!TextUtils.equals(chip, state.getText())) state.setText(chip);
-            stylePlayniteStateChip(state, host.uuid, item, sessionChip);
-            state.setCompoundDrawablesWithIntrinsicBounds(!sessionChip ? 0
-                    : suspendedSession ? R.drawable.ic_console_clock
-                    : R.drawable.ic_console_play, 0, 0, 0);
-            state.setCompoundDrawablePadding(dp(4));
-            state.setCompoundDrawableTintList(
-                    android.content.res.ColorStateList.valueOf(state.getCurrentTextColor()));
-            state.setPadding(dp(sessionChip ? 7 : 4), dp(sessionChip ? 3 : 1),
-                    dp(sessionChip ? 8 : 4), dp(sessionChip ? 3 : 1));
-        }
-        stylePlayniteStateEmphasis(state, item, operation,
-                resumeSession || suspendedSession, card.hasFocus());
-        // The carousel decides emphasis once the card is attached; grid cards never hide it.
-        if (!expandedLibraryMode) state.post(() -> stylePlayniteStateEmphasis(state, item,
-                gameOperationsController.presentation(host.uuid, item.game),
-                playniteSessionState(item) != PlayniteSessionPresentation.State.READY,
-                card.hasFocus()));
         if ((payload & PlayniteLibraryDiff.ARTWORK) != 0) resetPlaynitePoster(poster, item);
         if (!completedPlayniteInstallAnimations.isEmpty()
                 && completedPlayniteInstallAnimations.remove(
@@ -10052,12 +10107,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         PlayniteDashboardItem item = views.item;
         ComputerDetails host = item == null ? null : currentHost(views.hostUuid);
         if (host == null) return null;
-        PlayniteSessionPresentation.State sessionState = playniteSessionState(item);
-        String stateText = sessionState == PlayniteSessionPresentation.State.RESUME_SUSPENDED
-                ? getString(R.string.console_resume_suspended)
-                : sessionState == PlayniteSessionPresentation.State.RESUME_ACTIVE
-                ? getString(R.string.console_resume_session)
-                : playniteState(host.uuid, item);
+        // The full state, also for a child-blocked game, whose reason follows below.
+        String stateText = tileBadgeText(tileBadge(host.uuid, item, playniteSessionState(item),
+                gameOperationsController.presentation(host.uuid, item.game), false));
         String sourceName = PlayniteLibrarySources.label(item.game.libraryName.isEmpty()
                 ? item.game.source : item.game.libraryName);
         String cardDescription = getString(R.string.playnite_card_description,
@@ -10091,26 +10143,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final class PlayniteCardViews {
         final TextView name;
         final TextView playtime;
-        final TextView state;
+        final TextView badge;
         final ImageView source;
         final ImageView poster;
         final ImageView backdrop;
-        ProgressBar installProgress;
+        final TileLayout layout;
+        ConsoleTileProgressBar progress;
+        ConsoleTileBadge badgeModel;
         PlayniteDashboardItem item;
         String hostUuid;
         boolean sessionCard;
         int sourceIcon;
 
-        PlayniteCardViews(TextView name, TextView playtime, TextView state, ImageView source,
-                          ImageView poster, ImageView backdrop,
-                          ProgressBar installProgress) {
+        PlayniteCardViews(TextView name, TextView playtime, TextView badge, ImageView source,
+                          ImageView poster, ImageView backdrop, TileLayout layout) {
             this.name = name;
             this.playtime = playtime;
-            this.state = state;
+            this.badge = badge;
             this.source = source;
             this.poster = poster;
             this.backdrop = backdrop;
-            this.installProgress = installProgress;
+            this.layout = layout;
         }
     }
 
@@ -10121,11 +10174,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         PlayniteCardViews views = new PlayniteCardViews(
                 (TextView) findTaggedChild(group, "playnite.name"),
                 (TextView) findTaggedChild(group, "playnite.playtime"),
-                (TextView) findTaggedChild(group, "playnite.state"),
+                (TextView) findTaggedChild(group, "playnite.badge"),
                 (ImageView) findTaggedChild(group, "playnite.source"),
                 (ImageView) findTaggedChild(group, "playnite.poster"),
                 (ImageView) findTaggedChild(group, "playnite.poster.backdrop"),
-                (ProgressBar) findTaggedChild(group, "playnite.install.progress"));
+                (TileLayout) card.getTag(R.id.playnite_tile_layout));
         card.setTag(R.id.playnite_card_views, views);
         // One fixed line (boring layout, end ellipsis) so title changes stay cheap to lay out.
         views.name.setSingleLine(true);
@@ -10176,8 +10229,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             card.setAlpha(childAwarePlayniteCardAlpha(hostUuid, item, focusedOperation,
                     sessionCard, focused, childEligibilityProjection(
                             hostUuid, selectedProfileId(hostUuid)).blocked));
-            stylePlayniteStateEmphasis(views.state, item, focusedOperation,
-                    sessionCard, focused);
+            renderTileBadge(views, focused);
             updateCarouselMarquee(views.name, focused);
             if (focused) {
                 if (!expandedLibraryMode && card.getParent() == appRow) {
@@ -10249,19 +10301,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         float alpha = playniteCardAlpha(item, operation, resumeSession, focused);
         // A closing session never greys the games: a Play while it closes waits in the queue.
         return childBlocked ? Math.min(alpha, .46f) : alpha;
-    }
-
-    private void stylePlayniteStateEmphasis(TextView state, PlayniteDashboardItem item,
-                                            GameOperationsController.Presentation operation,
-                                            boolean resumeSession, boolean focused) {
-        boolean ordinaryReady = !resumeSession && !operation.attentionRequired
-                && !operation.installActive && !operation.uninstallActive
-                && item.game.installed
-                && item.mappingState == PlayniteDashboardItem.MappingState.MAPPED;
-        boolean homeCarousel = appRow != null && isDescendant(appRow, state)
-                && !expandedLibraryMode;
-        state.setVisibility(homeCarousel && ordinaryReady ? View.GONE : View.VISIBLE);
-        state.setAlpha(ordinaryReady && !focused ? .48f : 1f);
     }
 
     private void schedulePlayniteSelectionSave(String hostUuid, String gameId,
@@ -10351,10 +10390,53 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             selectedGamePlaytimePill.setContentDescription(
                     getString(R.string.playnite_playtime) + ": " + playtime);
         }
+        ComputerDetails host = currentHost(selectedHostUuid);
+        if (host != null) {
+            showSelectedGameStatus(tileBadge(host.uuid, item, playniteSessionState(item),
+                    gameOperationsController.presentation(host.uuid, item.game),
+                    childEligibilityProjection(host.uuid, selectedProfileId(host.uuid)).blocked));
+        }
         bindGameMetadataHeader(selectedGameMetadata, selectedGameTitle,
                 selectedGameFacts, item.game.name, facts);
         bindGameMetadataHeader(expandedLibrary, expandedGameTitle,
                 expandedGameFacts, item.game.name, facts);
+    }
+
+    /**
+     * The selected game's full status beside it, in its badge's colour and icon: a pill with a
+     * mini bar for work in progress in the carousel, a line in the library. Ready says nothing.
+     */
+    private void showSelectedGameStatus(ConsoleTileBadge badge) {
+        boolean visible = badge.visible();
+        String text = visible ? tileBadgeText(badge) : "";
+        int textColor = badge.panelTextColor();
+        if (selectedGameStatusPill != null) {
+            selectedGameStatusPill.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (visible) {
+                selectedGameStatusIcon.setImageResource(badge.kind.icon);
+                selectedGameStatusIcon.setImageTintList(
+                        android.content.res.ColorStateList.valueOf(textColor));
+                selectedGameStatusText.setText(text);
+                selectedGameStatusText.setTextColor(textColor);
+                selectedGameStatusBar.setVisibility(badge.kind.bar ? View.VISIBLE : View.GONE);
+                selectedGameStatusBar.setProgress(badge.progress, reducedMotion);
+                GradientDrawable background = gradient(0xD91A2026, 0xE00E1318, 10);
+                background.setStroke(dp(1), badge.kind.color);
+                selectedGameStatusPill.setBackground(background);
+            }
+        }
+        if (expandedGameStatus != null) {
+            expandedGameStatus.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (visible) {
+                android.graphics.drawable.Drawable icon = getDrawable(badge.kind.icon).mutate();
+                icon.setBounds(0, 0, dp(13), dp(13));
+                expandedGameStatus.setCompoundDrawables(icon, null, null, null);
+                expandedGameStatus.setCompoundDrawableTintList(
+                        android.content.res.ColorStateList.valueOf(textColor));
+                expandedGameStatus.setText(text);
+                expandedGameStatus.setTextColor(textColor);
+            }
+        }
     }
 
     private void prepareGameMetadataTransition() {
@@ -10498,6 +10580,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (selectedGameSource != null) selectedGameSource.setVisibility(View.GONE);
         if (selectedGameFactsRow != null) selectedGameFactsRow.setVisibility(View.GONE);
         if (selectedGameFacts != null) selectedGameFacts.setVisibility(View.GONE);
+        if (expandedGameStatus != null) expandedGameStatus.setVisibility(View.GONE);
         bindGameMetadata(selectedGameMetadata, selectedGameTitle,
                 selectedGameFacts, selectedGameDescription,
                 getString(R.string.playnite_full_library), "", "");
@@ -10569,141 +10652,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 getString(R.string.playnite_minutes_short)));
     }
 
-    private String playniteState(String hostUuid, PlayniteDashboardItem item) {
-        GameOperationsController.Presentation operation =
-                gameOperationsController.presentation(hostUuid, item.game);
-        if (operation.attentionRequired) {
-            return getString(R.string.playnite_install_attention);
-        }
-        if (operation.uninstallActive) {
-            return getString(R.string.playnite_uninstalling);
-        }
-        if (operation.installActive) {
-            String label = getString(item.game.installed ? operation.phase
-                    == GameOperationsController.Phase.PATCHING
-                    ? R.string.playnite_update_patching : R.string.playnite_update_downloading
-                    : R.string.playnite_installing);
-            return operation.progress >= 0
-                    ? label + " " + operation.progress + "%" : label;
-        }
-        if (!item.game.installed) return getString(R.string.playnite_not_installed);
-        if (item.game.updateRequired()) return updateLabel(item.game);
-        if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
-            return getString(R.string.playnite_game_installed);
-        }
-        return getString(R.string.playnite_launch_not_configured);
+    /** The tile badge of a game, from the session, the queue, its operation and its state. */
+    private ConsoleTileBadge tileBadge(String hostUuid, PlayniteDashboardItem item,
+                                       PlayniteSessionPresentation.State sessionState,
+                                       GameOperationsController.Presentation operation,
+                                       boolean childBlocked) {
+        return ConsoleTileBadge.of(sessionState, isQueuedPlayniteItem(hostUuid, item),
+                operation, item.game,
+                item.mappingState == PlayniteDashboardItem.MappingState.MAPPED, childBlocked);
     }
 
-    /** Steam's pending update of a tile: required, downloading or patching, with its percent. */
-    private String updateLabel(PlayniteLibraryGame game) {
-        if (!game.updateActive()) return getString(R.string.playnite_update_required);
-        String label = getString("patching".equals(game.updateState)
-                ? R.string.playnite_update_patching : R.string.playnite_update_downloading);
-        return game.updateProgress >= 0 ? label + " " + game.updateProgress + "%" : label;
-    }
-
-    private String playniteStateGlyph(String hostUuid, PlayniteDashboardItem item,
-                                      boolean resumeSession) {
-        if (!resumeSession && isQueuedPlayniteItem(hostUuid, item)) return "◷";
-        if (resumeSession) return "▶";
-        GameOperationsController.Presentation operation =
-                gameOperationsController.presentation(hostUuid, item.game);
-        if (operation.attentionRequired) return "!";
-        if (operation.uninstallActive) return "↓";
-        if (operation.installActive) return "↓";
-        if (!item.game.installed) return "↓";
-        if (item.game.updateRequired()) return "↻";
-        if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) return "✓";
-        return "!";
-    }
-
-    private String playniteStateChipLabel(String hostUuid, PlayniteDashboardItem item,
-                                          boolean resumeSession) {
-        if (resumeSession) return getString(R.string.console_resume);
-        if (isQueuedPlayniteItem(hostUuid, item)) return getString(R.string.console_queued);
-        GameOperationsController.Presentation operation =
-                gameOperationsController.presentation(hostUuid, item.game);
-        if (operation.attentionRequired) {
-            return getString(R.string.playnite_install_attention_short);
-        }
-        if (operation.uninstallActive) {
-            return getString(R.string.playnite_uninstalling);
-        }
-        if (operation.installActive) {
-            String label = getString(item.game.installed ? operation.phase
-                    == GameOperationsController.Phase.PATCHING
-                    ? R.string.playnite_update_patching : R.string.playnite_update_downloading
-                    : R.string.playnite_installing);
-            return operation.progress >= 0
-                    ? CONSOLE_UI_V2 ? operation.progress + "%"
-                    : label + " " + operation.progress + "%" : label;
-        }
-        if (!item.game.installed) return CONSOLE_UI_V2 ? ""
-                : getString(R.string.playnite_install_action_short);
-        if (item.game.updateRequired()) {
-            return item.game.updateActive() && item.game.updateProgress >= 0
-                    ? item.game.updateProgress + "%"
-                    : getString(R.string.playnite_update_short);
-        }
-        if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
-            return CONSOLE_UI_V2 ? "" : getString(R.string.playnite_ready_short);
-        }
-        return getString(R.string.playnite_configuration_short);
-    }
-
-    private CharSequence playniteStateChipText(String glyph, String label) {
-        return glyph.isEmpty() ? label : label.isEmpty() ? glyph : glyph + "  " + label;
-    }
-
-    private void stylePlayniteStateChip(TextView state, String hostUuid,
-                                        PlayniteDashboardItem item,
-                                        boolean resumeSession) {
-        GameOperationsController.Presentation operation =
-                gameOperationsController.presentation(hostUuid, item.game);
-        boolean installing = operation.installActive || operation.uninstallActive
-                || item.game.installed && item.game.updateRequired();
-        boolean unavailable = item.game.installed
-                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED;
-        int textColor;
-        int fill;
-        int stroke;
-        if (resumeSession) {
-            textColor = 0xFFE1F7FF; fill = 0xE0142933; stroke = 0xFF73D7FF;
-        } else if (operation.attentionRequired) {
-            textColor = 0xFFFFE1A6; fill = 0xE03D2B0A; stroke = 0xFFE3A93F;
-        } else if (installing) {
-            textColor = 0xFFFFE2A8; fill = 0xE03D2B0A; stroke = 0xFFE4B34B;
-        } else if (!item.game.installed) {
-            textColor = 0xFFE6EBEF; fill = 0xE0181E23; stroke = 0xFF9AA5AD;
-        } else if (unavailable) {
-            textColor = 0xFFFFC4BE; fill = 0xE0371B1A; stroke = 0xFFE16D63;
-        } else {
-            textColor = 0xFF8EF1AE; fill = 0xE014241B; stroke = 0xFF62C985;
-        }
-        Object appliedStyle = state.getTag(R.id.playnite_chip_style);
-        int[] applied = appliedStyle instanceof int[] ? (int[]) appliedStyle : null;
-        if (applied != null && applied[0] == textColor && applied[1] == fill
-                && applied[2] == stroke) return;
-        if (applied == null) {
-            applied = new int[3];
-            state.setTag(R.id.playnite_chip_style, applied);
-        }
-        applied[0] = textColor;
-        applied[1] = fill;
-        applied[2] = stroke;
-        state.setTextColor(textColor);
-        state.setShadowLayer(dp(1), 0, dp(1), 0xE0000000);
-        state.setElevation(dp(3));
-        state.setPadding(dp(4), dp(1), dp(4), dp(1));
-        // Rebinds recolour the chip's own drawable instead of allocating a new one.
-        GradientDrawable background = state.getBackground() instanceof GradientDrawable
-                ? (GradientDrawable) state.getBackground() : null;
-        if (background == null) {
-            background = gradient(fill, fill, 6);
-            state.setBackground(background);
-        }
-        background.setColor(fill);
-        background.setStroke(dp(1), stroke);
+    /** A badge's full words, as the side panel and the spoken card description say them. */
+    private String tileBadgeText(ConsoleTileBadge badge) {
+        if (badge.kind.label == 0) return "";
+        String percent = badge.percent();
+        String label = getString(badge.kind.label);
+        return percent.isEmpty() ? label : label + " " + percent;
     }
 
     private String playniteInstallKey(String hostUuid, PlayniteDashboardItem item) {
