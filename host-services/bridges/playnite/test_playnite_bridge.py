@@ -251,6 +251,70 @@ class StopVerifiedProcessTest(unittest.TestCase):
         probe.user32.PostMessageW.assert_not_called()
 
 
+class FocusGameWindowTest(unittest.TestCase):
+    DISPLAY = r"\\.\DISPLAY2"
+    MONITOR = [1920, 0, 3840, 1080]
+
+    def probe_with(self, *samples, style=WindowProbe.WS_THICKFRAME | WindowProbe.WS_MAXIMIZEBOX,
+                   zoomed=False):
+        probe = WindowProbe(None)
+        probe.kernel32 = mock.Mock()
+        probe.kernel32.GetCurrentThreadId.return_value = 1
+        probe.user32 = mock.Mock()
+        probe.user32.GetWindowThreadProcessId.return_value = 2
+        probe.user32.GetForegroundWindow.return_value = 0
+        probe.user32.SetForegroundWindow.return_value = True
+        probe.user32.GetWindowLongW.return_value = style
+        probe.user32.IsZoomed.return_value = zoomed
+        probe.sample = mock.Mock(side_effect=list(samples))
+        return probe
+
+    def window(self, bounds, display=DISPLAY):
+        return {"qualified": False, "reason": "target_not_fullscreen", "hwnd": 50,
+                "process_id": 42, "display": display, "bounds": bounds,
+                "monitor_bounds": self.MONITOR}
+
+    def test_verified_windowed_game_is_maximized_then_passes_the_gate(self):
+        probe = self.probe_with(self.window([2000, 100, 3000, 800]),
+                                self.window([1920, 0, 3840, 1040]))
+        result = probe.focus_game_window(42, "C:/Games/Game", self.DISPLAY)
+        self.assertTrue(result["focused"])
+        probe.user32.ShowWindow.assert_called_once_with(50, WindowProbe.SW_MAXIMIZE)
+        self.assertEqual(2, probe.sample.call_count)
+
+    def test_fullscreen_window_is_focused_without_restore_or_maximize(self):
+        probe = self.probe_with(self.window(list(self.MONITOR)))
+        self.assertTrue(probe.focus_game_window(42, "", self.DISPLAY)["focused"])
+        probe.user32.ShowWindow.assert_not_called()
+
+    def test_unverified_or_other_display_window_is_not_touched(self):
+        for sample in ({"qualified": False, "reason": "waiting_for_game_window"},
+                       self.window([0, 100, 1000, 800], display=r"\\.\DISPLAY1")):
+            probe = self.probe_with(sample)
+            with self.assertRaises(RuntimeError):
+                probe.focus_game_window(42, "", self.DISPLAY)
+            probe.user32.ShowWindow.assert_not_called()
+            probe.user32.SetForegroundWindow.assert_not_called()
+
+    def test_fixed_size_borderless_or_maximized_window_keeps_its_mode(self):
+        for style, zoomed in ((WindowProbe.WS_MAXIMIZEBOX, False),
+                              (WindowProbe.WS_THICKFRAME, False),
+                              (0, False),
+                              (WindowProbe.WS_THICKFRAME | WindowProbe.WS_MAXIMIZEBOX, True)):
+            probe = self.probe_with(self.window([2000, 100, 3000, 800]),
+                                    style=style, zoomed=zoomed)
+            with self.assertRaises(RuntimeError):
+                probe.focus_game_window(42, "", self.DISPLAY)
+            probe.user32.ShowWindow.assert_not_called()
+
+    def test_maximize_that_does_not_fill_the_display_is_not_focused(self):
+        probe = self.probe_with(self.window([2000, 100, 3000, 800]),
+                                self.window([2000, 100, 3000, 800]))
+        with self.assertRaises(RuntimeError):
+            probe.focus_game_window(42, "", self.DISPLAY)
+        probe.user32.SetForegroundWindow.assert_not_called()
+
+
 class WindowProbeTest(unittest.TestCase):
     @staticmethod
     def _steam_big_picture_window(root):

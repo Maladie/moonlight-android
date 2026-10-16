@@ -370,6 +370,10 @@ class WindowProbe:
     UOI_NAME = 2
     WM_CLOSE = 0x0010
     SW_RESTORE = 9
+    SW_MAXIMIZE = 3
+    GWL_STYLE = -16
+    WS_THICKFRAME = 0x00040000
+    WS_MAXIMIZEBOX = 0x00010000
     TH32CS_SNAPPROCESS = 0x00000002
     STILL_ACTIVE = 259
 
@@ -451,6 +455,10 @@ class WindowProbe:
             self.user32.PostMessageW.restype = wintypes.BOOL
             self.user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
             self.user32.ShowWindow.restype = wintypes.BOOL
+            self.user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+            self.user32.GetWindowLongW.restype = wintypes.LONG
+            self.user32.IsZoomed.argtypes = [wintypes.HWND]
+            self.user32.IsZoomed.restype = wintypes.BOOL
             self.user32.SetForegroundWindow.argtypes = [wintypes.HWND]
             self.user32.SetForegroundWindow.restype = wintypes.BOOL
             self.user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -1150,7 +1158,19 @@ class WindowProbe:
         if not self.fills_monitor(
                 list(sample.get("bounds") or []),
                 list(sample.get("monitor_bounds") or [])):
-            raise RuntimeError("The game window does not fill the streamed display.")
+            # Only a resizable window that offers its own maximize button: a fixed-size
+            # or borderless game keeps its intended mode. Maximize stays on this monitor.
+            style = int(self.user32.GetWindowLongW(hwnd, self.GWL_STYLE)) & 0xFFFFFFFF
+            resizable = self.WS_THICKFRAME | self.WS_MAXIMIZEBOX
+            if style & resizable != resizable or self.user32.IsZoomed(hwnd):
+                raise RuntimeError("The game window does not fill the streamed display.")
+            self.user32.ShowWindow(hwnd, self.SW_MAXIMIZE)
+            sample = self.sample("game", process_id, expected_display, install_directory)
+            if int(sample.get("hwnd") or 0) != hwnd or str(
+                    sample.get("display", "")).casefold() != expected_display.casefold() \
+                    or not self.fills_monitor(list(sample.get("bounds") or []),
+                                              list(sample.get("monitor_bounds") or [])):
+                raise RuntimeError("The game window does not fill the streamed display.")
         current_thread = int(self.kernel32.GetCurrentThreadId())
         target_thread = int(self.user32.GetWindowThreadProcessId(hwnd, None))
         foreground = int(self.user32.GetForegroundWindow() or 0)
@@ -1162,7 +1182,7 @@ class WindowProbe:
                     current_thread, thread_id, True):
                 attached.append(thread_id)
         try:
-            self.user32.ShowWindow(hwnd, self.SW_RESTORE)
+            # No SW_RESTORE: it would un-maximize the window that just passed the gate.
             self.user32.BringWindowToTop(hwnd)
             self.user32.SetActiveWindow(hwnd)
             self.user32.SetFocus(hwnd)

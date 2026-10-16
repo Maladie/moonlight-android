@@ -103,6 +103,15 @@ or starts the official `Playnite.FullscreenApp.exe` beside the running Desktop
 app. Both operations wait for the same verified-window gate before MoonWaker
 may reveal the stream.
 
+Focusing the running game (`/game/focus`, sent on reconnect and while readiness
+reports `target_not_foreground` or `target_not_fullscreen`) acts only on the
+verified game window already on the streamed display. When that window does not
+fill the display and is resizable with its own maximize button
+(`WS_THICKFRAME | WS_MAXIMIZEBOX`, not already maximized), the Bridge maximizes
+it in place and re-runs the window probe before the fullscreen gate; fixed-size,
+borderless and other windows are left untouched and the request fails. Focus
+never restores (un-maximizes) the window.
+
 ## Steam operations
 
 For a numeric Steam AppID, the Bridge resolves the current user's Steam install
