@@ -1,6 +1,6 @@
 {
   "product": "MoonWaker Host",
-  "version": "0.7.142",
-  "build": "2026.10.16-host-p1-merge",
+  "version": "0.7.143",
+  "build": "2026.10.16-chernobylite",
   "protocol_version": 7
 }
