@@ -1238,6 +1238,10 @@ class StartReadinessTest(unittest.TestCase):
 
     def test_probe_describes_hidden_minimized_and_small_game_windows(self):
         class User32:
+            @staticmethod
+            def IsIconic(_hwnd):
+                return False
+
             windows = {1: (False, (0, 0, 1920, 1080)), 2: (True, (-32000, -32000, -31840, -31972)),
                        3: (True, (0, 0, 320, 200)), 4: (True, (0, 0, 1920, 1080))}
 

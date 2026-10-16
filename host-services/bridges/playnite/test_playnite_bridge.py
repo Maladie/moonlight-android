@@ -65,6 +65,10 @@ class RunningScanCompletenessTest(unittest.TestCase):
 
         class User32:
             @staticmethod
+            def IsIconic(_hwnd):
+                return False
+
+            @staticmethod
             def IsWindowVisible(_hwnd):
                 return True
 
@@ -701,6 +705,10 @@ class WindowProbeTest(unittest.TestCase):
     def test_fresh_correlated_window_is_stabilized_then_invoked_once(self):
         class User32:
             @staticmethod
+            def IsIconic(_hwnd):
+                return False
+
+            @staticmethod
             def GetForegroundWindow():
                 return 77
 
@@ -762,6 +770,10 @@ class WindowProbeTest(unittest.TestCase):
 
     def test_missing_root_requires_certain_absence_of_exact_replacement(self):
         class User32:
+            @staticmethod
+            def IsIconic(_hwnd):
+                return False
+
             foreground = 77
             enumerate_window = True
 
@@ -914,6 +926,10 @@ class WindowProbeTest(unittest.TestCase):
     def test_steam_cef_launch_dialog_is_correlated_outside_game_directory(self):
         class User32:
             @staticmethod
+            def IsIconic(_hwnd):
+                return False
+
+            @staticmethod
             def GetForegroundWindow():
                 return 77
 
@@ -979,6 +995,10 @@ class WindowProbeTest(unittest.TestCase):
     def test_foreground_steam_surface_after_launcher_action_requires_observation(self):
         class User32:
             @staticmethod
+            def IsIconic(_hwnd):
+                return False
+
+            @staticmethod
             def GetForegroundWindow():
                 return 77
 
@@ -1037,6 +1057,10 @@ class WindowProbeTest(unittest.TestCase):
 
     def test_unchanged_fullscreen_provider_prompt_is_detected_without_clicking(self):
         class User32:
+            @staticmethod
+            def IsIconic(_hwnd):
+                return False
+
             @staticmethod
             def GetForegroundWindow():
                 return 77
