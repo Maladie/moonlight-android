@@ -19,8 +19,7 @@ Gateway files alone leaves the Gateway without a Vibepollo token.
 Host Control and its Configurator are compiled executables (`control\`), outside the
 allowlist: their backend (status, pairing, close session, Steam/Epic/Playnite/Discord
 settings, Napraw) and profile provisioning change only with the full installer. Host
-Control no longer stops or starts the Gateway and no longer writes a manual-stop marker;
-the updater's stop and start of Gateway are unaffected.
+Control does not stop or start the Gateway for an update; the updater does.
 
 ## Local development trust
 

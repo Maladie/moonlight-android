@@ -650,7 +650,7 @@ public class SessionStateProjectionTest {
     }
 
     @Test public void verifiedCloseProjectsClosingUntilAFreshIdlePollIsAccepted() {
-        // The snapshot SessionOrchestrator re-resolves right after a CLOSED result (MW-02).
+        // The snapshot SessionOrchestrator re-resolves right after a CLOSED result.
         m.enterHome(new Controller(), "session", "host", "child", 42, "game");
         assertNotNull(observe("host", ready("boot", dispatch("host"))).accepted);
         assertTrue(m.markTerminating("session", "host", 42, "game"));
@@ -1096,7 +1096,7 @@ public class SessionStateProjectionTest {
                 owner.current(m.snapshot(), 3L).observationState);
     }
 
-    /** MW-04 §7: the Gateway control generation is carried, never a correlation key. */
+    /** The Gateway control generation is carried, never a correlation key. */
     @Test public void controlGenerationIsCarriedButNeverDecidesTheProjection() {
         Controller controller = new Controller();
         m.enterHome(controller, "session", "host", "child", 42, "game");

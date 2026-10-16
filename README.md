@@ -33,7 +33,7 @@ the same source revision.
 | `app/src/main/jni/moonlight-core/` | Upstream Moonlight streaming core (submodule `moonlight-common-c`). Kept as close to upstream as possible. |
 | `host-services/` | Windows host: Gateway (the only LAN-facing API), an in-process Vibepollo client, per-profile Bridges for Playnite and (optional) Discord, Host Control, installer, updater, Login Broker and Credential Provider. See [host-services/README.md](host-services/README.md). |
 | `lab/` | Deterministic lab runner for device scenarios. |
-| `docs/` | Agent guides, hardening packet, UX backlog and the [work plan](docs/MoonWaker/PLAN_PL.md). |
+| `docs/` | Agent guides (`docs/agents/`), the console menu spec and third-party audio notices. `docs/MoonWaker/HARDENING/tools/` holds the source-fingerprint tool `lab/` uses. |
 
 ## Architecture in one paragraph
 
@@ -97,9 +97,6 @@ which checks are safe to run locally and which touch a real host or TV.
 
 - [AGENTS.md](AGENTS.md) – invariants, authority and scope rules for every change.
 - [CODEX_WORKFLOW.md](CODEX_WORKFLOW.md) – how delegated tasks and reviews are run.
-- [docs/MoonWaker/HARDENING/](docs/MoonWaker/HARDENING/START_HERE.md) – the session
-  hardening packet currently in progress.
-- [docs/MoonWaker/PLAN_PL.md](docs/MoonWaker/PLAN_PL.md) – prioritised plan of next steps.
 
 ## Upstream and credits
 

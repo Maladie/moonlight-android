@@ -31,5 +31,3 @@ Select actual available model/effort settings for the task. Sol is a reasonable 
 Record task, branch/HEAD, task-delta identity, outcome, changed ownership, validation commands/results, and remaining blockers. Link long logs instead of pasting them. Record source identity beyond HEAD when edits are uncommitted.
 
 Reuse valid evidence for unchanged source and environment; rerun checks invalidated by corrections. Never relax mandatory checks, device requirements, or independence to reduce tokens.
-
-For the hardening packet, its designated state, branch binding, and checkpoint tools remain authoritative for workflow progress. Read only the assigned task and needed contracts. Do not reset state, restart setup, or advance a dependent task while a required gate is pending.

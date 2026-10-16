@@ -1,1 +1,0 @@
-PASS: python -m py_compile lab/lab_runner.py lab/test_lab_runner.py (exit 0)

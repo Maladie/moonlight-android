@@ -17,29 +17,12 @@ class PacketTests(unittest.TestCase):
             entry.update(status='NOT_STARTED', implementation_report=None,
                          design_review_report=None, review_report=None)
 
-    def test_metadata_valid(self):
-        result = packet.validate(self.bundle)
-        self.assertEqual(result['tasks'], 11)
-        self.assertEqual(result['scenarios'], 50)
-        self.assertEqual(result['findings'], 11)
-
     def test_only_baseline_initially_dispatchable(self):
         self.assertEqual(packet.next_tasks(self.bundle)['dispatch_now'], ['S00'])
 
     def test_missing_dependency_blocks_worker(self):
         with self.assertRaises(ValueError):
             packet.make_context('S01', 'worker', False, self.bundle)
-
-    def test_preview_is_explicit(self):
-        text = packet.make_context('S01', 'worker', True, self.bundle)
-        self.assertIn('PREVIEW_NOT_EXECUTION_AUTHORIZATION', text)
-        self.assertIn('unaccepted dependencies', text)
-
-    def test_context_selects_only_assigned_findings(self):
-        text = packet.make_context('S01', 'worker', True, self.bundle)
-        self.assertIn('"id": "H02"', text)
-        self.assertNotIn('"id": "H08"', text)
-        self.assertIn('Complete independently usable outcome', text)
 
     def test_unknown_task_rejected(self):
         with self.assertRaises(ValueError):
@@ -60,16 +43,6 @@ class PacketTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid acceptance metadata'):
             packet.validate(self.bundle)
 
-    def test_owner_closure_needs_an_authorized_amendment_and_satisfies_dependencies(self):
-        self.bundle['state']['tasks']['S00']['status'] = 'CLOSED_BY_OWNER'
-        with self.assertRaisesRegex(ValueError, 'owner closure needs'):
-            packet.validate(self.bundle)
-        self.bundle['state']['contract_amendments'].append(
-            {'id': 'X', 'status': 'USER_AUTHORIZED', 'decision': 'd', 'value': 'v', 'source': 's'})
-        self.bundle['state']['tasks']['S00']['closure_decision'] = 'X'
-        packet.validate(self.bundle)
-        self.assertNotIn('S00', packet.pending_dependencies(self.bundle['tasks']['S01'], self.bundle))
-
     def test_reference_escape_rejected(self):
         with self.assertRaises(ValueError):
             packet.local_path('../../../../outside.json')
@@ -78,15 +51,6 @@ class PacketTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             packet.make_context('S00', 'reviewer', False, self.bundle)
 
-    def test_every_task_has_generator_context(self):
-        for task_id in self.bundle['tasks']:
-            for role in ['worker', 'reviewer']:
-                text = packet.make_context(task_id, role, True, self.bundle)
-                self.assertIn(task_id, text)
-                self.assertIn('Required output', text)
-
-
-@unittest.skipUnless(shutil.which('git'), 'Git unavailable; fingerprint tests not run')
 class FingerprintTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

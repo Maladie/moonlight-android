@@ -1,10 +1,9 @@
 # Menu, filtry i opcje — propozycja przegrupowania i wyglądu (styl PS5)
 
-Status: propozycja do decyzji właściciela, 2026-10-05; uzupełniona decyzjami
-właściciela z 2026-10-06 (struktura ekranu głównego, szybkie menu pod Guide, język
-wizualny v4, nowa kolejność prac). Oparta na przeglądzie aplikacji na BRAVII VH22
-(profil BASIA) przez adb: zrzuty ekranów, zrzuty drzewa widoków i kod `ConsoleActivity`.
-Ten dokument nie zmienia kodu. Kroki 1–4 z sekcji 6 są już zaimplementowane na tej gałęzi.
+Specyfikacja menu i języka wizualnego konsoli (ekran główny, panele, ustawienia, ekrany
+wejścia). Opisuje kod w `app/src/main/java/com/limelight/console`; sekcje są cytowane z
+komentarzy w kodzie po numerach. Jedyna część bez implementacji: szybkie menu pod
+Guide/PS (3.6).
 
 Makiety wizualne v4 (poza repozytorium, niewersjonowane):
 `D:\Maladie\moonlight-android\.claude\handoffs\mockups\` (`*-v4.png`, skrypt
@@ -23,21 +22,19 @@ Makiety wizualne v4 (poza repozytorium, niewersjonowane):
 | Kontroler | ikona kontrolera | Zidentyfikuj · Wyłącz · Rozparuj · Ustawienia Bluetooth |
 | Wyjście | z panelu Ustawienia | Wstecz na ekranie głównym opuszcza host (nie zamyka aplikacji); zamknięcie aplikacji tylko z menu |
 
-Wspólny komponent panelu (`ConsolePanel`) obsługuje wszystkie panele. Pasek filtrów
-i pasek ikon na ekranie głównym są w dawnej postaci.
+Wspólny komponent panelu (`ConsolePanel`) obsługuje wszystkie panele. Pasek górny i
+panel filtrów mają postać opisaną w 3.1 i 3.5.
 
-## 2. Co przeszkadzało
+## 2. Założenia
 
-Kroki 1–4 (sekcja 6) zajęły się punktami 1–3 i 5–8; otwarty zostaje punkt 4 (filtry).
-
-1. **Jedno „Opcje" mieszało trzy poziomy:** ustawienia aplikacji (dźwięki), ustawienia hosta (integracje, logowanie) i doraźne regulacje streamu (nadpisania bitrate'u).
-2. **Akcje hosta były w dwóch miejscach** (tytuł hosta i ekran wyboru hosta) z tą samą listą, w której sąsiadują „Pulpit" i „Odparuj hosta".
-3. **Panel akcji gry miał dziewięć pozycji bez grup**: uruchamianie, instalacja, sesja, streaming, profil dziecka i widoczność w jednej liście.
-4. **Pasek filtrów nie mówi, czym jest.** „Ostatnio grane" to sortowanie, ale nic na to nie wskazuje; „Wszystkie gry" i „Wszystkie platformy" wyglądają identycznie, choć jedno to pojedynczy wybór, a drugie wielokrotny. Prawy drążek tylko przenosi fokus na pasek.
-5. **Autopilot uruchamiał analizę od razu po wejściu** w pozycję menu, zamiast pokazać stan i przycisk.
-6. **README otwierało stronę GitHuba** z przyciskiem „Sign in"; na telewizorze nie da się jej użyć.
-7. **Wstecz na ekranie głównym otwierało pytanie o zamknięcie aplikacji**, co łatwo wywołać przypadkiem; przy zdalnym sterowaniu zatrzymało to cały przebieg testu.
-8. **Drobne:** „Pozostało dziś: 1381 min" zamiast „23 godz. 1 min"; stały napis „Biblioteka gier jest aktualna"; suwaki w procentach bez widocznego kroku; przełączniki „WŁ./WYŁ." jako pigułki o innym stylu niż reszta.
+1. Ustawienia aplikacji, ustawienia hosta i doraźne regulacje streamu są na osobnych poziomach.
+2. Akcje hosta mają jedną listę, z niebezpiecznymi pozycjami (Twarde zamknięcie, Odparuj hosta) na końcu.
+3. Panel akcji gry grupuje pozycje i pokazuje tylko grupy, które mają sens.
+4. Filtr, platformy i sortowanie są rozróżnialne z etykiet na przyciskach.
+5. Autopilot pokazuje stan i przycisk; analizy nie uruchamia samo wejście w pozycję menu.
+6. Pomoc działa offline; ekran telewizora nie otwiera stron wymagających logowania.
+7. Wstecz na ekranie głównym opuszcza host, nie pyta o zamknięcie aplikacji.
+8. Czas pokazywany w godzinach i minutach; przełączniki i suwaki w jednym stylu.
 
 ## 3. Docelowa struktura
 
@@ -52,7 +49,7 @@ Pasek górny zostaje, ale jest odchudzony; dawny pasek ikon z pięcioma przycisk
   stanu: Discord (gdy zalogowany; plakietka nieprzeczytanych) i Mikrofon USB (gdy włączony
   i dozwolony dla profilu; plakietka stanu). Etykieta pojawia się tylko pod ikoną z fokusem.
 - **Usunięte z paska:**
-  - *Odśwież stan i bibliotekę.* Stan hosta podąża sam po K1 (migawka sesji z koordynatora).
+  - *Odśwież stan i bibliotekę.* Stan hosta podąża sam (migawka sesji).
     Sprawdzone w kodzie: przycisk woła `refreshDashboard()`, który poza stanem hostów
     odpytuje listę aplikacji (`appListPoller.pollNow`) i odświeża bibliotekę Playnite
     (`requestPlayniteRefresh`), więc to także synchronizacja biblioteki. Ta funkcja
@@ -115,14 +112,11 @@ Zawartość bez zmian względem poprzedniej wersji; doprecyzowany wygląd:
   filtrują siatkę na żywo; nie ma osobnego okna tekstowego.
 - Pozycja „34 / 309" i opis gry zostają po lewej.
 - **Górna krawędź siatki musi ucinać**, tak by pod nagłówkiem nie było widać paska
-  poprzedniego rzędu. Pionowa zanikająca krawędź została usunięta 2026-10-06
-  (commit 416a3dc3), więc przycięcie robi przycięcie widoku (clip), nie gradient.
+  poprzedniego rzędu. Przycięcie robi clip widoku, nie zanikający gradient.
 
 ### 3.6 Szybkie menu (pod Guide/PS)
 
-Otwierane **krótkim naciśnięciem Guide/PS** (oczekiwany `KEYCODE_BUTTON_MODE`;
-**przed implementacją sprawdzić na telewizorze z padem właściciela**, bo HOME nie da się
-przechwycić). MENU/Options zostaje kontekstowe (karta gry na kaflu, panel hosta na
+Otwierane **krótkim naciśnięciem Guide/PS** (oczekiwany `KEYCODE_BUTTON_MODE`; HOME nie da się przechwycić). MENU/Options zostaje kontekstowe (karta gry na kaflu, panel hosta na
 hoście); długie MENU nie jest używane. Podczas streamu Guide trafia do PC (nakładka
 Steam/Xbox), więc szybkie menu dotyczy tylko konsoli.
 
@@ -142,7 +136,8 @@ Steam/Xbox), więc szybkie menu dotyczy tylko konsoli.
   profil MoonWaker, Przełącz użytkownika Windows (z wyraźnym ostrzeżeniem).
 - **Konflikt:** opcja wyzwalacza nakładki DM Discorda „guide" (`DiscordDmShortcutHandler`)
   koliduje z tym skrótem; trzeba ją usunąć albo ograniczyć do streamu.
-- Karta Stream czyta migawkę sesji, więc implementacja po MW-05 K3.
+- Karta Stream czyta migawkę sesji (`SessionModel`).
+- Stan: nie zaimplementowane; pad PS działa dziś jak Home.
 
 ### 3.7 Ekrany wejścia: wybór hosta, profil, PIN
 
@@ -374,56 +369,16 @@ wycięte w ikonie; liczniki w małych pigułkach.
   `setShadowLayer` i elevation).
 - Animacja fokusu = skala + alfa na GPU.
 
-## 5. Poprawki niezależne od przeprojektowania
+## 5. Zasady niezależne od przeprojektowania
 
-Zrobione w krokach 1–2 (sekcja 6): Wstecz na ekranie głównym nie zamyka aplikacji,
-Autopilot jako stan i przycisk, pomoc offline, „Pozostało dziś" w godzinach i minutach,
-napis o bibliotece tylko w stanie „odświeżam" i przy błędzie (stan „nieaktualna" usunięty 2026-10-09 — przesuwał karuzelę, a każde odświeżenie i tak go kończyło), etykiety typu na
-przyciskach filtrów.
+Wstecz na ekranie głównym nie zamyka aplikacji; Autopilot to stan i przycisk; pomoc jest
+offline; „Pozostało dziś" w godzinach i minutach; napis o bibliotece tylko w stanie
+„odświeżam" i przy błędzie; etykiety typu na przyciskach filtrów.
 
-## 6. Kolejność prac
+## 6. Stan wdrożenia
 
-Zrobione na tej gałęzi (siatka z pakietu P2 też już jest w użyciu):
-
-1. Poprawki z sekcji 5.
-2. Wspólny komponent panelu (`ConsolePanel`) jako osobna klasa widoku; przepięcie
-   istniejących paneli bez zmiany zawartości.
-3. Ustawienia pełnoekranowe (3.2) i przeniesienie pozycji z „Opcje".
-4. Karta gry (3.4) i panel hosta (3.3) w obecnej postaci.
-
-Dalej:
-
-- **5a. Wspólna warstwa wizualna:** panel ze szkła, zrzut tła z rozmyciem, trzy sposoby
-  fokusu, centrowanie tekstu, zestaw ikon (sekcja 4), zastosowane do istniejących
-  paneli (host, karta gry, ustawienia, menu akcji) jako osobne klasy widoków;
-  `ConsoleActivity` tylko je podpina. Przy okazji sprawdzić rozmiary tekstu z kroków 1–2
-  względem tabeli 4.6.
-- **5b. Panel filtrów i chipy (3.5)** wraz z przycięciem górnej krawędzi siatki.
-- **6a. Pasek górny (3.1):** kafel stanu hosta, warunkowe ikony Discord i mikrofon,
-  Szukaj z klawiaturą nad siatką; przeniesienie „Odśwież bibliotekę" do Ustawienia →
-  Biblioteka; „Zmień hosta" do panelu hosta; wariant panelu hosta z sesją.
-- **6b. Szybkie menu pod Guide (3.6):** najpierw weryfikacja kodu klawisza na
-  telewizorze, rozstrzygnięcie opcji „guide" w `DiscordDmShortcutHandler`; po MW-05 K3,
-  bo karta Stream czyta migawkę sesji.
-- **7. Ekrany wejścia (3.7) i animacja wejścia (3.8).** Opiera się na wspólnej warstwie
-  wizualnej z 5a (tło z rozmyciem, szkło, sposoby fokusu, centrowanie tekstu, ikony),
-  więc zaczyna się dopiero po akceptacji i scaleniu 5a. Jest niezależny od MW-05 K3/K4
-  z jednym wyjątkiem: reguła „nie po powrocie ze streamu" czyta migawkę sesji
-  (`SessionModel` z K3), więc 7d wchodzi po K3.
-  - **7a. Wspólna oprawa ekranów wejścia i wybór hosta.** Warstwa wyboru hosta budowana
-    dziś w `ConsoleActivity.buildHostSelectionLayer` / `createHostSelectionTile`
-    przechodzi do własnej klasy widoku.
-  - **7b. Wybór profilu i jego menu Opcje.**
-  - **7c. Ekran PIN.**
-  - **7d. Animacja wejścia.** Najpierw pomiar rzeczywistego czasu do gotowości
-    `prepareInitialCarouselFrame()` na telewizorze lub w laboratorium, przy zimnym i ciepłym
-    starcie; dopiero potem strojenie minimum (1,8 s) i limitu (ustalony przez właściciela: 4,5 s).
-
-  Każdy podkrok: build → zrzuty (emulator laboratorium, gdzie się da; ekran PIN okiem na
-  telewizorze, bo `FLAG_SECURE`) → akceptacja właściciela → commit. Nowe ekrany są
-  osobnymi klasami widoków.
-
-Każdy krok: build → zrzuty z telewizora → akceptacja właściciela → commit. Każdy jest
-niezależnie używalny i nie dotyka kodu sesji, więc może iść równolegle z hardeningiem
-(6b i 7d czekają na K3); ryzykiem są tylko konflikty w `ConsoleActivity`, dlatego nowe
-komponenty powstają jako osobne klasy, a Activity tylko je podpina i nie może urosnąć netto.
+Wdrożone: ekran główny z paskiem górnym (3.1), ustawienia pełnoekranowe (3.2), panel hosta
+(3.3), karta gry (3.4), panel filtrów i chipy (3.5), ekrany wejścia (3.7), animacja wejścia
+(3.8) i warstwa wizualna v4 (sekcja 4) w osobnych klasach widoków; `ConsoleActivity` tylko
+je podpina. Niezaimplementowane: szybkie menu pod Guide/PS (3.6) wraz z rozstrzygnięciem
+opcji „guide" w `DiscordDmShortcutHandler`.

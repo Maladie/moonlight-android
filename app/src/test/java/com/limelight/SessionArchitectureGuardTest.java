@@ -20,7 +20,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** MW-05: one owner per session fact; the Activities and process statics keep no copy. */
+/** One owner per session fact; the Activities and process statics keep no copy. */
 public class SessionArchitectureGuardTest {
     /**
      * Host-reported running app/game reads left in ConsoleActivity, per method. Game reads none.

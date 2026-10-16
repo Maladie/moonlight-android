@@ -33,4 +33,4 @@ A command list is not evidence of execution. A compile pass is not a device pass
 
 Fix failures introduced by the change. Distinguish a demonstrated baseline defect from a new regression. Rerun invalidated checks; avoid repeating unchanged full suites solely because another agent started. An independent reviewer may run focused checks necessary to challenge the candidate.
 
-For assigned hardening work, use its approved check plan and existing runner; do not build a competing evidence format or pipeline. Local execution is sufficient unless that task explicitly requires CI.
+Local execution is sufficient unless the task explicitly requires CI.

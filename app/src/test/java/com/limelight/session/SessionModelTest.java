@@ -1000,7 +1000,7 @@ public class SessionModelTest {
 
         assertTrue(m.ownsSwitchBeforeMutation(owner, request));
         assertFalse(m.ownsSwitchBeforeMutation(new FakeController(), request));
-        // The Gateway control generation is carried, never a decision key (MW-04 §7).
+        // The Gateway control generation is carried, never a decision key.
         assertTrue(m.bindControlGeneration(
                 owner, SESSION_A, 5L));
         assertTrue(m.ownsSwitchBeforeMutation(owner, request));

@@ -100,7 +100,7 @@ public class S05ControlPlaneContractTest {
         assertTrue(host.contains(
                 "String exact = stopTarget(expectedGame, gameState, currentGame);"));
         // An idle permit (no provider game) is the Gateway's proof: no racy provider re-read
-        // may reject the quit before /cancel (lab MW-05 D1: effect_rejected, Desktop kept running).
+        // may reject the quit before /cancel (effect_rejected, Desktop kept running).
         // Every permit naming a game is verified: no caller may skip it.
         assertTrue(host.contains("if (!permit.providerGameId.isEmpty()) {"));
         assertFalse(host.contains("providerAlreadyStopped"));

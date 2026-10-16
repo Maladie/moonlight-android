@@ -1,21 +1,19 @@
 # MoonWaker Architecture
 
-Status: draft for review
-Target branch: `feature/steam-operations`
-Purpose: define architectural boundaries before Instant Play, Guardian, additional game stores, and further host automation.
+Purpose: the architectural boundaries between the Android client, the Gateway, and the host Bridges.
 
 ## 1. Product boundary
 
 MoonWaker is a console-oriented Android TV client built on Moonlight. It coordinates:
 
 - Moonlight/Sunshine-compatible game streaming;
-- Vibepollo for stream host integration;
+- Vibepollo for stream host integration (called by the Gateway in process);
 - Playnite as the game library and lifecycle source;
 - MoonWaker Gateway as the authenticated client-facing host API;
-- per-profile host Bridges for Playnite and (optional, `-WithDiscord` builds only) Discord;
+- per-profile host processes: the Playnite Agent and (optional, `-WithDiscord` builds only) the Discord Bridge;
 - host-side control, installation, repair, and lifecycle tooling.
 
-The architecture should preserve Moonlight's streaming core and isolate MoonWaker-specific orchestration around it.
+Moonlight's streaming core is preserved and MoonWaker-specific orchestration is isolated around it.
 
 ## 2. Architectural principles
 
@@ -26,7 +24,7 @@ Do not maintain competing durable truths on Android and Windows for the same ope
 Examples:
 
 - installation/uninstallation lifecycle is host-authoritative through GameOps / `OperationJournal`;
-- currently retained in-process transport is Android-authoritative through `RetainedStreamSessionCoordinator`;
+- session state and the persistent session records are owned by `SessionModel` (one model thread, immutable published snapshots);
 - an intentionally suspended host session is persisted through `SuspendedSessionStore`;
 - reconnect data remains owned by `SessionResumeManager`;
 - transition privacy/readiness state remains owned by `LaunchTransitionController`.
@@ -48,16 +46,15 @@ It owns:
 
 It must not become the component that performs host effects.
 
-Future orchestration components may execute:
+Orchestration components execute the effects:
 
 - Wake-on-LAN;
 - Gateway requests;
 - Playnite focus;
 - game launch;
-- host repair;
 - stream launch/reconnect.
 
-They must feed observations back into the state machine instead of maintaining a competing transition state machine.
+They feed observations back into the state machine instead of maintaining a competing transition state machine.
 
 ### 2.3 One authenticated Gateway transport on Android
 
@@ -109,7 +106,7 @@ The default implementation should be the simplest design that correctly handles 
 
 ## 3. Android architecture
 
-### 3.1 Target shape
+### 3.1 Shape
 
 ```text
 ConsoleActivity
@@ -143,9 +140,9 @@ Game
 
 ### 3.2 `ConsoleActivity`
 
-`ConsoleActivity` is currently an oversized composition root containing UI, state resolution, GameOps actions, host actions, library behavior, and session orchestration.
+`ConsoleActivity` is the console's composition root.
 
-Its long-term responsibility should be:
+Its responsibility is:
 
 - construct/wire controllers;
 - render state;
@@ -153,24 +150,24 @@ Its long-term responsibility should be:
 - show panels/dialogs;
 - forward user intents to controllers/orchestrators.
 
-It should not own:
+It does not own:
 
 - durable GameOps interpretation;
 - launch/wake orchestration;
 - session truth resolution;
 - Gateway transport details.
 
-Do not rewrite `ConsoleActivity` wholesale. Extract vertical slices incrementally.
+Extract vertical slices into their own classes; do not grow the Activity.
 
 ### 3.3 `SessionStateResolver`
 
-Add a dedicated component that converts several lower-level observations into one deterministic `SessionSnapshot`.
+`SessionStateResolver` converts several lower-level observations into one deterministic `SessionSnapshot`.
 
-Inputs may include:
+Inputs include:
 
 - `ComputerDetails.runningGameId`;
 - resolved Playnite game ID;
-- `RetainedStreamSessionCoordinator`;
+- the session model's state (`SessionModel`);
 - `SuspendedSessionStore`;
 - `SessionResumeManager`;
 - relevant host sleep state.
@@ -191,13 +188,11 @@ SessionSnapshot
 
 Important: this component resolves state. It does not launch, stop, sleep, wake, or reconnect anything.
 
-`ActiveSessionSnapshot` is already a useful partial model, but it is not yet sufficient as the single resolver output. Its current fields cover active app/game/retained transport only. Extend or supersede it only as needed by the resolver; do not create parallel snapshot types for each UI path.
-
-`PlayniteSessionPresentation` should become a presentation projection over the resolved session snapshot (or a narrow derived view), rather than independently re-resolving session truth from a long list of primitive arguments. The goal is one resolution step followed by many read-only projections.
+`SessionSnapshot` is the single resolver output; do not create parallel snapshot types for each UI path. `PlayniteSessionPresentation` and the host presentation are read-only projections over it: one resolution step, many projections.
 
 ### 3.4 `GameOperationsController`
 
-Move install/uninstall orchestration and UI-facing operation projection out of `ConsoleActivity`.
+`GameOperationsController` owns install/uninstall orchestration and UI-facing operation projection.
 
 Responsibilities:
 
@@ -213,8 +208,6 @@ It must not create a second durable operation journal.
 Local state should be limited to request-in-flight or UI animation metadata.
 
 ### 3.5 `SessionOrchestrator`
-
-Introduce only after session resolution is deterministic.
 
 Responsibilities:
 
@@ -234,7 +227,7 @@ It must delegate transition readiness/privacy state to `LaunchTransitionControll
 
 `HostLaunchPreflight` is the intent-aware higher-level check.
 
-Possible stages:
+Stages (`HostLaunchPreflight.Stage`):
 
 ```text
 NETWORK_READY
@@ -256,9 +249,9 @@ Examples:
 
 `Game` should remain primarily the Moonlight streaming Activity.
 
-MoonWaker transition polling and recovery should move to a narrow `ConsoleStreamTransitionCoordinator`.
+MoonWaker transition polling and recovery live in the narrow `ConsoleStreamTransitionCoordinator`.
 
-Candidate responsibilities to extract:
+Responsibilities:
 
 - Playnite/Gateway transition observation;
 - event long-polling;
@@ -268,56 +261,28 @@ Candidate responsibilities to extract:
 - transition timeout policy;
 - conversion of host observations into calls to `LaunchTransitionController`.
 
-Do not move decoder, input, or core NvConnection lifecycle into this coordinator.
+Decoder, input, and core NvConnection lifecycle stay out of this coordinator.
 
 ## 4. Gateway client architecture
 
-### 4.1 Current issue
+### 4.1 Connection terminology
 
-Android currently contains duplicated authenticated Gateway transport behavior in:
-
-- `HostGatewayClient`;
-- `ui/overlay/DiscordGatewayClient`.
-
-This is a security and maintenance risk.
-
-### 4.2 Connection terminology and target shape
-
-The current Android code has three overlapping connection descriptors:
-
-- `GatewayConnection`;
-- `HostGatewayClient.Connection`;
-- `DiscordGatewayClient.Connection`.
-
-They represent essentially the same credential-bearing request context: endpoint, token, pinned certificate fingerprint, and integration profile. This duplication should be removed progressively, but **not all in C1A**.
-
-For the current request/response HTTPS architecture, use these terms precisely:
-
-- **`GatewayConnection`** — immutable validated connection descriptor / request context. It is not a live socket and does not own retries or connection lifecycle.
-- **`GatewayTransport`** — the single request executor for HTTPS/TLS, headers, response bounds, and error mapping. It may create a new `HttpsURLConnection` per request.
-- **domain API/client** — endpoint-specific request construction and DTO parsing.
-
-Do not introduce a `GatewaySession` abstraction unless MoonWaker later gains an actual long-lived logical Gateway session that needs independent lifecycle. Do not model a persistent transport connection that does not exist.
-
-Target shape:
+- **`GatewayConnection`** — immutable validated connection descriptor / request context: endpoint, token, pinned certificate fingerprint, and integration profile. It is not a live socket and does not own retries or connection lifecycle.
+- **`GatewayTransport`** — the single request executor for HTTPS/TLS, headers, response bounds, and error mapping. It creates a new `HttpsURLConnection` per request.
+- **domain client** — endpoint-specific request construction and DTO parsing: `HostGatewayClient`, `ChildSessionClient`, `ControlOperationClient`, `DiscordGatewayClient`.
 
 ```text
 GatewayConnection  (canonical immutable descriptor)
         |
 GatewayTransport   (single HTTPS/TLS implementation)
         |
-        +-- HostSystemGatewayClient
-        +-- PlayniteGatewayClient
+        +-- HostGatewayClient
+        +-- ChildSessionClient
+        +-- ControlOperationClient
         +-- DiscordGatewayClient
-        +-- VibepolloGatewayClient
 ```
 
-`GatewayTransport` owns HTTP/TLS/security behavior. Domain clients own endpoint paths, request bodies, domain DTO parsing, and domain-specific validation.
-
-Migration is intentionally staged:
-
-- **C1A**: introduce the canonical shared transport and domain split; both console and stream-overlay Gateway calls must use it. `HostGatewayClient` may remain as a compatibility facade and duplicate connection DTOs may remain temporarily where removing them would widen the diff.
-- **C1B**: follow-up cleanup after C1A is accepted; consolidate duplicate connection descriptors/callers and remove compatibility transport/domain paths where this can be done mechanically. C1B must not be smuggled into C1A.
+`GatewayTransport` owns HTTP/TLS/security behavior. Domain clients own endpoint paths, request bodies, domain DTO parsing, and domain-specific validation and delegate network/security behavior to the transport. There is no `GatewaySession` abstraction: MoonWaker has no long-lived logical Gateway session.
 
 ## 5. Windows host architecture
 
@@ -329,8 +294,7 @@ Gateway remains the only LAN-facing host API.
 `NT SERVICE\MoonWakerGateway` virtual account. Its host,
 `MoonWakerGatewayService.exe`, supervises only the machine Gateway process (restart after
 an exit with a 2–16 s backoff, state in `gateway-service-state.json`) and is available
-before interactive sign-in. The service is the Gateway's only launch path: there is no
-PowerShell supervisor or start/stop script. It must not start profile Bridges in session 0.
+before interactive sign-in. The service is the Gateway's only launch path. It must not start profile Bridges in session 0.
 
 Keep:
 
@@ -349,8 +313,7 @@ The Gateway owns the machine's single Vibepollo connection in process
 (Administrators, SYSTEM, read for the service; written only by the elevated
 Configurator), the HTTPS certificate pinned to the one in Vibepollo's
 configuration directory, control snapshots, the `MoonWaker Stream` application,
-Moonlight pairing, identity proofs and repair actions. There is no Vibepollo
-Bridge.
+Moonlight pairing, identity proofs and repair actions.
 
 ### 5.2 Host profiles and paired-client grants
 
@@ -414,12 +377,11 @@ another SID, and the tray does not restart it until that entry changes; an unrea
 registry (code 74) is only a backoff. A tray with an elevated token hosts nothing. Its watchdog ends a hung
 process (code 70) so the tray restarts it.
 
-Guardian should use host-side repair actions (Host Control's **Napraw**) rather than
-reimplement process supervision on Android.
+Android does not supervise host processes; repair is Host Control's **Napraw**.
 
 ### 5.4 Game Provider Bridge
 
-`GameProviderBridge.py` currently combines:
+`GameProviderBridge.py` (the Agent) combines:
 
 - Playnite pipe/IPC;
 - library cache;
@@ -431,20 +393,16 @@ reimplement process supervision on Android.
 - Epic probing;
 - HTTP serving.
 
-Do not rewrite it wholesale.
-
-Extract GameOps providers mechanically when the architecture is stable.
-
-Target shape:
+GameOps live in `GameOperations.py` and `OperationJournal.py` beside it:
 
 ```text
 GameProviderBridge
     |
     +-- Playnite IPC / library / lifecycle
     +-- readiness
-    +-- GameOperationsService
+    +-- GameOperationsService   (GameOperations.py)
             |
-            +-- OperationJournal
+            +-- OperationJournal   (OperationJournal.py)
             +-- SteamProvider
             +-- EpicProvider
             +-- GenericPlayniteProvider
@@ -544,21 +502,6 @@ transition or stream; a lost game window or later failure there is only a notice
 transition the user starts (for example a game started from the revealed
 Playnite).
 
-### 6.2 Host Privacy Surface
-
-Android alone does not hide a desktop frame after an unexpected target crash.
-
-An optional host-side opaque surface on the streamed display could improve the
-cosmetic transition. It is not implemented. If it is added, it should provide:
-
-- idempotent `privacy/show`;
-- idempotent `privacy/hide`;
-- transition ID required;
-- acknowledgement of effective transition ID;
-- host privacy surface shown before planned target replacement/close;
-- Android cover kept until host confirms target readiness and host surface
-  removal, with the manual reveal still available as in 6.1.
-
 ## 7. Boot, sleep, and remote sign-in
 
 The implemented bounded flow is:
@@ -608,46 +551,13 @@ configured Broker secrets before removing the Broker.
 Do not refactor for style alone:
 
 - `LaunchTransitionController`;
-- `RetainedStreamSessionCoordinator`;
+- `SessionModel`;
 - Gateway TLS/auth/profile boundary;
 - host loopback-only Bridge architecture;
 - Steam safety checks that validate launcher/process/window before automation;
 - Moonlight core streaming path.
 
-## 9. v1.0 architecture roadmap
-
-1. **C1A** — shared Gateway transport + domain split; one authenticated TLS/HTTP implementation.
-2. **C1B** — bounded cleanup of duplicate Gateway connection descriptors/callers after C1A review.
-3. **C2** — `GameOperationsController`.
-4. **C3** — `SessionStateResolver` and snapshot-based presentation projection.
-5. **C4** — extract host GameOps providers.
-6. **C5** — harden Steam zero-touch.
-7. **C6** — `ConsoleStreamTransitionCoordinator`.
-8. **C7** — `SessionOrchestrator` + `PlayIntent`.
-9. **C8** — `HostLaunchPreflight`.
-10. **C9** — suspend/resume hardening.
-11. **C10** — Host Privacy Surface.
-
-Then v1.0 stabilization.
-
-## 10. Deferred work
-
-Post-v1.0 unless required by discovered defects:
-
-- full Epic zero-touch;
-- GOG/Xbox providers;
-- generalized operation queue;
-- scheduled overnight install/sleep;
-- normalized host transition protocol;
-- complete removal of compatibility `HostGatewayClient`;
-- full DTO normalization;
-- large `wakeplay_gateway.py` split;
-- Guardian;
-- Streaming Autopilot;
-- Together;
-- preboot authentication and non-local Windows account automation.
-
-## 11. Review rule
+## 9. Review rule
 
 Every large MoonWaker change should answer:
 

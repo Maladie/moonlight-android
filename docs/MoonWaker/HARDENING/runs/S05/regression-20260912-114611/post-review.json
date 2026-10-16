@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "task": "S05",
-  "review_type": "independent post-edit review",
-  "reviewer": "s05_regression_contract_review",
-  "result": "ACCEPTED",
-  "finding": "The shared 1500 ms deadline covers all five authoritative sources, exhaustion remains fail-closed, forced reads skip WGC and optional telemetry, and the slow-success regression test reproduces the former liveness risk.",
-  "blocking_findings": []
-}

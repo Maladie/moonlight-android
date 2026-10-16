@@ -17,8 +17,9 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
- * Host polls and Gateway observations as session-model events (MW-04 §9 points 5, 6 and 8,
- * host sleep): the model alone decides what an observation changes; a reader only renders.
+ * Host polls and Gateway observations as session-model events (transport loss, a late
+ * observation, process death and host sleep): the model alone decides what an observation
+ * changes; a reader only renders.
  */
 public class SessionModelHostTest {
     private static final String TOKEN =
@@ -45,7 +46,7 @@ public class SessionModelHostTest {
                                          SessionModel.SwitchCallback completion) { }
     }
 
-    // ---- MW-04 §9 point 5: transport lost in the background, then a reconnect ----------------
+    // ---- transport lost in the background, then a reconnect ----------------
 
     @Test public void transportLostInTheBackgroundReconnectsWhileTheHostStillRunsIt() {
         Owner first = new Owner();
@@ -143,7 +144,7 @@ public class SessionModelHostTest {
         assertEquals(SessionModel.State.HOME_LIVE, m.state());
     }
 
-    // ---- MW-04 §9 point 6: observation A arriving after a newer B -----------------------------
+    // ---- observation A arriving after a newer B -----------------------------
 
     @Test public void olderObservationArrivingAfterANewerOneIsRejected() {
         long a = dispatch("host");
@@ -202,7 +203,7 @@ public class SessionModelHostTest {
         assertEquals(SessionSnapshot.State.UNCERTAIN, render("host").state);
     }
 
-    // ---- MW-04 §9 point 8: process death with a saved session ---------------------------------
+    // ---- process death with a saved session ---------------------------------
 
     @Test public void processDeathWithASavedSessionStartsWithoutALiveConnection() {
         m.enterHome(new Owner(), "s1", "host", "parent", 7, "game");

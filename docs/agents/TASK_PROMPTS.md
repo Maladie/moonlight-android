@@ -33,21 +33,3 @@ state that no blocking defect was found with remaining evidence limitations.
 Do not edit the candidate or accept on behalf of a coordinator when the packet
 assigns acceptance to that role.
 ```
-
-## Resume the assigned hardening workflow
-
-```text
-Resume docs/MoonWaker/HARDENING/RESUME.md using its existing STATE.json.
-Verify recorded branch, baseline, source identity, and dependency gates.
-Continue the current unfinished task, otherwise select one eligible next task.
-Do not recreate the branch, reset state, restart S00, or advance past a pending gate.
-
-Keep the coordinator focused on dispatch and evidence. Use a fresh worker for
-one new task and a real independent reviewer as required by the packet. Keep
-corrections in the task context. Pass dispatch/report paths rather than dumping
-full documents and logs into every conversation. Preserve design reviews,
-complete checkpoints, decomposition, and local/device test requirements.
-Stop after one accepted checkpoint or a genuine blocker; record the next action.
-```
-
-This last prompt is for an already initialized run. For a fresh run, use that packet's `START_HERE.md` and branch-creation policy. The packet is optional and is not installed by this agent-guidance proposal. Do not silently trim its generated dispatch or change acceptance to reduce context.
