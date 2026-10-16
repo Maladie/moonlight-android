@@ -244,19 +244,34 @@ and changes nothing. Status never answers `stream_generation_superseded`; a newe
 another actor on this TV is answered as `owned` with that actor, which retires this actor's
 own local record of an older stream and is never adopted by it.
 
-## A child's start on a retained stream
+## A child's start and the game it may stream
 
-A child-attached start (`child_session_id` set) may carry only the game of that child's
-live time session, the one the host granted at session start from the parent's sharing and
-the time rules; that session is the only entitlement source. A `resume`, `reconnect` or
-`warm_up` whose retained process proof names another game - possible when the record names
-no game yet and the parent's own game runs on the shared Windows profile - is refused with
-`409 child_game_not_entitled`, grants nothing and leaves the record and its generation
-as they were. A `reauthorize` names the same rule `retained_process_unconfirmed`. An idle
-provider carries no game and stays allowed. Closing is not gaining control: the child's
-`full_quit` and `hard_reset` of the same stream stay allowed. A child time session never
-bound to a process ends as stopped when another game runs and a complete scan lists none of
-its own game; the other game is left running.
+A child-attached start (`child_session_id` set) may carry or stream only the game of that
+child's live time session, the one the host granted at session start from the parent's
+sharing and the time rules; that session is the only entitlement source. A refused start
+grants nothing and leaves the record and its generation as they were.
+
+- `resume`, `reconnect` or `warm_up` on the child's retained stream: a retained process
+  proof that names another game - possible when the record names no game yet and the
+  parent's own game runs on the shared Windows profile - is refused with
+  `409 child_game_not_entitled`. An idle provider carries no game and stays allowed.
+- `reauthorize` applies the same rule and names it `retained_process_unconfirmed`.
+- A fresh start (`launch`, `replacement`, or `warm_up` without a retained record): the
+  session's game was checked only when the session began, and the parent may have started
+  its own game since. The Gateway reads the provider before it grants and needs
+  positive evidence: idle, or only the session's own game (starting or running) as the
+  current and every running game. Any other game is `409 child_game_not_entitled`; an
+  unreadable or unproven provider is `409 game_state_unverified`, a retry once the Bridge
+  answers again.
+
+Closing is not gaining control: the child's `full_quit` and `hard_reset` of the same stream
+stay allowed. A child time session never bound to a process is ended as stopped only on
+positive evidence that its game does not run: the provider's current game is another one
+with a verified process, and the complete scan lists none of the session's game. The other
+game is left running, and the terminal permit records the session's game as
+`abandoned_start_game_id`, so on success the Bridge drops a start of it still in flight and
+its effect fence rejects a late one. Without that evidence (another game still starting, an
+incomplete scan) the close stays `child_cleanup_required` and is retried.
 
 The lease-only child-session ends (`game_stopped`, `game_ended`, `actor_replaced`,
 `replacement`; `CHILD_LEASE_ONLY_REASONS`) release only the time lease and keep the stream

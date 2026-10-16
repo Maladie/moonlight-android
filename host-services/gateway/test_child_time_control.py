@@ -2481,6 +2481,40 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual("stream-newer", newer_stream["stream_session_id"])
         self.assertNotIn(terminal_id, self.state.control_state.get("completed", {}))
 
+    def test_hard_reset_during_the_streamer_close_survives_the_late_completion(self):
+        release, worker, result = self._end_with_blocking_close(
+            lambda: (True, "streamer_idle_after_close"))
+        session_id = self.state.child_time_session["session_id"]
+        terminal_id = "child-terminal:" + session_id
+        # The reset's own streamer close must not wait on the blocked one.
+        wakeplay_gateway.StreamerControlOperation.close = staticmethod(
+            lambda *_args, **_kwargs: (True, "streamer_idle_after_close"))
+        status, reset = self.state.hard_reset_session({"force": True})
+        self.assertEqual(200, status, reset)
+        generation = self.state.control_state["generation"]
+        epoch = self.state.control_state["actor_lease_epoch"]
+        reset_id = "hard-reset:%d:%d" % (generation, epoch)
+        completed = self.state.control_state["completed"]
+        reset_receipt = dict(completed[reset_id])
+        self.assertEqual(("failed", "superseded_by_hard_reset"), (
+            completed[terminal_id]["state"], completed[terminal_id]["reason"]))
+
+        release.set()
+        worker.join(10)
+        # The late completion reads the superseded receipt and changes nothing.
+        self.assertEqual(409, result["end"][0], result["end"][1])
+        self.assertTrue(result["end"][1]["cleanup_required"])
+        self.assertEqual(("failed", "superseded_by_hard_reset"), (
+            completed[terminal_id]["state"], completed[terminal_id]["reason"]))
+        self.assertEqual(reset_receipt, completed[reset_id])
+        self.assertEqual((generation, epoch), (
+            self.state.control_state["generation"],
+            self.state.control_state["actor_lease_epoch"]))
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIsNone(self.state.child_time_session)
+        self.assertEqual("hard_reset", self.state.child_time_completed[session_id]["reason"])
+
     def test_failed_streamer_close_leaves_a_recoverable_permit(self):
         session_id = self.start_running()
         original_close = wakeplay_gateway.StreamerControlOperation.close

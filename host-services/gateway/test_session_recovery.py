@@ -64,6 +64,8 @@ class SessionRecoveryTest(unittest.TestCase):
         self.bridge.set_library([{ "id": "steam:" + app, "provider": "steam",
             "providerGameId": app, "name": app, "installDir": "C:\\Games\\" + app,
             "exe": "game.exe"} for app in ("123", "456", "789")])
+        # The Bridge's background scan: an idle provider is proven idle.
+        self.bridge.state.refresh_running_games()
         self.stream_active = False
         self.closes = []
         self.serial = 0
@@ -593,6 +595,85 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertEqual(1, len(self.closes))
         # The parent's game was never the child's to stop.
         self.assertIn(7304, self.processes)
+        # The child's own game never ran: its start is abandoned under the terminal permit,
+        # so a launch of it still in flight is dropped and a late one fenced.
+        abandons = [call[3] for call in self.bridge.calls if call[2] == "/game/abandon-start"]
+        self.assertEqual(1, len(abandons), abandons)
+        self.assertEqual("steam:123", abandons[0]["game_id"])
+        self.assertEqual(child_id, abandons[0]["control_operation"]["child_session_id"])
+
+    def test_child_close_needs_positive_evidence_that_its_game_does_not_run(self):
+        # Another game without a verified process (still starting) proves nothing about the
+        # child's own game: the close stays a cleanup to retry, not a guess.
+        child_id = self.child_stream_without_game()
+        self.bridge.state.current = {"state": "starting", "id": "steam:789"}
+        self.bridge.state.refresh_running_games()
+        stream = dict(self.gateway.control_state["stream"])
+        status, result = self.acquire("kid", "full_quit")
+        self.assertEqual(409, status, result)
+        self.assertEqual("child_cleanup_required", result["reason"])
+        self.assertEqual(stream, self.gateway.control_state["stream"])
+        self.assertEqual([], self.closes)
+        self.assertFalse([call for call in self.bridge.calls
+                          if call[2] == "/game/abandon-start"])
+        self.assertEqual(child_id, self.gateway.child_time_session["session_id"])
+        # Recoverable: once the parent's game runs with a verified process, the close goes on.
+        self.run_game("789", 7305)
+        status, closed = self.acquire("kid", "full_quit", stream=stream)
+        self.assertEqual(200, status, closed)
+        self.assertIsNone(self.gateway.control_state["stream"])
+
+    def start_session_only(self, game="123"):
+        self.serial += 1
+        child_id = str(UUID(int=self.serial))
+        self.gateway.authorize_profile(self.client, "kid", allow_child=True)
+        status, result = self.gateway.child_time_session_start(
+            self.client, "kid", "steam:" + game, child_id, "allowance-" + str(self.serial))
+        self.assertEqual(202, status, result)
+        return child_id
+
+    def test_fresh_child_start_gets_no_permit_while_the_parents_unshared_game_runs(self):
+        child_id = self.start_session_only()  # the host was idle when the session began
+        self.run_game("789", 7401)  # then the parent starts its own game at the PC
+        generation = self.gateway.control_state["generation"]
+        for intent in ("launch", "warm_up", "replacement"):
+            with self.subTest(intent=intent):
+                status, result = self.acquire("kid", intent, child_id)
+                self.assertEqual(409, status, result)
+                self.assertEqual("child_game_not_entitled", result["reason"])
+                self.assertIsNone(self.gateway.control_state["active"])
+                self.assertIsNone(self.gateway.control_state["stream"])
+                self.assertEqual(generation, self.gateway.control_state["generation"])
+        # Recoverable: once the parent's game has ended, the same start is granted.
+        self.processes.clear()
+        self.bridge.state.current = {"id": "", "state": "idle"}
+        self.bridge.state.refresh_running_games()
+        status, permit = self.acquire("kid", "launch", child_id)
+        self.assertEqual(200, status, permit)
+        self.assertEqual("permitted", permit["state"])
+
+    def test_fresh_child_start_needs_a_readable_provider(self):
+        child_id = self.start_session_only()
+        proxy = self.gateway.proxy
+        self.gateway.proxy = lambda name, path, **kwargs: (
+            (False, {"error": "offline"}) if name == "game_provider"
+            else proxy(name, path, **kwargs))
+        generation = self.gateway.control_state["generation"]
+        status, result = self.acquire("kid", "launch", child_id)
+        self.assertEqual(409, status, result)
+        self.assertEqual("game_state_unverified", result["reason"])
+        self.assertIsNone(self.gateway.control_state["active"])
+        self.assertEqual(generation, self.gateway.control_state["generation"])
+        self.gateway.proxy = proxy
+        status, permit = self.acquire("kid", "launch", child_id)
+        self.assertEqual(200, status, permit)
+
+    def test_fresh_child_start_is_granted_for_its_own_running_game(self):
+        child_id = self.start_session_only()
+        self.run_game("123", 7402)
+        status, permit = self.acquire("kid", "launch", child_id)
+        self.assertEqual(200, status, permit)
+        self.assertEqual("permitted", permit["state"])
 
     def test_late_child_terminal_closes_its_stream_retained_after_game_ended(self):
         # game_ended is a lease-only end like game_stopped: the stream stays bound to the
