@@ -115,6 +115,9 @@ CONTROL_START_SILENT_GRACE_SECONDS = 60.0
 # 20 s acquire budget; the client gives up after 30 s.
 CONTROL_START_PROOF_RESERVE_SECONDS = 10.0
 CONTROL_ABANDON_RETRY_SECONDS = 1.0
+# How often a fresh child start re-reads an unreadable provider within its acquire budget.
+CHILD_START_PROVIDER_RETRY_SECONDS = 0.5
+PROVIDER_OBSERVATION_TIMEOUT_SECONDS = 3.0
 CHILD_TIME_USAGE_FILE = "child-time-usage.json"
 CLIENT_LAST_SEEN_WRITE_SECONDS = 5 * 60
 PIN_FAILURE_WINDOW_SECONDS = 5 * 60
@@ -697,6 +700,10 @@ class ControlProbes:
             return failed
         self.queued = (name, key, probe, 1 if taken is None else taken[2] + 1)
         return self.PENDING
+
+    def forget(self, name: str) -> None:
+        """Drop a result so the next `read` probes again (a wait for the probed state)."""
+        self.results.pop(name, None)
 
     def run(self) -> None:
         if self.queued is not None:
@@ -4160,7 +4167,8 @@ class GatewayState:
         if token and target_pid > 0:
             path += "?" + urllib.parse.urlencode({"target_process_id": target_pid,
                                                   "target_process_token": token})
-        ok, result = self.proxy("game_provider", path, timeout=3.0,
+        ok, result = self.proxy("game_provider", path,
+                                timeout=PROVIDER_OBSERVATION_TIMEOUT_SECONDS,
                                 profile_id=parent_profile_id)
         exact = {"target_token": token, "target_status": "unknown"}
         if not ok or not isinstance(result, dict):
@@ -4207,13 +4215,17 @@ class GatewayState:
                     "identity": identity, "running_games": identities,
                     "running_scan_status": running_scan_status, **exact,
                     "snapshot": result}
-        if game_evidence == "ABSENT" and process_evidence == "ABSENT" \
-                and current_state == "idle" and not current_id \
-                and running_scan_status == "complete" and target_retired:
+        idle = game_evidence == "ABSENT" and current_state == "idle" \
+            and not current_id and target_retired
+        if idle and process_evidence == "ABSENT" and running_scan_status == "complete":
             return {"kind": "idle", "game_id": "", "identity": None,
                     "running_games": [], "running_scan_status": running_scan_status,
                     **exact, "snapshot": result}
-        return {"kind": "unavailable", **exact, "snapshot": result}
+        # Idle but for a fresh partial scan that verified no game: only a fresh child start
+        # reads it, with the scan's unverified games (`_control_child_start_refusal`);
+        # closes and verdicts still need a complete scan.
+        return {"kind": "unavailable", **exact, "snapshot": result,
+                "partial_idle": idle and running_scan_status == "partial" and not running}
 
     @staticmethod
     def _child_time_running_verdict(session: dict[str, Any],
@@ -5007,6 +5019,21 @@ class GatewayState:
                     if current is probes.PENDING:
                         continue
                     refusal = self._control_child_start_refusal(child_session_id, current)
+                    process = (current.get("snapshot") or {}).get("process")
+                    if refusal == "game_state_unverified" \
+                            and current.get("kind") == "unavailable" \
+                            and (not isinstance(process, dict) or
+                                 process.get("running_scan_status") == "unavailable") \
+                            and deadline - time.monotonic() > \
+                            PROVIDER_OBSERVATION_TIMEOUT_SECONDS \
+                            + CHILD_START_PROVIDER_RETRY_SECONDS:
+                        # An offline provider or a stale scan (the Bridge rescans at least
+                        # every 5 s): re-read it within this request's budget, leaving the
+                        # last read room to finish by the deadline. Any other unproven
+                        # state (starting, stopping, a partial scan) is answered at once.
+                        probes.forget("child_start_game")
+                        self.control_condition.wait(CHILD_START_PROVIDER_RETRY_SECONDS)
+                        continue
                     if refusal:
                         return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                      "reason": refusal}
@@ -5096,14 +5123,28 @@ class GatewayState:
                                      current: dict[str, Any]) -> str:
         """Why a fresh child start may not begin, or "": it needs the provider's positive
         evidence of idle or of only this child session's own game (starting or running).
-        An unreadable provider is a retry, not a verdict."""
-        if current.get("kind") == "idle":
+        A partial scan's unverified games (seen, e.g. as several processes or behind an
+        ambiguous exe, but not verified) count like running ones. An unreadable provider is
+        a retry, not a verdict."""
+        kind = current.get("kind")
+        if kind == "idle":
             return ""
-        if current.get("kind") != "active":
+        process = (current.get("snapshot") or {}).get("process")
+        unverified = process.get("unverified_running_games") \
+            if isinstance(process, dict) else None
+        if not isinstance(unverified, list) \
+                or not all(isinstance(game, str) and game for game in unverified):
             return "game_state_unverified"
-        games = {self._child_time_normalize_game_id(item.get("game_id"))
-                 for item in current.get("running_games") or []}
-        games.add(self._child_time_normalize_game_id(current.get("game_id")))
+        games = {self._child_time_normalize_game_id(game) for game in unverified}
+        if kind == "active":
+            games |= {self._child_time_normalize_game_id(item.get("game_id"))
+                      for item in current.get("running_games") or []}
+            games.add(self._child_time_normalize_game_id(current.get("game_id")))
+        elif not (current.get("partial_idle") and games):
+            # ponytail: a partial scan naming no game (an unreadable process whose path is
+            # unreadable too) stays unverified, so the child is refused until it ends;
+            # accepting it is the owner's product/security boundary call.
+            return "game_state_unverified"
         return "" if all(self._control_child_game_entitled(child_session_id, game)
                          for game in games) else "child_game_not_entitled"
 

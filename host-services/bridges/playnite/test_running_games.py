@@ -237,6 +237,38 @@ class RunningGamesTest(unittest.TestCase):
         self.state.refresh_running_games()
         self.assertEqual([], self.state.current_snapshot()["running_games"])
 
+    def test_partial_scan_names_the_games_it_could_not_verify(self):
+        self.state.current = {"state": "idle"}
+        unowned = {k: v for k, v in identity(33, r"C:\Games\Batman\Batman.exe").items()
+                   if k != "user_sid"}  # the probe's owner-unreadable catalog process
+        for processes, expected in (
+                ([self.hk, identity(12, self.hk["process_path"], 101)], ["steam:1"]),
+                ([unowned], ["epic:Cowbird"]),
+                ([identity(44, r"C:\Games\HK\Batman\x.exe")], []),  # one game: verified
+                ([self.hk], [])):
+            with self.subTest(expected=expected, count=len(processes)):
+                self.probe.scan_running_processes.return_value = (processes, "complete")
+                running, status, _revision, _reason, unverified = \
+                    self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
+                self.assertEqual(expected, unverified)
+                self.assertEqual("partial" if expected else "complete", status)
+        # An exe under two install directories is ambiguous: both games are candidates.
+        self.state.library["steam:2"] = {"id": "steam:2", "provider": "steam",
+                                         "installDir": r"C:\Games\HK\Batman"}
+        self.state.library["epic:Cowbird"]["installDir"] = r"C:\Games\HK"
+        self.probe.scan_running_processes.return_value = (
+            [identity(44, r"C:\Games\HK\Batman\x.exe")], "complete")
+        self.state.refresh_running_games()
+        process = self.state.observation_snapshot()["process"]
+        self.assertEqual(("partial", "match_unconfirmed"),
+                         (process["running_scan_status"], process["running_scan_reason"]))
+        self.assertEqual(["epic:Cowbird", "steam:1", "steam:2"],
+                         process["unverified_running_games"])
+        self.state._running_scan_at -= 11
+        process = self.state.observation_snapshot()["process"]
+        self.assertEqual(([], "scan_stale"), (process["unverified_running_games"],
+                                               process["running_scan_reason"]))
+
     def test_shared_exe_native_without_connector_confirmation_is_not_claimed(self):
         guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
         self.state.library = {guid: {"id": guid, "provider": "playnite",
@@ -271,7 +303,7 @@ class RunningGamesTest(unittest.TestCase):
         self.state.handle_message({"type": "status", "status": {
             "name": "gameStarted", "id": guid, "processId": 44}})
 
-        running, status, _revision, _reason = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
+        running, status, _revision, _reason, _unverified = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
 
         self.assertEqual("complete", status)
         self.assertEqual({"steam:367520", guid},
@@ -300,7 +332,7 @@ class RunningGamesTest(unittest.TestCase):
                                  (("gone", None), ("complete", "verified"))):
             with self.subTest(probed=probed[0]):
                 self.probe.process_identity_status.return_value = probed
-                running, status, _revision, reason = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
+                running, status, _revision, reason, _unverified = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
                 self.assertEqual([], running)
                 self.assertEqual(expected, (status, reason))
 
@@ -484,7 +516,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
             dict(own) if pid == os.getpid() else {**emulator, "user_sid": "foreign"})
 
-        running, _status, _revision, _reason = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
+        running, _status, _revision, _reason, _unverified = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
 
         self.assertEqual([], running)
 
@@ -504,7 +536,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
             dict(own) if pid == os.getpid() else dict(emulator))
 
-        running, _status, _revision, _reason = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
+        running, _status, _revision, _reason, _unverified = self.state._verified_running_games(RUNNING_SCAN_DEADLINE)
 
         self.assertEqual([], running)
 

@@ -144,7 +144,10 @@ class RunningScanCompletenessTest(unittest.TestCase):
         result, status = self.scan({700: "alive"}, visible=[100, 700],
                                    paths={700: r"C:\Games\HK\hollow_knight.exe"})
         self.assertEqual("partial", status)
-        self.assertEqual([100], [item["process_id"] for item in result])
+        # It joins without owner evidence: the matcher may name its game, never verify it.
+        self.assertEqual([100, 700], [item["process_id"] for item in result])
+        self.assertEqual({"process_id": 700, "process_path": r"C:\Games\HK\hollow_knight.exe",
+                          "visible_window": True}, result[1])
 
     def test_owner_unreadable_game_image_outside_the_catalog_keeps_the_scan_complete(self):
         _result, status = self.scan({700: "alive"}, visible=[100],

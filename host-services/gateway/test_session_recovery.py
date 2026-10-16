@@ -91,7 +91,7 @@ class SessionRecoveryTest(unittest.TestCase):
             return self.bridge.proxy(name, path, **kwargs)
         gateway.proxy = proxy
 
-    def acquire(self, actor, intent, child_id="", stream=None):
+    def acquire(self, actor, intent, child_id="", stream=None, wait=0):
         self.serial += 1
         self.gateway.authorize_profile(self.client, actor, allow_child=True)
         stream = stream or self.gateway.control_state.get("stream") or {}
@@ -100,7 +100,7 @@ class SessionRecoveryTest(unittest.TestCase):
             "operation_id": op, "intent": intent, "stream_session_id": stream.get("stream_session_id", op),
             "sunshine_app_id": 7, "expected_generation": stream.get("generation", 0),
             "observed_sunshine_app_id": 7 if self.stream_active else 0,
-            "child_session_id": child_id}, op, 0)
+            "child_session_id": child_id}, op, wait)
 
     def start_child(self, game="123", retained=False):
         self.serial += 1
@@ -667,6 +667,126 @@ class SessionRecoveryTest(unittest.TestCase):
         self.gateway.proxy = proxy
         status, permit = self.acquire("kid", "launch", child_id)
         self.assertEqual(200, status, permit)
+
+    def partial_scan(self):
+        """The Bridge cannot read one visible-window process whose path it cannot read
+        either (an elevated window): partial, naming no game."""
+        self.bridge.state.running_process_probe.scan_running_processes.side_effect =             lambda _images, _catalog, _budget: (list(self.processes.values()), "partial")
+
+    def observation_reads(self):
+        proxy, reads = self.gateway.proxy, []
+        def counting(name, path, **kwargs):
+            if name == "game_provider" and path.startswith("/observation"):
+                reads.append(path)
+            return proxy(name, path, **kwargs)
+        self.gateway.proxy = counting
+        return reads
+
+    def idle_with_processes(self, *processes):
+        """Top-level idle while processes the scan cannot verify run (a game started at
+        the PC, outside MoonWaker)."""
+        for game, pid in processes:
+            self.processes[pid] = {"process_id": pid, "visible_window": True,
+                                   "process_path": rf"C:\Games\{game}\game.exe",
+                                   "process_started_filetime": pid, "user_sid": "own",
+                                   "session_id": 1}
+        self.bridge.state.current = {"id": "", "state": "idle"}
+        self.bridge.state.refresh_running_games()
+        return self.bridge.state.observation_snapshot()["process"]
+
+    def test_fresh_child_start_refuses_the_parents_game_running_as_two_processes(self):
+        child_id = self.start_session_only()
+        process = self.idle_with_processes(("789", 7501), ("789", 7502))
+        self.assertEqual(("partial", [], ["steam:789"]), (
+            process["running_scan_status"], process["running_games"],
+            process["unverified_running_games"]))
+        status, result = self.acquire("kid", "launch", child_id)
+        self.assertEqual(409, status, result)
+        self.assertEqual("child_game_not_entitled", result["reason"])
+        self.assertIsNone(self.gateway.control_state["active"])
+
+    def test_fresh_child_start_carries_its_own_game_running_as_two_processes(self):
+        child_id = self.start_session_only()
+        process = self.idle_with_processes(("123", 7503), ("123", 7504))
+        self.assertEqual(["steam:123"], process["unverified_running_games"])
+        status, permit = self.acquire("kid", "launch", child_id)
+        self.assertEqual(200, status, permit)
+        self.assertEqual("permitted", permit["state"])
+
+    def test_fresh_child_start_refuses_an_exe_matching_the_parents_and_its_own_game(self):
+        child_id = self.start_session_only()
+        library = list(self.bridge.state.library.values())
+        for game in library:
+            if game["id"] == "steam:789":
+                game["installDir"] = r"C:\Games\123"
+        self.bridge.set_library(library, revision="rev-2")
+        process = self.idle_with_processes(("123", 7505))
+        self.assertEqual(["steam:123", "steam:789"], process["unverified_running_games"])
+        status, result = self.acquire("kid", "launch", child_id)
+        self.assertEqual(409, status, result)
+        self.assertEqual("child_game_not_entitled", result["reason"])
+
+    def test_fresh_child_start_answers_a_partial_scan_naming_no_game_at_once(self):
+        # Known limit (owner's call): an unreadable process with an unreadable path may be
+        # any game, so the start stays unverified; it is no freshness state to wait out.
+        child_id = self.start_session_only()
+        self.partial_scan()
+        self.bridge.state.refresh_running_games()
+        process = self.bridge.state.observation_snapshot()["process"]
+        self.assertEqual(("partial", []), (process["running_scan_status"],
+                                           process["unverified_running_games"]))
+        reads = self.observation_reads()
+        with mock.patch("wakeplay_gateway.CHILD_START_PROVIDER_RETRY_SECONDS", 0):
+            status, result = self.acquire("kid", "launch", child_id, wait=5)
+        self.assertEqual(409, status, result)
+        self.assertEqual("game_state_unverified", result["reason"])
+        self.assertEqual(1, len(reads))
+
+    def test_fresh_child_start_refuses_a_partial_scan_listing_the_parents_game(self):
+        child_id = self.start_session_only()
+        self.partial_scan()
+        self.run_game("789", 7403)
+        self.assertEqual("partial", self.bridge.state.current_snapshot()["running_scan_status"])
+        status, result = self.acquire("kid", "launch", child_id)
+        self.assertEqual(409, status, result)
+        self.assertEqual("child_game_not_entitled", result["reason"])
+        self.assertIsNone(self.gateway.control_state["active"])
+
+    def test_fresh_child_start_gives_up_on_an_offline_provider_before_its_deadline(self):
+        child_id = self.start_session_only()
+        reads = self.observation_reads()
+        proxy = self.gateway.proxy
+        self.gateway.proxy = lambda name, path, **kwargs: (
+            proxy(name, path, **kwargs) and (False, {"error": "offline"})
+            if name == "game_provider" else proxy(name, path, **kwargs))
+        now = [1000.0]
+        with mock.patch("wakeplay_gateway.time.monotonic", side_effect=lambda: now[0]),                 mock.patch.object(self.gateway.control_condition, "wait",
+                                  side_effect=lambda seconds: now.__setitem__(
+                                      0, now[0] + seconds)):
+            status, result = self.acquire("kid", "launch", child_id, wait=5)
+        self.assertEqual(409, status, result)
+        self.assertEqual("game_state_unverified", result["reason"])
+        # Re-read every 0.5 s while a full 3 s read still fits before the 5 s deadline.
+        self.assertEqual(4, len(reads))
+
+    def test_fresh_child_start_waits_for_a_fresh_scan(self):
+        child_id = self.start_session_only()
+        self.bridge.state._running_scan_at -= 11  # older than the Bridge's 10 s freshness
+        self.assertEqual("unavailable",
+                         self.bridge.state.current_snapshot()["running_scan_status"])
+        proxy = self.gateway.proxy
+        reads = []
+        def rescanning(name, path, **kwargs):
+            result = proxy(name, path, **kwargs)
+            if name == "game_provider" and path.startswith("/observation"):
+                reads.append(result[1]["process"]["running_scan_status"])
+                self.bridge.state.refresh_running_games()  # the Bridge's next background scan
+            return result
+        self.gateway.proxy = rescanning
+        with mock.patch("wakeplay_gateway.CHILD_START_PROVIDER_RETRY_SECONDS", 0):
+            status, permit = self.acquire("kid", "launch", child_id, wait=5)
+        self.assertEqual(200, status, permit)
+        self.assertEqual(["unavailable", "complete"], reads)
 
     def test_fresh_child_start_is_granted_for_its_own_running_game(self):
         child_id = self.start_session_only()

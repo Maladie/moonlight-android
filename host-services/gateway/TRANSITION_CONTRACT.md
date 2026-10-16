@@ -275,9 +275,20 @@ grants nothing and leaves the record and its generation as they were.
   session's game was checked only when the session began, and the parent may have started
   its own game since. The Gateway reads the provider before it grants and needs
   positive evidence: idle, or only the session's own game (starting or running) as the
-  current and every running game. Any other game is `409 child_game_not_entitled`; an
-  unreadable or unproven provider is `409 game_state_unverified`, a retry once the Bridge
-  answers again.
+  current and every running game. A `partial` running scan publishes in
+  `/observation` (`process.unverified_running_games`, `process.running_scan_reason`) the
+  catalog games it saw but could not verify: an exe matching several games, an
+  unconfirmed emulator, a process without owner evidence (including an owner-unreadable
+  process whose path lies in the catalog), or several processes of one game. These count
+  like running games, so a partial scan with an idle top level is granted only when every
+  game it names is the session's own. Any other game is `409 child_game_not_entitled`.
+  Known limit: a partial scan naming no game (an unreadable process whose path is
+  unreadable too) stays `409 game_state_unverified` until that process ends; accepting it
+  is left to the owner. Only an offline provider or a stale scan is re-read, every 0.5 s
+  within the acquire's wait budget while a full 3 s read still fits before the deadline
+  (the Bridge rescans at least every 5 s); then it is `409 game_state_unverified`, and the
+  next Play is granted once the Bridge answers. Other unproven states (starting,
+  stopping, a live retained target) are answered at once.
 
 Closing is not gaining control: the child's `full_quit` and `hard_reset` of the same stream
 stay allowed. A child time session never bound to a process is ended as stopped only on

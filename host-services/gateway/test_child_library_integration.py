@@ -160,7 +160,7 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
         operation_id = "child-library-transport"
         # A fresh child start needs the provider's idle proof: an empty, complete scan.
         with self.bridge.state.lock:
-            self.bridge.state._record_running_scan_locked([], "complete")
+            self.bridge.state._record_running_scan_locked([], "complete", "verified", [])
         status, permit = self.gateway.control_operation_acquire(self.client, {
             "operation_id": operation_id,
             "intent": "launch",

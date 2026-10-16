@@ -406,7 +406,7 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
         self.gateway.authorize_child_profile(self.client, "kid")
         # A fresh child start needs the provider's idle proof: an empty, complete scan.
         with self.bridge.state.lock:
-            self.bridge.state._record_running_scan_locked([], "complete")
+            self.bridge.state._record_running_scan_locked([], "complete", "verified", [])
         status, permit = self.gateway.control_operation_acquire(self.client, {
             "operation_id": "child-integration-transport", "intent": "launch",
             "stream_session_id": SESSION_ID, "sunshine_app_id": 7,
