@@ -2357,6 +2357,33 @@ class BridgeStateTest(unittest.TestCase):
             self.assertEqual([], saved["playnite_library"])
             self.assertEqual(["steam"], [game["provider"] for game in saved["library"]])
 
+    def test_completed_install_clears_stale_installing_carried_by_catalog(self):
+        # An unowned Steam app is absent from GetOwnedGames, so an incomplete Steam scan
+        # carries its previous record (cached before the restart) into the new catalog.
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_path = Path(temporary) / "library-cache.json"
+            cache_path.write_text(json.dumps({"version": 2, "library": [
+                {"id": "steam:1016800", "name": "Chernobylite", "provider": "steam",
+                 "providerGameId": "1016800", "installed": True, "installing": True},
+            ]}), encoding="utf-8")
+            journal = OperationJournal(None)
+            journal.begin("steam:1016800", "install", "steam", "Chernobylite")
+            journal.update("steam:1016800", "completed")
+            operations = GameOperationsService(journal, steam=SteamProvider(roots=[]))
+            state = BridgeState(cache_path=cache_path, game_operations=operations)
+
+            with mock.patch.object(
+                    state.game_operations, "aggregate_catalog",
+                    side_effect=lambda _playnite, previous: {
+                        "library": previous, "providers": {}}):
+                state._refresh_catalog()
+
+            game = state.library_page("0", 10)["games"][0]
+            self.assertTrue(game["installed"])
+            self.assertFalse(game["installing"])
+            saved = json.loads(cache_path.read_text(encoding="utf-8"))
+            self.assertFalse(saved["library"][0]["installing"])
+
     def test_pending_installation_is_restored_from_operation_journal(self):
         with tempfile.TemporaryDirectory() as temporary:
             operation_path = Path(temporary) / "operations.sqlite3"
