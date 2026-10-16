@@ -936,9 +936,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 // Behind a screen saver the focus request of a reconnect is what makes the
                 // Bridge close the saver; a start is covered by the Bridge's own launch.
                 // Waking the saver has its own budget so it cannot use up the real focus attempts.
-                // A window that left fullscreen is maximized by the Bridge's focus remedy.
+                // The Bridge's focus remedy also restores a minimized window, moves one off the
+                // streamed display onto it and maximizes one that left fullscreen.
                 boolean focusRequired = "target_not_foreground".equals(readinessReason)
-                        || "target_not_fullscreen".equals(readinessReason);
+                        || "target_not_fullscreen".equals(readinessReason)
+                        || "target_minimized".equals(readinessReason)
+                        || "target_on_wrong_display".equals(readinessReason);
                 boolean wakeRequired = "host_screensaver_active".equals(readinessReason)
                         && "running".equalsIgnoreCase(snapshot.gameState);
                 if (snapshot.gatewayReady && "game".equalsIgnoreCase(snapshot.targetKind)
@@ -1225,7 +1228,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if ("target_not_fullscreen".equals(reason)) {
             return callbacks.gameWindowNotFullscreenMessage();
         }
-        if ("target_not_foreground".equals(reason)) {
+        if ("target_not_foreground".equals(reason) || "target_minimized".equals(reason)) {
             return callbacks.gameWindowNotForegroundMessage();
         }
         // Not a lock: the Bridge is waking the screensaver itself, and the broker would

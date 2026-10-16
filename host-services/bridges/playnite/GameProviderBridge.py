@@ -296,7 +296,7 @@ class StreamDisplayResolver:
 
     @classmethod
     def active_displays(cls) -> list[dict[str, Any]]:
-        """[{display_name, stream_virtual_display}] of the monitors attached to the desktop."""
+        """[{display_name, stream_virtual_display, bounds}] of the attached monitors."""
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo)]
         user32.GetMonitorInfoW.restype = wintypes.BOOL
@@ -316,14 +316,17 @@ class StreamDisplayResolver:
             info = _MonitorInfo()
             info.cbSize = ctypes.sizeof(info)
             if user32.GetMonitorInfoW(monitor, ctypes.byref(info)) and info.szDevice.strip():
-                names.append(info.szDevice)
+                bounds = info.rcMonitor
+                names.append((info.szDevice,
+                              [bounds.left, bounds.top, bounds.right, bounds.bottom]))
             return True
 
         callback = callback_type(collect)
         user32.EnumDisplayMonitors(None, None, callback, 0)
         return [{"display_name": name, "stream_virtual_display":
-                 adapters.get(name.upper(), "") in cls.STREAM_VIRTUAL_ADAPTER_IDS}
-                for name in names]
+                 adapters.get(name.upper(), "") in cls.STREAM_VIRTUAL_ADAPTER_IDS,
+                 "bounds": bounds}
+                for name, bounds in names]
 
     @staticmethod
     def _normalize(value: Any) -> str:
@@ -371,6 +374,8 @@ class WindowProbe:
     WM_CLOSE = 0x0010
     SW_RESTORE = 9
     SW_MAXIMIZE = 3
+    SWP_NOZORDER = 0x0004
+    SWP_NOACTIVATE = 0x0010
     GWL_STYLE = -16
     WS_THICKFRAME = 0x00040000
     WS_MAXIMIZEBOX = 0x00010000
@@ -459,6 +464,12 @@ class WindowProbe:
             self.user32.GetWindowLongW.restype = wintypes.LONG
             self.user32.IsZoomed.argtypes = [wintypes.HWND]
             self.user32.IsZoomed.restype = wintypes.BOOL
+            self.user32.IsIconic.argtypes = [wintypes.HWND]
+            self.user32.IsIconic.restype = wintypes.BOOL
+            self.user32.SetWindowPos.argtypes = [
+                wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, wintypes.UINT]
+            self.user32.SetWindowPos.restype = wintypes.BOOL
             self.user32.SetForegroundWindow.argtypes = [wintypes.HWND]
             self.user32.SetForegroundWindow.restype = wintypes.BOOL
             self.user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -1156,8 +1167,23 @@ class WindowProbe:
         if sample.get("reason") in {"host_session_locked", "host_screensaver_active"}:
             raise PermissionError("The Windows session is locked.")
         hwnd = int(sample.get("hwnd") or 0)
-        if not hwnd or str(sample.get("display", "")).casefold() != \
-                expected_display.casefold():
+        if not hwnd or not expected_display:
+            raise RuntimeError("No game window is available on the streamed display.")
+
+        def resample() -> dict[str, Any]:
+            again = self.sample("game", process_id, expected_display, install_directory)
+            if int(again.get("hwnd") or 0) != hwnd:
+                raise RuntimeError("The game window changed while it was being placed.")
+            return again
+
+        if self.user32.IsIconic(hwnd):
+            self.user32.ShowWindow(hwnd, self.SW_RESTORE)
+            sample = resample()
+        if str(sample.get("display", "")).casefold() != expected_display.casefold():
+            self.move_to_display(hwnd, list(sample.get("bounds") or []),
+                                 list(sample.get("monitor_bounds") or []), expected_display)
+            sample = resample()
+        if str(sample.get("display", "")).casefold() != expected_display.casefold():
             raise RuntimeError("No game window is available on the streamed display.")
         if not self.fills_monitor(
                 list(sample.get("bounds") or []),
@@ -1169,9 +1195,8 @@ class WindowProbe:
             if style & resizable != resizable or self.user32.IsZoomed(hwnd):
                 raise RuntimeError("The game window does not fill the streamed display.")
             self.user32.ShowWindow(hwnd, self.SW_MAXIMIZE)
-            sample = self.sample("game", process_id, expected_display, install_directory)
-            if int(sample.get("hwnd") or 0) != hwnd or str(
-                    sample.get("display", "")).casefold() != expected_display.casefold() \
+            sample = resample()
+            if str(sample.get("display", "")).casefold() != expected_display.casefold() \
                     or not self.fills_monitor(list(sample.get("bounds") or []),
                                               list(sample.get("monitor_bounds") or [])):
                 raise RuntimeError("The game window does not fill the streamed display.")
@@ -1199,6 +1224,30 @@ class WindowProbe:
             "process_id": int(sample.get("process_id") or 0),
             "display": str(sample.get("display") or ""),
         }
+
+    def move_to_display(self, hwnd: int, bounds: list[int], monitor_bounds: list[int],
+                        display: str) -> None:
+        """Places the window on `display`: a window filling its monitor takes the whole
+        target monitor, any other keeps its size at the target's top-left; a maximized
+        window moves restored and is maximized again there."""
+        target = next((list(item.get("bounds") or []) for item in
+                       StreamDisplayResolver.active_displays()
+                       if str(item.get("display_name") or "").casefold() ==
+                       display.casefold()), [])
+        if len(target) != 4 or len(bounds) != 4:
+            raise RuntimeError("The streamed display is not available.")
+        zoomed = bool(self.user32.IsZoomed(hwnd))
+        if zoomed:
+            self.user32.ShowWindow(hwnd, self.SW_RESTORE)
+        if self.fills_monitor(bounds, monitor_bounds):
+            width, height = target[2] - target[0], target[3] - target[1]
+        else:
+            width = min(bounds[2] - bounds[0], target[2] - target[0])
+            height = min(bounds[3] - bounds[1], target[3] - target[1])
+        self.user32.SetWindowPos(hwnd, None, target[0], target[1], width, height,
+                                 self.SWP_NOZORDER | self.SWP_NOACTIVATE)
+        if zoomed:
+            self.user32.ShowWindow(hwnd, self.SW_MAXIMIZE)
 
     def show_playnite_fullscreen(self, configured_path: str = "") -> dict[str, Any]:
         if not self.user32:
@@ -1549,6 +1598,7 @@ class WindowProbe:
         windows: list[dict[str, Any]] = []
         correlated_windows: list[dict[str, Any]] = []
         launcher_windows: list[dict[str, Any]] = []
+        minimized_windows: list[dict[str, Any]] = []
         process_tree = self._process_tree(process_id) \
             if target_kind == "game" and process_id else set()
         tracked_process_exited = target_kind == "game" and process_id > 0 \
@@ -1642,6 +1692,9 @@ class WindowProbe:
                 if tracked_process_exited:
                     details["replacement_process"] = True
                 correlated_windows.append(details)
+                if exact_process and details["title"] and self.user32.IsIconic(hwnd):
+                    minimized_windows.append(details)
+                    return True
             if width < 640 or height < 360:
                 return True
             windows.append(details)
@@ -1737,6 +1790,9 @@ class WindowProbe:
                         "launcher_action_attempted": True,
                         "launcher_detail": str(result.get("reason") or
                                                "launcher_uia_failed"), **selected}
+        if not windows and minimized_windows:
+            # The verified game's own window, minimized: the focus remedy restores it.
+            return {"qualified": False, "reason": "target_minimized", **minimized_windows[0]}
         if not windows:
             reason = "waiting_for_game_window" if target_kind == "game" else "waiting_for_playnite_window"
             return {"qualified": False, "reason": reason}

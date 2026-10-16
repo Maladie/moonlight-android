@@ -104,8 +104,12 @@ app. Both operations wait for the same verified-window gate before MoonWaker
 may reveal the stream.
 
 Focusing the running game (`/game/focus`, sent on reconnect and while readiness
-reports `target_not_foreground` or `target_not_fullscreen`) acts only on the
-verified game window already on the streamed display. When that window does not
+reports `target_not_foreground`, `target_not_fullscreen`, `target_minimized` or
+`target_on_wrong_display`) acts only on the verified game window. A minimized
+window is restored first. A window on another monitor (for example when the
+virtual-only topology was not applied) is moved onto the streamed display: one
+that filled its monitor takes the whole streamed display, any other keeps its
+size at the display's top-left corner. When that window does not
 fill the display and is resizable with its own maximize button
 (`WS_THICKFRAME | WS_MAXIMIZEBOX`, not already maximized), the Bridge maximizes
 it in place and re-runs the window probe before the fullscreen gate; fixed-size,

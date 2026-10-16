@@ -727,6 +727,22 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void minimizedOrMisplacedGameWindowAsksTheBridgeToPlaceIt() {
+        for (String reason : new String[] {"target_minimized", "target_on_wrong_display"}) {
+            FakeGateway gateway = gatewayWith(snapshot(true, true, "running", GAME, 42,
+                    false, "game", 0, reason));
+            FakeClock clock = new FakeClock();
+            gateway.snapshotAction = () -> clock.value += 3_000L;
+            Harness harness = new Harness(LaunchTransitionType.GAME, gateway, clock,
+                    new InterruptingSleeper());
+
+            harness.runObservation();
+
+            assertEquals(reason, 1, gateway.focusGameCalls);
+        }
+    }
+
+    @Test
     public void screensaverThatNeverClosesTimesOutUnlikeALock() {
         PlayniteTransitionGateway.Snapshot saver = snapshot(true, false, "idle", "", 0,
                 false, "playnite", 0, "host_screensaver_active");

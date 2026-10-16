@@ -259,7 +259,7 @@ class FocusGameWindowTest(unittest.TestCase):
     MONITOR = [1920, 0, 3840, 1080]
 
     def probe_with(self, *samples, style=WindowProbe.WS_THICKFRAME | WindowProbe.WS_MAXIMIZEBOX,
-                   zoomed=False):
+                   zoomed=False, iconic=False):
         probe = WindowProbe(None)
         probe.kernel32 = mock.Mock()
         probe.kernel32.GetCurrentThreadId.return_value = 1
@@ -269,6 +269,7 @@ class FocusGameWindowTest(unittest.TestCase):
         probe.user32.SetForegroundWindow.return_value = True
         probe.user32.GetWindowLongW.return_value = style
         probe.user32.IsZoomed.return_value = zoomed
+        probe.user32.IsIconic.return_value = iconic
         probe.sample = mock.Mock(side_effect=list(samples))
         return probe
 
@@ -290,14 +291,49 @@ class FocusGameWindowTest(unittest.TestCase):
         self.assertTrue(probe.focus_game_window(42, "", self.DISPLAY)["focused"])
         probe.user32.ShowWindow.assert_not_called()
 
-    def test_unverified_or_other_display_window_is_not_touched(self):
-        for sample in ({"qualified": False, "reason": "waiting_for_game_window"},
-                       self.window([0, 100, 1000, 800], display=r"\\.\DISPLAY1")):
-            probe = self.probe_with(sample)
+    def test_unverified_window_is_not_touched(self):
+        probe = self.probe_with({"qualified": False, "reason": "waiting_for_game_window"})
+        with self.assertRaises(RuntimeError):
+            probe.focus_game_window(42, "", self.DISPLAY)
+        probe.user32.ShowWindow.assert_not_called()
+        probe.user32.SetForegroundWindow.assert_not_called()
+
+    def test_minimized_game_window_is_restored_then_focused(self):
+        probe = self.probe_with(
+            {**self.window([-32000, -32000, -31840, -31972]), "reason": "target_minimized"},
+            self.window(list(self.MONITOR)), iconic=True)
+        self.assertTrue(probe.focus_game_window(42, "", self.DISPLAY)["focused"])
+        probe.user32.ShowWindow.assert_called_once_with(50, WindowProbe.SW_RESTORE)
+
+    def test_window_on_another_display_is_moved_onto_the_streamed_one(self):
+        displays = [{"display_name": r"\\.\DISPLAY1", "bounds": [0, 0, 3840, 2160]},
+                    {"display_name": self.DISPLAY, "bounds": list(self.MONITOR)}]
+        # A borderless window filling the other monitor takes the whole streamed one.
+        probe = self.probe_with(
+            {**self.window([0, 0, 3840, 2160], display=r"\\.\DISPLAY1"),
+             "monitor_bounds": [0, 0, 3840, 2160]},
+            self.window(list(self.MONITOR)))
+        with mock.patch.object(StreamDisplayResolver, "active_displays",
+                               return_value=displays):
+            self.assertTrue(probe.focus_game_window(42, "", self.DISPLAY)["focused"])
+        probe.user32.SetWindowPos.assert_called_once_with(
+            50, None, 1920, 0, 1920, 1080,
+            WindowProbe.SWP_NOZORDER | WindowProbe.SWP_NOACTIVATE)
+
+    def test_window_that_stays_off_the_streamed_display_is_not_focused(self):
+        displays = [{"display_name": self.DISPLAY, "bounds": list(self.MONITOR)}]
+        other = {**self.window([0, 100, 1000, 800], display=r"\\.\DISPLAY1"),
+                 "monitor_bounds": [0, 0, 1920, 1080]}
+        probe = self.probe_with(other, other)
+        with mock.patch.object(StreamDisplayResolver, "active_displays",
+                               return_value=displays):
             with self.assertRaises(RuntimeError):
                 probe.focus_game_window(42, "", self.DISPLAY)
-            probe.user32.ShowWindow.assert_not_called()
-            probe.user32.SetForegroundWindow.assert_not_called()
+        # A windowed game keeps its size at the streamed display's corner.
+        probe.user32.SetWindowPos.assert_called_once_with(
+            50, None, 1920, 0, 1000, 700,
+            WindowProbe.SWP_NOZORDER | WindowProbe.SWP_NOACTIVATE)
+        probe.user32.SetForegroundWindow.assert_not_called()
 
     def test_fixed_size_borderless_or_maximized_window_keeps_its_mode(self):
         for style, zoomed in ((WindowProbe.WS_MAXIMIZEBOX, False),
@@ -1164,11 +1200,15 @@ class WindowProbeTest(unittest.TestCase):
         self.assertFalse(WindowProbe.can_reveal_without_global_foreground(
             [100, 100, 1380, 820], monitor, r"\\.\DISPLAY2", r"\\.\DISPLAY15"))
 
-    def fullscreen_game_probe(self, foreground: int) -> WindowProbe:
+    def fullscreen_game_probe(self, foreground: int, iconic: bool = False) -> WindowProbe:
         class User32:
             @staticmethod
             def GetForegroundWindow():
                 return foreground
+
+            @staticmethod
+            def IsIconic(_hwnd):
+                return iconic
 
             @staticmethod
             def IsWindowVisible(_hwnd):
@@ -1202,6 +1242,12 @@ class WindowProbeTest(unittest.TestCase):
         probe._monitor_details = mock.Mock(side_effect=lambda hwnd: (
             r"\\.\DISPLAY1" if hwnd == 77 else r"\\.\DISPLAY2", [0, 0, 1920, 1080]))
         return probe
+
+    def test_minimized_verified_game_window_is_reported_for_the_focus_remedy(self):
+        sample = self.fullscreen_game_probe(0, iconic=True).sample(
+            "game", 1234, r"\\.\DISPLAY1", r"E:\Games\Example")
+        self.assertEqual("target_minimized", sample["reason"])
+        self.assertEqual(77, sample["hwnd"])
 
     def test_fullscreen_game_without_any_foreground_is_not_ready(self):
         sample = self.fullscreen_game_probe(0).sample(
