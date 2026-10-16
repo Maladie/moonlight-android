@@ -194,11 +194,14 @@ try {
         "/resource:$archive,MoonWaker.HostServices.zip",
         "/resource:$(Join-Path $hostServicesRoot 'version.json'),MoonWaker.Version.json",
         "/reference:System.dll", "/reference:System.Core.dll",
-        "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
         "/reference:System.Security.dll",
         "/reference:System.IO.Compression.dll",
         "/reference:System.IO.Compression.FileSystem.dll",
-        (Join-Path $PSScriptRoot "MoonWakerHostInstaller.cs")
+        # The installer shares Host Control's window style.
+        "/lib:$(Join-Path (Split-Path -Parent $compiler) 'WPF')", "/reference:PresentationFramework.dll",
+        "/reference:PresentationCore.dll", "/reference:WindowsBase.dll", "/reference:System.Xaml.dll",
+        (Join-Path $PSScriptRoot "MoonWakerHostInstaller.cs"),
+        (Join-Path $hostServicesRoot "control\HostControlUi.cs")
     )
     $icon = Join-Path $PSScriptRoot "moonwaker-host.ico"
     if (Test-Path -LiteralPath $icon) {

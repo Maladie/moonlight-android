@@ -493,15 +493,16 @@ namespace MoonWaker.HostControl
     }
 
     // A small modal window in the main window's style: a description, optional fields, an
-    // inline validation message, and a confirm button beside "Anuluj" (Enter / Esc; Enter is
-    // "Anuluj" when the confirm button is a Danger one). shield: the confirm button saves
+    // inline validation message, and a confirm button beside cancel, "Anuluj" by default
+    // (Enter / Esc; Enter is cancel when the confirm button is a Danger one). shield: the confirm button saves
     // through the elevated helper (UAC).
     internal sealed class HostDialog : Window
     {
         private readonly TextBlock problem;
 
         internal HostDialog(Window owner, Ui ui, string title, string description, UIElement body,
-            string confirm, ButtonKind kind, Func<string> validate, double width = 500, bool shield = false)
+            string confirm, ButtonKind kind, Func<string> validate, double width = 500, bool shield = false,
+            string cancelText = "Anuluj")
         {
             if (owner != null && owner.IsVisible) Owner = owner;
             WindowStartupLocation = Owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen;
@@ -543,7 +544,7 @@ namespace MoonWaker.HostControl
                 problem.Text = message;
                 problem.Visibility = Visibility.Visible;
             });
-            Button cancel = ui.Button("Anuluj", ButtonKind.Normal, false, false, delegate { DialogResult = false; });
+            Button cancel = ui.Button(cancelText, ButtonKind.Normal, false, false, delegate { DialogResult = false; });
             cancel.IsCancel = true;
             bool danger = kind == ButtonKind.Danger;
             accept.IsDefault = !danger;
@@ -574,10 +575,10 @@ namespace MoonWaker.HostControl
         }
 
         internal static bool Confirm(Window owner, Ui ui, string title, string text, string confirm, bool danger,
-            bool shield = false)
+            bool shield = false, string cancelText = "Anuluj")
         {
             return new HostDialog(owner, ui, title, text, null, confirm,
-                danger ? ButtonKind.Danger : ButtonKind.Primary, null, 500, shield).ShowDialog() == true;
+                danger ? ButtonKind.Danger : ButtonKind.Primary, null, 500, shield, cancelText).ShowDialog() == true;
         }
 
         private const string SteamKeyPage = "https://steamcommunity.com/dev/apikey";

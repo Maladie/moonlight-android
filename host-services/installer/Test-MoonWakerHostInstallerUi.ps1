@@ -6,24 +6,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Add-Type -AssemblyName System.IO.Compression
-
-function Get-Descendants([Windows.Forms.Control]$Parent) {
-    foreach ($child in $Parent.Controls) {
-        $child
-        foreach ($descendant in Get-Descendants $child) { $descendant }
-    }
-}
-
-function Save-Preview([Windows.Forms.Form]$Form, [string]$Path) {
-    $bitmap = [Drawing.Bitmap]::new($Form.Width, $Form.Height)
-    try {
-        $Form.DrawToBitmap($bitmap, [Drawing.Rectangle]::new(0, 0, $bitmap.Width, $bitmap.Height))
-        $bitmap.Save($Path, [Drawing.Imaging.ImageFormat]::Png)
-    } finally { $bitmap.Dispose() }
-}
 
 function Test-PackagedControlModules([IO.Compression.ZipArchive]$payload) {
     $moduleDirectory = Join-Path ([IO.Path]::GetTempPath()) (
@@ -54,6 +38,16 @@ function Test-PackagedControlModules([IO.Compression.ZipArchive]$payload) {
                     "moonwaker-installer-modules-*") {
                 Remove-Item -LiteralPath $resolvedModuleDirectory -Recurse -Force
             }
+        }
+    }
+}
+
+# Every element below root, through the logical tree.
+function Get-Descendants($Parent) {
+    foreach ($child in [Windows.LogicalTreeHelper]::GetChildren($Parent)) {
+        if ($child -is [Windows.DependencyObject]) {
+            $child
+            Get-Descendants $child
         }
     }
 }
@@ -103,101 +97,74 @@ try {
         Test-PackagedControlModules $payload
     } finally { $payload.Dispose() }
 } finally { $payloadStream.Dispose() }
-$formType = $assembly.GetType("MoonWaker.HostInstaller.InstallerForm", $true)
-$form = [Activator]::CreateInstance($formType, $true)
-$instanceFlags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
-try {
-    if ($form.AutoScaleMode -ne [Windows.Forms.AutoScaleMode]::Dpi) {
-        throw "Installer form is not configured for DPI scaling."
-    }
-    $form.ShowInTaskbar = $false
-    $form.StartPosition = [Windows.Forms.FormStartPosition]::Manual
-    $form.Location = [Drawing.Point]::new(-32000, -32000)
-    $form.Show()
-    [Windows.Forms.Application]::DoEvents()
 
-    $pages = $formType.GetField("pages", $instanceFlags).GetValue($form)
-    $steps = $formType.GetField("stepLabels", $instanceFlags).GetValue($form)
-    if ($pages.Count -ne 5 -or $steps.Count -ne 5) {
-        throw "Installer must expose exactly five guided steps."
-    }
-    $showPage = $formType.GetMethod("ShowPage", $instanceFlags)
-    $setLanguage = $formType.GetMethod("SetLanguage", $instanceFlags)
-    if ($null -eq $showPage -or $null -eq $setLanguage) {
-        throw "Wizard navigation methods are missing."
-    }
+# The window is never shown: Loaded (the system check) does not run, and each state is set
+# directly, rendered at the default size and inspected.
+$windowType = $assembly.GetType("MoonWaker.HostInstaller.InstallerWindow", $true)
+$flags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
+$window = $windowType.GetConstructor($flags, $null, @([bool]), $null).Invoke(@($false))
+function Set-State([string]$Name, $Value) { $windowType.GetField($Name, $flags).SetValue($window, $Value) }
+function Get-State([string]$Name) { $windowType.GetField($Name, $flags).GetValue($window) }
+$pageType = $windowType.GetNestedType("Page", [Reflection.BindingFlags]::NonPublic)
+$render = $windowType.GetMethod("Render", $flags, $null, [Type]::EmptyTypes, $null)
 
-    $setLanguage.Invoke($form, @(1)) | Out-Null
-    [Windows.Forms.Application]::DoEvents()
-    if (-not $form.Text.StartsWith("Instalator MoonWaker Host") -or
-        $steps[1].Text -ne "Sprawdzenie systemu") {
-        throw "Polish localization was not applied to the wizard shell."
-    }
-    $setLanguage.Invoke($form, @(0)) | Out-Null
-    [Windows.Forms.Application]::DoEvents()
-    if (-not $form.Text.StartsWith("MoonWaker Host Installer") -or
-        $steps[1].Text -ne "System check") {
-        throw "English localization was not applied to the wizard shell."
-    }
+$probe = Get-State "wakeOnLan"
+$probe.GetType().GetField("Supported", $flags).SetValue($probe, $false)
+Set-State "checking" $false
+foreach ($part in (Get-State "parts")) { $part.GetType().GetField("Present", $flags).SetValue($part, $true) }
+$log = Get-State "log"
+[void]$log.AppendLine("Przygotowywanie instalacji…").AppendLine("Rozpakowywanie zweryfikowanych komponentów hosta…")
 
-    foreach ($fieldName in @("profileId", "profileName", "discord", "discordId", "discordSecret",
-            "vibepolloToken", "createVibepolloToken", "vibepolloAdmin", "vibepolloPassword")) {
-        if ($null -ne $formType.GetField($fieldName, $instanceFlags)) {
-            throw "Installer still owns profile setup field '$fieldName'."
+$resolvedPreview = if ([string]::IsNullOrWhiteSpace($PreviewDirectory)) { "" } else {
+    [IO.Path]::GetFullPath($PreviewDirectory) }
+if ($resolvedPreview) { New-Item -ItemType Directory -Path $resolvedPreview -Force | Out-Null }
+
+$states = @(
+    @{ Name = "01-check"; Page = "Check" },
+    @{ Name = "02-ready"; Page = "Ready" },
+    @{ Name = "03-progress"; Page = "Progress"; Running = $true },
+    @{ Name = "04-installed"; Page = "Progress"; Completed = $true },
+    @{ Name = "05-remove"; Page = "Remove"; Removing = $true },
+    @{ Name = "06-removed"; Page = "Progress"; Removing = $true; Completed = $true }
+)
+$allText = @()
+foreach ($language in @(1, 0)) {
+    Set-State "language" $language
+    foreach ($state in $states) {
+        Set-State "page" ([Enum]::Parse($pageType, $state.Page))
+        Set-State "running" ([bool]$state.Running)
+        Set-State "completed" ([bool]$state.Completed)
+        Set-State "removing" ([bool]$state.Removing)
+        Set-State "progressTitle" "Instalowanie MoonWaker Host"
+        $render.Invoke($window, @()) | Out-Null
+        $root = $window.Content
+        $window.Content = $null
+        $root.Measure([Windows.Size]::new(980, 668))
+        $root.Arrange([Windows.Rect]::new(0, 0, 980, 668))
+        $root.UpdateLayout()
+        $elements = @(Get-Descendants $root)
+        if (@($elements | Where-Object { $_ -is [Windows.Controls.PasswordBox] }).Count) {
+            throw "The installer must not collect a password ($($state.Name))."
+        }
+        $allText += @($elements | Where-Object { $_ -is [Windows.Controls.TextBlock] } | ForEach-Object { $_.Text })
+        if ($resolvedPreview -and $language -eq 1) {
+            $bitmap = [Windows.Media.Imaging.RenderTargetBitmap]::new(980, 668, 96, 96,
+                [Windows.Media.PixelFormats]::Pbgra32)
+            $bitmap.Render($root)
+            $encoder = [Windows.Media.Imaging.PngBitmapEncoder]::new()
+            $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+            $stream = [IO.File]::Create((Join-Path $resolvedPreview ($state.Name + ".png")))
+            try { $encoder.Save($stream) } finally { $stream.Dispose() }
         }
     }
-
-    if ($null -ne $formType.GetField("launchHostControl", $instanceFlags)) {
-        throw "The elevated installer must not automatically activate Host Control through per-user COM."
-    }
-    $uninstall = $formType.GetField("uninstall", $instanceFlags).GetValue($form)
-    if ($null -eq $uninstall) { throw "Installer uninstall action is missing." }
-
-    $showPage.Invoke($form, @(1)) | Out-Null
-    $firmwarePanel = $formType.GetField("firmwarePanel", $instanceFlags).GetValue($form)
-    $updateSystemPageLayout = $formType.GetMethod("UpdateSystemPageLayout", $instanceFlags)
-    $firmwarePanel.Visible = $true
-    $updateSystemPageLayout.Invoke($form, @()) | Out-Null
-    [Windows.Forms.Application]::DoEvents()
-
-    $allControls = @(Get-Descendants $form)
-    $passwordBoxes = @($allControls | Where-Object {
-        $_ -is [Windows.Forms.TextBox] -and $_.UseSystemPasswordChar
-    })
-    if ($passwordBoxes.Count -ne 0) {
-        throw "The installer must not collect a Vibepollo bootstrap password."
-    }
-    $hostControlGuidance = @($allControls | Where-Object {
-        $_ -is [Windows.Forms.Label] -and $_.Text -like "*Host Control*"
-    })
-    if ($hostControlGuidance.Count -eq 0) {
-        throw "The installer does not direct profile setup to Host Control."
-    }
-
-    $resolvedPreview = if ([string]::IsNullOrWhiteSpace($PreviewDirectory)) { "" } else {
-        [IO.Path]::GetFullPath($PreviewDirectory)
-    }
-    if ($resolvedPreview) { New-Item -ItemType Directory -Path $resolvedPreview -Force | Out-Null }
-    for ($index = 0; $index -lt $pages.Count; $index++) {
-        $showPage.Invoke($form, @($index)) | Out-Null
-        [Windows.Forms.Application]::DoEvents()
-        $visiblePages = @($pages | Where-Object { $_.Visible })
-        if ($visiblePages.Count -ne 1 -or $visiblePages[0] -ne $pages[$index]) {
-            throw "Wizard page $index is not the sole visible page."
-        }
-        if ($pages[$index].HorizontalScroll.Visible) {
-            throw "Wizard page $index requires horizontal scrolling at default size."
-        }
-        if ($pages[$index].VerticalScroll.Visible) {
-            throw "Wizard page $index requires vertical scrolling at default size."
-        }
-        if ($resolvedPreview) {
-            Save-Preview $form (Join-Path $resolvedPreview ("installer-step-{0}.png" -f ($index + 1)))
-        }
-    }
-
-    Write-Output "MoonWaker Host Installer UI test passed."
-} finally {
-    $form.Close()
-    $form.Dispose()
+    $expected = if ($language -eq 1) { "Instalator MoonWaker Host" } else { "MoonWaker Host Installer" }
+    if (-not $window.Title.StartsWith($expected)) { throw "Language $language was not applied to the title." }
 }
+foreach ($needle in @("Profile w Host Control", "Profiles in Host Control", "Legendary (Epic Games)",
+        "Vibepollo", "Odinstaluj MoonWaker", "Uninstall MoonWaker")) {
+    if (-not ($allText -contains $needle)) { throw "The installer does not show: $needle" }
+}
+if ($null -ne $windowType.GetField("launchHostControl", $flags)) {
+    throw "The elevated installer must not automatically activate Host Control through per-user COM."
+}
+Write-Output "MoonWaker Host Installer UI test passed."

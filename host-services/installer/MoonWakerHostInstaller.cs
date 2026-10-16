@@ -2,17 +2,25 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
-using Microsoft.Win32;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Windows.Forms;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using System.Windows.Shapes;
+using Microsoft.Win32;
+using MoonWaker.HostControl;
+using Path = System.IO.Path;
 
 [assembly: AssemblyVersion("0.7.139.0")]
 [assembly: AssemblyFileVersion("0.7.139.0")]
@@ -35,6 +43,12 @@ namespace MoonWaker.HostInstaller
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool CreateDirectory(string path,
             ref SecurityAttributes securityAttributes);
+
+        internal const int MoveFileDelayUntilReboot = 4;
+
+        [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool MoveFileEx(string existing, string replacement, int flags);
     }
 
     // Starts a program through the signed-in user's Explorer (the desktop shell view's
@@ -114,527 +128,984 @@ namespace MoonWaker.HostInstaller
     internal static class Program
     {
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new InstallerForm());
+            bool uninstall = Array.IndexOf(args, "--uninstall") >= 0;
+            if (uninstall && InstallerWindow.RelaunchOutsideInstallation()) return;
+            InstallerWindow.ForgetStagedCopyAtReboot();
+            new Application().Run(new InstallerWindow(uninstall));
         }
     }
 
-    internal sealed class InstallerForm : Form
+    // The installer in Host Control's style (HostControlUi.cs): a step list on the left, cards
+    // on the right and an action bar below. Every change of state renders the window anew.
+    internal sealed class InstallerWindow : Window
     {
-        private static readonly Color Background = Color.FromArgb(12, 15, 22);
-        private static readonly Color Surface = Color.FromArgb(22, 27, 38);
-        private static readonly Color SurfaceRaised = Color.FromArgb(29, 35, 49);
-        private static readonly Color Muted = Color.FromArgb(174, 183, 201);
-        private static readonly Color Accent = Color.FromArgb(120, 103, 255);
-        private static readonly Color Good = Color.FromArgb(91, 214, 151);
-        private static readonly Color Warning = Color.FromArgb(255, 190, 94);
-        private static readonly Color Bad = Color.FromArgb(255, 112, 124);
+        private enum Page { Check, Ready, Remove, Progress }
 
-        private readonly Panel[] pages = new Panel[5];
-        private readonly Label[] stepLabels = new Label[5];
-        private readonly Panel pageHost = new Panel();
-        private readonly Panel navigation = new Panel();
-        private readonly Button back = new Button();
-        private readonly Button next = new Button();
-        private readonly Button uninstall = new Button();
-
-        private readonly Label wolStatus = new Label();
-        private readonly Label wolDetails = new Label();
-        private readonly Panel firmwarePanel = new Panel();
-        private readonly Label firmwareInstructions = new Label();
-        private readonly Button recheck = new Button();
-        private readonly Label vibepolloDetectionStatus = new Label();
-        private readonly Label vibepolloDetectionDetails = new Label();
-        private readonly Label vibepolloSetupStatus = new Label();
-        private readonly Label vibepolloSetupDetails = new Label();
-        private readonly Label moonWakerDetectionStatus = new Label();
-        private Panel vibepolloDetectionCard;
-        private Panel moonWakerDetectionCard;
-        private Label systemCaveat;
+        // A component the uninstall page offers. Patterns: the Apps & features names that
+        // Uninstall-MoonWakerHostServices.ps1 removes for Key.
+        private sealed class Part
+        {
+            internal string Key, English, Polish, EnglishNote, PolishNote;
+            internal string[] Patterns;
+            internal bool Locked, Selected, Present;
+        }
 
         // Fixed, never chosen: the machine-wide Run entry starts code from here in every
         // account, so its parent must be one that ordinary users cannot rename or create in.
         private static readonly string InstallDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "MoonWaker");
-        private readonly CheckBox installMachine = new CheckBox();
-        private readonly Label installationStatus = new Label();
+        private const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MoonWakerHost";
+        private const string InstalledCopyName = "MoonWakerHostInstaller.exe";
 
-        private readonly ProgressBar progress = new ProgressBar();
-        private readonly Label progressTitle = new Label();
-        private readonly Label progressDetail = new Label();
-        private readonly RichTextBox log = new RichTextBox();
-        private readonly Button install = new Button();
-
+        private readonly Ui ui;
+        private readonly string payloadVersion;
+        private readonly List<Part> parts = new List<Part>();
         private int language;
-        private int currentPage;
-        private bool restartHostControl;
+        private Page page;
+
+        private bool checking = true;
+        private WakeOnLanProbe wakeOnLan = new WakeOnLanProbe();
         private bool vibepolloInstalled;
         private string vibepolloVersion;
-        private WakeOnLanProbe wakeOnLan = new WakeOnLanProbe();
-        private bool installationCompleted;
-        private bool installationFailed;
-        private readonly string payloadVersion;
+        private string vibepolloError = "";
 
-        internal InstallerForm()
+        private bool removing;
+        private bool running;
+        private bool completed;
+        private bool failed;
+        private bool restartHostControl;
+        private double progress;
+        private string progressTitle = "";
+        private string progressDetail = "";
+        private readonly StringBuilder log = new StringBuilder();
+        private bool showLog;
+
+        internal InstallerWindow(bool uninstall)
         {
             payloadVersion = ReadPayloadVersion();
-            Text = "MoonWaker Host Installer " + payloadVersion;
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(1100, 830);
-            MinimumSize = new Size(1000, 760);
-            StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Background;
-            ForeColor = Color.White;
-            Font = new Font("Segoe UI", 9.5F);
-            DoubleBuffered = true;
-            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location); } catch { }
+            language = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "pl" ? 1 : 0;
+            ui = new Ui(new Palette(Palette.WindowsAppsUseLightTheme()));
+            Width = 980;
+            Height = 700;
+            MinWidth = 860;
+            MinHeight = 600;
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            Background = ui.P.Background;
+            Foreground = ui.P.Text;
+            FontFamily = Ui.Font;
+            TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
+            SourceInitialized += delegate { TitleBar.Apply(this, !ui.P.Light); };
+            Closing += delegate(object sender, CancelEventArgs e) { e.Cancel = running; };
 
-            Controls.Add(BuildSidebar());
-            Panel main = new Panel { Dock = DockStyle.Fill, BackColor = Background };
-            Controls.Add(main);
-            main.BringToFront();
+            parts.Add(new Part { Key = "MoonWaker", English = "MoonWaker Host", Polish = "MoonWaker Host",
+                EnglishNote = "Gateway, Login Broker, Host Control, profiles, pairing and stored credentials.",
+                PolishNote = "Gateway, Login Broker, Host Control, profile, parowanie i zapisane poświadczenia.",
+                Locked = true, Selected = true });
+            parts.Add(new Part { Key = "Legendary", English = "Legendary (Epic Games)", Polish = "Legendary (Epic Games)",
+                EnglishNote = "The program and every profile's Epic sign-in. Installed games stay on disk.",
+                PolishNote = "Program i logowania Epic wszystkich profili. Zainstalowane gry zostają na dysku.",
+                Locked = true, Selected = true });
+            parts.Add(new Part { Key = "Vibepollo", English = "Vibepollo", Polish = "Vibepollo",
+                EnglishNote = "Its own uninstaller removes it with Vibepollo Display Driver.",
+                PolishNote = "Usuwany własnym deinstalatorem, razem z Vibepollo Display Driver.",
+                Patterns = new[] { "*Vibepollo*" }, Selected = true });
+            parts.Add(new Part { Key = "ViGEmBus", English = "ViGEmBus", Polish = "ViGEmBus",
+                EnglishNote = "Virtual gamepad driver; other programs may use it.",
+                PolishNote = "Sterownik wirtualnych gamepadów; mogą go używać inne programy.",
+                Patterns = new[] { "*ViGEmBus*", "*Virtual Gamepad Emulation Bus*" } });
+            parts.Add(new Part { Key = "Python", English = "Python 3.12", Polish = "Python 3.12",
+                EnglishNote = "Gateway runtime; other programs may use it.",
+                PolishNote = "Środowisko Gateway; mogą go używać inne programy.",
+                Patterns = new[] { "Python 3.12.*" } });
+            parts.Add(new Part { Key = "OpenSSL", English = "OpenSSL", Polish = "OpenSSL",
+                EnglishNote = "Certificate tool of the Gateway; other programs may use it.",
+                PolishNote = "Narzędzie certyfikatów Gateway; mogą go używać inne programy.",
+                Patterns = new[] { "OpenSSL*" } });
+            DetectParts();
 
-            navigation.Dock = DockStyle.Bottom;
-            navigation.Height = 76;
-            navigation.BackColor = Color.FromArgb(17, 21, 30);
-            navigation.Padding = new Padding(24, 16, 24, 16);
-            main.Controls.Add(navigation);
-
-            ConfigureNavigationButton(back, 442, "Back", "Wstecz");
-            back.Click += delegate { if (currentPage > 1) ShowPage(currentPage - 1); };
-            navigation.Controls.Add(back);
-            ConfigureNavigationButton(next, 600, "Continue", "Dalej");
-            next.BackColor = Accent;
-            next.FlatAppearance.BorderColor = Accent;
-            next.Click += async delegate { await ContinueAsync(); };
-            navigation.Controls.Add(next);
-            ConfigureNavigationButton(uninstall, 24, "Uninstall", "Odinstaluj");
-            uninstall.Anchor = AnchorStyles.Top | AnchorStyles.Left;
-            uninstall.BackColor = Color.FromArgb(92, 38, 47);
-            uninstall.FlatAppearance.BorderColor = Bad;
-            uninstall.Click += async delegate { await UninstallAsync(); };
-            navigation.Controls.Add(uninstall);
-            navigation.Resize += delegate {
-                next.Left = navigation.ClientSize.Width - next.Width - 24;
-                back.Left = next.Left - back.Width - 12;
-            };
-
-            pageHost.Dock = DockStyle.Fill;
-            pageHost.BackColor = Background;
-            main.Controls.Add(pageHost);
-            pageHost.BringToFront();
-
-            BuildLanguagePage();
-            BuildSystemPage();
-            BuildVibepolloPage();
-            BuildOptionsPage();
-            BuildProgressPage();
-
-            installMachine.Checked = SharedComponentsNeedUpdate(InstallDirectory);
-            ApplyLanguage(this);
-            RefreshInstallationStatus();
-            ShowPage(0);
+            page = uninstall ? Page.Remove : Page.Check;
+            Render();
+            Loaded += async delegate { await RefreshPreflightAsync(); };
         }
 
-        private Panel BuildSidebar()
+        // An uninstall started from Apps & features runs the copy inside the installation,
+        // which the removal deletes: that copy hands over to one in protected staging.
+        internal static bool RelaunchOutsideInstallation()
         {
-            Panel sidebar = new Panel { Dock = DockStyle.Left, Width = 220,
-                BackColor = Color.FromArgb(18, 22, 32) };
-            PictureBox brandIcon = new PictureBox { Left = 24, Top = 28,
-                Width = 42, Height = 42, SizeMode = PictureBoxSizeMode.Zoom };
-            if (Icon != null) brandIcon.Image = Icon.ToBitmap();
-            sidebar.Controls.Add(brandIcon);
-            AddLabel(sidebar, "MOONWAKER", 13F, FontStyle.Bold, 77, 29, 138, 25);
-            Label host = AddLabel(sidebar, "HOST SETUP", 8.5F, FontStyle.Bold, 79, 52, 120, 20);
-            host.ForeColor = Color.FromArgb(169, 157, 255);
-            string[,] titles = {
-                { "Language", "Język" }, { "System check", "Sprawdzenie systemu" },
-                { "Vibepollo", "Vibepollo" }, { "MoonWaker", "MoonWaker" },
-                { "Installation", "Instalacja" }
-            };
-            for (int i = 0; i < stepLabels.Length; i++)
+            string self = Path.GetFullPath(Assembly.GetExecutingAssembly().Location);
+            if (!self.StartsWith(InstallDirectory.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
+                return false;
+            string copy = Path.Combine(CreateProtectedStagingDirectory(), InstalledCopyName);
+            File.Copy(self, copy);
+            using (Process.Start(new ProcessStartInfo(copy, "--uninstall") { UseShellExecute = false })) { }
+            return true;
+        }
+
+        // The staged copy cannot delete itself while it runs; Windows removes it at restart.
+        internal static void ForgetStagedCopyAtReboot()
+        {
+            string self = Path.GetFullPath(Assembly.GetExecutingAssembly().Location);
+            string directory = Path.GetDirectoryName(self);
+            string programData = Path.GetFullPath(Environment.GetFolderPath(
+                Environment.SpecialFolder.CommonApplicationData)).TrimEnd('\\');
+            if (!String.Equals(Path.GetDirectoryName(directory), programData, StringComparison.OrdinalIgnoreCase) ||
+                !Path.GetFileName(directory).StartsWith("MoonWakerInstaller-", StringComparison.Ordinal)) return;
+            NativeMethods.MoveFileEx(self, null, NativeMethods.MoveFileDelayUntilReboot);
+            NativeMethods.MoveFileEx(directory, null, NativeMethods.MoveFileDelayUntilReboot);
+        }
+
+        // ---- Rendering -------------------------------------------------------------------
+
+        private void Render()
+        {
+            Title = T("MoonWaker Host Installer ", "Instalator MoonWaker Host ") + payloadVersion;
+            Grid root = new Grid { Background = ui.P.Background };
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(216) });
+            root.ColumnDefinitions.Add(new ColumnDefinition());
+            root.Children.Add(Sidebar());
+
+            StackPanel content = new StackPanel { Margin = new Thickness(26, 18, 26, 14) };
+            if (page == Page.Check) BuildCheck(content);
+            else if (page == Page.Ready) BuildReady(content);
+            else if (page == Page.Remove) BuildRemove(content);
+            else BuildProgress(content);
+            ScrollViewer scroll = new ScrollViewer {
+                Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false };
+            scroll.Resources.Add(typeof(ScrollBar), ui.ScrollBarStyle());
+            DockPanel right = new DockPanel();
+            Grid.SetColumn(right, 1);
+            Border actions = ActionBar();
+            DockPanel.SetDock(actions, Dock.Bottom);
+            right.Children.Add(actions);
+            right.Children.Add(scroll);
+            root.Children.Add(right);
+            Content = root;
+        }
+
+        private Border Sidebar()
+        {
+            Palette p = ui.P;
+            DockPanel panel = new DockPanel { LastChildFill = false };
+            StackPanel brand = new StackPanel { Margin = new Thickness(12, 4, 12, 22) };
+            brand.Children.Add(ui.Text("MOONWAKER", 17, p.Text, FontWeights.Bold));
+            TextBlock sub = ui.Text(T("Host installer", "Instalator hosta"), 11, p.Muted, FontWeights.Normal);
+            sub.Margin = new Thickness(0, 2, 0, 0);
+            brand.Children.Add(sub);
+            DockPanel.SetDock(brand, Dock.Top);
+            panel.Children.Add(brand);
+
+            string[] steps = removing || page == Page.Remove
+                ? new[] { T("Components", "Składniki"), T("Removal", "Usuwanie") }
+                : new[] { T("System check", "Sprawdzenie"), T("Installation", "Instalacja"), T("Done", "Gotowe") };
+            int current = page == Page.Check || page == Page.Remove ? 0 : page == Page.Ready ? 1
+                : removing ? 1 : 2;
+            for (int index = 0; index < steps.Length; index++)
             {
-                Label number = AddLabel(sidebar, "0" + (i + 1), 9F, FontStyle.Bold,
-                    27, 130 + i * 66, 30, 24);
-                number.ForeColor = Color.FromArgb(113, 122, 142);
-                stepLabels[i] = AddLocalizedLabel(sidebar, titles[i, 0], titles[i, 1],
-                    10.5F, FontStyle.Regular, 68, 128 + i * 66, 138, 38);
+                bool on = index == current;
+                bool done = index < current || (index == current && completed);
+                Grid line = new Grid { Height = 38 };
+                line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                line.ColumnDefinitions.Add(new ColumnDefinition());
+                FrameworkElement mark = done ? ui.Check(22) : (FrameworkElement)ui.Step(index + 1, on);
+                mark.Margin = new Thickness(10, 0, 12, 0);
+                line.Children.Add(mark);
+                TextBlock label = ui.Text(steps[index], 13.5, on ? p.Text : p.Muted,
+                    on ? FontWeights.SemiBold : FontWeights.Normal);
+                Grid.SetColumn(label, 1);
+                line.Children.Add(label);
+                Border item = new Border {
+                    Background = on ? p.Card : Brushes.Transparent, CornerRadius = new CornerRadius(10),
+                    Margin = new Thickness(0, 0, 0, 2), Child = line };
+                AutomationProperties.SetName(item, steps[index]);
+                AutomationProperties.SetItemStatus(item, on ? T("current step", "bieżący krok") : "");
+                if (on)
+                {
+                    Border marker = new Border {
+                        Width = 4, Height = 18, CornerRadius = new CornerRadius(2), Background = p.Accent,
+                        HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(-3, 0, 0, 0) };
+                    line.Children.Add(marker);
+                }
+                DockPanel.SetDock(item, Dock.Top);
+                panel.Children.Add(item);
             }
-            Label version = AddLabel(sidebar, payloadVersion, 9F, FontStyle.Bold,
-                26, 660, 160, 24);
-            version.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
-            version.ForeColor = Muted;
-            return sidebar;
-        }
 
-        private void BuildLanguagePage()
-        {
-            Panel page = CreatePage(0, 620);
-            AddLabel(page, "Welcome / Witaj", 26F, FontStyle.Bold, 32, 45, 690, 44);
-            Label intro = AddLabel(page,
-                "Choose the installer language / Wybierz język instalatora",
-                11F, FontStyle.Regular, 34, 94, 680, 30);
-            intro.ForeColor = Muted;
-            Panel englishCard = MakeCard(page, 150, 120, Color.FromArgb(75, 151, 255));
-            AddLabel(englishCard, "English", 17F, FontStyle.Bold, 28, 22, 300, 34);
-            Label enDetail = AddLabel(englishCard, "Continue in English", 10F,
-                FontStyle.Regular, 29, 60, 300, 24);
-            enDetail.ForeColor = Muted;
-            Button english = MakeButton("Select", 525, 34, 150, 46);
-            english.Click += async delegate { await SelectLanguageAsync(0); };
-            englishCard.Controls.Add(english);
-            Panel polishCard = MakeCard(page, 288, 120, Color.FromArgb(231, 78, 99));
-            AddLabel(polishCard, "Polski", 17F, FontStyle.Bold, 28, 22, 300, 34);
-            Label plDetail = AddLabel(polishCard, "Kontynuuj po polsku", 10F,
-                FontStyle.Regular, 29, 60, 300, 24);
-            plDetail.ForeColor = Muted;
-            Button polish = MakeButton("Wybierz", 525, 34, 150, 46);
-            polish.Click += async delegate { await SelectLanguageAsync(1); };
-            polishCard.Controls.Add(polish);
-            Label note = AddLabel(page,
-                "You can restart the installer to choose another language.  •  Język można zmienić po ponownym uruchomieniu.",
-                9F, FontStyle.Regular, 34, 444, 680, 44);
-            note.ForeColor = Color.FromArgb(132, 142, 161);
-        }
-
-        private void BuildSystemPage()
-        {
-            Panel page = CreatePage(1, 745);
-            AddPageHeading(page, "Let's check this PC", "Sprawdźmy ten komputer",
-                "MoonWaker checks the streaming host before making changes.",
-                "MoonWaker sprawdzi host strumieniowania przed wprowadzeniem zmian.");
-            Panel wolCard = MakeCard(page, 112, 112, Color.FromArgb(68, 198, 142));
-            AddLocalizedLabel(wolCard, "Wake-on-LAN", "Wake-on-LAN", 13F,
-                FontStyle.Bold, 24, 16, 300, 28);
-            wolStatus.SetBounds(24, 48, 650, 25);
-            wolStatus.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
-            wolCard.Controls.Add(wolStatus);
-            wolDetails.SetBounds(24, 76, 650, 25);
-            wolDetails.ForeColor = Muted;
-            wolCard.Controls.Add(wolDetails);
-            firmwarePanel.SetBounds(28, 238, 704, 178);
-            firmwarePanel.BackColor = Color.FromArgb(49, 39, 25);
-            firmwarePanel.Controls.Add(new Panel { Dock = DockStyle.Left, Width = 4, BackColor = Warning });
-            AddLocalizedLabel(firmwarePanel,
-                "Wake-on-LAN needs attention", "Wake-on-LAN wymaga uwagi",
-                12F, FontStyle.Bold, 20, 14, 470, 28);
-            firmwareInstructions.SetBounds(20, 47, 652, 91);
-            firmwareInstructions.ForeColor = Color.FromArgb(235, 220, 191);
-            firmwareInstructions.Font = new Font("Segoe UI", 9.2F);
-            firmwarePanel.Controls.Add(firmwareInstructions);
-            ConfigureNavigationButton(recheck, 520, "Check again", "Sprawdź ponownie");
-            recheck.SetBounds(520, 136, 160, 32);
-            recheck.Click += async delegate { await RefreshPreflightAsync(); };
-            firmwarePanel.Controls.Add(recheck);
-            page.Controls.Add(firmwarePanel);
-            vibepolloDetectionCard = MakeCard(page, 430, 104, Color.FromArgb(255, 166, 76));
-            AddLabel(vibepolloDetectionCard, "Vibepollo", 13F, FontStyle.Bold, 24, 14, 300, 28);
-            vibepolloDetectionStatus.SetBounds(24, 45, 650, 24);
-            vibepolloDetectionStatus.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
-            vibepolloDetectionCard.Controls.Add(vibepolloDetectionStatus);
-            vibepolloDetectionDetails.SetBounds(24, 72, 650, 22);
-            vibepolloDetectionDetails.ForeColor = Muted;
-            vibepolloDetectionCard.Controls.Add(vibepolloDetectionDetails);
-            moonWakerDetectionCard = MakeCard(page, 548, 100, Accent);
-            AddLabel(moonWakerDetectionCard, "MoonWaker Host", 13F, FontStyle.Bold, 24, 14, 300, 28);
-            moonWakerDetectionStatus.SetBounds(24, 47, 650, 40);
-            moonWakerDetectionStatus.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
-            moonWakerDetectionCard.Controls.Add(moonWakerDetectionStatus);
-            systemCaveat = AddLocalizedLabel(page,
-                "Windows cannot read every vendor-specific BIOS/UEFI switch. The check above uses the wired adapter capability reported by Windows.",
-                "Windows nie potrafi odczytać każdego przełącznika BIOS/UEFI producenta. Powyższy test korzysta z możliwości przewodowej karty zgłoszonej przez Windows.",
-                8.8F, FontStyle.Regular, 32, 670, 685, 52);
-            systemCaveat.ForeColor = Color.FromArgb(133, 143, 162);
-            firmwarePanel.Visible = false;
-            UpdateSystemPageLayout();
-        }
-
-        private void BuildVibepolloPage()
-        {
-            Panel page = CreatePage(2, 480);
-            AddPageHeading(page, "Set up Vibepollo", "Skonfiguruj Vibepollo",
-                "Choose the Vibepollo folder; MoonWaker also installs its required controller driver.",
-                "Wybierz katalog Vibepollo; MoonWaker zainstaluje też wymagany sterownik kontrolerów.");
-            Panel statusCard = MakeCard(page, 112, 82, Color.FromArgb(255, 166, 76));
-            vibepolloSetupStatus.SetBounds(24, 15, 650, 25);
-            vibepolloSetupStatus.Font = new Font("Segoe UI", 10.5F, FontStyle.Bold);
-            statusCard.Controls.Add(vibepolloSetupStatus);
-            vibepolloSetupDetails.SetBounds(24, 45, 650, 24);
-            vibepolloSetupDetails.ForeColor = Muted;
-            statusCard.Controls.Add(vibepolloSetupDetails);
-            Panel setupCard = MakeCard(page, 208, 126, Accent);
-            Label setupNote = AddLocalizedLabel(setupCard,
-                "If Vibepollo is missing, its signed setup will open during the next step. Choose the destination folder and keep Vibepollo Display Driver selected. MoonWaker installs the archived ViGEmBus driver separately for virtual gamepads.",
-                "Jeśli brakuje Vibepollo, w następnym kroku otworzy się jego podpisany instalator. Wybierz katalog docelowy i pozostaw sterownik Vibepollo Display Driver. MoonWaker osobno zainstaluje zarchiwizowany ViGEmBus dla wirtualnych gamepadów.",
-                9F, FontStyle.Regular, 24, 23, 650, 75);
-            setupNote.ForeColor = Muted;
-        }
-
-        private void BuildOptionsPage()
-        {
-            Panel page = CreatePage(3, 520);
-            AddPageHeading(page, "Ready to install", "Gotowe do instalacji",
-                "Defaults are selected automatically. Change only what you need.",
-                "Ustawienia domyślne wybrano automatycznie. Zmień tylko to, czego potrzebujesz.");
-            Panel locationCard = MakeCard(page, 112, 208, Color.FromArgb(75, 151, 255));
-            AddLocalizedLabel(locationCard, "Host installation", "Instalacja hosta",
-                13F, FontStyle.Bold, 24, 15, 400, 28);
-            AddLocalizedLabel(locationCard, "Installation folder", "Katalog instalacji",
-                9F, FontStyle.Regular, 24, 51, 260, 22);
-            AddLabel(locationCard, InstallDirectory, 10F, FontStyle.Bold, 24, 74, 652, 34);
-            installationStatus.SetBounds(24, 119, 652, 75);
-            installationStatus.ForeColor = Muted;
-            locationCard.Controls.Add(installationStatus);
-            Panel profileCard = MakeCard(page, 334, 154, Color.FromArgb(68, 198, 142));
-            AddLocalizedLabel(profileCard, "Profiles in Host Control", "Profile w Host Control",
-                13F, FontStyle.Bold, 24, 14, 400, 28);
-            Label info = AddLocalizedLabel(profileCard,
-                "This installer installs the shared machine components and Gateway. Add Windows profiles, integrations and Remote Sign-in permissions in Host Control.",
-                "Ten instalator instaluje wspólne komponenty komputera i Gateway. Profile Windows, integracje i uprawnienia zdalnego logowania dodasz w Host Control.",
-                8.8F, FontStyle.Regular, 24, 48, 650, 42);
-            info.ForeColor = Muted;
-            AddLocalizedLabel(profileCard,
-                "After installation, open MoonWaker Host Control from the Windows Start menu.",
-                "Po instalacji otwórz MoonWaker Host Control z menu Start systemu Windows.",
-                8.6F, FontStyle.Bold, 24, 96, 650, 42);
-        }
-
-        private void BuildProgressPage()
-        {
-            Panel page = CreatePage(4, 650);
-            progressTitle.SetBounds(34, 58, 680, 44);
-            progressTitle.Font = new Font("Segoe UI", 25F, FontStyle.Bold);
-            page.Controls.Add(progressTitle);
-            progressDetail.SetBounds(36, 108, 675, 54);
-            progressDetail.Font = new Font("Segoe UI", 10.5F);
-            progressDetail.ForeColor = Muted;
-            page.Controls.Add(progressDetail);
-            Panel progressCard = MakeCard(page, 188, 318, Accent);
-            progress.SetBounds(26, 27, 648, 12);
-            progress.Style = ProgressBarStyle.Continuous;
-            progress.Maximum = 100;
-            progressCard.Controls.Add(progress);
-            AddLocalizedLabel(progressCard, "Installation log", "Dziennik instalacji",
-                9F, FontStyle.Bold, 26, 58, 300, 22);
-            log.SetBounds(26, 86, 648, 202);
-            log.ReadOnly = true;
-            log.BackColor = Color.FromArgb(10, 13, 19);
-            log.ForeColor = Color.FromArgb(204, 211, 224);
-            log.BorderStyle = BorderStyle.FixedSingle;
-            log.Font = new Font("Consolas", 9F);
-            log.WordWrap = true;
-            log.ScrollBars = RichTextBoxScrollBars.Vertical;
-            progressCard.Controls.Add(log);
-            install.Visible = false;
-        }
-
-        private Panel CreatePage(int index, int contentHeight)
-        {
-            Panel page = new Panel { Dock = DockStyle.Fill, BackColor = Background,
-                AutoScroll = true, AutoScrollMinSize = new Size(0, contentHeight), Visible = false };
-            pages[index] = page;
-            pageHost.Controls.Add(page);
-            return page;
-        }
-
-        private void AddPageHeading(Panel page, string englishTitle, string polishTitle,
-                                    string englishSubtitle, string polishSubtitle)
-        {
-            AddLocalizedLabel(page, englishTitle, polishTitle, 24F, FontStyle.Bold,
-                32, 34, 690, 43);
-            Label subtitle = AddLocalizedLabel(page, englishSubtitle, polishSubtitle,
-                10.5F, FontStyle.Regular, 34, 78, 685, 30);
-            subtitle.ForeColor = Muted;
-        }
-
-        private async Task SelectLanguageAsync(int selectedLanguage)
-        {
-            SetLanguage(selectedLanguage);
-            await RefreshPreflightAsync();
-        }
-
-        private void SetLanguage(int selectedLanguage)
-        {
-            language = selectedLanguage == 1 ? 1 : 0;
-            Text = T("MoonWaker Host Installer ", "Instalator MoonWaker Host ") + payloadVersion;
-            ApplyLanguage(this);
-            RefreshInstallationStatus();
-            ShowPage(1);
-        }
-
-        private async Task ContinueAsync()
-        {
-            if (currentPage == 1) { ShowPage(2); return; }
-            if (currentPage == 2)
+            StackPanel footer = new StackPanel { Margin = new Thickness(12, 10, 12, 0) };
+            StackPanel languages = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+            foreach (int choice in new[] { 1, 0 })
             {
-                ShowPage(3); return;
+                int selected = choice;
+                Button button = ui.Button(choice == 1 ? "Polski" : "English",
+                    language == choice ? ButtonKind.Primary : ButtonKind.Normal, true, false,
+                    delegate { language = selected; Render(); }, "language-" + choice);
+                button.Margin = new Thickness(0, 0, 6, 0);
+                languages.Children.Add(button);
             }
-            if (currentPage == 3)
-            {
-                await InstallAsync(); return;
-            }
-            if (currentPage == 4)
-            {
-                if (installationCompleted) { Close(); return; }
-                if (installationFailed) await InstallAsync();
-            }
+            footer.Children.Add(languages);
+            footer.Children.Add(ui.Text(T("Version ", "Wersja ") + payloadVersion.TrimStart('v'),
+                11, p.Muted, FontWeights.Normal));
+            DockPanel.SetDock(footer, Dock.Bottom);
+            panel.Children.Add(footer);
+            return new Border { Background = p.Side, Padding = new Thickness(10, 16, 10, 12), Child = panel };
         }
 
-        private void ShowPage(int index)
+        // The bar below the page: the state on the left, the page's actions on the right.
+        private Border ActionBar()
         {
-            currentPage = index;
-            for (int i = 0; i < pages.Length; i++)
+            Palette p = ui.P;
+            Tone tone; string state;
+            List<Button> buttons = new List<Button>();
+            bool installed = SharedComponentsInstalled(InstallDirectory);
+            if (page == Page.Check)
             {
-                pages[i].Visible = i == index;
-                stepLabels[i].ForeColor = i == index ? Color.White : Color.FromArgb(121, 130, 149);
-                stepLabels[i].Font = new Font("Segoe UI", 10.5F,
-                    i == index ? FontStyle.Bold : FontStyle.Regular);
+                tone = checking ? Tone.Accent : Tone.Ok;
+                state = checking ? T("Checking this PC…", "Sprawdzanie komputera…")
+                    : T("Check finished", "Sprawdzenie zakończone");
+                if (installed && !checking)
+                    buttons.Add(ui.Button(T("Uninstall…", "Odinstaluj…"), ButtonKind.Danger, false, false,
+                        delegate { ShowPage(Page.Remove); }, "uninstall"));
+                Button next = ui.Button(T("Continue", "Dalej"), ButtonKind.Primary, false, false,
+                    delegate { ShowPage(Page.Ready); }, "continue");
+                next.IsEnabled = !checking;
+                next.IsDefault = true;
+                buttons.Add(next);
             }
-            navigation.Visible = index != 0;
-            back.Visible = index > 1 && index < 4;
-            next.Visible = index > 0;
-            uninstall.Visible = index == 3 && SharedComponentsInstalled(InstallDirectory);
-            next.Enabled = true;
-            next.Text = index == 3 ? T("Install", "Zainstaluj") : T("Continue", "Dalej");
-            if (index == 4)
+            else if (page == Page.Ready)
             {
-                back.Visible = installationFailed;
-                next.Enabled = installationCompleted || installationFailed;
-                next.Text = installationCompleted ? T("Finish", "Zakończ") :
-                    (installationFailed ? T("Retry", "Spróbuj ponownie") :
-                    T("Installing…", "Instalowanie…"));
+                tone = Tone.Off;
+                state = InstallDirectory;
+                buttons.Add(ui.Button(T("Back", "Wstecz"), ButtonKind.Normal, false, false,
+                    delegate { ShowPage(Page.Check); }, "back"));
+                Button install = ui.Button(!installed ? T("Install", "Zainstaluj")
+                    : SharedComponentsNeedUpdate(InstallDirectory) ? T("Update", "Aktualizuj")
+                    : T("Reinstall", "Zainstaluj ponownie"), ButtonKind.Primary, false, false,
+                    async delegate { await InstallAsync(); }, "install");
+                install.IsDefault = true;
+                buttons.Add(install);
             }
-            pages[index].BringToFront();
+            else if (page == Page.Remove)
+            {
+                tone = installed ? Tone.Warn : Tone.Off;
+                state = installed ? T("Nothing is removed until you confirm.", "Nic nie zostanie usunięte bez potwierdzenia.")
+                    : T("No MoonWaker installation was found.", "Nie znaleziono instalacji MoonWaker.");
+                buttons.Add(ui.Button(T("Back", "Wstecz"), ButtonKind.Normal, false, false,
+                    delegate { ShowPage(Page.Check); }, "back"));
+                Button remove = ui.Button(T("Uninstall", "Odinstaluj"), ButtonKind.Danger, false, false,
+                    async delegate { await UninstallAsync(); }, "confirm-uninstall");
+                remove.IsEnabled = installed;
+                buttons.Add(remove);
+            }
+            else
+            {
+                tone = running ? Tone.Accent : completed ? Tone.Ok : Tone.Error;
+                state = running ? T("Working — keep this window open.", "Trwa praca — nie zamykaj tego okna.")
+                    : completed ? T("Finished", "Zakończono") : T("Needs attention", "Wymaga uwagi");
+                if (running)
+                {
+                    Button busy = ui.Button(removing ? T("Removing…", "Usuwanie…") : T("Installing…", "Instalowanie…"),
+                        ButtonKind.Primary, false, false, delegate { }, "busy");
+                    busy.IsEnabled = false;
+                    buttons.Add(busy);
+                }
+                else if (failed)
+                {
+                    buttons.Add(ui.Button(T("Back", "Wstecz"), ButtonKind.Normal, false, false,
+                        delegate { ShowPage(removing ? Page.Remove : Page.Ready); }, "back"));
+                    buttons.Add(ui.Button(T("Retry", "Spróbuj ponownie"), ButtonKind.Primary, false, false,
+                        async delegate { if (removing) await UninstallAsync(); else await InstallAsync(); }, "retry"));
+                }
+                else
+                {
+                    string control = Path.Combine(InstallDirectory, "control", "MoonWakerHostControl.exe");
+                    if (!removing && File.Exists(control))
+                        buttons.Add(ui.Button(T("Open Host Control", "Otwórz Host Control"), ButtonKind.Normal,
+                            false, false, delegate { OpenHostControl(control); }, "open-host-control"));
+                    Button close = ui.Button(T("Close", "Zamknij"), ButtonKind.Primary, false, false, Close, "close");
+                    close.IsDefault = true;
+                    buttons.Add(close);
+                }
+            }
+
+            DockPanel row = new DockPanel { VerticalAlignment = VerticalAlignment.Center };
+            StackPanel right = new StackPanel { Orientation = Orientation.Horizontal };
+            foreach (Button button in buttons)
+            {
+                button.Margin = new Thickness(8, 0, 0, 0);
+                right.Children.Add(button);
+            }
+            DockPanel.SetDock(right, Dock.Right);
+            row.Children.Add(right);
+            Ellipse dot = ui.Dot(tone);
+            dot.Margin = new Thickness(0, 0, 10, 0);
+            row.Children.Add(dot);
+            TextBlock text = ui.Text(state, 12, p.Muted, FontWeights.Normal);
+            text.TextTrimming = TextTrimming.CharacterEllipsis;
+            text.TextWrapping = TextWrapping.NoWrap;
+            AutomationProperties.SetLiveSetting(text, AutomationLiveSetting.Polite);
+            row.Children.Add(text);
+            return new Border {
+                Background = p.Side, BorderBrush = p.Line, BorderThickness = new Thickness(0, 1, 0, 0),
+                Padding = new Thickness(20, 12, 20, 12), Child = row };
         }
+
+        private void Heading(Panel content, string title, string subtitle)
+        {
+            content.Children.Add(ui.Text(title, 24, ui.P.Text, FontWeights.SemiBold));
+            TextBlock line = ui.Text(subtitle, 12.5, ui.P.Muted, FontWeights.Normal);
+            line.Margin = new Thickness(0, 2, 0, 16);
+            content.Children.Add(line);
+        }
+
+        // A small status card: a dot and a title over muted lines.
+        private Border StatusCard(string title, Tone tone, string state, string detail)
+        {
+            StackPanel stack = new StackPanel();
+            StackPanel head = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+            Ellipse dot = ui.Dot(tone);
+            dot.Margin = new Thickness(0, 0, 9, 0);
+            head.Children.Add(dot);
+            head.Children.Add(ui.Bold(title, 13.5));
+            stack.Children.Add(head);
+            stack.Children.Add(ui.Text(state, 12.5, ui.P.Text, FontWeights.Normal));
+            if (!String.IsNullOrEmpty(detail))
+            {
+                TextBlock muted = ui.Muted(detail);
+                muted.Margin = new Thickness(0, 3, 0, 0);
+                stack.Children.Add(muted);
+            }
+            Border card = ui.Card(stack);
+            card.Margin = new Thickness(0, 0, 12, 12);
+            return card;
+        }
+
+        private void BuildCheck(Panel content)
+        {
+            Heading(content, T("Let's check this PC", "Sprawdźmy ten komputer"),
+                T("MoonWaker checks the streaming host before making changes.",
+                  "MoonWaker sprawdza host strumieniowania, zanim cokolwiek zmieni."));
+            UniformGrid cards = new UniformGrid { Columns = 3, Margin = new Thickness(0, 0, -12, 0) };
+            string waiting = T("Checking…", "Sprawdzanie…");
+
+            Tone wolTone; string wolState, wolDetail;
+            if (checking) { wolTone = Tone.Off; wolState = waiting; wolDetail = ""; }
+            else if (!String.IsNullOrWhiteSpace(wakeOnLan.Error))
+            { wolTone = Tone.Error; wolState = T("Check failed", "Sprawdzenie nie powiodło się"); wolDetail = wakeOnLan.Error; }
+            else if (wakeOnLan.Armed)
+            { wolTone = Tone.Ok; wolState = T("Enabled", "Włączony"); wolDetail = wakeOnLan.Adapters; }
+            else if (wakeOnLan.Supported)
+            {
+                wolTone = Tone.Warn; wolState = T("Supported — enabled during installation", "Obsługiwany — zostanie włączony");
+                wolDetail = wakeOnLan.Adapters;
+            }
+            else
+            {
+                wolTone = Tone.Warn; wolState = T("Not available to Windows", "Niedostępny dla Windows");
+                wolDetail = T("Needs a firmware setting.", "Wymaga ustawienia w firmware.");
+            }
+            cards.Children.Add(StatusCard("Wake-on-LAN", wolTone, wolState, wolDetail));
+
+            cards.Children.Add(checking ? StatusCard("Vibepollo", Tone.Off, waiting, "")
+                : vibepolloInstalled
+                ? StatusCard("Vibepollo", Tone.Ok, T("Installed", "Zainstalowany") +
+                    (String.IsNullOrWhiteSpace(vibepolloVersion) ? "" : " " + vibepolloVersion),
+                    T("Its settings stay as they are.", "Jego ustawienia pozostaną bez zmian."))
+                : StatusCard("Vibepollo", Tone.Warn, T("Not installed", "Brak instalacji"),
+                    String.IsNullOrEmpty(vibepolloError)
+                        ? T("The official signed setup will be downloaded.", "Zostanie pobrany oficjalny podpisany instalator.")
+                        : vibepolloError));
+
+            bool installed = SharedComponentsInstalled(InstallDirectory);
+            cards.Children.Add(!installed
+                ? StatusCard("MoonWaker Host", Tone.Warn, T("Not installed", "Brak instalacji"),
+                    T("All host components will be added.", "Zostaną dodane wszystkie komponenty hosta."))
+                : SharedComponentsNeedUpdate(InstallDirectory)
+                ? StatusCard("MoonWaker Host", Tone.Warn, T("Update available", "Dostępna aktualizacja"),
+                    DisplayInstalledVersion(InstallDirectory) + " → " + payloadVersion)
+                : StatusCard("MoonWaker Host", Tone.Ok, T("Up to date", "Aktualny") + " " + payloadVersion,
+                    T("Profiles are managed in Host Control.", "Profilami zarządza Host Control.")));
+            content.Children.Add(cards);
+
+            if (!checking && (!String.IsNullOrWhiteSpace(wakeOnLan.Error) || !wakeOnLan.Supported))
+            {
+                Button recheck = ui.Button(T("Check again", "Sprawdź ponownie"), ButtonKind.Normal, true, false,
+                    async delegate { await RefreshPreflightAsync(); }, "recheck");
+                Border banner = ui.Banner(Tone.Warn, T("Wake-on-LAN needs attention.", "Wake-on-LAN wymaga uwagi."),
+                    !String.IsNullOrWhiteSpace(wakeOnLan.Error)
+                    ? T("Verify Wake-on-LAN in BIOS/UEFI and Device Manager, then check again.",
+                        "Sprawdź Wake-on-LAN w BIOS/UEFI i Menedżerze urządzeń, a potem sprawdź ponownie.")
+                    : T("Restart into BIOS/UEFI (usually Del, F2 or F10), enable “Wake on LAN”, “Power on by PCI-E” or “Resume by LAN”, use wired Ethernet and check again. You can also continue without it.",
+                        "Uruchom BIOS/UEFI (zwykle Del, F2 lub F10), włącz „Wake on LAN”, „Power on by PCI-E” lub „Resume by LAN”, użyj przewodowego Ethernetu i sprawdź ponownie. Możesz też kontynuować bez tego."),
+                    recheck);
+                banner.Margin = new Thickness(0, 0, 0, 12);
+                content.Children.Add(banner);
+            }
+            TextBlock caveat = ui.Muted(T(
+                "Windows cannot read every vendor-specific BIOS/UEFI switch; the check uses the wired adapter capability reported by Windows.",
+                "Windows nie odczyta każdego przełącznika BIOS/UEFI producenta; test korzysta z możliwości przewodowej karty zgłaszanej przez Windows."));
+            caveat.Margin = new Thickness(2, 4, 0, 0);
+            content.Children.Add(caveat);
+        }
+
+        private void BuildReady(Panel content)
+        {
+            bool installed = SharedComponentsInstalled(InstallDirectory);
+            bool update = SharedComponentsNeedUpdate(InstallDirectory);
+            Heading(content, T("Ready to install", "Gotowe do instalacji"),
+                T("Defaults are chosen for you; the installer only adds what is missing.",
+                  "Ustawienia wybrano automatycznie; instalator dodaje tylko to, czego brakuje."));
+            StackPanel list = new StackPanel();
+            Border pill = !installed ? ui.Pill(T("New installation", "Nowa instalacja"), Tone.Accent)
+                : update ? ui.Pill(DisplayInstalledVersion(InstallDirectory) + " → " + payloadVersion, Tone.Warn)
+                : ui.Pill(T("Up to date", "Aktualny"), Tone.Ok);
+            list.Children.Add(ui.Heading(T("What happens", "Co się stanie"), pill));
+            int step = 0;
+            list.Children.Add(ReadyItem(++step, false, "MoonWaker Host",
+                T("Gateway, Login Broker, Host Control and Legendary in ", "Gateway, Login Broker, Host Control i Legendary w ") +
+                InstallDirectory + T(". Profiles, certificates and pairing are kept.", ". Profile, certyfikaty i parowanie zostają zachowane.")));
+            list.Children.Add(ReadyItem(++step, vibepolloInstalled, "Vibepollo", vibepolloInstalled
+                ? T("Already installed; left unchanged.", "Już zainstalowany; bez zmian.")
+                : T("Its signed setup opens: choose the folder and keep Vibepollo Display Driver selected.",
+                    "Otworzy się jego podpisany instalator: wybierz katalog i pozostaw zaznaczony Vibepollo Display Driver.")));
+            list.Children.Add(ReadyItem(++step, false, T("Drivers and runtimes", "Sterowniki i środowiska"),
+                T("ViGEmBus 1.22.0 for virtual gamepads, Python 3.12 and OpenSSL — only if missing.",
+                  "ViGEmBus 1.22.0 dla wirtualnych gamepadów, Python 3.12 i OpenSSL — tylko jeśli ich brakuje.")));
+            list.Children.Add(ReadyItem(++step, wakeOnLan.Armed, "Wake-on-LAN",
+                wakeOnLan.Armed ? T("Already enabled.", "Już włączony.")
+                : wakeOnLan.Supported ? T("Windows enables it for the wired adapter.", "Windows włączy go dla karty przewodowej.")
+                : T("Skipped — Windows does not offer it yet.", "Pominięty — Windows jeszcze go nie udostępnia."),
+                !wakeOnLan.Supported));
+            content.Children.Add(ui.Card(list));
+
+            StackPanel next = new StackPanel();
+            next.Children.Add(ui.Heading(T("Profiles in Host Control", "Profile w Host Control"), null));
+            next.Children.Add(ui.Text(T(
+                "Windows profiles, game libraries, devices and Remote Sign-in are set up in MoonWaker Host Control after installation — from the Start menu or the button at the end.",
+                "Profile Windows, biblioteki gier, urządzenia i zdalne logowanie skonfigurujesz po instalacji w MoonWaker Host Control — z menu Start albo przyciskiem na końcu."),
+                12.5, ui.P.Muted, FontWeights.Normal));
+            Border card = ui.Card(next);
+            card.Margin = new Thickness(0, 12, 0, 0);
+            content.Children.Add(card);
+        }
+
+        // skipped: nothing happens to it (a muted dot instead of a step number).
+        private Border ReadyItem(int number, bool done, string title, string detail, bool skipped = false)
+        {
+            UIElement mark = done ? ui.Check(22) : skipped ? (UIElement)ui.Dot(Tone.Off) : ui.Step(number, true);
+            return ui.Item(number == 1, mark,
+                ui.Bold(title, 13), detail);
+        }
+
+        private void BuildRemove(Panel content)
+        {
+            Heading(content, T("Uninstall MoonWaker", "Odinstaluj MoonWaker"),
+                T("Choose what leaves this computer. MoonWaker and Legendary always go together.",
+                  "Wybierz, co usunąć z tego komputera. MoonWaker i Legendary są usuwane razem."));
+            StackPanel list = new StackPanel();
+            list.Children.Add(ui.Heading(T("Components", "Składniki"), ui.Muted(T("found on this computer", "wykryte na tym komputerze"))));
+            bool first = true;
+            foreach (Part part in parts)
+            {
+                if (!part.Locked && !part.Present) continue;
+                Part current = part;
+                string name = T(part.English, part.Polish);
+                Button toggle = ui.Switch(part.Selected, name, part.Locked, false, delegate
+                {
+                    if (current.Locked) return;
+                    current.Selected = !current.Selected;
+                    Render();
+                }, "remove-" + part.Key);
+                if (part.Locked) toggle.ToolTip = T("Always removed with MoonWaker.", "Zawsze usuwany razem z MoonWaker.");
+                list.Children.Add(ui.Item(first, null, ui.Bold(name, 13), T(part.EnglishNote, part.PolishNote), toggle));
+                first = false;
+            }
+            content.Children.Add(ui.Card(list));
+            Border warning = ui.Banner(Tone.Error, T("This cannot be undone.", "Tej operacji nie można cofnąć."),
+                T("Paired TVs must pair again after a new installation.",
+                  "Po nowej instalacji telewizory trzeba sparować ponownie."), null);
+            warning.Margin = new Thickness(0, 12, 0, 0);
+            content.Children.Add(warning);
+        }
+
+        private void BuildProgress(Panel content)
+        {
+            Heading(content, progressTitle, progressDetail);
+            if (completed)
+            {
+                if (removing) BuildRemoved(content); else BuildInstalled(content);
+                Button toggle = ui.Button((removing ? T("Removal log", "Dziennik usuwania")
+                    : T("Installation log", "Dziennik instalacji")) + (showLog ? "  ▾" : "  ▸"),
+                    ButtonKind.Normal, true, false, delegate { showLog = !showLog; Render(); }, "toggle-log");
+                toggle.Margin = new Thickness(0, 12, 0, 0);
+                content.Children.Add(toggle);
+                if (!showLog) return;
+            }
+            StackPanel stack = new StackPanel();
+            if (!completed) stack.Children.Add(ui.Bar(progress / 100.0));
+            TextBlock caption = ui.Text(removing ? T("Removal log", "Dziennik usuwania")
+                : T("Installation log", "Dziennik instalacji"), 12, ui.P.Muted, FontWeights.SemiBold);
+            caption.Margin = new Thickness(0, completed ? 0 : 14, 0, 6);
+            stack.Children.Add(caption);
+            TextBox output = new TextBox {
+                Text = log.ToString(), IsReadOnly = true, Height = 300, TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                FontFamily = new FontFamily("Cascadia Mono, Consolas"), BorderThickness = new Thickness(1) };
+            ui.Input(output);
+            output.FontSize = 12;
+            output.Resources.Add(typeof(ScrollBar), ui.ScrollBarStyle());
+            AutomationProperties.SetName(output, caption.Text);
+            output.Loaded += delegate { output.ScrollToEnd(); };
+            stack.Children.Add(output);
+            Border card = ui.Card(stack);
+            if (completed) card.Margin = new Thickness(0, 8, 0, 0);
+            content.Children.Add(card);
+        }
+
+        private void BuildInstalled(Panel content)
+        {
+            FrameworkElement mark = ui.Check(44);
+            mark.Margin = new Thickness(0, 0, 16, 0);
+            StackPanel text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            text.Children.Add(ui.Bold(T("Gateway and Login Broker are running.", "Gateway i Login Broker działają."), 14));
+            TextBlock note = ui.Muted(T("Open Host Control to add profiles, pair a TV and connect game libraries.",
+                "Otwórz Host Control, aby dodać profile, sparować telewizor i połączyć biblioteki gier."));
+            note.Margin = new Thickness(0, 3, 0, 0);
+            text.Children.Add(note);
+            DockPanel hero = new DockPanel();
+            hero.Children.Add(mark);
+            hero.Children.Add(text);
+            Border heroCard = ui.Card(hero);
+            heroCard.Margin = new Thickness(0, 0, 0, 12);
+            content.Children.Add(heroCard);
+
+            StackPanel list = new StackPanel();
+            list.Children.Add(ui.Heading(T("What next", "Co dalej"), null));
+            list.Children.Add(ui.Item(true, ui.Step(1, true), ui.Bold(T("Open Host Control", "Otwórz Host Control"), 13),
+                T("With the button below or from Start → MoonWaker.", "Z przycisku poniżej lub z menu Start → MoonWaker.")));
+            list.Children.Add(ui.Item(false, ui.Step(2, true), ui.Bold(T("Add a profile and pair the TV", "Dodaj profil i sparuj TV"), 13),
+                T("On the TV choose Add computer and type the code from Host Control.",
+                  "Na telewizorze wybierz Dodaj komputer i wpisz kod z Host Control.")));
+            list.Children.Add(ui.Item(false, ui.Step(3, true), ui.Bold(T("Uninstalling", "Odinstalowanie"), 13),
+                T("Windows Settings → Apps → MoonWaker Host, or this installer.",
+                  "W Ustawieniach Windows → Aplikacje → MoonWaker Host albo z tego instalatora.")));
+            content.Children.Add(ui.Card(list));
+        }
+
+        // What the removal achieved, read back from this computer rather than assumed.
+        private void BuildRemoved(Panel content)
+        {
+            StackPanel list = new StackPanel();
+            list.Children.Add(ui.Heading(T("Result", "Wynik"), null));
+            List<string> kept = new List<string>();
+            bool first = true;
+            foreach (Part part in parts)
+            {
+                string name = T(part.English, part.Polish);
+                if (!part.Selected) { if (part.Present) kept.Add(name); continue; }
+                bool gone = !part.Present;
+                if (!gone && part.Patterns == null) continue;
+                string detail = gone
+                    ? (part.Key == "Legendary" ? T("Program and Epic sign-ins removed; games stay on disk.",
+                        "Program i logowania Epic usunięte; gry zostały na dysku.") : T("Removed.", "Usunięty."))
+                    : T("Still installed — remove it in Windows Settings → Apps.",
+                        "Nadal zainstalowany — usuń go w Ustawieniach Windows → Aplikacje.");
+                list.Children.Add(ui.Item(first, gone ? ui.Check(22) : (UIElement)ui.Dot(Tone.Warn), ui.Bold(name, 13), detail));
+                first = false;
+            }
+            if (kept.Count > 0)
+                list.Children.Add(ui.Item(first, ui.Dot(Tone.Off), ui.Bold(String.Join(", ", kept.ToArray()), 13),
+                    T("Kept — not chosen for removal.", "Pozostawione — nie wybrano ich do usunięcia.")));
+            content.Children.Add(ui.Card(list));
+        }
+
+        private void ShowPage(Page target)
+        {
+            if (target == Page.Remove) DetectParts();
+            page = target;
+            Render();
+        }
+
+        // ---- Flows ------------------------------------------------------------------------
 
         private async Task RefreshPreflightAsync()
         {
-            recheck.Enabled = false;
-            next.Enabled = false;
-            SetStatus(wolStatus, T("Checking Windows…", "Sprawdzanie Windows…"), Muted);
-            SetStatus(vibepolloDetectionStatus, T("Checking installation…", "Sprawdzanie instalacji…"), Muted);
-            SetStatus(vibepolloSetupStatus, T("Checking installation…", "Sprawdzanie instalacji…"), Muted);
-            vibepolloDetectionDetails.Text = "";
-            vibepolloSetupDetails.Text = "";
-            firmwarePanel.Visible = false;
-            UpdateSystemPageLayout();
+            checking = true;
+            Render();
             Task<WakeOnLanProbe> wakeTask = Task.Run<WakeOnLanProbe>(() => ProbeWakeOnLan());
             Task<string> vibepolloTask = Task.Run<string>(() => DetectVibepolloVersion());
             try { wakeOnLan = await wakeTask; }
-            catch (Exception error)
-            {
-                wakeOnLan = new WakeOnLanProbe { Error = error.Message };
-            }
+            catch (Exception error) { wakeOnLan = new WakeOnLanProbe { Error = error.Message }; }
             try
             {
                 vibepolloVersion = await vibepolloTask;
                 vibepolloInstalled = vibepolloVersion != null;
+                vibepolloError = "";
             }
             catch (Exception error)
             {
                 vibepolloInstalled = false;
                 vibepolloVersion = null;
-                vibepolloDetectionDetails.Text = error.Message;
+                vibepolloError = error.Message;
             }
-            ApplyPreflightResults();
-            recheck.Enabled = true;
-            next.Enabled = true;
+            checking = false;
+            Render();
         }
 
-        private void ApplyPreflightResults()
+        private void StartRun(bool removal, string title, string detail)
         {
-            if (!String.IsNullOrWhiteSpace(wakeOnLan.Error))
+            removing = removal;
+            running = true;
+            completed = false;
+            failed = false;
+            progress = 4;
+            progressTitle = title;
+            progressDetail = detail;
+            log.Clear();
+            showLog = false;
+            page = Page.Progress;
+            Render();
+        }
+
+        private void FinishRun(Exception error, string title, string detail)
+        {
+            running = false;
+            if (error == null)
             {
-                SetStatus(wolStatus, T("Check failed", "Sprawdzenie nie powiodło się"), Bad);
-                wolDetails.Text = wakeOnLan.Error;
-                firmwareInstructions.Text = T(
-                    "Windows could not complete the adapter check. Verify Wake-on-LAN in BIOS/UEFI and Device Manager, then select Check again.",
-                    "Windows nie ukończył sprawdzania karty. Sprawdź Wake-on-LAN w BIOS/UEFI i Menedżerze urządzeń, a następnie wybierz Sprawdź ponownie.");
-                firmwarePanel.Visible = true;
-            }
-            else if (wakeOnLan.Armed)
-            {
-                SetStatus(wolStatus, T("Ready — Wake-on-LAN is enabled",
-                    "Gotowe — Wake-on-LAN jest włączony"), Good);
-                wolDetails.Text = wakeOnLan.Adapters;
-                firmwarePanel.Visible = false;
-            }
-            else if (wakeOnLan.Supported)
-            {
-                SetStatus(wolStatus, T("Supported — Windows will enable it during installation",
-                    "Obsługiwane — Windows włączy je podczas instalacji"), Warning);
-                wolDetails.Text = wakeOnLan.Adapters;
-                firmwarePanel.Visible = false;
+                completed = true;
+                progress = 100;
+                progressTitle = title;
+                progressDetail = detail;
             }
             else
             {
-                SetStatus(wolStatus, T("Not available to Windows", "Niedostępne dla Windows"), Warning);
-                wolDetails.Text = T("Enable the firmware setting, then return and check again.",
-                    "Włącz ustawienie firmware, następnie wróć i sprawdź ponownie.");
-                firmwareInstructions.Text = T(
-                    "1. Restart the PC and open BIOS/UEFI (usually Del, F2 or F10).\n2. Enable “Wake on LAN”, “Power on by PCI-E” or “Resume by LAN”. Save changes.\n3. Use wired Ethernet, start Windows and select Check again.",
-                    "1. Uruchom ponownie komputer i otwórz BIOS/UEFI (zwykle Del, F2 lub F10).\n2. Włącz „Wake on LAN”, „Power on by PCI-E” lub „Resume by LAN”. Zapisz zmiany.\n3. Użyj przewodowego Ethernetu, uruchom Windows i wybierz Sprawdź ponownie.");
-                firmwarePanel.Visible = true;
+                failed = true;
+                log.AppendLine().Append(T("ERROR: ", "BŁĄD: ")).AppendLine(error.Message);
+                progressTitle = removing ? T("Uninstallation needs attention", "Deinstalacja wymaga uwagi")
+                    : T("Installation needs attention", "Instalacja wymaga uwagi");
+                progressDetail = T("Review the log below, correct the problem and retry.",
+                    "Przeczytaj dziennik poniżej, popraw problem i spróbuj ponownie.");
             }
-            UpdateSystemPageLayout();
-            RefreshVibepolloStatus();
-            bool sharedInstalled = SharedComponentsInstalled(InstallDirectory);
-            bool updateRequired = SharedComponentsNeedUpdate(InstallDirectory);
-            if (!sharedInstalled)
-                SetStatus(moonWakerDetectionStatus,
-                    T("Not installed — all host components will be added",
-                      "Brak instalacji — wszystkie komponenty hosta zostaną dodane"), Warning);
-            else if (updateRequired)
-                SetStatus(moonWakerDetectionStatus,
-                    T("Update available — existing profiles and secrets will be preserved",
-                      "Dostępna aktualizacja — profile i sekrety zostaną zachowane"), Warning);
-            else
-                SetStatus(moonWakerDetectionStatus,
-                    T("Up to date — manage Windows profiles in Host Control",
-                      "Aktualne — profilami Windows zarządza Host Control"), Good);
-            RefreshInstallationStatus();
+            Render();
         }
 
-        private void UpdateSystemPageLayout()
+        private async Task InstallAsync()
         {
-            bool showFirmware = firmwarePanel.Visible;
-            vibepolloDetectionCard.Top = showFirmware ? 430 : 238;
-            moonWakerDetectionCard.Top = showFirmware ? 548 : 356;
-            systemCaveat.Top = showFirmware ? 670 : 478;
-            pages[1].AutoScrollMinSize = new Size(0, showFirmware ? 745 : 565);
+            if (!PrepareHostControlUpdate(true)) return;
+            StartRun(false, T("Installing MoonWaker Host", "Instalowanie MoonWaker Host"),
+                T("Keep this window open while the machine components and Gateway are installed.",
+                  "Pozostaw to okno otwarte podczas instalowania komponentów komputera i Gateway."));
+            log.AppendLine(T("Preparing the installation…", "Przygotowywanie instalacji…"));
+            bool ensureVibepollo = !vibepolloInstalled;
+            bool enableWakeOnLan = wakeOnLan.Supported && !wakeOnLan.Armed;
+            Exception failure = null;
+            try
+            {
+                log.Append(await Task.Run<string>(() => RunInstaller(ensureVibepollo, enableWakeOnLan)));
+                RegisterUninstallEntry();
+            }
+            catch (Exception error) { failure = error; }
+            RestartHostControlIfNeeded();
+            FinishRun(failure, T("MoonWaker Host is installed", "MoonWaker Host jest zainstalowany"),
+                T("Version ", "Wersja ") + payloadVersion.TrimStart('v') + T(" in ", " w ") + InstallDirectory);
         }
 
-        private void RefreshVibepolloStatus()
+        private async Task UninstallAsync()
         {
-            if (vibepolloInstalled)
+            if (!SharedComponentsInstalled(InstallDirectory)) return;
+            List<string> components = new List<string>();
+            List<string> names = new List<string>();
+            foreach (Part part in parts)
             {
-                SetStatus(vibepolloDetectionStatus,
-                    T("Installed", "Zainstalowany") +
-                    (String.IsNullOrWhiteSpace(vibepolloVersion) ? "" : "  •  " + vibepolloVersion), Good);
-                SetStatus(vibepolloSetupStatus,
-                    T("Installed", "Zainstalowany") +
-                    (String.IsNullOrWhiteSpace(vibepolloVersion) ? "" : "  •  " + vibepolloVersion), Good);
-                vibepolloDetectionDetails.Text = T(
-                    "MoonWaker will use the existing installation and will not replace its settings.",
-                    "MoonWaker użyje istniejącej instalacji i nie zastąpi jej ustawień.");
-                vibepolloSetupDetails.Text = vibepolloDetectionDetails.Text;
+                if (!part.Present || !part.Selected) continue;
+                names.Add(T(part.English, part.Polish));
+                if (part.Patterns != null) components.Add(part.Key);
             }
-            else
+            if (!HostDialog.Confirm(this, ui, T("Uninstall MoonWaker?", "Odinstalować MoonWaker?"),
+                    T("To be removed: ", "Zostaną usunięte: ") + String.Join(", ", names.ToArray()) + ". " +
+                    T("Host Control and Host Configurator will close.", "Host Control i Host Configurator zostaną zamknięte."),
+                    T("Uninstall", "Odinstaluj"), true, false, T("Cancel", "Anuluj"))) return;
+            if (!PrepareHostControlUpdate(false)) return;
+            StartRun(true, T("Uninstalling MoonWaker Host", "Odinstalowywanie MoonWaker Host"),
+                components.Contains("Vibepollo")
+                ? T("Stopping services and removing MoonWaker. Follow Vibepollo's uninstaller if it opens.",
+                    "Zatrzymywanie usług i usuwanie MoonWaker. Jeśli otworzy się deinstalator Vibepollo, postępuj według niego.")
+                : T("Stopping services and removing MoonWaker data…", "Zatrzymywanie usług i usuwanie danych MoonWaker…"));
+            log.AppendLine(progressDetail);
+            progress = 10;
+            Exception failure = null;
+            try
             {
-                SetStatus(vibepolloDetectionStatus,
-                    T("Not installed — the official signed setup will be downloaded",
-                      "Brak instalacji — zostanie pobrany oficjalny podpisany instalator"), Warning);
-                SetStatus(vibepolloSetupStatus,
-                    T("Not installed — the official signed setup will be downloaded",
-                      "Brak instalacji — zostanie pobrany oficjalny podpisany instalator"), Warning);
-                vibepolloDetectionDetails.Text = T(
-                    "The latest stable release is downloaded directly from Nonary/Vibepollo on GitHub.",
-                    "Najnowsze stabilne wydanie zostanie pobrane bezpośrednio z Nonary/Vibepollo na GitHub.");
-                vibepolloSetupDetails.Text = vibepolloDetectionDetails.Text;
+                log.Append(await Task.Run<string>(() => RunUninstaller(components)));
+                Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, false);
+            }
+            catch (Exception error) { failure = error; }
+            DetectParts();
+            FinishRun(failure, T("MoonWaker was removed", "MoonWaker został usunięty"),
+                T("Services, profiles, Legendary, credentials and installation files were removed.",
+                  "Usunięto usługi, profile, Legendary, poświadczenia i pliki instalacji."));
+        }
+
+        private void ReportProgress(int value, string detail)
+        {
+            Dispatcher.BeginInvoke(new Action(delegate {
+                progress = Math.Max(progress, value);
+                progressDetail = detail;
+                log.AppendLine(detail);
+                Render();
+            }));
+        }
+
+        private void OpenHostControl(string executable)
+        {
+            // Host Control runs with the signed-in user's standard token, not this elevated one.
+            try { UnelevatedShell.Start(executable, "", Path.GetDirectoryName(executable)); }
+            catch (Exception error)
+            {
+                log.AppendLine(T("Could not open Host Control: ", "Nie udało się otworzyć Host Control: ") + error.Message);
+                Render();
+            }
+        }
+
+        // Apps & features lists MoonWaker Host; its Uninstall starts the copy kept in the
+        // installation with --uninstall.
+        private static void RegisterUninstallEntry()
+        {
+            string copy = Path.Combine(InstallDirectory, InstalledCopyName);
+            string self = Path.GetFullPath(Assembly.GetExecutingAssembly().Location);
+            if (!String.Equals(self, copy, StringComparison.OrdinalIgnoreCase)) File.Copy(self, copy, true);
+            using (RegistryKey key = Registry.LocalMachine.CreateSubKey(UninstallKey))
+            {
+                key.SetValue("DisplayName", "MoonWaker Host");
+                key.SetValue("DisplayIcon", copy);
+                key.SetValue("Publisher", "MoonWaker");
+                key.SetValue("InstallLocation", InstallDirectory);
+                key.SetValue("UninstallString", Quote(copy) + " --uninstall");
+                key.SetValue("NoModify", 1, RegistryValueKind.DWord);
+                key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+            }
+        }
+
+        private void DetectParts()
+        {
+            List<string> names = InstalledProductNames();
+            foreach (Part part in parts)
+            {
+                if (part.Patterns == null) { part.Present = SharedComponentsInstalled(InstallDirectory); continue; }
+                part.Present = false;
+                foreach (string pattern in part.Patterns)
+                {
+                    Regex like = new Regex("^" + Regex.Escape(pattern).Replace("\\*", ".*") + "$",
+                        RegexOptions.IgnoreCase);
+                    foreach (string name in names) if (like.IsMatch(name)) part.Present = true;
+                }
+            }
+        }
+
+        // Visible Apps & features entries that can be uninstalled, as the uninstall script sees them.
+        private static List<string> InstalledProductNames()
+        {
+            List<string> names = new List<string>();
+            foreach (RegistryView view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                try
+                {
+                    using (RegistryKey root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
+                    using (RegistryKey uninstall = root.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"))
+                    {
+                        if (uninstall == null) continue;
+                        foreach (string subKey in uninstall.GetSubKeyNames())
+                        {
+                            using (RegistryKey entry = uninstall.OpenSubKey(subKey))
+                            {
+                                if (entry == null || Convert.ToString(entry.GetValue("UninstallString")) == "" ||
+                                    Convert.ToString(entry.GetValue("SystemComponent")) == "1") continue;
+                                string display = Convert.ToString(entry.GetValue("DisplayName"));
+                                if (display != "") names.Add(display);
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+            return names;
+        }
+
+        private string RunInstaller(bool ensureVibepollo, bool enableWakeOnLan)
+        {
+            string temporary = CreateProtectedStagingDirectory();
+            Exception installError = null;
+            try
+            {
+                ReportProgress(10, T("Unpacking verified host components…",
+                    "Rozpakowywanie zweryfikowanych komponentów hosta…"));
+                ExtractPayload(temporary);
+                string package = Path.Combine(temporary, "host-services");
+                string hostScript = Path.Combine(package, "install", "Install-WakePlayHost.ps1");
+                string machineWrapper = Path.Combine(package, "install", "Invoke-MoonWakerMachineInstall.ps1");
+                string prerequisiteScript = Path.Combine(package, "install", "Prepare-MoonWakerHost.ps1");
+                if (!File.Exists(hostScript) || !File.Exists(machineWrapper) ||
+                    !File.Exists(prerequisiteScript)) throw new InvalidOperationException(T(
+                    "The embedded host package is incomplete.", "Osadzony pakiet hosta jest niekompletny."));
+                ReportProgress(28, ensureVibepollo
+                    ? T("Installing components; Vibepollo's setup opens when it is needed…",
+                        "Instalowanie składników; instalator Vibepollo otworzy się, gdy będzie potrzebny…")
+                    : T("Checking required components and drivers…",
+                        "Sprawdzanie wymaganych składników i sterowników…"));
+                string output = RunMachineInstall(hostScript, machineWrapper, prerequisiteScript, temporary,
+                    enableWakeOnLan, ensureVibepollo, true, true, true);
+                ReportProgress(92, T("Machine services are installed and starting.",
+                    "Usługi komputera są zainstalowane i uruchamiane."));
+                return output;
+            }
+            catch (Exception error) { installError = error; throw; }
+            finally
+            {
+                try { DeleteProtectedStagingDirectory(temporary); }
+                catch { if (installError == null) throw; }
+            }
+        }
+
+        private string RunUninstaller(List<string> components)
+        {
+            string temporary = CreateProtectedStagingDirectory();
+            Exception uninstallError = null;
+            try
+            {
+                ExtractPayload(temporary);
+                string script = Path.Combine(temporary, "host-services", "install",
+                    "Uninstall-MoonWakerHostServices.ps1");
+                if (!File.Exists(script)) throw new InvalidOperationException(T(
+                    "The embedded uninstaller is missing.", "Brakuje osadzonego deinstalatora."));
+                ReportProgress(25, T("Removing MoonWaker services and files…", "Usuwanie usług i plików MoonWaker…"));
+                string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " +
+                    Quote(script) + " -PurgeCredentials -RemoveFiles";
+                if (components.Count > 0) arguments += " -RemoveComponents " + String.Join(",", components.ToArray());
+                ProcessStartInfo info = new ProcessStartInfo(WindowsPowerShellPath(), arguments);
+                info.UseShellExecute = false; info.CreateNoWindow = true;
+                info.RedirectStandardOutput = true; info.RedirectStandardError = true;
+                info.StandardOutputEncoding = Encoding.UTF8; info.StandardErrorEncoding = Encoding.UTF8;
+                info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
+                using (Process process = Process.Start(info))
+                {
+                    Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+                    Task<string> stderr = process.StandardError.ReadToEndAsync();
+                    process.WaitForExit();
+                    Task.WaitAll(new Task[] { stdout, stderr });
+                    if (process.ExitCode != 0) throw new InvalidOperationException(
+                        String.IsNullOrWhiteSpace(stderr.Result) ? stdout.Result : stderr.Result);
+                    return stdout.Result;
+                }
+            }
+            catch (Exception error) { uninstallError = error; throw; }
+            finally
+            {
+                try { DeleteProtectedStagingDirectory(temporary); }
+                catch { if (uninstallError == null) throw; }
+            }
+        }
+
+        private static string RunMachineInstall(string hostScript, string wrapper,
+            string prerequisiteScript, string temporaryDirectory,
+            bool enableWakeOnLan, bool ensureVibepollo, bool ensureViGEmBus,
+            bool ensurePython, bool ensureOpenSsl)
+        {
+            if (!File.Exists(wrapper)) throw new InvalidOperationException(
+                "The machine installation module is missing.");
+            string resultPath = Path.Combine(temporaryDirectory, "machine-install-result.txt");
+            string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(wrapper) +
+                " -HostInstallScript " + Quote(hostScript) +
+                " -PrerequisiteScript " + Quote(prerequisiteScript) +
+                " -ProtectedStagingDirectory " + Quote(temporaryDirectory) +
+                " -ResultPath " + Quote(resultPath);
+            if (enableWakeOnLan) arguments += " -EnableWakeOnLan";
+            if (ensureVibepollo) arguments += " -EnsureVibepollo";
+            if (ensureViGEmBus) arguments += " -EnsureViGEmBus";
+            if (ensurePython) arguments += " -EnsurePython";
+            if (ensureOpenSsl) arguments += " -EnsureOpenSsl";
+            ProcessStartInfo info = new ProcessStartInfo(WindowsPowerShellPath(), arguments);
+            info.UseShellExecute = false; info.CreateNoWindow = true;
+            info.RedirectStandardOutput = true; info.RedirectStandardError = true;
+            info.StandardOutputEncoding = Encoding.UTF8; info.StandardErrorEncoding = Encoding.UTF8;
+            info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
+            using (Process process = Process.Start(info))
+            {
+                Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+                Task<string> stderr = process.StandardError.ReadToEndAsync();
+                process.WaitForExit();
+                Task.WaitAll(new Task[] { stdout, stderr });
+                string details = File.Exists(resultPath) ? File.ReadAllText(resultPath).Trim() : "";
+                if (String.IsNullOrWhiteSpace(details) && !String.IsNullOrWhiteSpace(stderr.Result))
+                    details = stderr.Result.Trim();
+                if (String.IsNullOrWhiteSpace(details) && !String.IsNullOrWhiteSpace(stdout.Result))
+                    details = stdout.Result.Trim();
+                if (process.ExitCode != 0) throw new InvalidOperationException(
+                    "Machine preparation failed (" + process.ExitCode + ")." +
+                    (String.IsNullOrWhiteSpace(details) ? "" : "\r\n\r\n" + details));
+                return String.IsNullOrWhiteSpace(details) ? "" : details + "\r\n";
+            }
+        }
+
+        // Host Control and the Configurator hold installed files: they close first. An update
+        // asks and starts the tray again afterwards; an uninstallation said so in its confirmation.
+        private bool PrepareHostControlUpdate(bool reopen)
+        {
+            restartHostControl = false;
+            List<Process> running = new List<Process>();
+            bool hostControlRunning = false;
+            foreach (string name in new[] { "MoonWakerHostControl", "MoonWakerHostConfigurator" })
+            {
+                foreach (Process process in Process.GetProcessesByName(name))
+                {
+                    running.Add(process);
+                    if (name == "MoonWakerHostControl") hostControlRunning = true;
+                }
+            }
+            if (running.Count == 0) return true;
+            bool agreed = !reopen || HostDialog.Confirm(this, ui, "MoonWaker Host Control", T(
+                "Host Control must close for the update. It reopens after installation.",
+                "Host Control musi zostać zamknięty na czas aktualizacji. Uruchomi się ponownie po instalacji."),
+                T("Close and continue", "Zamknij i kontynuuj"), false, false, T("Cancel", "Anuluj"));
+            if (!agreed)
+            {
+                foreach (Process process in running) process.Dispose();
+                return false;
+            }
+            try
+            {
+                restartHostControl = reopen && hostControlRunning;
+                foreach (Process process in running)
+                {
+                    using (process)
+                    {
+                        if (process.CloseMainWindow() && process.WaitForExit(3000)) continue;
+                        process.Kill();
+                        if (!process.WaitForExit(5000)) throw new InvalidOperationException(T(
+                            "MoonWaker Host Control did not close in time.",
+                            "MoonWaker Host Control nie zamknął się na czas."));
+                    }
+                }
+                return true;
+            }
+            catch (Exception error)
+            {
+                RestartHostControlIfNeeded();
+                MessageBox.Show(this, error.Message, "MoonWaker", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+        }
+
+        private void RestartHostControlIfNeeded()
+        {
+            if (!restartHostControl) return;
+            restartHostControl = false;
+            string executable = Path.Combine(InstallDirectory, "control", "MoonWakerHostControl.exe");
+            if (!File.Exists(executable)) return;
+            // The tray hosts profile processes only with the user's standard token.
+            try { UnelevatedShell.Start(executable, "--tray", Path.GetDirectoryName(executable)); }
+            catch (Exception error)
+            {
+                log.AppendLine(T("Could not restart Host Control: ",
+                    "Nie udało się ponownie uruchomić Host Control: ") + error.Message);
             }
         }
 
@@ -721,316 +1192,6 @@ namespace MoonWaker.HostInstaller
                 if (File.Exists(executable)) return "";
             }
             return null;
-        }
-
-        private async Task InstallAsync()
-        {
-            if (!PrepareHostControlUpdate(installMachine.Checked, true)) return;
-            installationCompleted = false;
-            installationFailed = false;
-            ShowPage(4);
-            next.Enabled = false;
-            back.Visible = false;
-            progress.Value = 4;
-            progressTitle.Text = T("Installing MoonWaker Host", "Instalowanie MoonWaker Host");
-            progressDetail.Text = T(
-                "Keep this administrator window open while the machine components and Gateway are installed.",
-                "Pozostaw to okno administratora otwarte podczas instalowania komponentów komputera i Gateway.");
-            log.Text = T("Preparing the installation…\r\n", "Przygotowywanie instalacji…\r\n");
-            try
-            {
-                string output = await Task.Run<string>(() => RunInstaller());
-                log.AppendText(output);
-                progress.Value = 100;
-                progressTitle.Text = T("Host files are installed", "Pliki hosta są zainstalowane");
-                progressDetail.Text = T(
-                    "Gateway and Login Broker are running. Open Host Control from Start to add profiles and integrations.",
-                    "Gateway i Login Broker działają. Otwórz Host Control z menu Start, aby dodać profile i integracje.");
-                installationCompleted = true;
-            }
-            catch (Exception error)
-            {
-                log.AppendText("\r\n" + T("ERROR: ", "BŁĄD: ") + error.Message);
-                progressTitle.Text = T("Installation needs attention", "Instalacja wymaga uwagi");
-                progressDetail.Text = T("Review the message below, correct the problem and retry.",
-                    "Przeczytaj komunikat poniżej, popraw problem i spróbuj ponownie.");
-                installationFailed = true;
-            }
-            finally { RestartHostControlIfNeeded(); ShowPage(4); }
-        }
-
-        private async Task UninstallAsync()
-        {
-            if (!SharedComponentsInstalled(InstallDirectory))
-            {
-                ShowWarning(T("No MoonWaker installation was found.",
-                    "Nie znaleziono instalacji MoonWaker."));
-                return;
-            }
-            DialogResult answer = MessageBox.Show(this, T(
-                "Remove MoonWaker services, profiles, pairing data and stored credentials from this computer?\n\nThis cannot be undone.",
-                "Usunąć z tego komputera usługi MoonWaker, profile, dane parowania i zapisane poświadczenia?\n\nTej operacji nie można cofnąć."),
-                T("Uninstall MoonWaker", "Odinstaluj MoonWaker"),
-                MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (answer != DialogResult.Yes || !PrepareHostControlUpdate(true, false)) return;
-
-            installationCompleted = false;
-            installationFailed = false;
-            ShowPage(4);
-            next.Enabled = false;
-            back.Visible = false;
-            progress.Value = 10;
-            progressTitle.Text = T("Uninstalling MoonWaker Host", "Odinstalowywanie MoonWaker Host");
-            progressDetail.Text = T("Stopping services and removing MoonWaker data…",
-                "Zatrzymywanie usług i usuwanie danych MoonWaker…");
-            log.Text = progressDetail.Text + "\r\n";
-            try
-            {
-                string output = await Task.Run<string>(() => RunUninstaller());
-                log.AppendText(output);
-                progress.Value = 100;
-                progressTitle.Text = T("MoonWaker was removed", "MoonWaker został usunięty");
-                progressDetail.Text = T("Services, profiles, credentials and installation files were removed.",
-                    "Usunięto usługi, profile, poświadczenia i pliki instalacji.");
-                installationCompleted = true;
-            }
-            catch (Exception error)
-            {
-                log.AppendText("\r\n" + T("ERROR: ", "BŁĄD: ") + error.Message);
-                progressTitle.Text = T("Uninstallation needs attention", "Deinstalacja wymaga uwagi");
-                progressDetail.Text = T("Review the message below and retry.",
-                    "Przeczytaj komunikat poniżej i spróbuj ponownie.");
-                installationFailed = true;
-            }
-            finally { ShowPage(4); }
-        }
-
-        private string RunInstaller()
-        {
-            string temporary = CreateProtectedStagingDirectory();
-            Exception installError = null;
-            try
-            {
-                ReportProgress(10, T("Unpacking verified host components…",
-                    "Rozpakowywanie zweryfikowanych komponentów hosta…"));
-                ExtractPayload(temporary);
-                string package = Path.Combine(temporary, "host-services");
-                string hostScript = Path.Combine(package, "install", "Install-WakePlayHost.ps1");
-                string machineWrapper = Path.Combine(package, "install", "Invoke-MoonWakerMachineInstall.ps1");
-                string prerequisiteScript = Path.Combine(package, "install", "Prepare-MoonWakerHost.ps1");
-                if (!File.Exists(hostScript) || !File.Exists(machineWrapper) ||
-                    !File.Exists(prerequisiteScript)) throw new InvalidOperationException(T(
-                    "The embedded host package is incomplete.", "Osadzony pakiet hosta jest niekompletny."));
-                bool ensureVibepollo = !vibepolloInstalled;
-                bool ensureViGEmBus = true;
-                bool enableWakeOnLan = wakeOnLan.Supported && !wakeOnLan.Armed;
-                StringBuilder combinedOutput = new StringBuilder();
-                if (installMachine.Checked || ensureVibepollo || ensureViGEmBus || enableWakeOnLan)
-                {
-                    ReportProgress(28, T("Checking required components and drivers…",
-                        "Sprawdzanie wymaganych składników i sterowników…"));
-                    combinedOutput.Append(RunMachineInstall(hostScript, machineWrapper,
-                        prerequisiteScript, temporary,
-                        installMachine.Checked, enableWakeOnLan, ensureVibepollo, ensureViGEmBus,
-                        true, true));
-                }
-                if (combinedOutput.Length == 0) combinedOutput.AppendLine(T(
-                    "Machine host components are already up to date.",
-                    "Komponenty hosta komputera są już aktualne."));
-                ReportProgress(92, T("Machine services are installed and starting; open Host Control to pair or manage profiles.",
-                    "Usługi komputera są zainstalowane i uruchamiane; otwórz Host Control, aby sparować urządzenie lub zarządzać profilami."));
-                return combinedOutput.ToString();
-            }
-            catch (Exception error) { installError = error; throw; }
-            finally
-            {
-                try { DeleteProtectedStagingDirectory(temporary); }
-                catch { if (installError == null) throw; }
-            }
-        }
-
-        private string RunUninstaller()
-        {
-            string temporary = CreateProtectedStagingDirectory();
-            Exception uninstallError = null;
-            try
-            {
-                ExtractPayload(temporary);
-                string script = Path.Combine(temporary, "host-services", "install",
-                    "Uninstall-MoonWakerHostServices.ps1");
-                if (!File.Exists(script)) throw new InvalidOperationException(T(
-                    "The embedded uninstaller is missing.", "Brakuje osadzonego deinstalatora."));
-                string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " +
-                    Quote(script) + " -PurgeCredentials -RemoveFiles";
-                ProcessStartInfo info = new ProcessStartInfo(WindowsPowerShellPath(), arguments);
-                info.UseShellExecute = false; info.CreateNoWindow = true;
-                info.RedirectStandardOutput = true; info.RedirectStandardError = true;
-                info.StandardOutputEncoding = Encoding.UTF8; info.StandardErrorEncoding = Encoding.UTF8;
-                info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
-                using (Process process = Process.Start(info))
-                {
-                    Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-                    Task<string> stderr = process.StandardError.ReadToEndAsync();
-                    process.WaitForExit();
-                    Task.WaitAll(new Task[] { stdout, stderr });
-                    if (process.ExitCode != 0) throw new InvalidOperationException(
-                        String.IsNullOrWhiteSpace(stderr.Result) ? stdout.Result : stderr.Result);
-                    return stdout.Result;
-                }
-            }
-            catch (Exception error) { uninstallError = error; throw; }
-            finally
-            {
-                try { DeleteProtectedStagingDirectory(temporary); }
-                catch { if (uninstallError == null) throw; }
-            }
-        }
-
-        private static string RunMachineInstall(string hostScript, string wrapper,
-            string prerequisiteScript, string temporaryDirectory,
-            bool installHost, bool enableWakeOnLan, bool ensureVibepollo, bool ensureViGEmBus,
-            bool ensurePython, bool ensureOpenSsl)
-        {
-            if (!File.Exists(wrapper)) throw new InvalidOperationException(
-                "The machine installation module is missing.");
-            string resultPath = Path.Combine(temporaryDirectory, "machine-install-result.txt");
-            string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(wrapper) +
-                " -HostInstallScript " + Quote(hostScript) +
-                " -PrerequisiteScript " + Quote(prerequisiteScript) +
-                " -ProtectedStagingDirectory " + Quote(temporaryDirectory) +
-                " -ResultPath " + Quote(resultPath);
-            if (!installHost) arguments += " -SkipMoonWakerHost";
-            if (enableWakeOnLan) arguments += " -EnableWakeOnLan";
-            if (ensureVibepollo) arguments += " -EnsureVibepollo";
-            if (ensureViGEmBus) arguments += " -EnsureViGEmBus";
-            if (ensurePython) arguments += " -EnsurePython";
-            if (ensureOpenSsl) arguments += " -EnsureOpenSsl";
-            ProcessStartInfo info = new ProcessStartInfo(WindowsPowerShellPath(), arguments);
-            info.UseShellExecute = false; info.CreateNoWindow = true;
-            info.RedirectStandardOutput = true; info.RedirectStandardError = true;
-            info.StandardOutputEncoding = Encoding.UTF8; info.StandardErrorEncoding = Encoding.UTF8;
-            info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
-            using (Process process = Process.Start(info))
-            {
-                Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-                Task<string> stderr = process.StandardError.ReadToEndAsync();
-                process.WaitForExit();
-                Task.WaitAll(new Task[] { stdout, stderr });
-                string details = File.Exists(resultPath) ? File.ReadAllText(resultPath).Trim() : "";
-                if (String.IsNullOrWhiteSpace(details) && !String.IsNullOrWhiteSpace(stderr.Result))
-                    details = stderr.Result.Trim();
-                if (String.IsNullOrWhiteSpace(details) && !String.IsNullOrWhiteSpace(stdout.Result))
-                    details = stdout.Result.Trim();
-                if (process.ExitCode != 0) throw new InvalidOperationException(
-                    "Machine preparation failed (" + process.ExitCode + ")." +
-                    (String.IsNullOrWhiteSpace(details) ? "" : "\r\n\r\n" + details));
-                return String.IsNullOrWhiteSpace(details) ? "" : details + "\r\n";
-            }
-        }
-
-        private void ReportProgress(int value, string detail)
-        {
-            if (IsDisposed) return;
-            BeginInvoke(new Action(delegate {
-                progress.Value = Math.Max(progress.Minimum, Math.Min(progress.Maximum, value));
-                progressDetail.Text = detail;
-                log.AppendText(detail + "\r\n");
-            }));
-        }
-
-        private bool PrepareHostControlUpdate(bool required, bool reopen)
-        {
-            restartHostControl = false;
-            if (!required) return true;
-            List<Process> running = new List<Process>();
-            bool hostControlRunning = false;
-            foreach (string name in new[] { "MoonWakerHostControl", "MoonWakerHostConfigurator" })
-            {
-                foreach (Process process in Process.GetProcessesByName(name))
-                {
-                    running.Add(process);
-                    if (name == "MoonWakerHostControl") hostControlRunning = true;
-                }
-            }
-            if (running.Count == 0) return true;
-            DialogResult answer = MessageBox.Show(this, reopen ? T(
-                "MoonWaker Host Control must close for the update.\n\nClose it now and reopen it after installation?",
-                "MoonWaker Host Control musi zostać zamknięty na czas aktualizacji.\n\nZamknąć go teraz i uruchomić ponownie po instalacji?") : T(
-                "MoonWaker Host Control and Host Configurator must close before uninstallation.\n\nClose them now?",
-                "MoonWaker Host Control i Host Configurator muszą zostać zamknięte przed deinstalacją.\n\nZamknąć je teraz?"),
-                "MoonWaker Host Control", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-            if (answer != DialogResult.Yes)
-            {
-                foreach (Process process in running) process.Dispose();
-                return false;
-            }
-            try
-            {
-                restartHostControl = reopen && hostControlRunning;
-                foreach (Process process in running)
-                {
-                    using (process)
-                    {
-                        if (process.CloseMainWindow() && process.WaitForExit(3000)) continue;
-                        process.Kill();
-                        if (!process.WaitForExit(5000)) throw new InvalidOperationException(T(
-                            "MoonWaker Host Control did not close in time.",
-                            "MoonWaker Host Control nie zamknął się na czas."));
-                    }
-                }
-                return true;
-            }
-            catch (Exception error)
-            {
-                RestartHostControlIfNeeded();
-                MessageBox.Show(this, error.Message, "MoonWaker",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
-        }
-
-        private void RestartHostControlIfNeeded()
-        {
-            if (!restartHostControl) return;
-            restartHostControl = false;
-            string executable = Path.Combine(InstallDirectory, "control", "MoonWakerHostControl.exe");
-            if (!File.Exists(executable)) return;
-            // The tray hosts profile processes only with the user's standard token.
-            try { UnelevatedShell.Start(executable, "--tray", Path.GetDirectoryName(executable)); }
-            catch (Exception error)
-            {
-                log.AppendText("\r\n" + T("Could not restart Host Control: ",
-                    "Nie udało się ponownie uruchomić Host Control: ") + error.Message);
-            }
-        }
-
-        private void RefreshInstallationStatus()
-        {
-            bool sharedInstalled = SharedComponentsInstalled(InstallDirectory);
-            bool updateRequired = SharedComponentsNeedUpdate(InstallDirectory);
-            if (!sharedInstalled)
-            {
-                installationStatus.ForeColor = Warning;
-                installationStatus.Text = T(
-                    "New installation. Shared host components and Gateway will be installed. Profiles are added in Host Control.",
-                    "Nowa instalacja. Zostaną zainstalowane wspólne komponenty hosta i Gateway. Profile dodaje się w Host Control.");
-            }
-            else if (updateRequired)
-            {
-                installationStatus.ForeColor = Warning;
-                installationStatus.Text = T("Update ", "Aktualizacja ") +
-                    DisplayInstalledVersion(InstallDirectory) + " → " + payloadVersion + T(
-                    ". Existing profiles, certificates, pairing and encrypted tokens will be preserved.",
-                    ". Istniejące profile, certyfikaty, parowanie i zaszyfrowane tokeny zostaną zachowane.");
-            }
-            else
-            {
-                installationStatus.ForeColor = Good;
-                installationStatus.Text = T(
-                    "Shared components are up to date. Open Host Control to add or manage Windows profiles.",
-                    "Wspólne komponenty są aktualne. Profile Windows dodasz lub zmienisz w Host Control.");
-            }
-            uninstall.Visible = currentPage == 3 && sharedInstalled;
         }
 
         private static string RunHiddenProcess(string fileName, string arguments, int timeoutMilliseconds)
@@ -1300,99 +1461,9 @@ namespace MoonWaker.HostInstaller
             return "\"" + value.Replace("\"", "\\\"") + "\"";
         }
 
-        private void ShowWarning(string message)
-        {
-            MessageBox.Show(this, message, "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-
-        private void SetStatus(Label label, string text, Color color)
-        {
-            label.Text = "●  " + text;
-            label.ForeColor = color;
-        }
-
         private string T(string english, string polish)
         {
             return language == 1 ? polish : english;
-        }
-
-        private TControl Localize<TControl>(TControl control, string english, string polish)
-            where TControl : Control
-        {
-            control.Tag = new[] { english, polish };
-            control.Text = T(english, polish);
-            return control;
-        }
-
-        private void ApplyLanguage(Control root)
-        {
-            string[] translations = root.Tag as string[];
-            if (translations != null && translations.Length == 2) root.Text = translations[language];
-            foreach (Control child in root.Controls) ApplyLanguage(child);
-        }
-
-        private void ConfigureCheckBox(CheckBox box, string english, string polish, int left, int top)
-        {
-            Localize(box, english, polish);
-            box.SetBounds(left, top, 650, 30);
-            box.ForeColor = Color.White;
-            box.FlatStyle = FlatStyle.Flat;
-            box.FlatAppearance.BorderColor = Accent;
-        }
-
-        private Panel MakeCard(Control parent, int top, int height, Color accentColor)
-        {
-            Panel card = new Panel { Left = 28, Top = top, Width = 704, Height = height,
-                BackColor = Surface, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
-            card.Controls.Add(new Panel { Dock = DockStyle.Left, Width = 4, BackColor = accentColor });
-            parent.Controls.Add(card);
-            return card;
-        }
-
-        private Button MakeButton(string text, int left, int top, int width, int height)
-        {
-            Button button = new Button { Text = text, FlatStyle = FlatStyle.Flat,
-                BackColor = SurfaceRaised, ForeColor = Color.White, Cursor = Cursors.Hand };
-            button.FlatAppearance.BorderColor = Color.FromArgb(108, 116, 140);
-            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(54, 63, 84);
-            button.SetBounds(left, top, width, height);
-            return button;
-        }
-
-        private Button MakeLocalizedButton(string english, string polish, int left,
-                                           int top, int width, int height)
-        {
-            return Localize(MakeButton(T(english, polish), left, top, width, height), english, polish);
-        }
-
-        private void ConfigureNavigationButton(Button button, int left, string english, string polish)
-        {
-            Localize(button, english, polish);
-            button.SetBounds(left, 16, 146, 42);
-            button.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            button.FlatStyle = FlatStyle.Flat;
-            button.BackColor = SurfaceRaised;
-            button.ForeColor = Color.White;
-            button.Cursor = Cursors.Hand;
-            button.FlatAppearance.BorderColor = Color.FromArgb(91, 101, 124);
-            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(56, 65, 87);
-        }
-
-        private Label AddLocalizedLabel(Control parent, string english, string polish,
-            float size, FontStyle style, int left, int top, int width, int height)
-        {
-            return Localize(AddLabel(parent, T(english, polish), size, style,
-                left, top, width, height), english, polish);
-        }
-
-        private Label AddLabel(Control parent, string text, float size, FontStyle style,
-                               int left, int top, int width, int height)
-        {
-            Label label = new Label { Text = text, Font = new Font("Segoe UI", size, style),
-                ForeColor = Color.White, AutoEllipsis = false, UseMnemonic = false };
-            label.SetBounds(left, top, width, height);
-            parent.Controls.Add(label);
-            return label;
         }
 
         private sealed class WakeOnLanProbe

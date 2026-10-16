@@ -183,7 +183,15 @@ The installer registers the automatic Gateway and Login Broker services, the
 x64 MoonWaker Credential Provider, Host Control/Configurator, and a Private
 LocalSubnet firewall rule. It never asks for a Windows account or password;
 profiles, credentials, and device grants are configured afterward in Host
-Control.
+Control. Its window is WPF and shares Host Control's style (`control\HostControlUi.cs`).
+
+The installer keeps a copy of itself as `%ProgramFiles%\MoonWaker\MoonWakerHostInstaller.exe`
+and lists **MoonWaker Host** in Windows Settings > Apps; Uninstall there starts that copy
+with `--uninstall`, which hands over to a copy in protected staging (removed at the next
+restart) so the installation directory can be deleted. The uninstall page removes MoonWaker
+together with Legendary and every profile's Epic sign-in (installed games stay), plus the
+Gateway firewall rule and Start menu folder, and optionally Vibepollo (on by default),
+ViGEmBus, Python 3.12 and OpenSSL, each through its own uninstaller.
 
 The installation directory is always `%ProgramFiles%\MoonWaker` (64-bit Program
 Files) and cannot be chosen: the installer, `Install-WakePlayHost.ps1`, the Gateway
@@ -224,6 +232,9 @@ Broker credentials before Broker removal:
 ```powershell
 .\install\Uninstall-MoonWakerHostServices.ps1 -PurgeCredentials
 ```
+
+`-RemoveComponents Vibepollo,ViGEmBus,Python,OpenSSL` (any subset) also runs those
+products' own uninstallers after MoonWaker's services stop.
 
 Both modes remove only MoonWaker services and MoonWaker's provider registration.
 Purge mode additionally removes configured Broker credentials and known

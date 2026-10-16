@@ -155,10 +155,12 @@ try {
         "/resource:$zipPath,MoonWaker.HostServices.zip",
         "/resource:$(Join-Path $hostServices 'version.json'),MoonWaker.Version.json",
         "/reference:System.dll", "/reference:System.Core.dll",
-        "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
         "/reference:System.Security.dll",
         "/reference:System.IO.Compression.dll", "/reference:System.IO.Compression.FileSystem.dll",
-        $installerSource
+        # The installer shares Host Control's window style.
+        "/lib:$(Join-Path (Split-Path -Parent $csc) 'WPF')", "/reference:PresentationFramework.dll",
+        "/reference:PresentationCore.dll", "/reference:WindowsBase.dll", "/reference:System.Xaml.dll",
+        $installerSource, (Join-Path $hostServices "control\HostControlUi.cs")
     )
     & $csc $compilerArguments
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installer)) {

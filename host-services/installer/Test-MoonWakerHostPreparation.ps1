@@ -222,26 +222,37 @@ if (-not $sources.Manifest.Contains('requestedExecutionLevel level="requireAdmin
     throw "The self-extracting installer must request administrator rights."
 }
 Assert-Contains "Installer" @(
-    "Choose the Vibepollo folder",
+    "keep Vibepollo Display Driver selected",
     'arguments += " -EnsureViGEmBus"',
     'arguments += " -EnsurePython"',
     'arguments += " -EnsureOpenSsl"',
-    'ensureVibepollo, ensureViGEmBus,',
-    'true, true));',
+    'enableWakeOnLan, ensureVibepollo, true, true, true);',
     'Path.Combine("gateway", "MoonWakerGatewayService.exe")',
     'Path.Combine("windows-login", "login-broker", "MoonWakerLoginBroker.exe")',
     'Path.Combine("windows-login", "credential-provider", "MoonWakerCredentialProvider.dll")',
     "Profiles in Host Control",
     "Gateway and Login Broker are running",
     "Gateway i Login Broker działają",
-    "PrepareHostControlUpdate(installMachine.Checked, true)",
+    "PrepareHostControlUpdate(true)",
     "RestartHostControlIfNeeded()",
     "RedirectStandardError = true",
     'if (installError == null) throw;',
     'if (uninstallError == null) throw;',
     'Environment.SpecialFolder.ProgramFiles), "MoonWaker");',
     '" -PurgeCredentials -RemoveFiles"',
-    '"Uninstall", "Odinstaluj"'
+    '"Uninstall", "Odinstaluj"',
+    '" -RemoveComponents "',
+    'Registry.LocalMachine.CreateSubKey(UninstallKey)',
+    'Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, false)',
+    'Quote(copy) + " --uninstall"',
+    'RelaunchOutsideInstallation()'
+)
+# The uninstaller removes what the installer adds: third-party components on request,
+# the Gateway firewall rule and the Start menu folder.
+Assert-Contains "Uninstall" @(
+    '[ValidateSet("Vibepollo", "ViGEmBus", "Python", "OpenSSL")][string[]]$RemoveComponents',
+    'Remove-NetFirewallRule',
+    'Start Menu\Programs\MoonWaker'
 )
 foreach ($name in @("Prepare", "Gateway")) {
     if ($sources[$name].Contains('Test-Path -LiteralPath $command.Source')) {
