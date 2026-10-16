@@ -737,7 +737,9 @@ namespace MoonWaker.HostControl
         private const int WmHotkey = 0x0312;
         private const uint StreamHotkeyModifiers = 0x0001 | 0x0002 | 0x0004 | 0x4000;
         private const uint StreamHotkeyKey = 0x23;
-        private static readonly Icon moonWakerIcon = MoonWakerIcon.Create();
+        private static readonly Icon moonWakerIcon = new Icon(
+            Assembly.GetExecutingAssembly().GetManifestResourceStream("MoonWaker.Icon.ico"),
+            SystemInformation.SmallIconSize);
         private readonly HostControlWindow window;
         private readonly IntPtr handle;
         private readonly HwndSource source;
@@ -862,38 +864,6 @@ namespace MoonWaker.HostControl
             }
             catch { }
             worker.Join(1000);
-        }
-    }
-
-    internal static class MoonWakerIcon
-    {
-        public static Icon Create()
-        {
-            using (Bitmap bitmap = new Bitmap(32, 32))
-            using (Graphics graphics = Graphics.FromImage(bitmap))
-            using (SolidBrush body = new SolidBrush(Color.FromArgb(116, 100, 255)))
-            using (SolidBrush detail = new SolidBrush(Color.FromArgb(240, 242, 255)))
-            {
-                // MakeTransparent creates the AND mask used by the legacy
-                // Windows notification-area API.  An alpha-only bitmap from
-                // GetHicon otherwise appears as a black square in the tray.
-                graphics.Clear(Color.Fuchsia);
-                graphics.FillPolygon(body, new Point[] {
-                    new Point(3, 15), new Point(7, 9), new Point(11, 9), new Point(14, 11),
-                    new Point(18, 11), new Point(21, 9), new Point(25, 9), new Point(29, 15),
-                    new Point(27, 22), new Point(23, 24), new Point(20, 19), new Point(12, 19),
-                    new Point(9, 24), new Point(5, 22) });
-                graphics.FillRectangle(detail, new Rectangle(8, 14, 7, 2));
-                graphics.FillRectangle(detail, new Rectangle(10, 12, 2, 6));
-                graphics.FillRectangle(detail, new Rectangle(21, 13, 3, 3));
-                graphics.FillRectangle(detail, new Rectangle(25, 17, 3, 3));
-                bitmap.MakeTransparent(Color.Fuchsia);
-                IntPtr handle = bitmap.GetHicon();
-                using (Icon temporary = Icon.FromHandle(handle))
-                {
-                    return (Icon)temporary.Clone();
-                }
-            }
         }
     }
 }

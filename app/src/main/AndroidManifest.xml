@@ -71,7 +71,7 @@
         android:isGame="true"
         android:banner="@drawable/moonwaker_launcher_banner"
         android:appCategory="game"
-        android:icon="@drawable/moonwaker_launcher_icon"
+        android:icon="@mipmap/ic_launcher"
         android:installLocation="auto"
         android:gwpAsanMode="always"
         android:localeConfig="@xml/locales_config"
@@ -162,7 +162,7 @@
             android:name=".MoonWakerTvLauncher"
             android:targetActivity=".console.ConsoleActivity"
             android:label="@string/app_label"
-            android:icon="@drawable/moonwaker_launcher_icon"
+            android:icon="@mipmap/ic_launcher"
             android:banner="@drawable/moonwaker_launcher_banner"
             android:exported="true">
             <intent-filter>

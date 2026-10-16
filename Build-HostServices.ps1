@@ -91,7 +91,8 @@ try {
         "MoonWakerHostControl.cs", "HostControlWindow.cs", "HostControlUi.cs",
         "HostControlBackend.cs", "MoonWakerHostControl.manifest",
         "MoonWakerHostConfigurator.cs", "ConfiguratorChanges.cs", "HostChanges.cs",
-        "MoonWakerHostConfigurator.manifest", "vibepollo-token-scopes.json")) {
+        "MoonWakerHostConfigurator.manifest", "vibepollo-token-scopes.json",
+        "moonwaker-host-control.ico")) {
         Copy-Item -LiteralPath (Join-Path $hostServices "control\$file") `
             -Destination $controlTarget -Force
     }

@@ -85,6 +85,7 @@ try {
         "host-services/gateway/provider_control_operation.py",
         "host-services/gateway/vibepollo_client.py",
         "host-services/control/vibepollo-token-scopes.json",
+        "host-services/control/moonwaker-host-control.ico",
         "host-services/bridges/playnite/ControlEffectFence.py",
         "host-services/gateway/MoonWakerGatewayService.cs",
         "host-services/gateway/MoonWakerGatewayService.manifest",
