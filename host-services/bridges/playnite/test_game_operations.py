@@ -3,6 +3,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -945,6 +946,30 @@ class GameOperationsTest(unittest.TestCase):
 
             self.assertFalse(sample["started"])
             self.assertEqual("not_started", sample["phase"])
+
+    def test_fresh_no_subscription_refusal_fails_uninstalled_install(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "steamapps").mkdir()
+            (root / "logs").mkdir()
+            provider = SteamProvider(roots=[root], root_resolver=lambda: root)
+            game = {"source": "Steam", "providerGameId": "1016800"}
+            requested_at = time.time()
+            stamp = lambda at: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(at))
+            log = root / "logs" / "content_log.txt"
+            log.write_text(f"[{stamp(requested_at - 60)}] Failed installing AppID 1016800 "
+                           "(No subscription)\n", encoding="utf-8")
+            baseline = {"steam_baseline": provider.operation_baseline(game),
+                        "requested_at": requested_at}
+            self.assertEqual("not_started", provider.sample(game, "install", baseline)["phase"])
+
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write(f"[{stamp(requested_at)}] Failed installing AppID 1016800 "
+                             "(No subscription)\n")
+            sample = provider.sample(game, "install", baseline)
+
+            self.assertTrue(sample["failed"])
+            self.assertEqual("steam_no_subscription", sample["reason"])
 
     def test_zero_state_placeholder_manifest_is_not_started(self):
         with tempfile.TemporaryDirectory() as temporary:

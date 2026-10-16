@@ -2799,6 +2799,27 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual([(88, "uninstall", "FTL")], confirmations)
         self.assertEqual("game-installation-auto-confirmed", self.state.events[-1]["event"])
 
+    def test_steam_no_subscription_sample_fails_install(self):
+        self._start_direct_steam(installed=False, operation="install")
+        token = self.state.installations[GAME_ID]["token"]
+        self.now += 2
+        probes = {game_id: baseline for game_id, baseline, _ in self.state.installation_probes()}
+        self.assertEqual(self.state.installations[GAME_ID]["requested_at"],
+                         probes[GAME_ID]["requested_at"])
+
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "failed": True, "started": False, "phase": "failed",
+            "requires_attention": False, "reason": "steam_no_subscription",
+            "launcher": "steam.exe", "scan_available": True, "scan_complete": True,
+        }, token)
+
+        self.assertNotIn(GAME_ID, self.state.installations)
+        self.assertFalse(self.state.library[GAME_ID]["installing"])
+        self.assertEqual("failed", self.state.operation_journal.get(GAME_ID)["state"])
+        self.assertEqual(("game-installation-failed", "steam_no_subscription"),
+                         (self.state.events[-1]["event"],
+                          self.state.events[-1]["payload"]["reason"]))
+
     def test_steam_uninstall_requires_stable_healthy_manifest_absence(self):
         self._start_direct_steam(installed=True, operation="uninstall")
         token = self.state.installations[GAME_ID]["token"]

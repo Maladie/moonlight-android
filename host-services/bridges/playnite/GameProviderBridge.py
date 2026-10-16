@@ -1075,7 +1075,7 @@ class WindowProbe:
                     "hwnd": 0, "title": "", "image": ""}
         provider_sample = self.game_operations.sample(baseline)
         if provider_sample and (any(provider_sample.get(key) for key in (
-                "installed", "uninstalled", "started")) or
+                "installed", "uninstalled", "started", "failed")) or
                 bool(provider_sample.get("requires_attention"))):
             return provider_sample
         if not self.user32:
@@ -3123,7 +3123,7 @@ class BridgeState:
             is self.game_operations.epic else dispatch(dict(game), sender)
         if not is_steam and self.game_operations.provider_for(game) is self.game_operations.epic:
             if self._is_epic_terminal_failure(result):
-                if self._fail_epic_operation(game_id, result, token, "dispatch"):
+                if self._fail_operation(game_id, result, token, "dispatch"):
                     return {
                         "accepted": False, "command": operation, "provider": "epic",
                         "dispatch": str(result.get("dispatch") or "none"),
@@ -3709,22 +3709,23 @@ class BridgeState:
                 "error_excerpt": str(sample.get("error_excerpt") or "")[:300],
             })
 
-    def _fail_epic_operation(self, game_id: str, sample: dict[str, Any],
-                             token: tuple[str, str, float] | None,
-                             stage: str) -> bool:
-        reason = str(sample.get("reason") or "epic_operation_failed")
+    def _fail_operation(self, game_id: str, sample: dict[str, Any],
+                        token: tuple[str, str, float] | None,
+                        stage: str) -> bool:
+        """End the game's operation as failed: journal it, drop the session, publish."""
         with self.lock:
             session = self.installations.get(game_id)
             game = self.library.get(game_id)
             if session is None or game is None \
-                    or not self._operation_result_current_locked(game_id, token) \
-                    or self.game_operations.provider_for(game) \
-                    is not self.game_operations.epic:
+                    or not self._operation_result_current_locked(game_id, token):
                 return False
+            provider = self.game_operations.provider_label(game)
+            reason = str(sample.get("reason") or f"{provider}_operation_failed")
             operation = str(session.get("operation") or "install")
             self.operation_journal.update(
                 game_id, "failed", detail=reason,
-                launcher=str(sample.get("launcher") or "legendary.exe"))
+                launcher=str(sample.get("launcher") or {
+                    "epic": "legendary.exe", "steam": "steam.exe"}.get(provider, "")))
             self.installations.pop(game_id, None)
             game["installing"] = False
             game["uninstalling"] = False
@@ -3738,7 +3739,7 @@ class BridgeState:
             })
         if self.operation_audit is not None:
             try:
-                self.operation_audit("epic_operation_failed", {
+                self.operation_audit(f"{provider}_operation_failed", {
                     "game_id": game_id, "kind": operation, "reason": reason,
                     "stage": stage, "dispatch": str(sample.get("dispatch") or "none"),
                     "exit_code": int(sample.get("exit_code") or 0),
@@ -3751,7 +3752,9 @@ class BridgeState:
     def installation_probes(self) -> list[
             tuple[str, dict[str, Any], tuple[str, str, float] | None]]:
         with self.lock:
-            return [(game_id, dict(session.get("baseline") or {}), session.get("token"))
+            return [(game_id, {**(session.get("baseline") or {}),
+                               "requested_at": float(session.get("requested_at") or 0)},
+                     session.get("token"))
                     for game_id, session in self.installations.items()
                     if (session.get("baseline") or {}).get("game")
                     and self.clock() - float(session.get("requested_at") or 0) >= 1.5]
@@ -4071,7 +4074,10 @@ class BridgeState:
                                or (sample.get("requires_attention")
                                    and prompt_reason not in {
                                        "launcher_prompt", "secure_desktop"})):
-            self._fail_epic_operation(game_id, sample, token, "runtime")
+            self._fail_operation(game_id, sample, token, "runtime")
+            return
+        if sample.get("failed"):
+            self._fail_operation(game_id, sample, token, "runtime")
             return
         if self._handle_steam_probe(game_id, sample, token):
             return

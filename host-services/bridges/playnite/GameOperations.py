@@ -254,6 +254,7 @@ class SteamProvider(GenericPlayniteProvider):
     # "Failed installing AppID 550 (No subscription)": the account has no licence for the app
     # (files left by a Family Sharing lender), so Steam can never update it for this account.
     UPDATE_FAILED = re.compile(r'Failed installing AppID (\d+) \(([^)]*)\)')
+    LOG_TIMESTAMP = re.compile(r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\]')
     UPDATE_ERROR = re.compile(
         r'Disk write failure|Not enough disk space|Disk read failure', re.IGNORECASE)
 
@@ -907,28 +908,49 @@ class SteamProvider(GenericPlayniteProvider):
             "accepted": False, "command": "update", "provider": "steam",
             "dispatch": "none", "reason": "steam_direct_dispatch_failed"}
 
-    def _update_error(self, app_id: str) -> str:
-        """The error Steam last logged for the app's state, or "" when its last state is fine."""
+    def _content_log_lines(self) -> list[str]:
+        """The tail of Steam's content_log.txt (local time), cached by size and mtime."""
         root = self._root()
         if root is None:
-            return ""
+            return []
         path = root / "logs" / "content_log.txt"
         try:
             details = path.stat()
             key = (str(path), details.st_size, details.st_mtime_ns)
             cached = getattr(self, "_content_log_cache", None)
             if cached is not None and cached[0] == key:
-                lines = cached[1]
-            else:
-                with path.open("rb") as log:
-                    log.seek(max(0, details.st_size - self.LAUNCH_LOG_TAIL_BYTES))
-                    lines = log.read().decode("utf-8", errors="replace").splitlines()
-                self._content_log_cache = (key, lines)
+                return cached[1]
+            with path.open("rb") as log:
+                log.seek(max(0, details.st_size - self.LAUNCH_LOG_TAIL_BYTES))
+                lines = log.read().decode("utf-8", errors="replace").splitlines()
         except OSError:
-            return ""
+            return []
+        self._content_log_cache = (key, lines)
+        return lines
+
+    def _no_subscription_since(self, app_id: str, since: float) -> bool:
+        """Whether Steam refused to install the app for lack of a licence at or after
+        `since` (epoch seconds); an older refusal must not fail a new install."""
+        for line in self._content_log_lines():
+            failed = self.UPDATE_FAILED.search(line)
+            stamp = self.LOG_TIMESTAMP.match(line)
+            if failed is None or stamp is None or failed.group(1) != app_id \
+                    or failed.group(2).casefold() != "no subscription":
+                continue
+            try:
+                logged = time.mktime(time.strptime(stamp.group(1), "%Y-%m-%d %H:%M:%S"))
+            except (ValueError, OverflowError):
+                continue
+            # The log has whole seconds: a refusal in the request's own second counts.
+            if logged >= int(since):
+                return True
+        return False
+
+    def _update_error(self, app_id: str) -> str:
+        """The error Steam last logged for the app's state, or "" when its last state is fine."""
         # The app's last event decides: a later state line clears an earlier failure.
         last = ""
-        for line in lines:
+        for line in self._content_log_lines():
             match = self.UPDATE_STATE.search(line)
             if match is not None and match.group(1) == app_id:
                 last = match.group(2)
@@ -1053,6 +1075,14 @@ class SteamProvider(GenericPlayniteProvider):
                 **common, "installed": True, "started": True,
                 "phase": "completed_install", "progress": 100,
                 "install_directory": str(snapshot["install_directory"]),
+            }
+        requested_at = float((baseline or {}).get("requested_at") or 0)
+        if operation == "install" and requested_at > 0 and self._no_subscription_since(
+                str(snapshot.get("app_id") or ""), requested_at):
+            return {
+                **common, "failed": True, "started": False, "phase": "failed",
+                "requires_attention": False, "reason": "steam_no_subscription",
+                "launcher": "steam.exe",
             }
         if operation == "uninstall" and snapshot.get("scan_available") \
                 and snapshot.get("scan_complete") \
