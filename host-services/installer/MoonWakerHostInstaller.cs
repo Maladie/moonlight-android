@@ -876,7 +876,7 @@ namespace MoonWaker.HostInstaller
             using (RegistryKey key = Registry.LocalMachine.CreateSubKey(UninstallKey))
             {
                 key.SetValue("DisplayName", "MoonWaker Host");
-                key.SetValue("DisplayIcon", copy);
+                key.SetValue("DisplayIcon", Path.Combine(InstallDirectory, "control", "MoonWakerHostControl.exe"));
                 key.SetValue("Publisher", "MoonWaker");
                 key.SetValue("InstallLocation", InstallDirectory);
                 key.SetValue("UninstallString", Quote(copy) + " --uninstall");

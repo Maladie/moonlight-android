@@ -203,10 +203,7 @@ try {
         (Join-Path $PSScriptRoot "MoonWakerHostInstaller.cs"),
         (Join-Path $hostServicesRoot "control\HostControlUi.cs")
     )
-    $icon = Join-Path $PSScriptRoot "moonwaker-host.ico"
-    if (Test-Path -LiteralPath $icon) {
-        $arguments = @("/win32icon:$icon") + $arguments
-    }
+    $arguments = @("/win32icon:$(Join-Path $PSScriptRoot 'moonwaker-host.ico')") + $arguments
     & $compiler @arguments
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
         throw "MoonWaker Host Installer compilation failed."
