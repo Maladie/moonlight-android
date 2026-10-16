@@ -63,7 +63,7 @@ class SessionRecoveryTest(unittest.TestCase):
         service.launch = mock.Mock(return_value={"accepted": True, "command": "launch"})
         self.bridge.set_library([{ "id": "steam:" + app, "provider": "steam",
             "providerGameId": app, "name": app, "installDir": "C:\\Games\\" + app,
-            "exe": "game.exe"} for app in ("123", "456")])
+            "exe": "game.exe"} for app in ("123", "456", "789")])
         self.stream_active = False
         self.closes = []
         self.serial = 0
@@ -131,6 +131,35 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertEqual(200, status, result)
         self.assertEqual(pid, self.gateway.child_time_session["process_id"])
         return child_id
+
+    def child_stream_without_game(self):
+        """A child's stream whose record names no game yet (launched, no process bound)."""
+        self.serial += 1
+        child_id = str(UUID(int=self.serial))
+        self.gateway.authorize_profile(self.client, "kid", allow_child=True)
+        status, result = self.gateway.child_time_session_start(
+            self.client, "kid", "steam:123", child_id, "allowance-" + str(self.serial))
+        self.assertEqual(202, status, result)
+        status, permit = self.acquire("kid", "launch", child_id)
+        self.assertEqual(200, status, permit)
+        self.stream_active = True
+        status, result = self.gateway.control_operation_complete(self.client, {
+            "operation_id": permit["operation_id"], "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True},
+            permit["operation_id"])
+        self.assertEqual(200, status, result)
+        self.assertFalse(self.gateway.control_state["stream"].get("provider_game_id"))
+        return child_id
+
+    def run_game(self, game, pid):
+        identity = {"process_id": pid, "process_path": "C:\\Games\\" + game + "\\game.exe",
+                    "process_started_filetime": pid, "user_sid": "own",
+                    "session_id": 1, "visible_window": True}
+        self.processes[pid] = identity
+        self.bridge.state.current = {
+            "state": "running", "id": "steam:" + game, "processId": pid,
+            "processPath": identity["process_path"], "processStartedFiletime": pid}
+        self.bridge.state.refresh_running_games()
 
     def test_catalog_removal_cannot_retire_a_live_retained_process(self):
         # R010: the exact target check must not depend on the game staying in the catalog.
@@ -480,6 +509,109 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertEqual("parent", self.gateway.control_state["stream"]["actor_profile_id"])
         self.assertEqual("", self.gateway.control_state["stream"]["child_session_id"])
         self.assertEqual([], self.closes)
+
+    def test_parent_takeover_refuses_a_new_process_of_the_ended_game(self):
+        child_id = self.start_child()
+        self.processes.clear()
+        self.bridge.state.current = {"id": "", "state": "idle"}
+        self.bridge.state.refresh_running_games()
+        self.fixture.clock.advance(5)
+        _status, ended = self.gateway.child_time_housekeeping_tick()
+        self.assertEqual(("ended", "game_ended"), (ended["state"], ended["reason"]))
+        stream = dict(self.gateway.control_state["stream"])
+        self.assertEqual(child_id, stream["child_session_id"])
+        generation = self.gateway.control_state["generation"]
+        # The same game again, but another process: not what the retained stream carried.
+        self.run_game("123", 9701)
+        self.assertNotEqual(stream["process_token"], self.gateway._child_time_process_token(
+            self.bridge.state.current_snapshot()["running_games"][0]))
+
+        status, rejected = self.acquire("parent", "reauthorize")
+        self.assertEqual(409, status, rejected)
+        self.assertEqual("retained_process_unconfirmed", rejected["reason"])
+        self.assertIsNone(self.gateway.control_state["active"])
+        self.assertEqual(generation, self.gateway.control_state["generation"])
+        self.assertEqual(stream, self.gateway.control_state["stream"])
+
+    def test_child_gets_no_control_of_an_unshared_game_on_its_unbound_stream(self):
+        # The parent's own game (not shared with the kid) runs on the shared Windows profile.
+        child_id = self.child_stream_without_game()
+        stream = dict(self.gateway.control_state["stream"])
+        generation = self.gateway.control_state["generation"]
+        self.run_game("789", 7301)
+        for intent in ("resume", "reconnect", "warm_up"):
+            with self.subTest(intent=intent):
+                status, result = self.acquire("kid", intent, child_id)
+                self.assertEqual(409, status, result)
+                self.assertEqual("child_game_not_entitled", result["reason"])
+                self.assertIsNone(self.gateway.control_state["active"])
+                self.assertEqual(generation, self.gateway.control_state["generation"])
+                self.assertEqual(stream, self.gateway.control_state["stream"])
+
+    def test_child_carries_its_own_shared_game_on_its_unbound_stream(self):
+        child_id = self.child_stream_without_game()
+        self.run_game("123", 7302)
+        status, permit = self.acquire("kid", "resume", child_id)
+        self.assertEqual(200, status, permit)
+        self.assertEqual("permitted", permit["state"])
+        self.assertEqual(
+            self.gateway._child_time_provider_game(self.gateway.child_time_session),
+            self.gateway.control_state["active"]["provider_game_id"])
+
+    def test_parent_resume_carries_its_own_game_unaffected(self):
+        status, parent = self.acquire("parent", "launch")
+        self.assertEqual(200, status, parent)
+        self.stream_active = True
+        status, result = self.gateway.control_operation_complete(self.client, {
+            "operation_id": parent["operation_id"], "generation": parent["generation"],
+            "actor_lease_epoch": parent["actor_lease_epoch"], "succeeded": True},
+            parent["operation_id"])
+        self.assertEqual(200, status, result)
+        self.run_game("789", 7303)
+        status, permit = self.acquire("parent", "resume")
+        self.assertEqual(200, status, permit)
+        self.assertEqual("permitted", permit["state"])
+        self.assertIn("789", self.gateway.control_state["active"]["provider_game_id"])
+
+    def test_child_refused_control_can_still_close_the_session(self):
+        self._refused_child_closes("full_quit")
+
+    def test_child_refused_control_can_still_hard_reset_the_session(self):
+        self._refused_child_closes("hard_reset")
+
+    def _refused_child_closes(self, intent):
+        # Recovery is no parent privilege: the refused child closes the stream it holds.
+        child_id = self.child_stream_without_game()
+        self.run_game("789", 7304)
+        status, result = self.acquire("kid", "resume", child_id)
+        self.assertEqual(409, status, result)
+        status, closed = self.acquire("kid", intent)
+        self.assertEqual(200, status, closed)
+        self.assertEqual("succeeded", closed["state"])
+        self.assertIsNone(self.gateway.control_state["stream"])
+        self.assertIsNone(self.gateway.child_time_session)
+        self.assertEqual(1, len(self.closes))
+        # The parent's game was never the child's to stop.
+        self.assertIn(7304, self.processes)
+
+    def test_late_child_terminal_closes_its_stream_retained_after_game_ended(self):
+        # game_ended is a lease-only end like game_stopped: the stream stays bound to the
+        # ended child session, and that session's late terminal may still close it.
+        self.start_child()
+        child = self.gateway.child_time_session
+        self.processes.clear()
+        self.bridge.state.current = {"id": "", "state": "idle"}
+        self.bridge.state.refresh_running_games()
+        self.fixture.clock.advance(5)
+        _status, ended = self.gateway.child_time_housekeeping_tick()
+        self.assertEqual("game_ended", ended["reason"])
+        self.assertEqual(child["session_id"],
+                         self.gateway.control_state["stream"]["child_session_id"])
+        status, result = self.gateway._child_time_finish(
+            self.client, child, "daily_limit_reached", self.fixture.clock.wall)
+        self.assertEqual(200, status, result)
+        self.assertIsNone(self.gateway.control_state["stream"])
+        self.assertEqual(1, len(self.closes))
 
     def test_child_session_ending_during_a_read_yields_no_permit(self):
         # The entitlement gate is re-checked under the lock after every unlocked read.

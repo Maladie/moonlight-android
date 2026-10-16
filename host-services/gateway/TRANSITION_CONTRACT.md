@@ -244,6 +244,25 @@ and changes nothing. Status never answers `stream_generation_superseded`; a newe
 another actor on this TV is answered as `owned` with that actor, which retires this actor's
 own local record of an older stream and is never adopted by it.
 
+## A child's start on a retained stream
+
+A child-attached start (`child_session_id` set) may carry only the game of that child's
+live time session, the one the host granted at session start from the parent's sharing and
+the time rules; that session is the only entitlement source. A `resume`, `reconnect` or
+`warm_up` whose retained process proof names another game - possible when the record names
+no game yet and the parent's own game runs on the shared Windows profile - is refused with
+`409 child_game_not_entitled`, grants nothing and leaves the record and its generation
+as they were. A `reauthorize` names the same rule `retained_process_unconfirmed`. An idle
+provider carries no game and stays allowed. Closing is not gaining control: the child's
+`full_quit` and `hard_reset` of the same stream stay allowed. A child time session never
+bound to a process ends as stopped when another game runs and a complete scan lists none of
+its own game; the other game is left running.
+
+The lease-only child-session ends (`game_stopped`, `game_ended`, `actor_replaced`,
+`replacement`; `CHILD_LEASE_ONLY_REASONS`) release only the time lease and keep the stream
+retained. After one of them another actor may `reauthorize` the stream, and the ended
+session's own late `child_terminal` may still close the stream that is still bound to it.
+
 ## Retry after a lost transport
 
 A start from the owner of the retained record has two outcomes. While the streamer still

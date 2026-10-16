@@ -149,6 +149,10 @@ CHILD_GAME_EVENT_KINDS = {
     "privacy-gate-closed", "target-window-ready", "session-hard-reset",
 }
 CHILD_TIME_SESSION_ID_PATTERN = PROFILE_SESSION_ID_PATTERN
+# Child-session ends that release only the time lease and leave the managed stream retained:
+# the client's verified stop, the host's own observed game end and the two actor handoffs.
+CHILD_LEASE_ONLY_REASONS = frozenset({
+    "game_stopped", "game_ended", "actor_replaced", "replacement"})
 CHILD_VIBEPOOLLO_UUID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 DIAGNOSTIC_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._:$-]{1,256}$")
 DIAGNOSTIC_ROUTE_PATTERN = re.compile(r"^/[A-Za-z0-9._:{}/-]{0,255}$")
@@ -4874,12 +4878,9 @@ class GatewayState:
                             "client_id", "execution_profile_id", "stream_session_id", "sunshine_app_id"))
                     previous_child = str((stream or {}).get("child_session_id") or "")
                     previous_ended = self.child_time_completed.get(previous_child, {})
-                    # Lease-only releases leave the stream retained for the next actor:
-                    # the client's verified stop (game_stopped), the host's own observed
-                    # game end (game_ended) and the two handoffs.
+                    # A lease-only release leaves the stream retained for the next actor.
                     if not exact or previous_child and previous_child != child_session_id \
-                            and previous_ended.get("reason") not in {
-                                "game_stopped", "game_ended", "actor_replaced", "replacement"}:
+                            and previous_ended.get("reason") not in CHILD_LEASE_ONLY_REASONS:
                         return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                      "reason": "retained_owner_unconfirmed"}
                     target = stream if self._child_time_process_token(stream) \
@@ -4897,11 +4898,8 @@ class GatewayState:
                     current_identity = current.get("identity")
                     current_token = self._child_time_process_token(current_identity)
                     target_time = self.child_time_session
-                    child_game_matches = not child_session_id or (
-                        isinstance(target_time, dict)
-                        and target_time.get("session_id") == child_session_id
-                        and self._child_time_provider_game(target_time)
-                        == self._child_time_normalize_game_id(current_game_id))
+                    child_game_matches = self._control_child_game_entitled(
+                        child_session_id, current_game_id)
                     provider_idle = current.get("kind") == "idle"
                     stream_token = self._child_time_process_token(stream)
                     target_token = self._child_time_process_token(target_time) \
@@ -4976,6 +4974,14 @@ class GatewayState:
                                 "ok": False, "state": "blocked",
                                 "reason": "retained_process_unconfirmed",
                             }
+                        # A stream that names no game would otherwise carry on whatever the
+                        # provider runs, e.g. the parent's own game on the shared profile.
+                        if not self._control_child_game_entitled(
+                                child_session_id, retained["provider_game_id"]):
+                            return HTTPStatus.CONFLICT, {
+                                "ok": False, "state": "blocked",
+                                "reason": "child_game_not_entitled",
+                            }
                         del retained["provider_idle_confirmed"]
                         proposed.update(retained)
                 elif intent in {"resume", "reconnect"} and not idle_restart:
@@ -5032,15 +5038,16 @@ class GatewayState:
     def _control_child_entitled(self, intent: str, child_session_id: str, client_id: str,
                                 actor_id: str, execution_id: str) -> bool:
         """The child-session entitlement gate: a child-attached operation needs its live
-        session (or, for child_terminal, its exact game_stopped retained stream); a child
-        actor without one may only close."""
+        session (or, for child_terminal, its exact retained stream after a lease-only end);
+        a child actor without one may only close. Which game a start may carry is
+        `_control_child_game_entitled`."""
         if child_session_id:
             child = self.child_time_session
             completed_child = self.child_time_completed.get(child_session_id)
             stream = self.control_state.get("stream")
             retained_terminal = intent == "child_terminal" and \
                 isinstance(completed_child, dict) and \
-                completed_child.get("reason") == "game_stopped" and \
+                completed_child.get("reason") in CHILD_LEASE_ONLY_REASONS and \
                 all(completed_child.get(key) == value for key, value in (
                     ("client_id", client_id),
                     ("actor_profile_id", actor_id),
@@ -5057,6 +5064,17 @@ class GatewayState:
                     actor_id == child.get("actor_profile_id") and
                     execution_id == child.get("execution_profile_id")) or retained_terminal
         return not self.is_child_profile(actor_id) or intent in {"full_quit", "hard_reset"}
+
+    def _control_child_game_entitled(self, child_session_id: str, game_id: Any) -> bool:
+        """A child-attached start may carry only its live session's game: the one the host
+        granted at session start from the parent's sharing and the time rules. No game (idle)
+        grants nothing; an operation without a child session is not child-attached (a child
+        actor without one may only close, see `_control_child_entitled`)."""
+        session = self.child_time_session
+        game = self._child_time_normalize_game_id(game_id)
+        return not child_session_id or not game or (
+            isinstance(session, dict) and session.get("session_id") == child_session_id
+            and self._child_time_provider_game(session) == game)
 
     def _control_finish_child_stream(self, client: dict[str, Any],
                                      proposed: dict[str, Any],
@@ -6072,6 +6090,15 @@ class GatewayState:
         if not exact or not token or self._child_time_process_token(
                 current.get("identity")) != token:
             if self._child_time_process_absent(current, token):
+                return True, "none"
+            # Never bound to a process and another game runs (e.g. the parent's own on the
+            # shared profile) with a complete scan that lists none of this session's game:
+            # nothing of this session runs, and the other game is not this session's to stop.
+            game = self._child_time_provider_game(session)
+            if not token and not exact and current.get("kind") == "active" \
+                    and current.get("running_scan_status") == "complete" \
+                    and not any(self._child_time_normalize_game_id(item.get("game_id")) == game
+                                for item in current.get("running_games") or []):
                 return True, "none"
             return False, "cleanup_required"
         payload = {
