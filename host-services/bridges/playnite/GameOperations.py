@@ -251,6 +251,9 @@ class SteamProvider(GenericPlayniteProvider):
     UPDATE_NUDGE_SECONDS = 120.0
     # content_log.txt state text that proves Steam gave up on the update.
     UPDATE_STATE = re.compile(r'AppID (\d+) state changed : (.*)$')
+    # "Failed installing AppID 550 (No subscription)": the account has no licence for the app
+    # (files left by a Family Sharing lender), so Steam can never update it for this account.
+    UPDATE_FAILED = re.compile(r'Failed installing AppID (\d+) \(([^)]*)\)')
     UPDATE_ERROR = re.compile(
         r'Disk write failure|Not enough disk space|Disk read failure', re.IGNORECASE)
 
@@ -910,19 +913,33 @@ class SteamProvider(GenericPlayniteProvider):
         root = self._root()
         if root is None:
             return ""
+        path = root / "logs" / "content_log.txt"
         try:
-            with (root / "logs" / "content_log.txt").open("rb") as log:
-                log.seek(0, os.SEEK_END)
-                log.seek(max(0, log.tell() - self.LAUNCH_LOG_TAIL_BYTES))
-                lines = log.read().decode("utf-8", errors="replace").splitlines()
+            details = path.stat()
+            key = (str(path), details.st_size, details.st_mtime_ns)
+            cached = getattr(self, "_content_log_cache", None)
+            if cached is not None and cached[0] == key:
+                lines = cached[1]
+            else:
+                with path.open("rb") as log:
+                    log.seek(max(0, details.st_size - self.LAUNCH_LOG_TAIL_BYTES))
+                    lines = log.read().decode("utf-8", errors="replace").splitlines()
+                self._content_log_cache = (key, lines)
         except OSError:
             return ""
-        state = ""
+        # The app's last event decides: a later state line clears an earlier failure.
+        last = ""
         for line in lines:
             match = self.UPDATE_STATE.search(line)
             if match is not None and match.group(1) == app_id:
-                state = match.group(2)
-        found = self.UPDATE_ERROR.search(state)
+                last = match.group(2)
+                continue
+            failed = self.UPDATE_FAILED.search(line)
+            if failed is not None and failed.group(1) == app_id:
+                last = "Failed " + failed.group(2)
+        if last.casefold() == "failed no subscription":
+            return "no_subscription"
+        found = self.UPDATE_ERROR.search(last)
         return found.group(0).casefold().replace(" ", "_") if found else ""
 
     @staticmethod
@@ -958,7 +975,8 @@ class SteamProvider(GenericPlayniteProvider):
                 if not values:
                     continue
                 flags = self._number(values, "stateflags")
-                if not (flags & 4 and flags & self.UPDATE_FLAGS):
+                if not (flags & 4 and flags & self.UPDATE_FLAGS) \
+                        or self._update_error(match.group(1)) == "no_subscription":
                     continue
                 snapshot = {
                     "bytes_total": self._number(values, "bytestodownload"),
@@ -980,10 +998,15 @@ class SteamProvider(GenericPlayniteProvider):
         app_id = str(snapshot.get("app_id") or "")
         pending = bool(snapshot.get("update_pending"))
         phase, progress = self.update_phase(snapshot) if pending else ("downloading", -1)
+        error = self._update_error(app_id) if pending else ""
+        if error == "no_subscription":
+            # Steam cannot update an app this account has no licence for (a Family Sharing
+            # lender's files): there is no update to wait for, the game launches as it is.
+            pending, error = False, ""
         result = {
             "pending": pending, "installed": bool(snapshot.get("installed")),
             "phase": phase, "progress": progress,
-            "error": self._update_error(app_id) if pending else "", "nudge": False,
+            "error": error, "nudge": False,
         }
         if not pending:
             self._verify_seen.pop(app_id, None)

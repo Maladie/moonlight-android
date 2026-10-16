@@ -132,6 +132,22 @@ class UpdateStartTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.state.install_game("steam:10")
 
+    def test_an_app_without_a_licence_is_no_update_and_launches_as_it_is(self):
+        log = self.root / "logs" / "content_log.txt"
+        failed = "Failed installing AppID 10 (No subscription)"
+        log.write_text(failed + chr(10), encoding="utf-8")
+        self.state.game_operations.steam._update_states_cache = None
+        self.assertNotIn("updateState", self.state.library_page("0", 10)["games"][0])
+        result = self.state.start_game("steam:10")
+        self.assertNotEqual("update", result.get("command"))
+        self.assertEqual(1, len(self.launches()))
+        # a later state line of the app (bought, shared again) clears the failure
+        log.write_text(failed + chr(10) + "AppID 10 state changed : Update Running," + chr(10),
+                       encoding="utf-8")
+        sample = self.state.game_operations.update_sample(
+            dict(self.state.library["steam:10"]))
+        self.assertTrue(sample["pending"])
+
     def test_launch_starts_only_when_the_update_is_done(self):
         task = self.start()
         self.state.advance_update(task)
