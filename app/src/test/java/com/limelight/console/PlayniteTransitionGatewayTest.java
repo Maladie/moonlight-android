@@ -102,6 +102,18 @@ public class PlayniteTransitionGatewayTest {
         assertEquals("unknown", rejected.gameState);
         assertEquals("UNAVAILABLE", rejected.gameEvidence);
         assertEquals(2, client.parsedObservations);
+        // A pre-launch decision trusts the streamer's app only from its own accepted read.
+        assertTrue(accepted.observationAccepted);
+        assertFalse(rejected.observationAccepted);
+        HostGatewayClient down = new HostGatewayClient() {
+            @Override SessionObservation getSessionObservation(GatewayConnection connection,
+                    String executionProfileId, long requestOrdinal) throws IOException {
+                throw new IOException("down");
+            }
+        };
+        assertFalse(new PlayniteTransitionGateway(model, connection("parent"),
+                PlayniteTransitionGateway.ActorContext.parent("parent"), down)
+                .snapshot().observationAccepted);
     }
 
     @Test public void snapshotReadsAgainWhenADashboardPollWinsTheDispatch() throws Exception {

@@ -190,6 +190,18 @@ public final class SessionSnapshot {
                 false);
     }
 
+    /** This projection with the streamer's app unknown; every other fact unchanged. */
+    SessionSnapshot withStreamerUnknown() {
+        return new SessionSnapshot(hostId, profileId, executionProfileId, state, hostGameAppId,
+                playniteGameId, retainedTransport, explicitSuspension, suspensionSleepObserved,
+                hostSleepRequested, hostSleepObserved, suspendId, neutralStreamTarget,
+                observationState, observationCorrelated, producerBootId, producerRevision,
+                requestOrdinal, transportGeneration, controlGeneration, actorLeaseEpoch,
+                operationId, streamSessionId, processEvidence, processId, processToken,
+                windowEvidence, observationReason, STREAMER_APP_UNKNOWN, endingGame, display,
+                terminationUnconfirmed, closeFailed);
+    }
+
     boolean hasActiveSession() { return state == State.ACTIVE; }
 
     /** The game the host runs with an exact, correlated process proof; empty otherwise. */

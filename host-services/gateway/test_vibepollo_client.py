@@ -100,7 +100,8 @@ class ControlSnapshotTest(unittest.TestCase):
                 ({"current_app": "missing", "apps": apps}, None),    # not listed
                 ({"current_app": None, "apps": apps}, None),
                 ({"current_app": "", "apps": {"uuid": "a"}}, None)):
-            with self.subTest(response=response),                     mock.patch.object(client, "call", return_value=response):
+            with self.subTest(response=response), \
+                    mock.patch.object(client, "call", return_value=response):
                 self.assertEqual(expected, client.running_app_id())
         with mock.patch.object(client, "call", side_effect=VibepolloError("down")):
             self.assertIsNone(client.running_app_id())

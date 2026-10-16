@@ -1378,6 +1378,15 @@ public final class SessionOrchestrator implements AutoCloseable {
                 prepared.target.getAppId(), runningGame, nowMillis);
     }
 
+    /**
+     * The projection a pre-launch decision reads: the streamer's app counts only from the
+     * observation this decision just had accepted ({@code observedNow}); a failed or rejected
+     * read leaves it unknown, never the projection's older held value nor the serverinfo poll.
+     */
+    static SessionSnapshot preLaunchProjection(SessionSnapshot projection, boolean observedNow) {
+        return observedNow ? projection : projection.withStreamerUnknown();
+    }
+
     /** The host's streamer is known to run an app other than {@code appId}; unknown is not. */
     static boolean anotherAppRuns(SessionSnapshot projection, int appId) {
         return projection.streamerAppId > 0 && projection.streamerAppId != appId;

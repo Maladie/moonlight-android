@@ -4805,6 +4805,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 + '|' + snapshot.state + '|' + snapshot.observationState
                 + '|' + snapshot.playniteGameId + '|' + snapshot.processEvidence
                 + '|' + snapshot.processId + '|' + snapshot.processToken
+                // Not projection identity, but the app cards' running badge reads it.
+                + '|' + snapshot.streamerAppId
                 + '|' + consoleHostState(host, snapshot)
                 + '|' + hostStatus(host, snapshot, false)
                 + '|' + queuedPlayniteGameId(host.uuid);
@@ -7246,7 +7248,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                   GatewayConnection connection) {
         final SuspendedSessionStore.Session suspendedRequest;
         final long sleepRequestedAt;
-        int runningAppId = resolveSessionSnapshot(host).streamerAppId;
+        SessionSnapshot session = resolveSessionSnapshot(host);
+        // Recoverable over refusal: with the streamer unknown the session this client knows of
+        // (its retained, suspended or reconnect app) is saved anyway; a stale resume record is
+        // recoverable, a lost one is not. With none known there is no app to resume.
+        int runningAppId = session.streamerAppId == SessionSnapshot.STREAMER_APP_UNKNOWN
+                ? session.hostGameAppId : session.streamerAppId;
         if (runningAppId > 0) {
             String gameId = uniquePlayniteGameIdForRunningApp(host, runningAppId);
             if (gameId.isEmpty()) {
@@ -12721,20 +12728,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     /**
-     * One fresh host observation into the session projection before the warm-up launches. The
-     * warm-up reads its game from that projection when it launches, never from this read.
+     * Reads the host's observation now; whether the model accepted this read's own
+     * observation. The projection records what the read observed (or that it was unavailable).
      */
-    private void refreshObservationNow(ComputerDetails host, String profileId) {
+    private boolean refreshObservationNow(ComputerDetails host, String profileId) {
         String address = host.activeAddress == null ? null : host.activeAddress.address;
         GatewayConnection gateway = hostGatewayStore.loadForHost(
                 host.uuid, address, profileId);
-        if (gateway == null) return;
+        if (gateway == null) return false;
         try {
-            new PlayniteTransitionGateway(sessionModel, host.uuid, gateway,
+            return new PlayniteTransitionGateway(sessionModel, host.uuid, gateway,
                     gatewayActorContext(host.uuid, profileId), hostGatewayClient,
-                    SystemClock::uptimeMillis).snapshot();
+                    SystemClock::uptimeMillis).snapshot().observationAccepted;
         } catch (IOException | RuntimeException unavailable) {
-            // The projection records what the read observed (or that it was unavailable).
+            return false;
         }
     }
 
@@ -13190,8 +13197,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     return null;
                 }
                 // The streamer's app is the observation's fact: observe before deciding on it.
-                refreshObservationNow(ready, intent.profileId);
-                SessionSnapshot readyProjection = resolveSessionSnapshot(ready, intent.profileId);
+                boolean observed = refreshObservationNow(ready, intent.profileId);
+                SessionSnapshot readyProjection = SessionOrchestrator.preLaunchProjection(
+                        resolveSessionSnapshot(ready, intent.profileId), observed);
                 return new SessionOrchestrator.PreparedWarmUp(
                         result.target, ready, intent.profileKey, readyProjection);
             }
@@ -13381,9 +13389,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                 }
             }
-            if (ready != null) refreshObservationNow(ready, transitionProfileId);
             if (ready != null && SessionOrchestrator.anotherAppRuns(
-                    resolveSessionSnapshot(ready, transitionProfileId), app.getAppId())
+                    SessionOrchestrator.preLaunchProjection(
+                            resolveSessionSnapshot(ready, transitionProfileId),
+                            refreshObservationNow(ready, transitionProfileId)), app.getAppId())
                     && !terminateKnownControlPlane(ready, transitionProfileId,
                     knownProviderGameId(ready)).closed()) {
                 mainHandler.post(() -> {

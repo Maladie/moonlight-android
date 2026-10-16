@@ -1187,6 +1187,19 @@ public class SessionTransitionTableTest {
         SessionSnapshot unknown = hostRuns(SessionSnapshot.STREAMER_APP_UNKNOWN, "", false);
         assertFalse(SessionOrchestrator.anotherAppRuns(unknown, 42));
         assertFalse(SessionOrchestrator.ownsFreshSession(unknown));
+        // Pre-launch decisions: a failed refresh makes the held streamer app unknown.
+        SessionSnapshot heldIdle = hostRuns(0, "", false);
+        assertTrue(SessionOrchestrator.ownsFreshSession(
+                SessionOrchestrator.preLaunchProjection(heldIdle, true)));
+        assertFalse(SessionOrchestrator.ownsFreshSession(
+                SessionOrchestrator.preLaunchProjection(heldIdle, false)));
+        assertTrue(SessionOrchestrator.anotherAppRuns(
+                SessionOrchestrator.preLaunchProjection(hostRuns(7, "", false), true), 42));
+        assertFalse(SessionOrchestrator.anotherAppRuns(
+                SessionOrchestrator.preLaunchProjection(hostRuns(7, "", false), false), 42));
+        SessionSnapshot unknownCopy = SessionOrchestrator.preLaunchProjection(heldIdle, false);
+        assertEquals(heldIdle, unknownCopy);
+        assertEquals(heldIdle.signature(), unknownCopy.signature());
     }
 
     /** K5.2 addendum: resume or start fresh is the table's, read from the model and record. */

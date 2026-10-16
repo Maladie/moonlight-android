@@ -537,6 +537,19 @@ public class ConsoleActivityEnsureContractTest {
                 + "                    && host.runningGameId != 0"));
     }
 
+    @Test public void unknownStreamerKeepsTheSleepResumeRecordAndRendersBadgeChanges()
+            throws IOException {
+        String source = consoleActivitySource();
+        String sleep = source.substring(source.indexOf("private void requestHostSleep("),
+                source.indexOf("renderHostSelection();", source.indexOf(
+                        "private void requestHostSleep(")));
+        assertOrdered(sleep, "session.streamerAppId == SessionSnapshot.STREAMER_APP_UNKNOWN",
+                "? session.hostGameAppId : session.streamerAppId;", "if (runningAppId > 0) {");
+        String key = source.substring(source.indexOf("private String sessionPresentationKey("),
+                source.indexOf("private void resumeSelectedSession("));
+        assertTrue(key.contains("snapshot.streamerAppId"));
+    }
+
     @Test public void retainedSwitchSkipsWakeAndRequiresPreparedNeutralTarget()
             throws IOException {
         String source = consoleActivitySource();

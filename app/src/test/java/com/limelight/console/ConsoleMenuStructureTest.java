@@ -55,6 +55,23 @@ public class ConsoleMenuStructureTest {
         assertFalse(ConsoleHostPanel.menu(facts).items.get(0).enabled);
     }
 
+    @Test public void activeSessionClosesEvenWithTheStreamerUnknown() {
+        ConsoleHostPanel.Facts facts = new ConsoleHostPanel.Facts();
+        facts.online = true;
+        facts.paired = true;
+        facts.sessionActive = true;
+        assertTrue(closeEnabled(ConsoleHostPanel.menu(facts)));
+        facts.sessionActive = false;
+        assertFalse(closeEnabled(ConsoleHostPanel.menu(facts)));
+    }
+
+    private static boolean closeEnabled(ConsoleActionMenu<ConsoleHostPanel.Action> menu) {
+        for (ConsoleActionMenu.Item<ConsoleHostPanel.Action> item : menu.items) {
+            if (item.action == ConsoleHostPanel.Action.CLOSE_SESSION) return item.enabled;
+        }
+        throw new AssertionError("no close action");
+    }
+
     @Test public void offlineHostOffersWakeInsteadOfSleep() {
         ConsoleHostPanel.Facts facts = new ConsoleHostPanel.Facts();
         facts.canWake = true;
