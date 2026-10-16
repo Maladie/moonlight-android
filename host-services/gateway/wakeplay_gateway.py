@@ -6283,24 +6283,34 @@ class GatewayState:
                     or not isinstance(stream, dict) \
                     or stream.get("child_session_id") != session.get("session_id"):
                 return False, "stale_session"
-            close_trace: dict[str, Any] = {}
+            stream = dict(stream)
+        # The streamer close runs outside the Gateway lock: an unreachable Vibepollo would
+        # otherwise stall every request for the length of its timeouts. The held permit is
+        # the in-flight marker (no other operation acquires the host meanwhile), and the
+        # completion below applies only while that exact permit is still active, so a late
+        # result after a hard reset or recovery replaced it is rejected as stale.
+        close_trace: dict[str, Any] = {}
+        try:
             # The Gateway holds a child's terminal operation on its own record: a session
             # no client is attributed to must not keep an enforced limit's stream open.
             closed, close_reason = StreamerControlOperation.close(
                 self.vibepollo, stream, trace=close_trace, host_held=True)
-            DIAGNOSTICS.record(
-                "child-terminal-streamer-close", level="INFO" if closed else "WARN",
-                operation_id=operation_id, generation=permit["generation"],
-                actor_lease_epoch=permit["actor_lease_epoch"],
-                child_session_id=str(session.get("session_id") or ""),
-                stream_session_id=str(stream.get("stream_session_id") or ""),
-                execution_profile_id=str(session.get("execution_profile_id") or ""),
-                **close_trace)
-            terminal_status, terminal = self._child_time_control_call(session, lambda:
-                self.control_operation_complete(client, {
-                    "operation_id": operation_id, "generation": permit["generation"],
-                    "actor_lease_epoch": permit["actor_lease_epoch"],
-                    "succeeded": bool(closed)}, operation_id))
+        except Exception as error:
+            closed, close_reason = False, "streamer_close_failed"
+            close_trace["error"] = repr(error)
+        DIAGNOSTICS.record(
+            "child-terminal-streamer-close", level="INFO" if closed else "WARN",
+            operation_id=operation_id, generation=permit["generation"],
+            actor_lease_epoch=permit["actor_lease_epoch"],
+            child_session_id=str(session.get("session_id") or ""),
+            stream_session_id=str(stream.get("stream_session_id") or ""),
+            execution_profile_id=str(session.get("execution_profile_id") or ""),
+            **close_trace)
+        terminal_status, terminal = self._child_time_control_call(session, lambda:
+            self.control_operation_complete(client, {
+                "operation_id": operation_id, "generation": permit["generation"],
+                "actor_lease_epoch": permit["actor_lease_epoch"],
+                "succeeded": bool(closed)}, operation_id))
         return (terminal_status == HTTPStatus.OK and terminal.get("state") == "succeeded",
                 "none" if closed else close_reason)
 
