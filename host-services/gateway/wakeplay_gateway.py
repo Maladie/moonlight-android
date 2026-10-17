@@ -8039,7 +8039,7 @@ class GatewayState:
                 "error": "" if ok else self.upstream_error(
                     result, "Game provider library refresh failed."),
             }
-        if action in {"game/stop-verified", "game/focus"}:
+        if action in {"game/stop-verified", "game/abandon-start", "game/focus"}:
             actor_id, parent_id, _parent, _actor = self._child_policy_context(client, actor_profile_id)
             session = self.child_time_session
             if (not isinstance(session, dict)
@@ -8047,18 +8047,17 @@ class GatewayState:
                     or str(session.get("client_id") or "") != self.broker_client_id(client)):
                 raise PermissionError("child_session_binding_mismatch")
             game_id = str(session.get("game_id") or "")
-            if action == "game/stop-verified" and \
+            if action != "game/focus" and \
                     self._child_request_game(parent_id, body.get("game_id")) != \
                     self._child_time_normalize_game_id(game_id):
                 raise PermissionError("child_session_binding_mismatch")
-            payload = {"game_id": game_id} \
-                if action == "game/stop-verified" else {}
+            payload = {"game_id": game_id} if action != "game/focus" else {}
             if action == "game/stop-verified":
                 token = body.get("expected_process_token")
                 if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token):
                     raise ValueError("A valid expected process token is required.")
                 payload["expected_process_token"] = token
-            if action == "game/stop-verified":
+            if action != "game/focus":
                 ok, result = controlled("/" + action, payload, 22.0, parent_id)
             else:
                 ok, result = self.proxy_json("game_provider", "/" + action, payload,
@@ -8338,6 +8337,12 @@ class GatewayState:
                        "expected_process_token": token}
             path = "/game/stop-verified"
             timeout = 25.0
+        elif action == "game/abandon-start":
+            # A start that never produced a game process: the Bridge drops it to idle and
+            # refuses once a process exists, so nothing is ever stopped by this.
+            payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
+            path = "/game/abandon-start"
+            timeout = 5.0
         elif action == "game/focus":
             payload = {}
             path = "/game/focus"
@@ -8352,7 +8357,7 @@ class GatewayState:
             timeout = 5.0
         else:
             return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite action."}
-        if action in {"game/start", "game/stop-verified"} \
+        if action in {"game/start", "game/stop-verified", "game/abandon-start"} \
                 and client is not None:
             if not REQUEST_ID_PATTERN.fullmatch(request_id):
                 return HTTPStatus.CONFLICT, {"ok": False,
@@ -8365,7 +8370,8 @@ class GatewayState:
         else:
             ok, result = self.proxy_json("game_provider", path, payload, timeout=timeout)
         accepted = not isinstance(result, dict) or bool(result.get("accepted", True))
-        if ok and action in {"game/start", "game/install", "game/uninstall", "game/stop-verified"} \
+        if ok and action in {"game/start", "game/install", "game/uninstall", "game/stop-verified",
+                             "game/abandon-start"} \
                 and not accepted:
             return HTTPStatus.OK, {
                 "ok": False,
@@ -9538,7 +9544,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     return
                 child_action = path[len(API_PREFIX) + 1:]
                 child_start = child_action in {
-                    "game/start", "game/stop-verified", "game/focus", "game/install",
+                    "game/start", "game/stop-verified", "game/abandon-start", "game/focus",
+                    "game/install",
                     "game/uninstall", "game/install/focus", "game/install/verify",
                 }
                 child_refresh = path == f"{API_PREFIX}/library/refresh"
@@ -9670,6 +9677,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 f"{API_PREFIX}/game/install": "game/install",
                 f"{API_PREFIX}/game/uninstall": "game/uninstall",
                 f"{API_PREFIX}/game/stop-verified": "game/stop-verified",
+                f"{API_PREFIX}/game/abandon-start": "game/abandon-start",
                 f"{API_PREFIX}/game/focus": "game/focus",
                 f"{API_PREFIX}/game/install/focus": "game/install/focus",
                 f"{API_PREFIX}/game/install/verify": "game/install/verify",

@@ -238,6 +238,15 @@ public final class PlayniteTransitionGateway {
                     && processId > 0 && !processToken.isEmpty();
         }
 
+        /** The expected game's start is starting or failed and has no process to stop. */
+        public boolean hasStartWithoutProcessFor(String expectedGameId) {
+            String state = SessionSnapshot.normalize(gameState);
+            return ("starting".equals(state) || "failed".equals(state))
+                    && SessionSnapshot.normalize(expectedGameId).equals(
+                    SessionSnapshot.normalize(gameId))
+                    && processId <= 0 && processToken.isEmpty();
+        }
+
         public boolean hasVerifiedGameFor(String expectedGameId) {
             return "VERIFIED".equals(gameEvidence)
                     && SessionSnapshot.normalize(expectedGameId).equals(
@@ -496,6 +505,10 @@ public final class PlayniteTransitionGateway {
 
     public void stopGame(String gameId, String processToken) throws IOException {
         client.stopGame(connection, gameId, processToken);
+    }
+
+    public void abandonStart(String gameId) throws IOException {
+        client.abandonStart(connection, gameId);
     }
 
     /**

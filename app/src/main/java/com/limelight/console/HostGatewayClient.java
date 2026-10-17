@@ -2061,6 +2061,15 @@ public class HostGatewayClient {
         return stoppedCurrent(response, gameId, true);
     }
 
+    /** Drops this game's start that never produced a process; the host refuses once one exists. */
+    void abandonStart(GatewayConnection connection, String gameId) throws IOException {
+        JSONObject response = request(connection,
+                "/api/v1/game/abandon-start", "POST", gameStopBody(gameId, null), 10_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error", "start_not_abandonable"), 0);
+        }
+    }
+
     static JSONObject gameStopBody(String gameId, String processToken) throws IOException {
         if (!isPlayniteId(gameId)) {
             throw new IllegalArgumentException("Invalid game record ID");

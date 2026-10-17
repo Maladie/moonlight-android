@@ -7942,11 +7942,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 stage = "validate_game";
                 String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
                         expected.playniteGameId, current.gameState, current.gameId);
-                if (exactGame == null) {
+                if (current.hasStartWithoutProcessFor(expected.playniteGameId)) {
+                    // Never started (e.g. the launcher refused it): nothing to stop, the host
+                    // drops the start so it is free for the next game.
+                    stage = "abandon_start";
+                    gateway.abandonStart(expected.playniteGameId);
+                } else if (exactGame == null) {
                     failureReason = "provider_game_not_exact";
                     throw new IOException("provider_game_not_exact");
-                }
-                if (!exactGame.isEmpty()) {
+                } else if (!exactGame.isEmpty()) {
                     stage = "validate_process";
                     if (!current.hasVerifiedProcessFor(exactGame)) {
                         failureReason = "provider_process_not_exact";

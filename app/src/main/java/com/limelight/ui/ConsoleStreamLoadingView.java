@@ -23,6 +23,7 @@ import android.text.TextUtils;
 import android.text.Spanned;
 import android.text.style.BulletSpan;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.LineHeightSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
 import android.util.AttributeSet;
@@ -281,6 +282,9 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
         actionsRow = new LinearLayout(context);
         actionsRow.setOrientation(LinearLayout.HORIZONTAL);
+        // A reserved row has no visible pill to measure: without this it collapses to 0 and the
+        // bottom-anchored card jumps whenever actions come or go.
+        actionsRow.setMinimumHeight(dp(ACTION_HEIGHT_DP));
         card.addView(actionsRow, row(14));
         retryView = pillText(context.getString(R.string.transition_retry));
         retryView.setOnClickListener(view -> requestRetryOnce());
@@ -832,6 +836,10 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             text.setSpan(new StyleSpan(Typeface.ITALIC), start, text.length(),
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
+        // Every laid-out line as tall as the padding lines setLines adds below short text, so
+        // one, two or three lines (italic, fallback glyphs) keep the area's height to the pixel.
+        text.setSpan(new LineHeightSpan.Standard(lineView.getLineHeight()), 0, text.length(),
+                Spanned.SPAN_INCLUSIVE_INCLUSIVE);
         lineView.setText(text);
         // Both read from the couch: the notice in full ink, the message a step softer.
         lineView.setTextColor(lineMessage.isEmpty() ? INK : INK_SOFT);

@@ -530,6 +530,36 @@ class ControlOperationTest(unittest.TestCase):
         self.assertEqual("parent", binding["execution_profile_id"])
         self.assertEqual("stream-1", binding["stream_session_id"])
 
+    def test_end_game_abandons_start_without_process_under_provider_permit(self):
+        _status, launch = self.acquire(self.request("transport"))
+        self.complete(launch)
+        calls = []
+        self.state.proxy_json = lambda name, path, body, **kwargs: (
+            calls.append((name, path, body)) or
+            (True, {"accepted": True, "command": "abandon-start"}))
+        self.authorize()
+
+        status, result = self.state.playnite_action(
+            "game/abandon-start", {"game_id": "steam:7"}, self.client,
+            "parent", "provider-abandon")
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual(("game_provider", "/game/abandon-start"), calls[0][:2])
+        self.assertEqual("steam:7", calls[0][2]["game_id"])
+        self.assertEqual(launch["generation"],
+                         calls[0][2]["control_operation"]["generation"])
+
+        self.state.proxy_json = lambda name, path, body, **kwargs: (
+            True, {"accepted": False, "command": "abandon-start",
+                   "reason": "start_not_abandonable"})
+        status, refused = self.state.playnite_action(
+            "game/abandon-start", {"game_id": "steam:7"}, self.client,
+            "parent", "provider-abandon-2")
+        self.assertEqual(200, status)
+        self.assertFalse(refused["ok"])
+        self.assertEqual("start_not_abandonable", refused["error"])
+
     def test_completed_provider_request_replays_saved_result_without_effect(self):
         _status, launch = self.acquire(self.request("transport"))
         self.complete(launch)

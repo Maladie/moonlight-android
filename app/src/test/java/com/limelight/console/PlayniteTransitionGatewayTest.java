@@ -350,6 +350,21 @@ public class PlayniteTransitionGatewayTest {
         assertFalse(pending.hasVerifiedProcessFor("steam:123"));
     }
 
+    @Test public void startWithoutProcessIsAbandonableOnlyForTheExactProcesslessGame() {
+        assertTrue(new PlayniteTransitionGateway.Snapshot(true, true, "starting", "steam:123",
+                0, false, "game", 0, "launcher_interaction_required", false)
+                .hasStartWithoutProcessFor("steam:123"));
+        assertTrue(new PlayniteTransitionGateway.Snapshot(true, true, "failed", "steam:123",
+                0, false, "game", 0, "", false).hasStartWithoutProcessFor("steam:123"));
+        assertFalse(new PlayniteTransitionGateway.Snapshot(true, true, "starting", "steam:123",
+                0, false, "game", 0, "", false).hasStartWithoutProcessFor("steam:456"));
+        assertFalse(new PlayniteTransitionGateway.Snapshot(true, true, "starting", "steam:123",
+                42, false, "game", 0, "", false, PROCESS_TOKEN)
+                .hasStartWithoutProcessFor("steam:123"));
+        assertFalse(new PlayniteTransitionGateway.Snapshot(true, true, "running", "steam:123",
+                0, false, "game", 0, "", false).hasStartWithoutProcessFor("steam:123"));
+    }
+
     @Test public void rejectedIdleControlReadCannotLetFullQuitSkipTheStop() throws Exception {
         // R011 P1: the full-quit read (idle, ordinal N) loses to a newer dashboard read that
         // still shows the permit's game running (N+1). The rejected idle must not read as idle.
