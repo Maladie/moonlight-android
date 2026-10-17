@@ -1342,11 +1342,6 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             sps.constraintSet4Flag = true;
             sps.constraintSet5Flag = true;
         }
-        else {
-            // Force the constraints unset otherwise (some may be set by default)
-            sps.constraintSet4Flag = false;
-            sps.constraintSet5Flag = false;
-        }
     }
 
     @SuppressWarnings("deprecation")
@@ -1490,31 +1485,6 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 // The H264Utils.readSPS function safely handles
                 // Annex B NALUs (including NALUs with escape sequences)
                 SeqParameterSet sps = H264Utils.readSPS(spsBuf);
-
-                // Some decoders rely on H264 level to decide how many buffers are needed
-                // Since we only need one frame buffered, we'll set the level as low as we can
-                // for known resolution combinations. Reference frame invalidation may need
-                // these, so leave them be for those decoders.
-                if (!refFrameInvalidationActive) {
-                    if (initialWidth <= 720 && initialHeight <= 480 && refreshRate <= 60) {
-                        // Max 5 buffered frames at 720x480x60
-                        LimeLog.info("Patching level_idc to 31");
-                        sps.levelIdc = 31;
-                    }
-                    else if (initialWidth <= 1280 && initialHeight <= 720 && refreshRate <= 60) {
-                        // Max 5 buffered frames at 1280x720x60
-                        LimeLog.info("Patching level_idc to 32");
-                        sps.levelIdc = 32;
-                    }
-                    else if (initialWidth <= 1920 && initialHeight <= 1080 && refreshRate <= 60) {
-                        // Max 4 buffered frames at 1920x1080x64
-                        LimeLog.info("Patching level_idc to 42");
-                        sps.levelIdc = 42;
-                    }
-                    else {
-                        // Leave the profile alone (currently 5.0)
-                    }
-                }
 
                 // TI OMAP4 requires a reference frame count of 1 to decode successfully. Exynos 4
                 // also requires this fixup.
