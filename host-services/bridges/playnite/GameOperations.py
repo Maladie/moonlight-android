@@ -763,11 +763,12 @@ class SteamProvider(GenericPlayniteProvider):
                 "reason": "steam_launch_dispatched", "exit_code": 0}
 
     # Steam's own launch state machine, e.g. `[2026-10-08 22:51:17] GameAction [AppID 410110,
-    # ActionID 6] : LaunchApp waiting for user response to ShowInterstitials ""`.
+    # ActionID 6] : LaunchApp waiting for user response to ShowInterstitials ""`, or a launch
+    # Steam refuses with a dialog: `LaunchApp failed with AppError_5 with "FamilySharing"`.
     LAUNCH_ACTION = re.compile(
-        r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] GameAction \[AppID (\d+), ActionID \d+\] : '
-        r'LaunchApp (waiting for user response to|continues with user response|changed task to)'
-        r' "?([A-Za-z]*)')
+        r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] GameAction \[AppID (\d+), ActionID (\d+)\] : '
+        r'LaunchApp (waiting for user response to|continues with user response|changed task to'
+        r'|failed with) "?(\w*)"?(?: with "(\w*)")?')
     LAUNCH_PROMPT_GRACE = 3.0
     LAUNCH_LOG_TAIL_BYTES = 256 * 1024
 
@@ -791,7 +792,7 @@ class SteamProvider(GenericPlayniteProvider):
         self._launch_log_cache = (key, lines)
         return lines
 
-    def pending_launch_prompt(self, game: dict[str, Any],
+    def pending_launch_prompt(self, game: dict[str, Any], requested_at: float,
                               now: float | None = None) -> str:
         """The Steam launch task of this game waiting for a user answer, or "".
 
@@ -799,11 +800,15 @@ class SteamProvider(GenericPlayniteProvider):
         decides, even one older than this request: while an earlier action still waits
         (an unanswered interstitial), Steam ignores new launches of the app and logs nothing
         for them. Steam answers its own short prompts (launch option, process creation)
-        within a second, so a wait counts only after a short grace."""
+        within a second, so a wait counts only after a short grace.
+
+        A refused launch (no license, e.g. a returned Family Sharing game) leaves Steam's
+        dialog with purchase-type choices for the user; it counts only when logged for this
+        request (`requested_at`, wall clock), since a new launch replaces an old failure."""
         app_id = str(game.get("providerGameId") or "").strip()
         if not app_id:
             return ""
-        pending, waiting_since = "", 0.0
+        pending, waiting_since, failed_action = "", 0.0, ""
         for line in self._launch_log_lines():
             match = self.LAUNCH_ACTION.match(line)
             if match is None or match.group(2) != app_id:
@@ -812,9 +817,19 @@ class SteamProvider(GenericPlayniteProvider):
                 logged = time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
             except (ValueError, OverflowError):
                 continue
-            waiting = match.group(3).startswith("waiting")
-            pending = match.group(4) if waiting else ""
-            waiting_since = logged if waiting else 0.0
+            action, step, value, cause = match.group(3, 4, 5, 6)
+            if step == "failed with":
+                pending = "_".join(filter(None, ("Failed", cause or value)))
+                waiting_since, failed_action = logged, action
+                continue
+            if value == "Failed" and action == failed_action:
+                continue  # follows this action's "failed with" line that names the cause
+            waiting = step.startswith("waiting")
+            pending = value if waiting else ""
+            waiting_since, failed_action = (logged if waiting else 0.0), ""
+        if failed_action:
+            # Log stamps are whole seconds: the failure's second must reach the request.
+            return pending if waiting_since + 1 > requested_at else ""
         current = time.time() if now is None else now
         return pending if pending and current - waiting_since >= self.LAUNCH_PROMPT_GRACE \
             else ""
@@ -2251,23 +2266,56 @@ class GameOperationsService:
                             records[game_id] = dict(game)
 
         standalone: list[dict[str, Any]] = []
+        playnite_metadata: dict[str, dict[str, Any]] = {}
         for game in playnite_games:
             if not isinstance(game, dict):
                 continue
             source = self._playnite_source(game).casefold()
-            if source not in {"steam", "epic"}:
+            if source in {"steam", "epic"}:
+                provider_id = str(game.get("providerGameId") or "").strip()
+                if provider_id:
+                    playnite_metadata[f"{source}:{provider_id}"] = game
+            else:
                 playnite = self._playnite_record(game)
                 if playnite is not None:
                     standalone.append(playnite)
         for record in records.values():
             old = previous.get(str(record["id"])) or {}
             provider = str(record.get("provider") or "")
-            if old.get("metadataProvider") == provider:
+            # The last aggregation's Playnite description is not store data.
+            if record.pop("descriptionFromPlaynite", False):
+                record.pop("description", None)
+            # A store answer is authoritative; the last one is kept only while
+            # the store does not answer.
+            if record.get("metadataProvider") != provider \
+                    and old.get("metadataProvider") == provider:
                 for key in ("cover", "background", "hero", "description", "genres",
-                            "artworkVersion", "metadataProvider"):
-                    if record.get(key) in (None, "", []) \
-                            and old.get(key) not in (None, "", []):
+                            "metadataProvider"):
+                    if key == "description" and old.get("descriptionFromPlaynite"):
+                        continue
+                    if old.get(key) not in (None, "", []):
                         record[key] = old[key]
+            # Playnite's local metadata fills only what the store left empty. It
+            # is re-derived from the connector snapshot on every aggregation.
+            local = playnite_metadata.get(str(record["id"])) or {}
+            for key, store_key in (("description", "description"),
+                                   ("boxArtPath", "cover"),
+                                   ("backgroundImagePath", "background"),
+                                   ("iconPath", "")):
+                if key != "description":
+                    record.pop(key, None)
+                value = str(local.get(key) or "").strip()
+                if value and not record.get(store_key):
+                    record[key] = value
+                    if key == "description":
+                        record["descriptionFromPlaynite"] = True
+            artwork = [str(record.get(key) or "") for key in (
+                "cover", "background", "hero", "boxArtPath", "backgroundImagePath",
+                "iconPath")]
+            record.pop("artworkVersion", None)
+            if any(artwork):
+                record["artworkVersion"] = hashlib.sha256(
+                    "\0".join(artwork).encode("utf-8")).hexdigest()
             if record.get("provider") == "steam" and "playtimeMinutes" not in record:
                 # A manifest-only/offline snapshot has no usage data, not zero usage.
                 for key in ("playtimeMinutes", "lastPlayed"):

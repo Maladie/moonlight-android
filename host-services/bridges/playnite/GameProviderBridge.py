@@ -5775,7 +5775,8 @@ class WindowReadinessWorker:
             expected_launcher_images = self.state.game_operations.expected_launcher_images(
                 launch_game) if launch_game else set()
             steam = self.state.game_operations.steam
-            steam_prompt = steam.pending_launch_prompt(launch_game) \
+            steam_prompt = steam.pending_launch_prompt(
+                launch_game, float(current["launchRequestedAt"])) \
                 if launch_in_progress and not process_id and launch_game and \
                 self.state.game_operations.provider_for(launch_game) is steam else ""
             if target_kind == "game" and \

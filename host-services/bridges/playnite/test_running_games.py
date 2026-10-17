@@ -1015,12 +1015,84 @@ class StartReadinessTest(unittest.TestCase):
                     f'[{stamp}] GameAction [AppID 2, ActionID 7] : LaunchApp waiting for '
                     f'user response to ShowInterstitials ""\n')
             steam = SteamProvider(root_resolver=lambda: Path(root))
-            self.assertEqual("", steam.pending_launch_prompt({"providerGameId": "1"}))
+            self.assertEqual("", steam.pending_launch_prompt({"providerGameId": "1"}, 0.0))
             self.assertEqual("ShowInterstitials",
-                             steam.pending_launch_prompt({"providerGameId": "2"}))
+                             steam.pending_launch_prompt({"providerGameId": "2"}, 0.0))
             # Steam's own sub-second waits are not a prompt.
             self.assertEqual("", steam.pending_launch_prompt(
-                {"providerGameId": "2"}, now=time.time() - 9))
+                {"providerGameId": "2"}, 0.0, now=time.time() - 9))
+
+    def test_steam_refused_launch_is_a_prompt_only_for_this_request(self):
+        # Real Steam log of a returned Family Sharing game (2026-10-16): Steam then shows
+        # its purchase dialog, which only the user may answer.
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "logs"))
+            logged = time.time() - 10
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(logged))
+            with open(os.path.join(root, "logs", "console_log.txt"), "w") as log:
+                log.write(
+                    f'[{stamp}] GameAction [AppID 1, ActionID 55] : LaunchApp changed task '
+                    f'to RequestingLicense with ""\n'
+                    f'[{stamp}] GameAction [AppID 1, ActionID 55] : LaunchApp failed with '
+                    f'AppError_5 with "FamilySharing"\n'
+                    f'[{stamp}] GameAction [AppID 1, ActionID 55] : LaunchApp changed task '
+                    f'to Failed with ""\n'
+                    f'[{stamp}] GameAction [AppID 2, ActionID 56] : LaunchApp failed with '
+                    f'AppError_5 with "FamilySharing"\n'
+                    f'[{stamp}] GameAction [AppID 2, ActionID 57] : LaunchApp changed task '
+                    f'to RequestingLicense with ""\n')
+            steam = SteamProvider(root_resolver=lambda: Path(root))
+            game = {"providerGameId": "1"}
+            # Reported at once: Steam does not answer its own refusal.
+            self.assertEqual("Failed_FamilySharing",
+                             steam.pending_launch_prompt(game, logged - 0.5, now=logged))
+            # The failure of an earlier request is not this request's prompt.
+            self.assertEqual("", steam.pending_launch_prompt(game, logged + 5))
+            # A newer launch action replaces the failure.
+            self.assertEqual("", steam.pending_launch_prompt({"providerGameId": "2"}, 0.0))
+
+    def test_steam_failed_task_without_failure_cause_clears_a_wait(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "logs"))
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 10))
+            with open(os.path.join(root, "logs", "console_log.txt"), "w") as log:
+                log.write(
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp waiting for '
+                    f'user response to ShowInterstitials ""\n'
+                    f'[{stamp}] GameAction [AppID 1, ActionID 6] : LaunchApp changed task '
+                    f'to Failed with ""\n'
+                    f'[{stamp}] GameAction [AppID 2, ActionID 7] : LaunchApp failed with '
+                    f'AppError_5 with "FamilySharing"\n'
+                    f'[{stamp}] GameAction [AppID 2, ActionID 8] : LaunchApp changed task '
+                    f'to Failed with ""\n')
+            steam = SteamProvider(root_resolver=lambda: Path(root))
+            self.assertEqual("", steam.pending_launch_prompt({"providerGameId": "1"}, 0.0))
+            # Another action's Failed task does not name the earlier action's cause.
+            self.assertEqual("", steam.pending_launch_prompt({"providerGameId": "2"}, 0.0))
+
+    def test_steam_refused_launch_is_launcher_interaction(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "logs"))
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(self.requested_at + 1))
+            with open(os.path.join(root, "logs", "console_log.txt"), "w") as log:
+                log.write(
+                    f'[{stamp}] GameAction [AppID 1, ActionID 55] : LaunchApp failed with '
+                    f'AppError_5 with "FamilySharing"\n'
+                    f'[{stamp}] GameAction [AppID 1, ActionID 55] : LaunchApp changed task '
+                    f'to Failed with ""\n')
+            self.state.game_operations.steam.root_resolver = lambda: Path(root)
+            self.state.library["steam:1"]["providerGameId"] = "1"
+            probe = mock.Mock()
+            probe.steam_prompt_window.return_value = {
+                "hwnd": 5, "process_id": 77, "image": "steamwebhelper.exe",
+                "display": r"\\.\DISPLAY9", "foreground": True}
+            self.run_worker_once(probe)
+        probe.sample.assert_not_called()
+        self.assertEqual("launcher_interaction_required", self.state.readiness["reason"])
+        self.assertEqual("launcher-interaction-required", self.state.events[-1]["event"])
+        self.assertEqual("steam_Failed_FamilySharing",
+                         self.state.observation_snapshot()["window"]["launcher"]["detail"])
 
     def test_closed_session_abandons_a_start_without_a_game_process(self):
         self.now += GAME_START_TIMEOUT

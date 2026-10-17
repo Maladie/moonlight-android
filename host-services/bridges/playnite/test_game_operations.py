@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -284,8 +285,95 @@ class GameOperationsTest(unittest.TestCase):
         game = self.service.aggregate_catalog([], previous)["library"]["steam:10"]
 
         self.assertEqual("Cached", game["description"])
-        self.assertEqual("cached-version", game["artworkVersion"])
+        self.assertEqual(hashlib.sha256(
+            "https://example.invalid/cover.jpg\0\0\0\0\0".encode()).hexdigest(),
+            game["artworkVersion"])
         self.assertEqual("steam", game["metadataProvider"])
+
+    def test_playnite_local_metadata_fills_only_what_the_store_left_empty(self):
+        self.steam.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [
+                {"id": "steam:28050", "provider": "steam", "providerGameId": "28050",
+                 "name": "Deus Ex: Human Revolution"},
+                {"id": "steam:91310", "provider": "steam", "providerGameId": "91310",
+                 "name": "Dead Island", "metadataProvider": "steam",
+                 "cover": "https://example.invalid/cover.jpg"},
+            ],
+        })
+        self.epic.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [],
+        })
+        playnite = [
+            {"id": "11111111-1111-1111-1111-111111111111", "source": "Steam",
+             "providerGameId": "28050", "description": "Adam Jensen",
+             "boxArtPath": "E:/dx/box.jpg", "backgroundImagePath": "E:/dx/bg.jpg",
+             "iconPath": "E:/dx/icon.ico"},
+            {"id": "22222222-2222-2222-2222-222222222222", "source": "Steam",
+             "providerGameId": "91310", "description": "Zombies",
+             "boxArtPath": "E:/di/box.jpg", "backgroundImagePath": "E:/di/bg.jpg"},
+        ]
+
+        library = self.service.aggregate_catalog(playnite)["library"]
+
+        delisted, listed = library["steam:28050"], library["steam:91310"]
+        self.assertEqual(2, len(library))
+        self.assertEqual("Adam Jensen", delisted["description"])
+        self.assertEqual("E:/dx/box.jpg", delisted["boxArtPath"])
+        self.assertEqual("E:/dx/bg.jpg", delisted["backgroundImagePath"])
+        self.assertEqual("E:/dx/icon.ico", delisted["iconPath"])
+        self.assertNotIn("metadataProvider", delisted)
+        self.assertTrue(delisted["artworkVersion"])
+        # One source per field: the store cover wins, Playnite fills the rest.
+        self.assertNotIn("boxArtPath", listed)
+        self.assertEqual("E:/di/bg.jpg", listed["backgroundImagePath"])
+        self.assertEqual("Zombies", listed["description"])
+
+        # Store briefly unreachable, Playnite connector snapshot still cached.
+        self.steam.catalog.return_value = {
+            "available": True, "complete": True, "reason": "", "games": [
+                {"id": "steam:28050", "provider": "steam", "providerGameId": "28050"},
+                {"id": "steam:91310", "provider": "steam", "providerGameId": "91310"}]}
+        again = self.service.aggregate_catalog(playnite, library)["library"]
+        self.assertEqual(delisted["artworkVersion"], again["steam:28050"]["artworkVersion"])
+        self.assertEqual("https://example.invalid/cover.jpg", again["steam:91310"]["cover"])
+        self.assertNotIn("boxArtPath", again["steam:91310"])
+
+        # Playnite disabled: its paths disappear and the artwork version changes.
+        gone = self.service.aggregate_catalog([], library)["library"]["steam:28050"]
+        for key in ("boxArtPath", "backgroundImagePath", "iconPath", "description",
+                    "artworkVersion"):
+            self.assertNotIn(key, gone)
+
+    def test_playnite_description_is_never_kept_as_store_metadata(self):
+        self.steam.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [
+                {"id": "steam:91310", "provider": "steam", "providerGameId": "91310",
+                 "metadataProvider": "steam", "cover": "https://example.invalid/c.jpg"}]})
+        self.epic.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [],
+        })
+        playnite = [{"id": "22222222-2222-2222-2222-222222222222", "source": "Steam",
+                     "providerGameId": "91310", "description": "Zombies"}]
+        library = self.service.aggregate_catalog(playnite)["library"]
+        self.assertEqual("Zombies", library["steam:91310"]["description"])
+
+        # Store answers without metadata: its last cover stays, Playnite's text does not.
+        self.steam.catalog.return_value = {
+            "available": True, "complete": True, "reason": "", "games": [
+                {"id": "steam:91310", "provider": "steam", "providerGameId": "91310"}]}
+        kept = self.service.aggregate_catalog([], library)["library"]["steam:91310"]
+        self.assertEqual("https://example.invalid/c.jpg", kept["cover"])
+        self.assertNotIn("description", kept)
+
+        # Store unreachable: the record copied from the last one loses the fill too.
+        self.steam.catalog.return_value = {
+            "available": False, "complete": False, "reason": "steam_unavailable",
+            "games": []}
+        copied = self.service.aggregate_catalog([], library)["library"]["steam:91310"]
+        self.assertNotIn("description", copied)
+        self.assertNotIn("descriptionFromPlaynite", copied)
+        refilled = self.service.aggregate_catalog(playnite, library)["library"]
+        self.assertEqual("Zombies", refilled["steam:91310"]["description"])
 
     def test_incomplete_provider_snapshot_preserves_last_authoritative_record(self):
         self.steam.catalog = mock.Mock(return_value={
