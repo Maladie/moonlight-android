@@ -18,9 +18,9 @@ using System.Windows.Forms;
 using System.Windows.Interop;
 using System.Windows.Threading;
 
-[assembly: AssemblyVersion("0.7.145.0")]
-[assembly: AssemblyFileVersion("0.7.145.0")]
-[assembly: AssemblyInformationalVersion("0.7.145+2026.10.16-epic-updates")]
+[assembly: AssemblyVersion("0.7.146.0")]
+[assembly: AssemblyFileVersion("0.7.146.0")]
+[assembly: AssemblyInformationalVersion("0.7.146+2026.10.17-launch-license-art")]
 // WPF follows the per-monitor DPI of the manifest only for a .NET Framework 4.6.2+ target.
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 
