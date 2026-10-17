@@ -22,9 +22,9 @@ using Microsoft.Win32;
 using MoonWaker.HostControl;
 using Path = System.IO.Path;
 
-[assembly: AssemblyVersion("0.7.146.0")]
-[assembly: AssemblyFileVersion("0.7.146.0")]
-[assembly: AssemblyInformationalVersion("0.7.146+2026.10.17-launch-license-art")]
+[assembly: AssemblyVersion("0.7.147.0")]
+[assembly: AssemblyFileVersion("0.7.147.0")]
+[assembly: AssemblyInformationalVersion("0.7.147+2026.10.17-abandon-start")]
 
 namespace MoonWaker.HostInstaller
 {
