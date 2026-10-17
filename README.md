@@ -1,9 +1,13 @@
 # MoonWaker
 
-MoonWaker is a console-style Android TV client for streaming PC games. It is built on
-[Moonlight](https://moonlight-stream.org) and adds a Windows host side that wakes the PC,
-signs the right Windows user in, starts the chosen game and hands the TV a stream that
-stays covered until the game is on screen.
+MoonWaker is an Android TV client for streaming PC games, built on
+[Moonlight](https://moonlight-stream.org) and paired with its own Windows host side.
+
+The point of it is a console on your TV. You pick up the pad, choose who plays and which
+game, and the rest happens on its own: the PC wakes up, the right Windows user signs in, the
+game starts and the picture shows up once the game is really there. Until then the stream
+stays covered. Windows itself, with its desktop and launcher windows, is what MoonWaker works
+hard to keep off the screen, and every menu is built for a remote or a gamepad from the couch.
 
 The game library comes straight from the stores installed on the PC: Steam (owned games
 through the Steam Web API, install state from Steam's own manifests) and Epic through
