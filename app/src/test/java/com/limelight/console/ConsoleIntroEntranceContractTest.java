@@ -135,7 +135,7 @@ public class ConsoleIntroEntranceContractTest {
 
         // A render during the entrance builds no card: three steps of one card, then the rest.
         String diff = between(activity, "private void applyPlayniteDiff(",
-                "private List<PlayniteDashboardItem> preserveOrderDuringFocus(");
+                "private void moveCarouselCard(");
         assertTrue(diff.contains(
                 "boolean introSteps = introView != null && introView.entering();"));
         assertTrue(diff.contains(
@@ -195,7 +195,7 @@ public class ConsoleIntroEntranceContractTest {
                 < answered.indexOf(ends + "                    renderLibraryAfterIntroEntrance(host.uuid);"));
         // That render, with the load over, no longer puts the loading cards back.
         String diff = between(activity, "private void applyPlayniteDiff(",
-                "private List<PlayniteDashboardItem> preserveOrderDuringFocus(");
+                "private void moveCarouselCard(");
         assertTrue(diff.contains("if (playniteInitialLoadPending || playniteLibraryRefreshing) {\n"
                 + "                showCarouselLoadingGhosts();"));
         assertTrue(diff.contains("empty.setTag(\"playnite.empty\");"));
@@ -274,7 +274,7 @@ public class ConsoleIntroEntranceContractTest {
         assertEquals(1, render.split("isPlayniteInstalling\\(", -1).length - 1);
         assertTrue(render.contains("promoteInstallingGames(installing, ordered, sourceFiltered)"));
         assertTrue(render.contains("putInstallingItemsFirst(installing, items)"));
-        assertTrue(render.contains("host, carouselSource, maxCarouselGameCount(), installing);"));
+        assertTrue(render.contains("host, unfilteredItems, maxCarouselGameCount(), installing);"));
         for (String[] helper : new String[][]{
                 {"private List<PlayniteDashboardItem> carouselPlayniteItems(",
                         "private long carouselActivityEpoch("},

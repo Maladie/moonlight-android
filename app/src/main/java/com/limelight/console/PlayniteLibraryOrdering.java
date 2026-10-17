@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import java.text.Collator;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Comparator;
 import java.util.GregorianCalendar;
@@ -11,6 +12,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -82,6 +84,57 @@ final class PlayniteLibraryOrdering {
         }
         remaining.sort(alphabetic);
         result.addAll(remaining);
+        return result;
+    }
+
+    /**
+     * The dashboard carousel, the one rule for its order: the session's game ({@code
+     * sessionGameId}, resumable or suspended, matched ignoring case), up to
+     * three installs in progress, installed games by {@code activity} (newest first), then the
+     * other installed games by name. {@code activity} is a game's recency (played or
+     * installed); zero or less is none. Equal facts give the same order on every refresh.
+     */
+    static List<PlayniteDashboardItem> carousel(List<PlayniteDashboardItem> items, int limit,
+                                                String sessionGameId, Set<String> installingIds,
+                                                ToLongFunction<PlayniteDashboardItem> activity,
+                                                Locale locale) {
+        List<PlayniteDashboardItem> result = new ArrayList<>();
+        if (items.isEmpty() || limit <= 0) return result;
+        Comparator<PlayniteLibraryGame> alphabetic = alphabetic(locale);
+        Comparator<PlayniteDashboardItem> byName = (left, right) ->
+                alphabetic.compare(left.game, right.game);
+        Comparator<PlayniteDashboardItem> recentFirst = Comparator
+                .comparingLong(activity).reversed().thenComparing(byName);
+        List<PlayniteDashboardItem> installing = new ArrayList<>();
+        List<PlayniteDashboardItem> recent = new ArrayList<>();
+        List<PlayniteDashboardItem> rest = new ArrayList<>();
+        PlayniteDashboardItem session = null;
+        for (PlayniteDashboardItem item : items) {
+            if (session == null && !sessionGameId.isEmpty()
+                    && sessionGameId.equalsIgnoreCase(item.stableId())) session = item;
+            boolean installs = installingIds.contains(item.game.playniteGameId);
+            if (installs) installing.add(item);
+            if (!item.game.installed) continue;
+            if (!installs && activity.applyAsLong(item) > 0L) recent.add(item);
+            else rest.add(item);
+        }
+        installing.sort(recentFirst);
+        recent.sort(recentFirst);
+        rest.sort(byName);
+        Set<String> included = new HashSet<>();
+        if (session != null) {
+            result.add(session);
+            included.add(session.stableId());
+        }
+        for (PlayniteDashboardItem item : installing.subList(0, Math.min(3, installing.size()))) {
+            if (result.size() < limit && included.add(item.stableId())) result.add(item);
+        }
+        for (List<PlayniteDashboardItem> group : Arrays.asList(recent, rest)) {
+            for (PlayniteDashboardItem item : group) {
+                if (result.size() >= limit) return result;
+                if (included.add(item.stableId())) result.add(item);
+            }
+        }
         return result;
     }
 

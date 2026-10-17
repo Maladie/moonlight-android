@@ -159,7 +159,7 @@ public class ConsoleActivityLibraryPerformanceContractTest {
     @Test public void carouselBuildsManyMissingCardsAcrossFrames() throws IOException {
         String source = consoleActivitySource();
         String diff = source.substring(source.indexOf("private void applyPlayniteDiff("),
-                source.indexOf("private List<PlayniteDashboardItem> preserveOrderDuringFocus("));
+                source.indexOf("private void moveCarouselCard("));
         // The render decides per position; a prepared returning frame is built whole.
         assertTrue(diff.contains("if (card == null && !suppressInitialCarouselMotion && (introSteps\n"
                 + "                    || !PlayniteLibraryDiff.buildsInRender(index, missingCards))) {"));

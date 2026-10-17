@@ -206,12 +206,14 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(grid.contains("CELL_MARGIN_DP = 4"));
         assertTrue(source.contains("homeContent.setPadding(dp(54), dp(14), dp(54), dp(27))"));
         assertTrue(source.contains("titleParams.topMargin = dp(103)"));
-        assertTrue(source.contains("homeContent.addView(playniteLibraryStatus, 1, statusParams)"));
-        assertTrue(source.contains("statusParams.topMargin = dp(16)"));
+        // Host notices sit in a fixed band under the cards: nothing above or below moves.
+        assertTrue(source.contains("carouselStage.addView(playniteLibraryStatus, statusParams)"));
+        assertTrue(source.contains("Gravity.BOTTOM | Gravity.START"));
+        assertFalse(source.contains("homeContent.addView(playniteLibraryStatus, 1"));
         assertTrue(source.contains("playniteLibraryStatus.setMinHeight(dp(18))"));
         assertTrue(source.contains("playniteLibraryStatus.setShadowLayer(dp(2)"));
         assertTrue(source.contains(
-                "playniteLibraryStatus.setVisibility(showStatus ? View.VISIBLE : View.GONE)"));
+                "playniteLibraryStatus.setVisibility(showStatus ? View.VISIBLE : View.INVISIBLE)"));
         assertFalse(source.contains(
                 "CONSOLE_UI_V2 && textId == R.string.playnite_data_current"));
         assertTrue(source.contains("Gravity.TOP | Gravity.START"));
@@ -224,8 +226,9 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains("CAROUSEL_FOCUSED_CARD_WIDTH_DP = 92"));
         assertTrue(source.contains("available - focusedGrowth"));
         assertTrue(source.contains("return Math.max(1, slots + 3)"));
+        // The carousel's order has one owner (installed games only: PlayniteLibraryOrderingTest).
         assertTrue(source.contains(
-                "if (item.game.installed && included.add(item.stableId())) result.add(item)"));
+                "return PlayniteLibraryOrdering.carousel(items, limit, selectedSessionGameId(),"));
         assertTrue(source.contains("CAROUSEL_PREVIOUS_CARD_COUNT"));
         assertTrue(source.contains("shine.postDelayed(this, 7_000L)"));
         assertTrue(source.contains("shine.postDelayed(animation, 2_200L)"));

@@ -1574,6 +1574,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (expandedLibraryMode || hostSelectionVisible || appRow == null || event == null
                 || event.getAction() != KeyEvent.ACTION_DOWN) return false;
         int keyCode = event.getKeyCode();
+        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) return focusCarouselBelowTopBar();
         if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT
                 && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) return false;
         View focused = getCurrentFocus();
@@ -1598,6 +1599,59 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             target += step;
         }
         return true;
+    }
+
+    /** Down from the top bar lands on the visible card nearest below, not the first card. */
+    private boolean focusCarouselBelowTopBar() {
+        View focused = getCurrentFocus();
+        if (focused == null || topBar == null || appScroll == null
+                || !isDescendant(topBar, focused) || appScroll.getWidth() == 0) return false;
+        List<View> cards = new ArrayList<>();
+        for (int index = 0; index < appRow.getChildCount(); index++) {
+            View child = appRow.getChildAt(index);
+            if (child.getVisibility() == View.VISIBLE && (child.isFocusable()
+                    || pendingCarouselGameId(child) != null)) cards.add(child);
+        }
+        int[] location = new int[2];
+        int[] lefts = new int[cards.size()];
+        int[] rights = new int[cards.size()];
+        for (int index = 0; index < cards.size(); index++) {
+            cards.get(index).getLocationInWindow(location);
+            lefts[index] = location[0];
+            rights[index] = location[0] + cards.get(index).getWidth();
+        }
+        focused.getLocationInWindow(location);
+        int originCenter = location[0] + focused.getWidth() / 2;
+        appScroll.getLocationInWindow(location);
+        int nearest = nearestVisibleCard(lefts, rights, location[0],
+                location[0] + appScroll.getWidth(), originCenter);
+        if (nearest < 0) return false;
+        View target = cards.get(nearest);
+        if (pendingCarouselGameId(target) != null) target = buildPendingCarouselCard(target);
+        if (target == null || !target.isFocusable()) return false;
+        target.requestFocus();
+        return true;
+    }
+
+    /**
+     * The card whose centre is nearest {@code originCenter} among those whose centre lies in
+     * the viewport [{@code viewportLeft}, {@code viewportRight}); the left one on a tie.
+     * -1 when no card is visible.
+     */
+    static int nearestVisibleCard(int[] lefts, int[] rights, int viewportLeft,
+                                  int viewportRight, int originCenter) {
+        int nearest = -1;
+        long nearestDistance = Long.MAX_VALUE;
+        for (int index = 0; index < lefts.length; index++) {
+            long center = ((long) lefts[index] + rights[index]) / 2;
+            if (center < viewportLeft || center >= viewportRight) continue;
+            long distance = Math.abs(center - originCenter);
+            if (distance < nearestDistance) {
+                nearest = index;
+                nearestDistance = distance;
+            }
+        }
+        return nearest;
     }
 
     private void handleConsoleAudioKey(KeyEvent event) {
@@ -2228,12 +2282,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             playniteLibraryStatus.setMaxLines(2);
             playniteLibraryStatus.setMinHeight(dp(18));
             playniteLibraryStatus.setShadowLayer(dp(2), 0, dp(1), 0xE0000000);
-            LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            statusParams.topMargin = dp(16);
-            statusParams.bottomMargin = dp(12);
-            homeContent.addView(playniteLibraryStatus, 1, statusParams);
+            playniteLibraryStatus.setEllipsize(TextUtils.TruncateAt.END);
+            playniteLibraryStatus.setGravity(Gravity.CENTER_VERTICAL);
+            if (carouselStage != null) {
+                // A fixed band under the cards, inside the carousel's own height: a notice
+                // coming or going moves neither the cards nor the selected game's details.
+                FrameLayout.LayoutParams statusParams = new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(32),
+                        Gravity.BOTTOM | Gravity.START);
+                carouselStage.addView(playniteLibraryStatus, statusParams);
+            } else {
+                // Portrait: its slot under the list is kept while no notice shows.
+                homeContent.addView(playniteLibraryStatus, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(32)));
+            }
             LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
             actionParams.topMargin = dp(5);
@@ -2506,6 +2568,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
      * on this same cover (Effects.showLoading).
      */
     private void showQueuedCover(PlayIntent waiting) {
+        launchCoverGeneration++;
         ComputerDetails host = currentHost(waiting.hostId);
         String artwork = coverArtworkPath(waiting.hostId, waiting.profileId,
                 waiting.loadingArtworkGameId, "launch");
@@ -8481,7 +8544,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && ConsoleLibraryStatus.visible(libraryStatus);
         CharSequence status = showStatus ? getText(textId) : "";
         playniteLibraryStatus.setText(status);
-        playniteLibraryStatus.setVisibility(showStatus ? View.VISIBLE : View.GONE);
+        playniteLibraryStatus.setVisibility(showStatus ? View.VISIBLE : View.INVISIBLE);
         updateLibraryActionVisibility();
         int color = ConsoleLibraryStatus.isError(libraryStatus) ? 0xFFFFB74D : 0xFFC8D2DC;
         playniteLibraryStatus.setTextColor(color);
@@ -8496,12 +8559,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (debugLibraryActions == null) return;
         boolean resumeVisible = quickResumeButton != null
                 && quickResumeButton.getVisibility() == View.VISIBLE;
-        boolean statusVisible = playniteLibraryStatus != null
-                && playniteLibraryStatus.getParent() == debugLibraryActions
-                && playniteLibraryStatus.getVisibility() == View.VISIBLE
-                && !TextUtils.isEmpty(playniteLibraryStatus.getText());
-        debugLibraryActions.setVisibility(
-                resumeVisible || statusVisible ? View.VISIBLE : View.GONE);
+        debugLibraryActions.setVisibility(resumeVisible ? View.VISIBLE : View.GONE);
     }
 
     private void renderExpandedLibraryFromStart(ComputerDetails host) {
@@ -8597,10 +8655,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         allPlayniteItems = Collections.unmodifiableList(new ArrayList<>(items));
         unfilteredPlayniteItems = Collections.unmodifiableList(
                 new ArrayList<>(unfilteredItems));
-        List<PlayniteDashboardItem> carouselSource = CONSOLE_UI_V2
-                ? putSelectedSessionFirst(unfilteredItems) : unfilteredItems;
         List<PlayniteDashboardItem> dashboardItems = carouselPlayniteItems(
-                host, carouselSource, maxCarouselGameCount(), installing);
+                host, unfilteredItems, maxCarouselGameCount(), installing);
         String sessionSignature = playniteTileSessionSignature(playniteSessionProjection, host);
         boolean libraryTileFocused = getCurrentFocus() != null
                 && "playnite:__library__".equals(getCurrentFocus().getTag());
@@ -8714,52 +8770,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private List<PlayniteDashboardItem> carouselPlayniteItems(ComputerDetails host,
             List<PlayniteDashboardItem> items, int limit, Set<String> installingIds) {
         if (host == null || items.isEmpty() || limit <= 0) return Collections.emptyList();
-        Comparator<PlayniteDashboardItem> recentFirst = Comparator
-                .<PlayniteDashboardItem>comparingLong(item ->
-                        carouselActivityEpoch(host.uuid, item)).reversed()
-                .thenComparing(item -> item.game.name, String.CASE_INSENSITIVE_ORDER);
-        List<PlayniteDashboardItem> installing = new ArrayList<>();
-        List<PlayniteDashboardItem> recent = new ArrayList<>();
         for (PlayniteDashboardItem item : items) {
-            if (installingIds.contains(item.game.playniteGameId)) {
-                String activityKey = playniteCarouselInstallActivityKey(
-                        host.uuid, item.stableId());
-                if (preferences.getLong(activityKey, 0L) == 0L) {
-                    preferences.edit().putLong(
-                            activityKey, System.currentTimeMillis()).apply();
-                }
-                installing.add(item);
-            }
-            else if (item.game.installed
-                    && carouselActivityEpoch(host.uuid, item) > 0L) recent.add(item);
-        }
-        installing.sort(recentFirst);
-        recent.sort(recentFirst);
-        List<PlayniteDashboardItem> result = new ArrayList<>();
-        Set<String> included = new HashSet<>();
-        if (!resumePlayniteGameId.isEmpty()) {
-            for (PlayniteDashboardItem item : items) {
-                if (resumePlayniteGameId.equals(item.stableId()) && result.size() < limit) {
-                    result.add(item);
-                    included.add(item.stableId());
-                    break;
-                }
+            if (!installingIds.contains(item.game.playniteGameId)) continue;
+            String activityKey = playniteCarouselInstallActivityKey(host.uuid, item.stableId());
+            if (preferences.getLong(activityKey, 0L) == 0L) {
+                preferences.edit().putLong(activityKey, System.currentTimeMillis()).apply();
             }
         }
-        for (int index = 0; index < Math.min(3, installing.size())
-                && result.size() < limit; index++) {
-            PlayniteDashboardItem item = installing.get(index);
-            if (included.add(item.stableId())) result.add(item);
-        }
-        for (PlayniteDashboardItem item : recent) {
-            if (result.size() >= limit) break;
-            if (included.add(item.stableId())) result.add(item);
-        }
-        for (PlayniteDashboardItem item : items) {
-            if (result.size() >= limit) break;
-            if (item.game.installed && included.add(item.stableId())) result.add(item);
-        }
-        return result;
+        return PlayniteLibraryOrdering.carousel(items, limit, selectedSessionGameId(),
+                installingIds, item -> carouselActivityEpoch(host.uuid, item),
+                getResources().getConfiguration().getLocales().get(0));
     }
 
     private long carouselActivityEpoch(String hostUuid, PlayniteDashboardItem item) {
@@ -9529,10 +9549,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return Math.max(3, available / 100);
     }
 
+    /** The session's game the library and carousel lead with: resumable, else suspended. */
+    private String selectedSessionGameId() {
+        return !resumePlayniteGameId.isEmpty() ? resumePlayniteGameId : suspendedPlayniteGameId;
+    }
+
     private List<PlayniteDashboardItem> putSelectedSessionFirst(
             List<PlayniteDashboardItem> items) {
-        String selectedGameId = !resumePlayniteGameId.isEmpty()
-                ? resumePlayniteGameId : suspendedPlayniteGameId;
+        String selectedGameId = selectedSessionGameId();
         if (selectedGameId.isEmpty() || items.isEmpty()) return items;
         for (PlayniteDashboardItem item : items) {
             if (!selectedGameId.equalsIgnoreCase(item.stableId())) continue;
@@ -9593,10 +9617,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? Math.max(0, appRow.indexOfChild(currentFocus)) : 0;
 
         List<PlayniteDashboardItem> items = requestedItems;
-        if (focusedId != null && resumePlayniteGameId.isEmpty()
-                && containsPlayniteId(requestedItems, focusedId)) {
-            items = preserveOrderDuringFocus(requestedItems);
-        }
         Map<String, View> existing = new LinkedHashMap<>();
         Map<String, View> placeholders = new LinkedHashMap<>();
         boolean containsNonPlaynite = false;
@@ -9689,10 +9709,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (currentIndex < 0) {
                 appRow.addView(card, Math.min(index, appRow.getChildCount()),
                         playniteCardSpacing());
-            } else if (currentIndex != index && focusedId == null) {
-                appRow.removeViewAt(currentIndex);
-                appRow.addView(card, Math.min(index, appRow.getChildCount()),
-                        playniteCardSpacing());
+            } else if (currentIndex != index) {
+                moveCarouselCard(card, currentIndex, index);
             }
             if (suppressInitialCarouselMotion) {
                 ImageView poster = (ImageView) findTaggedChild(
@@ -9717,22 +9735,24 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         wireHomeFocusNavigation();
     }
 
-    private List<PlayniteDashboardItem> preserveOrderDuringFocus(
-            List<PlayniteDashboardItem> requested) {
-        Map<String, PlayniteDashboardItem> values = new LinkedHashMap<>();
-        for (PlayniteDashboardItem item : requested) values.put(item.stableId(), item);
-        List<PlayniteDashboardItem> result = new ArrayList<>();
-        for (PlayniteDashboardItem old : renderedPlayniteItems) {
-            PlayniteDashboardItem replacement = values.remove(old.stableId());
-            if (replacement != null) result.add(replacement);
+    /**
+     * Puts a carousel card at {@code index}. A focused card stays attached (detaching it
+     * would drop focus): the cards ahead of it move behind it, and the row follows it.
+     */
+    private void moveCarouselCard(View card, int currentIndex, int index) {
+        if (!card.hasFocus()) {
+            appRow.removeViewAt(currentIndex);
+            appRow.addView(card, Math.min(index, appRow.getChildCount()),
+                    playniteCardSpacing());
+            return;
         }
-        result.addAll(values.values());
-        return result;
-    }
-
-    private boolean containsPlayniteId(List<PlayniteDashboardItem> items, String id) {
-        for (PlayniteDashboardItem item : items) if (item.stableId().equals(id)) return true;
-        return false;
+        for (int moved = 0; moved < currentIndex - index; moved++) {
+            View ahead = appRow.getChildAt(index);
+            appRow.removeViewAt(index);
+            appRow.addView(ahead, appRow.indexOfChild(card) + 1 + moved);
+        }
+        if (portraitLayout) smoothCenterOn(appVerticalScroll, card);
+        else smoothCenterOn(appScroll, card);
     }
 
     private int playnitePayload(PlayniteDashboardItem old, PlayniteDashboardItem item) {
@@ -10989,6 +11009,38 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         MoonWakerDiagnostics.record(path == null ? "WARN" : "INFO", "android.console",
                 "cover.artwork", "outcome", outcome, "kind", cover, "game_id", gameId.trim());
         return path;
+    }
+
+    /**
+     * A Play's cover artwork, decided once on the UI thread: the cached background at once; one
+     * the library names but this device has not cached yet is fetched for at most {@link
+     * CoverArtwork#FETCH_WAIT_MS}, then the standard cover (null). Never decided once the
+     * cover is no longer this Play's ({@link #launchCoverGeneration}).
+     */
+    private void decideLaunchArtwork(PlayIntent intent, Consumer<String> decided) {
+        int generation = launchCoverGeneration;
+        String cached = coverArtworkPath(intent.hostId, intent.profileId,
+                intent.loadingArtworkGameId, "launch");
+        PlayniteLibraryGame game = providerGameMetadata(intent.hostId, intent.profileId,
+                intent.loadingArtworkGameId);
+        HostProfileKey key = new HostProfileKey(intent.hostId, intent.profileId);
+        ComputerDetails host = currentHost(intent.hostId);
+        GatewayConnection connection = cached != null || host == null
+                || CoverArtwork.find(playniteArtworkCache, key, game).outcome
+                != CoverArtwork.Outcome.CACHE_MISS ? null
+                : hostGatewayStore.loadForHost(host.uuid, host.activeAddress == null
+                        ? null : host.activeAddress.address, intent.profileId);
+        if (connection == null) {
+            decided.accept(cached);
+            return;
+        }
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forBackdrop(game);
+        CoverArtwork.fetchWithin(() -> playniteArtworkCache.fetch(hostGatewayClient, connection,
+                        key, game.playniteGameId, spec.kind, spec.version),
+                playniteArtworkExecutor, mainHandler::post, mainHandler::postDelayed,
+                () -> generation == launchCoverGeneration,
+                file -> decided.accept(file == null ? null : coverArtworkPath(intent.hostId,
+                        intent.profileId, intent.loadingArtworkGameId, "launch")));
     }
 
     /**
@@ -12955,13 +13007,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     queuedCoverIntent = null;
                     streamLoadingView.setStep(1, getString(R.string.console_preparing_host,
                             hostName));
+                    afterLoadingCover(opaqueFrameReady);
                 } else {
                     queuedCoverIntent = null;
-                    ConsoleActivity.this.showLoading(hostName, intent.appName,
-                            coverArtworkPath(intent.hostId, intent.profileId,
-                                    intent.loadingArtworkGameId, "launch"));
+                    ConsoleActivity.this.showLoading(hostName, intent.appName, null);
+                    // The cover is up at once on its plain ground; the launch waits until its
+                    // artwork is decided, so the cover never swaps it mid-transition.
+                    ConsoleStreamLoadingView cover = streamLoadingView;
+                    cover.awaitSplashArtwork();
+                    decideLaunchArtwork(intent, artwork -> {
+                        cover.setSplashArtwork(artwork);
+                        afterLoadingCover(opaqueFrameReady);
+                    });
                 }
-                afterLoadingCover(opaqueFrameReady);
             }
 
             @Override public void refreshSession(
@@ -13163,11 +13221,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         intent.hostId, intent.profileId, transitionType, app.getAppId(),
                         intent.transitionGameId(), System.currentTimeMillis(),
                         intent.startBeforeStream);
+                // The stream keeps the artwork its cover decided, even one fetched since.
                 launchPreparedStream(host, app,
                         intent.quickLaunchId.isEmpty() ? null : intent.quickLaunchId,
-                        transition, coverArtworkPath(
-                                intent.hostId, intent.profileId,
-                                intent.loadingArtworkGameId, "launch"),
+                        transition, streamLoadingView == null
+                                ? null : streamLoadingView.splashArtworkPath(),
                         sourceSuspendId, intent.playniteGameId,
                         ownsFreshSunshineSession
                                 && transitionType == LaunchTransitionType.GAME
@@ -13997,6 +14055,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         throw SessionFailure.switchFailed(error.get());
     }
 
+    /**
+     * Whose the loading cover is: bumped when a cover is shown, handed to another (queued)
+     * Play, or taken down. A Play's late launch artwork lands only while it is unchanged.
+     */
+    private int launchCoverGeneration;
+
     private void showLoading(String hostName, String appName) {
         showLoading(hostName, appName, null);
     }
@@ -14017,6 +14081,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             streamLoadingView.stop();
             loadingLayer.removeView(streamLoadingView);
         }
+        launchCoverGeneration++;
         // The user's action that began this transition: every cover of it counts from here.
         streamLoadingEpoch = SystemClock.elapsedRealtime();
         streamLoadingView = new ConsoleStreamLoadingView(this,
@@ -14070,6 +14135,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showHome() {
+        launchCoverGeneration++;
         childPairingRepairAvailable = false;
         queuedCoverIntent = null;
         if (discordDmNotifications != null) {

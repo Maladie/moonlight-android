@@ -12,7 +12,7 @@ import java.util.Locale;
 /**
  * The loading cover's one information card: kicker, game title (and the game a switch leaves),
  * five step segments, the current real stage with the time since the transition began, an
- * optional notice (sharing one line with the rotating message) and the actions on offer. Pure state; the view only renders it, in the same
+ * optional notice (sharing one area with the rotating message) and the actions on offer. Pure state; the view only renders it, in the same
  * place with and without artwork.
  */
 public final class LoadingCoverModel {
@@ -104,7 +104,9 @@ public final class LoadingCoverModel {
         phase = Phase.LOADING;
         step = Math.max(step, Math.min(STEPS, value));
         stage = status == null ? "" : status.trim();
-        notice = attention == null ? "" : attention.trim();
+        // The status shows once: a notice repeating the stage (the host's "waiting for the
+        // game window" under the same stage) is no notice.
+        notice = attention == null || attention.trim().equals(stage) ? "" : attention.trim();
         reasonCode = "";
         retry = false;
         return true;
@@ -223,17 +225,25 @@ public final class LoadingCoverModel {
 
     public boolean stepsVisible() { return phase != Phase.CLOSING; }
 
-    /** What the card's one line under the stage says. */
-    public enum Line { NOTICE, MESSAGE, NONE }
+    /** What the card's one area under the stage says. */
+    public enum Line { NOTICE, NOTICE_AND_MESSAGE, MESSAGE, NONE }
 
     /**
-     * The one line below the stage, in the same place in every stepped state: the notice when
-     * there is one, otherwise the rotating message; never empty. The closing card has its own
-     * layout without it.
+     * The one area below the stage, in the same place in every stepped state; never empty. A
+     * failure's notice takes it alone; while loading a notice ("taking longer", the host's
+     * reason) sits above the rotating message, which never goes away. The closing card has its
+     * own layout without it.
      */
     public Line line() {
         if (!stepsVisible()) return Line.NONE;
-        return !notice.isEmpty() || !reasonCode.isEmpty() ? Line.NOTICE : Line.MESSAGE;
+        if (notice.isEmpty() && reasonCode.isEmpty()) return Line.MESSAGE;
+        return phase == Phase.LOADING ? Line.NOTICE_AND_MESSAGE : Line.NOTICE;
+    }
+
+    /** Whether the rotating message is on the card. */
+    public boolean messageShown() {
+        Line line = line();
+        return line == Line.MESSAGE || line == Line.NOTICE_AND_MESSAGE;
     }
 
     /** The action row is present in every stepped state (empty is only invisible). */

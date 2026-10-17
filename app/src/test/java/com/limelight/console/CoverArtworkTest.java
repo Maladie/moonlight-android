@@ -7,12 +7,15 @@ import org.junit.rules.TemporaryFolder;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /** TV 2026-10-15: the cover shows exactly the file the carousel shows as the game's backdrop. */
 public class CoverArtworkTest {
@@ -66,6 +69,71 @@ public class CoverArtworkTest {
         Files.write(other.toPath(), new byte[]{1});
         assertEquals(CoverArtwork.Outcome.CACHE_MISS,
                 CoverArtwork.find(cache, key, game("cover-v1", "background-v7")).outcome);
+    }
+
+    /**
+     * A never-launched game's background: the launch waits for its fetch at most
+     * FETCH_WAIT_MS and answers once, so the cover never swaps to a late arrival.
+     */
+    @Test public void aMissingBackgroundIsWaitedForOnceWithinTheBound() {
+        File art = new File("art.img");
+        ArrayDeque<Runnable> network = new ArrayDeque<>();
+        ArrayDeque<Runnable> ui = new ArrayDeque<>();
+        List<Runnable> timeouts = new ArrayList<>();
+        List<Long> delays = new ArrayList<>();
+        CoverArtwork.Delay delay = (action, millis) -> {
+            timeouts.add(action);
+            delays.add(millis);
+        };
+
+        // Fetched in time: that file, and the timeout later changes nothing.
+        List<File> decided = new ArrayList<>();
+        CoverArtwork.fetchWithin(() -> art, network::add, ui::add, delay, () -> true,
+                decided::add);
+        assertEquals(Collections.singletonList(CoverArtwork.FETCH_WAIT_MS), delays);
+        drain(network);
+        drain(ui);
+        timeouts.get(0).run();
+        assertEquals(Collections.singletonList(art), decided);
+
+        // Too slow: the standard cover at the bound; the late file is not shown.
+        decided.clear();
+        CoverArtwork.fetchWithin(() -> art, network::add, ui::add, delay, () -> true,
+                decided::add);
+        timeouts.get(1).run();
+        drain(network);
+        drain(ui);
+        assertEquals(Collections.singletonList((File) null), decided);
+
+        // Failed: the standard cover at once, not after the bound.
+        decided.clear();
+        CoverArtwork.fetchWithin(() -> { throw new IOException("offline"); },
+                network::add, ui::add, delay, () -> true, decided::add);
+        drain(network);
+        drain(ui);
+        assertEquals(Collections.singletonList((File) null), decided);
+        timeouts.get(2).run();
+        assertEquals(1, decided.size());
+    }
+
+    /** A Play no longer current (cancelled, or superseded on the cover) is never answered. */
+    @Test public void aStalePlayIsNeverAnswered() {
+        ArrayDeque<Runnable> network = new ArrayDeque<>();
+        ArrayDeque<Runnable> ui = new ArrayDeque<>();
+        List<Runnable> timeouts = new ArrayList<>();
+        boolean[] current = {true};
+        List<File> decided = new ArrayList<>();
+        CoverArtwork.fetchWithin(() -> new File("art.img"), network::add, ui::add,
+                (action, millis) -> timeouts.add(action), () -> current[0], decided::add);
+        current[0] = false;
+        drain(network);
+        drain(ui);
+        timeouts.get(0).run();
+        assertTrue(decided.isEmpty());
+    }
+
+    private static void drain(ArrayDeque<Runnable> tasks) {
+        while (!tasks.isEmpty()) tasks.remove().run();
     }
 
     private static final String OTHER_ID = "00000001-0000-0000-0000-000000000000";

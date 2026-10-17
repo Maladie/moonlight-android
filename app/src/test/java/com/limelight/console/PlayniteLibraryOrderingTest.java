@@ -7,6 +7,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 
@@ -101,6 +103,67 @@ public class PlayniteLibraryOrderingTest {
         PlayniteLibraryGame item = new PlayniteLibraryGame(id(1), "Game", true,
                 false, 0L, "", "", "", "First\n\n\n\nSecond", 0, "Steam");
         assertEquals("First\n\nSecond", item.description);
+    }
+
+    @Test public void carouselPutsTheLastPlayedGameFirstAndTheRestByName() {
+        List<PlayniteDashboardItem> host = Arrays.asList(item(game(3, "Zeta", true, "")),
+                item(game(1, "Played", true, "")), item(game(2, "Alpha", true, "")),
+                item(game(4, "Absent", false, "")), item(game(5, "Older", true, "")));
+        Map<String, Long> activity = new HashMap<>();
+        activity.put(id(5), 1_000L);
+        activity.put(id(1), 2_000L);
+        List<PlayniteDashboardItem> before = carousel(host, activity, "");
+        assertEquals(Arrays.asList("Played", "Older", "Alpha", "Zeta"), itemNames(before));
+
+        // A host answering in another order, the same facts: the same carousel.
+        List<PlayniteDashboardItem> reversed = new ArrayList<>(host);
+        Collections.reverse(reversed);
+        assertEquals(itemNames(before), itemNames(carousel(reversed, activity, "")));
+
+        // Zeta played last lands first, and stays there once its session ends.
+        activity.put(id(3), 3_000L);
+        assertEquals(Arrays.asList("Zeta", "Played", "Older", "Alpha"),
+                itemNames(carousel(host, activity, "")));
+    }
+
+    @Test public void carouselLeadsWithTheResumableGameThenInstallsWithinTheLimit() {
+        List<PlayniteDashboardItem> host = Arrays.asList(item(game(1, "Recent", true, "")),
+                item(game(2, "Session", true, "")), item(game(3, "Installing", false, "")),
+                item(game(4, "Alpha", true, "")));
+        Map<String, Long> activity = Collections.singletonMap(id(1), 5_000L);
+        List<PlayniteDashboardItem> ordered = PlayniteLibraryOrdering.carousel(host, 3, id(2),
+                Collections.singleton(id(3)),
+                item -> activity.getOrDefault(item.stableId(), 0L), Locale.ENGLISH);
+        assertEquals(Arrays.asList("Session", "Installing", "Recent"), itemNames(ordered));
+    }
+
+    /** A suspended session's game leads too, matched ignoring the id's case. */
+    @Test public void carouselLeadsWithTheSessionGameIgnoringCase() {
+        String suspendedId = "abcdef00-0000-0000-0000-000000000000";
+        List<PlayniteDashboardItem> host = Arrays.asList(item(game(1, "Recent", true, "")),
+                item(new PlayniteLibraryGame(suspendedId, "Suspended", true, false,
+                        0L, "", "", "", "", 0, "Steam")));
+        Map<String, Long> activity = Collections.singletonMap(id(1), 5_000L);
+        assertEquals(Arrays.asList("Suspended", "Recent"), itemNames(
+                carousel(host, activity, suspendedId.toUpperCase(Locale.ROOT))));
+    }
+
+    private static List<PlayniteDashboardItem> carousel(List<PlayniteDashboardItem> items,
+                                                        Map<String, Long> activity,
+                                                        String resumeGameId) {
+        return PlayniteLibraryOrdering.carousel(items, 10, resumeGameId,
+                Collections.emptySet(), item -> activity.getOrDefault(item.stableId(), 0L),
+                Locale.ENGLISH);
+    }
+
+    private static PlayniteDashboardItem item(PlayniteLibraryGame game) {
+        return new PlayniteDashboardItem(game, 1, PlayniteDashboardItem.MappingState.MAPPED);
+    }
+
+    private static List<String> itemNames(List<PlayniteDashboardItem> items) {
+        List<String> names = new ArrayList<>();
+        for (PlayniteDashboardItem item : items) names.add(item.game.name);
+        return names;
     }
 
     private static PlayniteLibraryGame game(int suffix, String name, boolean installed,

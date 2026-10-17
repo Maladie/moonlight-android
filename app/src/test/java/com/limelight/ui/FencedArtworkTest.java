@@ -35,6 +35,26 @@ public class FencedArtworkTest {
         while (!tasks.isEmpty()) tasks.remove().run();
     }
 
+    /** A launch deciding its artwork: plain ground (pending), and a decode from before never paints. */
+    @Test public void heldArtworkIsPendingUntilTheDecidedRequest() {
+        artwork.request("/art/old.png");
+        artwork.hold();
+        assertTrue(artwork.pending());
+        assertEquals("", artwork.requested());
+        drain(decodes);
+        drain(ui);
+        assertEquals(Arrays.asList(null, null), shown);
+
+        artwork.request("");
+        assertEquals("the standard cover once decided", false, artwork.pending());
+        artwork.hold();
+        artwork.request("/art/fez.png");
+        drain(decodes);
+        drain(ui);
+        assertEquals("/art/fez.png", artwork.requested());
+        assertEquals(Arrays.asList(null, null, null, null, null, "bitmap:/art/fez.png"), shown);
+    }
+
     /** TV 2026-10-15: another game's cached artwork never serves a different request. */
     @Test public void theCacheServesOnlyItsOwnPath() {
         cache.put("/art/hollow-knight.png", "bitmap:/art/hollow-knight.png");

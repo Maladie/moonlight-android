@@ -65,7 +65,8 @@ public class LoadingCoverModelTest {
         model.step(3, "Starting the game", "Taking longer than usual");
         assertEquals("Starting the game", model.stage());
         assertEquals("Taking longer than usual", model.notice());
-        assertEquals(LoadingCoverModel.Line.NOTICE, model.line());
+        assertEquals(LoadingCoverModel.Line.NOTICE_AND_MESSAGE, model.line());
+        assertTrue("the rotating message stays under a loading notice", model.messageShown());
         // Informational: the current segment keeps sweeping, never amber.
         assertEquals(CURRENT, model.stepState(2));
     }
@@ -113,9 +114,22 @@ public class LoadingCoverModelTest {
         assertEquals(Arrays.asList(REVEAL, CANCEL), model.actions());
         assertEquals(DONE, model.stepState(2));
         assertEquals(CURRENT, model.stepState(3));
-        assertEquals("the notice replaces the rotating message", LoadingCoverModel.Line.NOTICE, model.line());
+        assertEquals("the notice keeps the rotating message under it",
+                LoadingCoverModel.Line.NOTICE_AND_MESSAGE, model.line());
         assertTrue(model.manualReveal(false));
         assertEquals(LoadingCoverModel.Kicker.STARTING, model.kicker());
+    }
+
+    /** The host's "waiting for the game window" under the same stage: the status shows once. */
+    @Test public void aNoticeRepeatingTheStageIsNoNoticeAndTheMessageStays() {
+        LoadingCoverModel model = new LoadingCoverModel("Game", 0L);
+        model.step(4, "Game started — waiting for the game window",
+                " Game started — waiting for the game window ");
+        assertEquals("", model.notice());
+        assertEquals(LoadingCoverModel.Line.MESSAGE, model.line());
+        model.step(4, "Game started — waiting for the game window", "Target window is stabilizing…");
+        assertEquals("Target window is stabilizing…", model.notice());
+        assertTrue(model.messageShown());
     }
 
     @Test public void onlyARevealedGameShowsGameRunning() {
@@ -281,7 +295,8 @@ public class LoadingCoverModelTest {
             assertTrue(model.actionsSlot() != LoadingCoverModel.Slot.NONE);
         }
         assertEquals(LoadingCoverModel.Line.MESSAGE, loading.line());
-        assertEquals(LoadingCoverModel.Line.NOTICE, notice.line());
+        assertEquals(LoadingCoverModel.Line.NOTICE_AND_MESSAGE, notice.line());
+        assertFalse("a failure's notice stands alone", failed.messageShown());
         assertEquals("reveal available keeps the messages", LoadingCoverModel.Line.MESSAGE,
                 reveal.line());
         assertEquals(LoadingCoverModel.Line.NOTICE, failed.line());

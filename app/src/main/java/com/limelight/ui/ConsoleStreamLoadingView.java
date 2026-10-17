@@ -24,6 +24,7 @@ import android.text.Spanned;
 import android.text.style.BulletSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
+import android.text.style.StyleSpan;
 import android.util.AttributeSet;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -124,7 +125,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final Segments segments;
     private final TextView stageView;
     private final TextView elapsedView;
-    /** The one line under the stage: the notice, else the rotating message. */
+    /** The area under the stage: the notice and, while loading, the rotating message. */
     private final TextView lineView;
     private final LinearLayout actionsRow;
     private final TextView retryView;
@@ -149,8 +150,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     /** The rotating message the line shows whenever there is no notice; a handoff continues it. */
     private String currentMessage;
     private boolean rotating;
-    private CharSequence lineTarget = "";
-    private boolean lineIsNotice;
+    private CharSequence lineNotice = "";
+    private String lineMessage = "";
     /** The stage text the label shows or fades to. */
     private String stageTarget = "";
     /** This cover's frames: effects ordered after it wait here, each settles exactly once. */
@@ -159,12 +160,12 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     private final Runnable rotateMessage = new Runnable() {
         @Override public void run() {
-            if (stopped || model.line() != LoadingCoverModel.Line.MESSAGE
+            if (stopped || !model.messageShown()
                     || getVisibility() != VISIBLE || messages.length == 0) {
                 return;
             }
             currentMessage = messages[nextMessageIndex()];
-            showLine(currentMessage, false);
+            showLine(lineNotice, currentMessage);
             handler.postDelayed(this, MESSAGE_INTERVAL_MS);
         }
     };
@@ -375,6 +376,16 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
      */
     public void setSplashArtwork(String artworkPath) {
         artwork.request(artworkPath);
+    }
+
+    /** The artwork is still being decided: the plain dark ground until {@link #setSplashArtwork}. */
+    public void awaitSplashArtwork() {
+        artwork.hold();
+    }
+
+    /** The artwork this cover decided on (empty for the standard background): its stream keeps it. */
+    public String splashArtworkPath() {
+        return artwork.requested();
     }
 
     public void setTitle(String title) {
@@ -737,12 +748,13 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             text.setSpan(new ForegroundColorSpan(INK_FAINT), start, text.length(), 0);
             notice = text;
         }
-        boolean noticeShown = model.line() == LoadingCoverModel.Line.NOTICE;
-        lineView.setVisibility(model.line() == LoadingCoverModel.Line.NONE ? GONE : VISIBLE);
-        if (model.line() != LoadingCoverModel.Line.NONE) {
-            showLine(noticeShown ? notice : currentMessage, noticeShown);
+        LoadingCoverModel.Line line = model.line();
+        boolean message = model.messageShown();
+        lineView.setVisibility(line == LoadingCoverModel.Line.NONE ? GONE : VISIBLE);
+        if (line != LoadingCoverModel.Line.NONE) {
+            showLine(line == LoadingCoverModel.Line.MESSAGE ? "" : notice,
+                    message ? currentMessage : "");
         }
-        boolean message = model.line() == LoadingCoverModel.Line.MESSAGE;
         if (message != rotating) {
             rotating = message;
             if (message) scheduleLoadingMessage();
@@ -774,16 +786,20 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
                 && getVisibility() == VISIBLE && ValueAnimator.areAnimatorsEnabled();
     }
 
-    /** A changed line (notice or message) cross-fades like the stage. */
-    private void showLine(CharSequence text, boolean notice) {
-        if (notice == lineIsNotice && text.toString().contentEquals(lineTarget)
-                && lineView.getText().length() > 0) {
+    /**
+     * A changed area cross-fades like the stage; a message rotating under an unchanged notice
+     * swaps in place, so the notice never blinks.
+     */
+    private void showLine(CharSequence notice, String message) {
+        boolean noticeChanged = !notice.toString().contentEquals(lineNotice);
+        if (!noticeChanged && message.equals(lineMessage) && lineView.getText().length() > 0) {
             return;
         }
-        lineTarget = text;
-        lineIsNotice = notice;
+        lineNotice = notice;
+        lineMessage = message;
         lineView.animate().cancel();
-        if (!animatesChanges() || lineView.getText().length() == 0) {
+        if (!animatesChanges() || lineView.getText().length() == 0
+                || !noticeChanged && notice.length() > 0) {
             applyLine();
             lineView.setAlpha(1f);
             return;
@@ -797,15 +813,29 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private void applyLine() {
         // The notice's dot is a bullet span: centred on the first line, wrapped lines hang
         // after it, and the area keeps its LINE_COUNT height (a tall compound drawable grew it).
-        SpannableStringBuilder text = new SpannableStringBuilder(lineTarget);
-        if (lineIsNotice) {
+        // The message is its own paragraph below; a long notice ellipsizes it away at the end.
+        SpannableStringBuilder text = new SpannableStringBuilder(lineNotice);
+        if (text.length() > 0) {
             text.setSpan(new BulletSpan(dp(7), WARN, dp(3)), 0, text.length(),
                     Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
         }
+        if (!lineMessage.isEmpty()) {
+            int noticeEnd = text.length();
+            if (noticeEnd > 0) {
+                // Only while loading, so no reason code's own colour sits under this one.
+                text.setSpan(new ForegroundColorSpan(INK), 0, noticeEnd,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                text.append("\n");
+            }
+            int start = text.length();
+            text.append(lineMessage);
+            text.setSpan(new StyleSpan(Typeface.ITALIC), start, text.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
         lineView.setText(text);
         // Both read from the couch: the notice in full ink, the message a step softer.
-        lineView.setTextColor(lineIsNotice ? INK : INK_SOFT);
-        lineView.setTypeface(Typeface.DEFAULT, lineIsNotice ? Typeface.NORMAL : Typeface.ITALIC);
+        lineView.setTextColor(lineMessage.isEmpty() ? INK : INK_SOFT);
+        lineView.setTypeface(Typeface.DEFAULT, Typeface.NORMAL);
     }
 
     /** A changed stage cross-fades (out, then in) instead of swapping. */
@@ -916,8 +946,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     private void scheduleLoadingMessage() {
         handler.removeCallbacks(rotateMessage);
-        if (stopped || reducedMotion || model.line() != LoadingCoverModel.Line.MESSAGE
-                || messages.length == 0) {
+        if (stopped || reducedMotion || !model.messageShown() || messages.length == 0) {
             return;
         }
         handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);

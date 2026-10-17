@@ -84,6 +84,22 @@ public final class FencedArtwork<T> {
         });
     }
 
+    /**
+     * UI thread. The artwork is still being decided (a launch fetching it): the plain ground,
+     * never the standard background, until the next {@link #request} names it.
+     */
+    public void hold() {
+        if (stopped) return;
+        path = "";
+        decoding = new Object();
+        display("", null);
+    }
+
+    /** The latest requested path; empty for none or while held. */
+    public String requested() {
+        return path;
+    }
+
     public void stop() {
         stopped = true;
     }
