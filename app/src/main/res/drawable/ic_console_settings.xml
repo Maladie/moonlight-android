@@ -1,0 +1,7 @@
+<!-- Top bar line icon (UX_MENU_PL.md 4.7): Material keylines on a 28 dp canvas, square glyph
+     18/24 including the stroke (the 20-unit gear scaled 0.8), 2-unit stroke after scaling, round caps; tinted in code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="28dp" android:height="28dp" android:viewportWidth="24" android:viewportHeight="24">
+    <group android:scaleX="0.8" android:scaleY="0.8" android:pivotX="12" android:pivotY="12">
+        <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="2.5" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M12.22,2h-0.44a2,2 0,0 0,-2,2v0.18a2,2 0,0 1,-1,1.73l-0.43,0.25a2,2 0,0 1,-2,0l-0.15,-0.08a2,2 0,0 0,-2.73,0.73l-0.22,0.38a2,2 0,0 0,0.73,2.73l0.15,0.1a2,2 0,0 1,1,1.72v0.51a2,2 0,0 1,-1,1.74l-0.15,0.09a2,2 0,0 0,-0.73,2.73l0.22,0.38a2,2 0,0 0,2.73,0.73l0.15,-0.08a2,2 0,0 1,2,0l0.43,0.25a2,2 0,0 1,1,1.73V20a2,2 0,0 0,2,2h0.44a2,2 0,0 0,2,-2v-0.18a2,2 0,0 1,1,-1.73l0.43,-0.25a2,2 0,0 1,2,0l0.15,0.08a2,2 0,0 0,2.73,-0.73l0.22,-0.38a2,2 0,0 0,-0.73,-2.73l-0.15,-0.09a2,2 0,0 1,-1,-1.74v-0.51a2,2 0,0 1,1,-1.74l0.15,-0.09a2,2 0,0 0,0.73,-2.73l-0.22,-0.38a2,2 0,0 0,-2.73,-0.73l-0.15,0.08a2,2 0,0 1,-2,0l-0.43,-0.25a2,2 0,0 1,-1,-1.73V4a2,2 0,0 0,-2,-2M12,15a3,3 0,1 0,0,-6a3,3 0,1 0,0,6" />
+    </group>
+</vector>

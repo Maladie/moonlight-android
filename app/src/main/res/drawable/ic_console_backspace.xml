@@ -1,0 +1,4 @@
+<!-- PIN keypad delete key (mockup ic_backspace): key outline with a cross, 2.6 px stroke at 40 px. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="19dp" android:height="19dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="3.12" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M17,10H42V38H17L5,24ZM24,18L34,30M34,18L24,30" />
+</vector>

@@ -8,7 +8,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 public class AppPreferences {
-    private static final String APP_PREFERENCES_FILE = "AppPreferences";
+    public static final String APP_PREFERENCES_FILE = "AppPreferences";
     private static final String PREF_BITRATE_OVERRIDE = "bitrate_override"; // Global bitrate override
     private static final String PREF_PERF_OVERLAY_OVERRIDE = "perf_overlay_override"; // Global performance overlay override
     private static final String PREF_OVERRIDES_ENABLED = "overrides_enabled"; // Whether overrides section is enabled
@@ -66,7 +66,12 @@ public class AppPreferences {
     }
 
     public static AppSettings getAppSettings(Context context, String appKey) {
-        SharedPreferences prefs = context.getSharedPreferences(APP_PREFERENCES_FILE, Context.MODE_PRIVATE);
+        return getAppSettings(context.getSharedPreferences(APP_PREFERENCES_FILE,
+                Context.MODE_PRIVATE), appKey);
+    }
+
+    /** Reads from an already opened {@link #APP_PREFERENCES_FILE}, for many apps in a row. */
+    public static AppSettings getAppSettings(SharedPreferences prefs, String appKey) {
         String jsonString = prefs.getString(appKey, null);
         
         if (jsonString == null) {
@@ -89,6 +94,20 @@ public class AppPreferences {
         } catch (JSONException e) {
             e.printStackTrace();
         }
+    }
+
+    public static void applyStreamSettings(Context context, String appKey, int width, int height,
+                                           int fps, int bitrateKbps) {
+        saveAppSettings(context, appKey, copyWithStreamSettings(
+                getAppSettings(context, appKey), width, height, fps, bitrateKbps));
+    }
+
+    static AppSettings copyWithStreamSettings(AppSettings current, int width, int height, int fps,
+                                              int bitrateKbps) {
+        PreferenceConfiguration.validateStreamSettings(width, height, fps, bitrateKbps);
+        return new AppSettings(width + "x" + height, fps, current.framePacing, bitrateKbps,
+                current.actualDisplayRefreshRate, current.enableHdr, current.enablePerfOverlay,
+                false);
     }
 
     private static int getFramePacingValue(String framePacingString) {
@@ -225,7 +244,7 @@ public class AppPreferences {
         return applyOverrides ? applyPreferenceOverrides(context, config) : config;
     }
 
-    private static PreferenceConfiguration applyPreferenceOverrides(Context context, PreferenceConfiguration config) {
+    public static PreferenceConfiguration applyPreferenceOverrides(Context context, PreferenceConfiguration config) {
         // Apply global overrides only if overrides are enabled (highest priority)
         // This override applies to all streams regardless of other settings
         SharedPreferences defaultPrefs = PreferenceManager.getDefaultSharedPreferences(context);

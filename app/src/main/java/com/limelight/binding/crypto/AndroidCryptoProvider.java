@@ -11,10 +11,13 @@ import java.math.BigInteger;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.Provider;
 import java.security.SecureRandom;
+import java.security.Signature;
+import java.security.GeneralSecurityException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -23,6 +26,7 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
+import java.nio.charset.StandardCharsets;
 
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x500.X500NameBuilder;
@@ -43,6 +47,9 @@ import com.limelight.LimeLog;
 import com.limelight.nvstream.http.LimelightCryptoProvider;
 
 public class AndroidCryptoProvider implements LimelightCryptoProvider {
+
+    private static final String IDENTITY_CHALLENGE_PREFIX =
+            "moonwaker-vibepollo-identity-v1\n";
 
     private final File certFile;
     private final File keyFile;
@@ -249,6 +256,54 @@ public class AndroidCryptoProvider implements LimelightCryptoProvider {
 
             // Return a cached value if we have it
             return pemCertBytes;
+        }
+    }
+
+    /** Fingerprint of the Moonlight client certificate, not the host certificate. */
+    public String getClientCertificateSha256() {
+        X509Certificate certificate = getClientCertificate();
+        if (certificate == null) throw new IllegalStateException("Missing client certificate");
+        return certificateSha256(certificate);
+    }
+
+    /** Sign only a Gateway-issued identity challenge with the existing client key. */
+    public String signIdentityChallenge(String challenge) {
+        return Base64.encodeToString(signIdentityChallengeBytes(
+                challenge, getClientPrivateKey()), Base64.NO_WRAP);
+    }
+
+    static String certificateSha256(X509Certificate certificate) {
+        if (certificate == null) throw new IllegalArgumentException("Missing certificate");
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(certificate.getEncoded());
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte value : digest) {
+                result.append(String.format(Locale.US, "%02x", value & 0xff));
+            }
+            return result.toString();
+        } catch (GeneralSecurityException error) {
+            throw new IllegalStateException("Unable to fingerprint client certificate", error);
+        }
+    }
+
+    static byte[] signIdentityChallengeBytes(String challenge, PrivateKey privateKey) {
+        if (challenge == null || !challenge.startsWith(IDENTITY_CHALLENGE_PREFIX)
+                || challenge.length() > 512
+                || !challenge.substring(IDENTITY_CHALLENGE_PREFIX.length())
+                .matches("[\\x20-\\x7e\\n]+")) {
+            throw new IllegalArgumentException("Invalid identity challenge");
+        }
+        if (privateKey == null || !"RSA".equalsIgnoreCase(privateKey.getAlgorithm())) {
+            throw new IllegalStateException("Missing RSA client key");
+        }
+        try {
+            Signature signature = Signature.getInstance("SHA256withRSA");
+            signature.initSign(privateKey);
+            signature.update(challenge.getBytes(StandardCharsets.UTF_8));
+            return signature.sign();
+        } catch (GeneralSecurityException error) {
+            throw new IllegalStateException("Unable to sign identity challenge", error);
         }
     }
 

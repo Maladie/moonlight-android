@@ -1,0 +1,11 @@
+{
+  "schema_version": 3,
+  "listen_host": "0.0.0.0",
+  "listen_port": 8785,
+  "certificate": "gateway-cert.pem",
+  "private_key": "gateway-key.pem",
+  "microphone_worker": "MoonWakerMicrophoneWorker.exe",
+  "discord_audio_worker": "MoonWakerDiscordAudioWorker.exe",
+  "profiles": {},
+  "clients": []
+}

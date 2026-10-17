@@ -52,33 +52,15 @@ public class ComputerDatabaseManager {
             c.deleteDatabase(COMPUTER_DB_NAME);
             computerDb = c.openOrCreateDatabase(COMPUTER_DB_NAME, 0, null);
         }
-        initializeDb(c);
-    }
-
-    public void close() {
-        computerDb.close();
-    }
-
-    private void initializeDb(Context c) {
         // Create tables if they aren't already there
         computerDb.execSQL(String.format((Locale)null,
                 "CREATE TABLE IF NOT EXISTS %s(%s TEXT PRIMARY KEY, %s TEXT NOT NULL, %s TEXT NOT NULL, %s TEXT, %s TEXT)",
                 COMPUTER_TABLE_NAME, COMPUTER_UUID_COLUMN_NAME, COMPUTER_NAME_COLUMN_NAME,
                 ADDRESSES_COLUMN_NAME, MAC_ADDRESS_COLUMN_NAME, SERVER_CERT_COLUMN_NAME));
+    }
 
-        // Move all computers from the old DB (if any) to the new one
-        List<ComputerDetails> oldComputers = LegacyDatabaseReader.migrateAllComputers(c);
-        for (ComputerDetails computer : oldComputers) {
-            updateComputer(computer);
-        }
-        oldComputers = LegacyDatabaseReader2.migrateAllComputers(c);
-        for (ComputerDetails computer : oldComputers) {
-            updateComputer(computer);
-        }
-        oldComputers = LegacyDatabaseReader3.migrateAllComputers(c);
-        for (ComputerDetails computer : oldComputers) {
-            updateComputer(computer);
-        }
+    public void close() {
+        computerDb.close();
     }
 
     public void deleteComputer(ComputerDetails details) {

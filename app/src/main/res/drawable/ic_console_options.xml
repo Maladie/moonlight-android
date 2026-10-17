@@ -1,0 +1,4 @@
+<!-- Options key (mockup ic_options): rounded box with three lines, 2.6 px stroke at 40 px. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="15dp" android:height="15dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="3.12" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M12,8H36A7,7 0,0 1,43 15V33A7,7 0,0 1,36 40H12A7,7 0,0 1,5 33V15A7,7 0,0 1,12 8ZM14,17H34M14,24H34M14,31H34" />
+</vector>

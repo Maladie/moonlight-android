@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug-only lab hook; the DUMP permission restricts senders to the adb shell. -->
+        <receiver
+            android:name="com.limelight.console.ProjectionSampleReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.limelight.debug.action.SAMPLE_SESSION_PROJECTION" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

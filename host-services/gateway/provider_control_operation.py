@@ -1,0 +1,239 @@
+"""Common provider RPC execution and retirement for parent and child callers.
+
+The Gateway's existing ledger owns permits and receipts. This owner handles the
+remote effect boundary and preserves definitive rejections separately from lost
+responses, so a failed stop cannot strand the whole host.
+"""
+
+import time
+
+from control_operation_policy import ControlOperationPolicy
+
+
+class ProviderControlOperation:
+    def __init__(self, binding, complete, proxy):
+        self.binding = binding
+        self.complete = complete
+        self.proxy = proxy
+
+    def execute(self, client, request_id, path, payload, timeout, profile_id=None,
+                supplied=None):
+        digest = ControlOperationPolicy.effect_hash(path, payload)
+        permit, owns = self.binding(client, request_id, digest, supplied)
+        if permit is False:
+            return False, {"error": "control_operation_required"}
+        if permit.get("direction") == "stop" and permit.get("process_token"):
+            exact_process = path == "/game/stop-verified" and \
+                payload.get("expected_process_token") == permit.get("process_token")
+            expected_game = str(permit.get("provider_game_id") or "").strip().casefold()
+            requested_game = str(payload.get("game_id") or "").strip().casefold()
+            if not exact_process or expected_game and requested_game != expected_game:
+                return False, {"error": "control_process_identity_mismatch"}
+        if permit.get("state") in {"succeeded", "failed"}:
+            result = dict(permit.get("effect_result") or {})
+            return permit["state"] == "succeeded", result
+        request = {**payload, "control_operation":
+                   ControlOperationPolicy.bridge_binding(permit)}
+        try:
+            ok, result = self.proxy("game_provider", path, request,
+                                    timeout=timeout, profile_id=profile_id)
+        except OSError:
+            ok, result = False, {"error": "provider_response_unavailable"}
+        accepted = ok and isinstance(result, dict) and result.get("accepted") is not False
+        # A returned provider response is final even when the requested effect
+        # failed. An RPC transport failure needs the provider retirement barrier.
+        definite = isinstance(result, dict) and (ok or result.get("accepted") is False)
+        if owns and not self.complete(client, permit, accepted, result, definite):
+            return False, {"error": "control_operation_uncertain",
+                           "provider_reason": self.reason(result)}
+        return ok, result
+
+    @staticmethod
+    def reason(result):
+        return str(result.get("reason") or result.get("error") or "provider_rejected") \
+            if isinstance(result, dict) else "provider_response_unavailable"
+
+    def retire(self, operation):
+        binding = ControlOperationPolicy.bridge_binding(operation)
+        try:
+            ok, result = self.proxy("game_provider", "/control/operation/retire",
+                                    binding, timeout=3.0,
+                                    profile_id=operation["execution_profile_id"])
+        except OSError:
+            return False, None
+        exact = ok and isinstance(result, dict) and result.get("accepted") is True \
+            and result.get("state") == "retired" and all(
+                result.get(key) == value for key, value in binding.items())
+        return exact, result.get("result") if exact else None
+
+
+class StreamerControlOperation:
+    @staticmethod
+    def _identity_trace(trace, observed, stream):
+        if trace is None:
+            return
+        clients = ControlOperationPolicy._snapshot_items(
+            observed.get("clients")) if isinstance(observed, dict) else None
+        apps = ControlOperationPolicy._snapshot_items(
+            observed.get("apps")) if isinstance(observed, dict) else None
+        connected = [item for item in clients if isinstance(item, dict)
+                     and item.get("connected") is True] if clients is not None else []
+        running = [item for item in apps if isinstance(item, dict)
+                   and item.get("running") is True] if apps is not None else []
+        observed_app = running[0].get("app_id") if len(running) == 1 else None
+        expected_app = stream.get("sunshine_app_id")
+        trace.update({
+            "expected_app_id": expected_app if type(expected_app) is int else None,
+            "observed_app_id": observed_app if type(observed_app) is int else None,
+            "expected_client_present": int(bool(stream.get("vibepollo_client_uuid"))),
+            "observed_client_matches": int(len(connected) == 1 and
+                bool(stream.get("vibepollo_client_uuid")) and str(
+                    connected[0].get("uuid") or "").casefold() == str(
+                    stream.get("vibepollo_client_uuid")).casefold()),
+            "snapshot_connected_clients": len(connected) if clients is not None else None,
+            "snapshot_running_apps": len(running) if apps is not None else None,
+        })
+
+    @staticmethod
+    def _await_idle(streamer, timeout=5.0, trace=None):
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                ok, observed = streamer.control_snapshot(timeout=min(2.0, remaining))
+                if trace is not None:
+                    session = observed.get("session") if isinstance(observed, dict) else None
+                    clients = ControlOperationPolicy._snapshot_items(
+                        observed.get("clients")) if isinstance(observed, dict) else None
+                    apps = ControlOperationPolicy._snapshot_items(
+                        observed.get("apps")) if isinstance(observed, dict) else None
+                    unavailable = observed.get("control_unavailable_sources") \
+                        if isinstance(observed, dict) else None
+                    trace.update({
+                        "snapshot_attempts": trace.get("snapshot_attempts", 0) + 1,
+                        "snapshot_http_ok": int(bool(ok)),
+                        "snapshot_http_status": 200 if ok else
+                            (observed.get("status") if isinstance(observed, dict)
+                             and type(observed.get("status")) is int else 0),
+                        "snapshot_control_fresh": int(isinstance(observed, dict)
+                                                      and observed.get("control_fresh") is True),
+                        "snapshot_unavailable_source_count": len(unavailable)
+                            if isinstance(unavailable, list) else None,
+                        "snapshot_session_active": int(session["active"])
+                            if isinstance(session, dict) and
+                            type(session.get("active")) is bool else None,
+                        "snapshot_app_running": int(session["app_running"])
+                            if isinstance(session, dict) and
+                            type(session.get("app_running")) is bool else None,
+                        "snapshot_session_count": session.get("count")
+                            if isinstance(session, dict) and
+                            type(session.get("count")) is int else None,
+                        "snapshot_connected_clients": sum(isinstance(item, dict)
+                            and item.get("connected") is True for item in clients)
+                            if clients is not None else None,
+                        "snapshot_running_apps": sum(isinstance(item, dict)
+                            and item.get("running") is True for item in apps)
+                            if apps is not None else None,
+                    })
+                if ok and ControlOperationPolicy.streamer_idle(observed):
+                    return True
+            except OSError:
+                if trace is not None:
+                    trace["snapshot_attempts"] = trace.get("snapshot_attempts", 0) + 1
+                    trace["snapshot_http_ok"] = 0
+                    trace["snapshot_http_status"] = 0
+                    for key in ("snapshot_control_fresh", "snapshot_unavailable_source_count",
+                                "snapshot_session_active", "snapshot_app_running",
+                                "snapshot_session_count", "snapshot_connected_clients",
+                                "snapshot_running_apps"):
+                        trace.pop(key, None)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.25, remaining))
+
+    @staticmethod
+    def force_close(streamer, trace=None):
+        try:
+            ok, result = streamer.close_app(timeout=8.0)
+            if trace is not None:
+                trace["close_http_ok"] = int(bool(ok))
+                trace["close_http_status"] = 200 if ok else (
+                    result.get("status") if isinstance(result, dict)
+                    and type(result.get("status")) is int else 0)
+        except OSError:
+            if trace is not None:
+                trace["close_http_ok"] = 0
+                trace["close_http_status"] = 0
+        return StreamerControlOperation._await_idle(streamer, trace=trace)
+
+    @staticmethod
+    def close(streamer, stream, trace=None, host_held=False):
+        """Caller holds the exact Gateway permit through observation and effect."""
+        def result(closed, reason, stage):
+            if trace is not None:
+                trace.update({"reason": reason, "close_stage": stage})
+            return closed, reason
+
+        allowed, reason = StreamerControlOperation.closable(
+            streamer, stream, trace, host_held)
+        if not allowed or reason == "streamer_already_idle":
+            return allowed, reason
+        # An accepted close is asynchronous, and Vibepollo can also return HTTP
+        # 500 after closing or lose the response.  In every case, keep the same
+        # permit until fresh physical evidence confirms the postcondition.
+        if StreamerControlOperation.force_close(streamer, trace=trace):
+            return result(True, "streamer_idle_after_close", "idle_confirmed")
+        return result(False, "streamer_close_unconfirmed", "observe_idle")
+
+    @staticmethod
+    def closable(streamer, stream, trace=None, host_held=False):
+        """The decision `close` acts on, without its effect: (True, "streamer_already_idle"
+        | "streamer_close_allowed") or (False, refusal). A host-held close of the Gateway's
+        own record uses `host_streamer_close_allowed`, every other close the client rule."""
+        allowed_by = ControlOperationPolicy.host_streamer_close_allowed if host_held \
+            else ControlOperationPolicy.streamer_close_allowed
+
+        def result(closed, reason, stage):
+            if trace is not None:
+                trace.update({"reason": reason, "close_stage": stage})
+            return closed, reason
+
+        # A control snapshot fans out to several Vibepollo endpoints. One
+        # transiently unavailable source is not evidence that another owner has
+        # the stream, so retry only the unavailable observation. An authoritative
+        # identity mismatch still fails closed immediately.
+        observation_deadline = time.monotonic() + 12.0
+        while True:
+            try:
+                ok, observed = streamer.control_snapshot(timeout=min(8.0, max(
+                    0.1, observation_deadline - time.monotonic())))
+            except OSError:
+                ok, observed = False, None
+            if trace is not None:
+                session = observed.get("session") if isinstance(observed, dict) else None
+                unavailable = observed.get("control_unavailable_sources") \
+                    if isinstance(observed, dict) else None
+                trace.update({
+                    "snapshot_attempts": trace.get("snapshot_attempts", 0) + 1,
+                    "snapshot_http_ok": int(bool(ok)),
+                    "snapshot_control_fresh": int(isinstance(observed, dict) and
+                                                  observed.get("control_fresh") is True),
+                    "snapshot_unavailable_source_count": len(unavailable)
+                        if isinstance(unavailable, list) else None,
+                    "snapshot_session_count": session.get("count")
+                        if isinstance(session, dict) and
+                        type(session.get("count")) is int else None,
+                })
+                StreamerControlOperation._identity_trace(trace, observed, stream)
+            if ok and ControlOperationPolicy.streamer_idle(observed):
+                return result(True, "streamer_already_idle", "idle_confirmed")
+            if ok and ControlOperationPolicy.streamer_snapshot_authoritative(observed):
+                if not allowed_by(observed, stream):
+                    return result(False, "streamer_identity_unconfirmed", "identity_rejected")
+                return True, "streamer_close_allowed"
+            if time.monotonic() >= observation_deadline:
+                return result(False, "streamer_snapshot_unavailable", "observe_authority")
+            time.sleep(0.25)

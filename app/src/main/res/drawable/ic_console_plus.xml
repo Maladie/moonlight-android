@@ -1,0 +1,4 @@
+<!-- Add mark (mockup ic_plus): 2.6 px stroke at 40 px. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="31dp" android:height="31dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="3.12" android:strokeLineCap="round" android:pathData="M24,8V40M8,24H40" />
+</vector>

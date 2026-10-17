@@ -21,6 +21,7 @@ import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.UUID;
 import java.util.concurrent.Semaphore;
 
 import javax.crypto.KeyGenerator;
@@ -29,6 +30,9 @@ import javax.crypto.SecretKey;
 import org.xmlpull.v1.XmlPullParserException;
 
 import com.limelight.LimeLog;
+import com.limelight.gateway.ControlOperationClient;
+import com.limelight.gateway.GatewayConnection;
+import com.limelight.gateway.GatewayTransport;
 import com.limelight.nvstream.av.audio.AudioRenderer;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.http.ComputerDetails;
@@ -40,7 +44,7 @@ import com.limelight.nvstream.http.PairingManager;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
 
-public class NvConnection {
+public class NvConnection implements StreamInput {
     // Context parameters
     private LimelightCryptoProvider cryptoProvider;
     private String uniqueId;
@@ -48,8 +52,46 @@ public class NvConnection {
     private static Semaphore connectionAllowed = new Semaphore(1);
     private final boolean isMonkey;
     private final Context appContext;
+    private final ControlBinding controlBinding;
+    private final String controlBootstrapOperationId = "control-" + UUID.randomUUID();
+    private volatile long controlGeneration;
+    private volatile boolean startAbandoned;
+    // Written and read on the start thread only.
+    private boolean startReleased;
+    // The Gateway refused this start's acquire: no permit, no effect sent.
+    private boolean startRefused;
+    private final NativeStartGate startGate = new NativeStartGate(connectionAllowed);
+
+    public static final class ControlBinding {
+        final ControlOperationClient client;
+        final GatewayConnection connection;
+        final String streamSessionId;
+        final String intent;
+        final long expectedGeneration;
+        final String childSessionId;
+
+        public ControlBinding(ControlOperationClient client, GatewayConnection connection,
+                              String streamSessionId, String intent,
+                              long expectedGeneration, String childSessionId) {
+            if (client == null || connection == null) throw new NullPointerException("control");
+            this.client = client;
+            this.connection = connection;
+            this.streamSessionId = streamSessionId;
+            this.intent = intent;
+            this.expectedGeneration = expectedGeneration;
+            this.childSessionId = childSessionId;
+        }
+    }
 
     public NvConnection(Context appContext, ComputerDetails.AddressTuple host, int httpsPort, String uniqueId, StreamConfiguration config, LimelightCryptoProvider cryptoProvider, X509Certificate serverCert)
+    {
+        this(appContext, host, httpsPort, uniqueId, config, cryptoProvider, serverCert, null);
+    }
+
+    public NvConnection(Context appContext, ComputerDetails.AddressTuple host, int httpsPort,
+                        String uniqueId, StreamConfiguration config,
+                        LimelightCryptoProvider cryptoProvider, X509Certificate serverCert,
+                        ControlBinding controlBinding)
     {
         this.appContext = appContext;
         this.cryptoProvider = cryptoProvider;
@@ -66,6 +108,17 @@ public class NvConnection {
         this.context.riKeyId = generateRiKeyId();
 
         this.isMonkey = ActivityManager.isUserAMonkey();
+        this.controlBinding = controlBinding;
+    }
+
+    public long getControlGeneration() {
+        return controlGeneration;
+    }
+
+    public synchronized boolean reauthorizeControlGeneration(long expected, long generation) {
+        if (expected <= 0L || controlGeneration != expected || generation <= expected) return false;
+        controlGeneration = generation;
+        return true;
     }
     
     private static SecretKey generateRiAesKey() {
@@ -86,6 +139,28 @@ public class NvConnection {
         return new SecureRandom().nextInt();
     }
 
+    /**
+     * The user cancelled this start: a permit whose effect was not sent yet is handed back to
+     * the host instead of being used. A start already sent completes and is closed by its
+     * listener.
+     */
+    public void abandonStart() {
+        startAbandoned = true;
+    }
+
+    /** Best effort: the host ends a permit it cannot hear about by itself, only later. */
+    private ControlOperationClient.Result abandonControlStart(String operationId, int appId,
+                                                              long generation) {
+        try {
+            return controlBinding.client.abandon(controlBinding.connection, operationId,
+                    controlBinding.streamSessionId, appId, controlBinding.childSessionId,
+                    generation);
+        } catch (IOException unresolved) {
+            LimeLog.warning("Abandoned start was not released: " + unresolved.getMessage());
+            return null;
+        }
+    }
+
     public void stop() {
         // Interrupt any pending connection. This is thread-safe.
         MoonBridge.interruptConnection();
@@ -95,10 +170,9 @@ public class NvConnection {
         synchronized (MoonBridge.class) {
             MoonBridge.stopConnection();
             MoonBridge.cleanupBridge();
+            // Now a pending connection can be processed
+            startGate.stopped();
         }
-
-        // Now a pending connection can be processed
-        connectionAllowed.release();
     }
 
     private InetAddress resolveServerAddress() throws IOException {
@@ -307,6 +381,120 @@ public class NvConnection {
             }
         }
         
+        int currentAppId = h.getCurrentGame(serverInfo);
+        if (controlBinding == null) {
+            return startAppEffect(h, serverInfo, app);
+        }
+        String intent = currentAppId != 0 && currentAppId != app.getAppId()
+                ? "replacement" : currentAppId == app.getAppId()
+                ? ("reconnect".equals(controlBinding.intent) ? "reconnect"
+                : "warm_up".equals(controlBinding.intent) ? "warm_up"
+                : "reauthorize".equals(controlBinding.intent) ? "reauthorize" : "resume")
+                : controlBinding.intent;
+        String operationId = ControlOperationClient.operationId(intent,
+                controlBinding.streamSessionId, app.getAppId(),
+                controlBinding.expectedGeneration, controlBinding.childSessionId);
+        ControlOperationClient.Permit permit;
+        try {
+            permit = controlBinding.client.acquire(controlBinding.connection, operationId,
+                    intent, controlBinding.streamSessionId, app.getAppId(),
+                    controlBinding.expectedGeneration, currentAppId,
+                    controlBinding.childSessionId);
+        } catch (IOException unavailable) {
+            int refusedStatus = unavailable instanceof GatewayTransport.GatewayException
+                    ? ((GatewayTransport.GatewayException) unavailable).statusCode() : 0;
+            if (refusedStatus >= 400 && refusedStatus < 500) {
+                // Only a 4xx is the host's refusal: nothing was permitted. A 5xx or an
+                // unreadable answer may follow a granted permit, like a lost transport.
+                startRefused = true;
+                throw unavailable;
+            }
+            ControlOperationClient.Result reconciled = null;
+            IOException unresolved = unavailable;
+            try {
+                reconciled = controlBinding.client.reconcile(
+                        controlBinding.connection, operationId, controlBinding.streamSessionId,
+                        app.getAppId(), currentAppId);
+            } catch (IOException rejected) {
+                unresolved = rejected;
+            }
+            if (reconciled == null || !reconciled.succeeded()) {
+                // The answer was lost, so the permit may exist without an owner: no effect
+                // was sent under it, and the host releases it on this declaration.
+                ControlOperationClient.Result abandoned =
+                        abandonControlStart(operationId, app.getAppId(), 0L);
+                if (abandoned != null && abandoned.succeeded()) {
+                    // The host found it started all the same: closed like a cancelled start.
+                    context.connListener.startLeftOnHost(abandoned.generation);
+                }
+                throw abandoned != null && !abandoned.succeeded() ? unavailable : unresolved;
+            }
+            permit = controlBinding.client.acquire(controlBinding.connection,
+                    controlBootstrapOperationId, "reconnect",
+                    controlBinding.streamSessionId, app.getAppId(),
+                    reconciled.generation, currentAppId, controlBinding.childSessionId);
+        }
+        boolean replayed = permit.succeeded();
+        if (replayed) {
+            permit = controlBinding.client.acquireBootstrapAfterReplay(
+                    controlBinding.connection, controlBootstrapOperationId,
+                    permit, currentAppId, controlBinding.childSessionId);
+        }
+        if (startAbandoned && currentAppId == 0 && !replayed) {
+            // Cancelled before the effect of a fresh start: nothing is sent. The host releases
+            // the permit, or names the generation of a stream it found started, which the
+            // listener closes. A start onto an application already running on the host goes
+            // on instead: only its completed generation lets the listener close that stream.
+            ControlOperationClient.Result abandoned =
+                    abandonControlStart(permit.operationId, app.getAppId(), permit.generation);
+            if (abandoned != null && abandoned.succeeded()) {
+                controlGeneration = abandoned.generation;
+                return true;
+            }
+            startReleased = true;
+            return false;
+        }
+        boolean succeeded = false;
+        try {
+            succeeded = startAppEffect(h, serverInfo, app);
+            if (!succeeded) {
+                try {
+                    controlBinding.client.complete(
+                            controlBinding.connection, permit, false, true);
+                } catch (IOException ignored) {
+                    // The received effect failure is definitive, but a lost terminal
+                    // response remains recoverable through the same operation ID.
+                }
+                return false;
+            }
+            ControlOperationClient.Result terminal;
+            try {
+                terminal = controlBinding.client.complete(
+                        controlBinding.connection, permit, true);
+            } catch (GatewayTransport.GatewayException rejected) {
+                throw rejected;
+            } catch (IOException lostResponse) {
+                int observed = h.getComputerDetails(true).runningGameId;
+                terminal = controlBinding.client.reconcile(
+                        controlBinding.connection, permit, observed);
+            }
+            if (!terminal.succeeded()) return false;
+            controlGeneration = terminal.generation;
+            return true;
+        } catch (IOException | XmlPullParserException | RuntimeException error) {
+            if (!succeeded) {
+                try {
+                    controlBinding.client.complete(controlBinding.connection, permit, false);
+                } catch (IOException ignored) {
+                    // The host keeps the operation UNCERTAIN until explicit reconciliation.
+                }
+            }
+            throw error;
+        }
+    }
+
+    private boolean startAppEffect(NvHTTP h, String serverInfo, NvApp app)
+            throws XmlPullParserException, IOException {
         // If there's a game running, resume it
         if (h.getCurrentGame(serverInfo) != 0) {
             try {
@@ -392,7 +580,8 @@ public class NvConnection {
 
                 try {
                     if (!startApp()) {
-                        context.connListener.stageFailed(appName, 0, 0);
+                        // A cancelled start that sent nothing has no failure to report.
+                        if (!startReleased) context.connListener.stageFailed(appName, 0, 0);
                         return;
                     }
                     context.connListener.stageComplete(appName);
@@ -403,6 +592,16 @@ public class NvConnection {
                     return;
                 } catch (XmlPullParserException | IOException e) {
                     e.printStackTrace();
+                    if (e instanceof GatewayTransport.GatewayException && (startRefused
+                            || ((GatewayTransport.GatewayException) e).statusCode() == 409)) {
+                        int status = ((GatewayTransport.GatewayException) e).statusCode();
+                        String reason = ((GatewayTransport.GatewayException) e).reason();
+                        // A pairing or grant refusal carries no reason; its status names it.
+                        if (reason == null) reason = status == 401 ? "unauthorized"
+                                : status == 403 ? "forbidden" : "";
+                        context.connListener.controlRejected(appName, reason, startRefused);
+                        return;
+                    }
                     context.connListener.displayMessage(e.getMessage());
                     context.connListener.stageFailed(appName, MoonBridge.ML_PORT_FLAG_TCP_47984 | MoonBridge.ML_PORT_FLAG_TCP_47989, 0);
                     return;
@@ -414,7 +613,7 @@ public class NvConnection {
                 // Acquire the connection semaphore to ensure we only have one
                 // connection going at once.
                 try {
-                    connectionAllowed.acquire();
+                    startGate.acquire();
                 } catch (InterruptedException e) {
                     context.connListener.displayMessage(e.getMessage());
                     context.connListener.stageFailed(appName, 0, 0);
@@ -424,6 +623,9 @@ public class NvConnection {
                 // Moonlight-core is not thread-safe with respect to connection start and stop, so
                 // we must not invoke that functionality in parallel.
                 synchronized (MoonBridge.class) {
+                    // Stopped while the app launched: the listener already learned the control
+                    // generation from stageComplete and owns the host stream's close.
+                    if (!startGate.tryBegin()) return;
                     MoonBridge.setupBridge(videoDecoderRenderer, audioRenderer, connectionListener);
                     int ret = MoonBridge.startConnection(context.serverAddress.address,
                             context.serverAppVersion, context.serverGfeVersion, context.rtspSessionUrl,
@@ -442,7 +644,7 @@ public class NvConnection {
                         // LiStartConnection() failed, so the caller is not expected
                         // to stop the connection themselves. We need to release their
                         // semaphore count for them.
-                        connectionAllowed.release();
+                        startGate.startFailed();
                         return;
                     }
                 }

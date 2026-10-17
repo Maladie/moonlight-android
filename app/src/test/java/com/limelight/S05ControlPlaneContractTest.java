@@ -1,0 +1,273 @@
+package com.limelight;
+
+import org.junit.Test;
+
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+import static com.limelight.SourceText.assertOrdered;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+public class S05ControlPlaneContractTest {
+    @Test public void directSunshineEffectsExistOnlyInsideTheExactPermitLifetime()
+            throws Exception {
+        String connection = source("com/limelight/nvstream/NvConnection.java");
+        String start = between(connection, "private boolean startApp(",
+                "private boolean startAppEffect(");
+        assertOrdered(start, "controlBinding.client.acquire(", "startAppEffect(",
+                "controlBinding.client.complete(");
+        assertTrue(start.contains("controlBinding.expectedGeneration, currentAppId"));
+
+        String host = source("com/limelight/stream/HostSessionTermination.java");
+        assertOrdered(host, "getComputerDetails(true)",
+                "control.acquire(");
+        assertOrdered(host, "control.acquire(",
+                "provider.stopEvidenceWithinControl(");
+        assertOrdered(host, "provider.stopGameWithinControl(",
+                "http.quitApp()");
+
+        assertFalse(source("com/limelight/Game.java").contains(".quitApp("));
+        assertFalse(source("com/limelight/console/ConsoleActivity.java")
+                .contains(".quitApp("));
+    }
+
+    @Test public void cancelledOrUnansweredStartHandsItsPermitBackBeforeAnyEffect()
+            throws Exception {
+        String connection = source("com/limelight/nvstream/NvConnection.java");
+        String start = between(connection, "private boolean startApp(",
+                "private boolean startAppEffect(");
+        // A lost acquire answer: reconcile first, then the declaration, never an effect.
+        // Cancel before the effect: the permit is abandoned and the launch is never sent.
+        assertOrdered(start, "catch (IOException unavailable)", "controlBinding.client.reconcile(",
+                "abandonControlStart(operationId, app.getAppId(), 0L)",
+                "if (startAbandoned && currentAppId == 0 && !replayed) {",
+                "abandonControlStart(permit.operationId, app.getAppId(), permit.generation)",
+                "succeeded = startAppEffect(");
+        int cancelled = start.indexOf("if (startAbandoned && currentAppId == 0 && !replayed) {");
+        int effect = start.indexOf("succeeded = startAppEffect(");
+        String branch = start.substring(cancelled, effect);
+        assertTrue(branch.contains("controlGeneration = abandoned.generation;"));
+        assertTrue(branch.contains("startReleased = true;"));
+        assertFalse(branch.contains(".complete("));
+        assertTrue(connection.contains(
+                "if (!startReleased) context.connListener.stageFailed(appName, 0, 0);"));
+        assertTrue(source("com/limelight/stream/AndroidStreamRuntime.java").contains(
+                "@Override public void abandonStart() { connection.abandonStart(); }"));
+    }
+
+    @Test public void semanticAcquireRejectionIsNotReconciledAsTransportLoss()
+            throws Exception {
+        String connection = source("com/limelight/nvstream/NvConnection.java");
+        String start = between(connection, "private boolean startApp(",
+                "private boolean startAppEffect(");
+        // The host's refusal of the acquire (4xx) is rethrown before any reconcile; a 5xx,
+        // an unreadable answer and a lost transport may follow a granted permit.
+        int transport = start.indexOf("catch (IOException unavailable)");
+        int semantic = start.indexOf("if (refusedStatus >= 400 && refusedStatus < 500) {");
+        int rethrown = start.indexOf("throw unavailable;", semantic);
+        int reconcile = start.indexOf("controlBinding.client.reconcile(");
+        assertTrue(transport >= 0 && transport < semantic && semantic < rethrown
+                && rethrown < reconcile);
+        assertFalse(start.substring(transport, rethrown).contains(".reconcile("));
+        int complete = start.indexOf("controlBinding.client.complete(", reconcile);
+        int completeSemantic = start.indexOf(
+                "catch (GatewayTransport.GatewayException", complete);
+        int completeTransport = start.indexOf("catch (IOException lostResponse)", complete);
+        int completeReconcile = start.indexOf("controlBinding.client.reconcile(", complete);
+        assertTrue(completeSemantic > complete && completeSemantic < completeTransport
+                && completeTransport < completeReconcile);
+    }
+
+    @Test public void normalTerminalEntrypointsJoinOwnerButHardResetBypassesIt() throws Exception {
+        String console = source("com/limelight/console/ConsoleActivity.java");
+        String terminate = between(console,
+                "private void requestTerminateSession(ComputerDetails host, String",
+                "private boolean isPairingContextCurrent(");
+        String hard = between(console, "private void requestHardTerminateSession(",
+                "private void finishHardTerminate(");
+        assertTrue(terminate.contains("new SessionEvent.TerminateRequested("));
+        assertFalse(hard.contains("new SessionEvent.TerminateRequested("));
+        assertTrue(hard.contains("clearHardResetSessionState(host, profileKey)"));
+        assertTrue(hard.contains("hardResetHost(gateway, childSessionId)"));
+        assertFalse(terminate.contains("new SessionEvent.Disconnect("));
+    }
+
+    @Test public void ordinaryQuitAcceptsAlreadyIdleProviderAndDoesNotPoisonBarrier()
+            throws Exception {
+        String host = source("com/limelight/stream/HostSessionTermination.java");
+
+        assertTrue(host.contains(
+                "String exact = stopTarget(expectedGame, gameState, currentGame);"));
+        // An idle permit (no provider game) is the Gateway's proof: no racy provider re-read
+        // may reject the quit before /cancel (effect_rejected, Desktop kept running).
+        // Every permit naming a game is verified: no caller may skip it.
+        assertTrue(host.contains("if (!permit.providerGameId.isEmpty()) {"));
+        assertFalse(host.contains("providerAlreadyStopped"));
+        assertTrue(host.contains(
+                "control.complete(gateway, permit, false, !effectResultUncertain)"));
+        assertTrue(host.contains("\"control-full-quit-\" + UUID.randomUUID()"));
+        assertTrue(host.contains(
+                "return closed(control.complete(gateway, permit, true).succeeded(),"));
+    }
+
+    @Test public void terminalLocalEffectsDoNotDependOnViewsOrHostRpc() throws Exception {
+        String game = source("com/limelight/Game.java");
+        String privacy = between(game, "private void applyImmediateTerminalPrivacy(",
+                "private void openTerminalConsoleHome(");
+        String terminate = between(game, "private void terminateWholeSessionVerified(",
+                "private void applyImmediateTerminalPrivacy(");
+        assertTrue(privacy.contains("controllerHandler.setInputSuppressed(true)"));
+        assertTrue(privacy.contains("if (overlayMenuView != null)"));
+        // The cover is the controller's closing one; full quit never waits for a frame.
+        assertTrue(privacy.contains("transitionController.closingStream(transitionSpec.id)"));
+        assertFalse(privacy.contains("showOpaque"));
+        assertFalse(privacy.contains("awaitCover("));
+        assertFalse(terminate.contains("awaitCover("));
+
+        assertTrue(terminate.contains("wholeSessionTermination.run("));
+        assertTrue(terminate.contains("stopConnectionResult("));
+        assertTrue(terminate.contains("HostSessionTermination.run("));
+        int rejected = terminate.indexOf("Whole-session termination rejected");
+        assertTrue(rejected >= 0);
+        assertFalse(terminate.substring(rejected,
+                terminate.indexOf("wholeSessionTermination.run(")).contains("return;"));
+    }
+
+    @Test public void childTerminalUsesCommonOwnerWhileGameOnlyRetainStaysDistinct()
+            throws Exception {
+        String game = source("com/limelight/Game.java");
+        String terminal = between(game, "private void finishChildSession(",
+                "private boolean childStateMatches(");
+        String disconnect = between(source("com/limelight/stream/StreamRuntime.java"),
+                "@Override public void disconnectRetainedStream(",
+                "@Override public void terminateRetainedSession(");
+        assertTrue(terminal.contains("terminateWholeSessionVerified(null)"));
+        assertFalse(game.contains("terminateChildSession("));
+        String awaitedEnd = between(game, "private ChildSessionClient.State endChildSessionAndWait(",
+                "private void endChildSession(");
+        assertTrue(awaitedEnd.contains("client.end("));
+        assertTrue(awaitedEnd.contains("client.status("));
+        assertTrue(awaitedEnd.contains("SystemClock.elapsedRealtime() + 30_000L"));
+        assertTrue(awaitedEnd.contains("!ChildSessionLifecycle.terminal(state)"));
+        assertTrue(disconnect.contains("stop(result ->"));
+        assertFalse(disconnect.contains("terminateHost("));
+        assertTrue(source("com/limelight/console/ConsoleStreamTransitionCoordinator.java")
+                .contains("callbacks.controlTransportAuthorized()"));
+        String lifecycle = source("com/limelight/console/ChildSessionLifecycle.java");
+        assertTrue(lifecycle.contains("ChildTerminalPolicy.action("));
+        assertFalse(lifecycle.contains("WholeSessionTermination.Owner"));
+        assertFalse(lifecycle.contains("TerminationActions"));
+        assertFalse(game.contains("childHeartbeatRunnable"));
+        assertFalse(game.contains("childCountdownRunnable"));
+        assertFalse(game.contains("ChildTerminalPolicy.apply("));
+        String close = between(game, "private void closeStreamWithPrivacy(",
+                "private ");
+        assertTrue(close.contains("terminateWholeSessionVerified(null)"));
+        String common = between(game, "private void terminateWholeSessionVerified("
+                        + "SessionModel.TerminationCallback completion,\n"
+                        + "            boolean requesterPresentsHome, String namedGameId)",
+                "private void applyImmediateTerminalPrivacy(");
+        assertTrue(common.contains("if (!wholeSessionTermination.begin())"));
+        assertTrue(common.contains("stopChildMonitoring()"));
+        assertTrue(game.contains("CHILD_HEARTBEAT_INTERVAL_MS = 30_000L"));
+        assertTrue(game.contains("setSuspendSessionAvailable(true)"));
+        assertFalse(game.contains("setSuspendSessionAvailable(!isChildSession())"));
+        String overlay = source("com/limelight/ui/overlay/OverlayMenuView.java");
+        assertFalse(overlay.contains("hostActionsAvailable"));
+        int suspend = overlay.indexOf("if (suspendSessionAvailable)");
+        int quit = overlay.indexOf("R.string.console_close_session", suspend);
+        assertTrue(quit > suspend);
+        assertTrue(overlay.substring(suspend, quit).contains("}"));
+    }
+
+    @Test public void capabilityAndPostQuitWarmupSuppressionAreProductionWired()
+            throws Exception {
+        String gateway = source("com/limelight/console/HostGatewayClient.java");
+        String console = source("com/limelight/console/ConsoleActivity.java");
+        assertTrue(gateway.contains("available(capabilities, \"control_operations_v2\")"));
+        assertTrue(console.contains(
+                "if (!hostGatewayClient.getCapabilities(connection).controlOperations)"));
+        assertTrue(console.contains("EXTRA_SUPPRESS_AUTO_WARM_UP"));
+        assertTrue(source("com/limelight/Game.java").contains(
+                "home.putExtra(ConsoleActivity.EXTRA_SUPPRESS_AUTO_WARM_UP, true)"));
+    }
+
+    @Test public void acknowledgedRetainedHandoffUsesAtomicCommitAndExactCompensation() throws Exception {
+        String game = source("com/limelight/Game.java");
+        String transfer = between(game, "private void beginNewRetainedGameAttempt(",
+                "private void releaseUnusedAllowance(");
+        assertTrue(transfer.contains("RetainedControlHandoff.finish("));
+        assertTrue(transfer.contains("new SessionEvent.Reauthorize("));
+        assertTrue(transfer.contains(
+                "new SessionEvent.ProviderReauthorize("));
+        assertTrue(transfer.contains("providerIdentity.processToken"));
+        assertTrue(transfer.contains("providerIdentity.processId"));
+        assertTrue(transfer.contains("authorization.actorLeaseEpoch"));
+        assertFalse(transfer.contains("new SessionEvent.ActorBound("));
+        assertTrue(transfer.contains("authorizationCompensated.compareAndSet(false, true)"));
+        assertTrue(transfer.contains("authorization.streamSessionId, authorization.sunshineAppId"));
+        assertTrue(transfer.contains("authorization.generation,"));
+        assertTrue(transfer.contains("targetGateway, allowance.sessionId, \"cancelled\""));
+        assertTrue(transfer.contains("new SessionEvent.ReauthorizationDiscarded("));
+    }
+
+    @Test public void savedRecoveryRebindsActorWithinTheSameExecutionLifecycle()
+            throws Exception {
+        String console = source("com/limelight/console/ConsoleActivity.java");
+        String reconnect = between(console,
+                "private void reconnectSavedSessionForActor(",
+                "private ChildSessionClient.State releasePersistedChildTimeAttachment(");
+        assertTrue(reconnect.contains("targetExecution.equals(pending.executionProfileId)"));
+        assertTrue(reconnect.contains("!intent.profileId.equals(pending.profileId)"));
+        assertTrue(reconnect.contains("!pending.childSessionId.isEmpty() && !isChildIntent(intent)"));
+        assertTrue(reconnect.contains(
+                "releasePersistedChildTimeAttachment(\n                            pending, intent.profileId)"));
+        assertTrue(reconnect.contains("startChildSession(intent, cancelled)"));
+        assertTrue(reconnect.contains("failClosedActorHandoff(intent, pending, accepted)"));
+        assertTrue(reconnect.contains("failClosedActorHandoff(intent, pending, binding)"));
+        String resume = between(console, "private String startResumeActivity(",
+                "private void failClosedActorHandoff(");
+        assertTrue(resume.contains("Game.EXTRA_CONTROL_INTENT, \"reauthorize\""));
+        assertTrue(resume.contains("Game.EXTRA_PROFILE_ID, intent.profileId"));
+        assertTrue(resume.contains("Game.EXTRA_EXECUTION_PROFILE_ID"));
+        assertOrdered(resume, "if (actorHandoff)",
+                "resume.removeExtra(Game.EXTRA_CHILD_SESSION_ID)");
+        String game = source("com/limelight/Game.java");
+        assertTrue(game.contains(
+                "launch|resume|reconnect|replacement|warm_up|reauthorize"));
+        String connection = source("com/limelight/nvstream/NvConnection.java");
+        String start = between(connection, "private boolean startApp(",
+                "private boolean startAppEffect(");
+        assertTrue(start.contains(
+                "\"reauthorize\".equals(controlBinding.intent) ? \"reauthorize\""));
+        assertTrue(start.contains("acquireBootstrapAfterReplay("));
+        assertTrue(game.contains("SessionEvent.SuspendedEnded.forExecution("));
+        assertTrue(console.contains("records.recentlyEndedForExecution("));
+        String compensation = between(console, "private void failClosedActorHandoff(",
+                "private SessionOrchestrator.CloseResult switchRetainedProviderGame(");
+        assertOrdered(compensation, "releaseNewChildTimeAttachmentAndWait(newBinding)",
+                "terminateKnownControlPlane(");
+        assertTrue(compensation.contains("client.end("));
+        assertTrue(compensation.contains("client.status("));
+        assertTrue(compensation.contains("SystemClock.elapsedRealtime() + 30_000L"));
+        String known = between(console, "private long knownControlGeneration(",
+                "private String knownProviderGameId(");
+        assertTrue(known.contains("retained.executionProfileId"));
+        assertTrue(known.contains("pending.executionProfileId"));
+        assertFalse(known.contains("retained.profileId"));
+        assertFalse(known.contains("pending.profileId"));
+    }
+
+    private static String source(String relative) throws Exception {
+        Path path = Paths.get("src/main/java", relative);
+        return SourceText.read(path);
+    }
+
+    private static String between(String source, String start, String end) {
+        int from = source.indexOf(start);
+        int to = source.indexOf(end, from + start.length());
+        assertTrue(from >= 0 && to > from);
+        return source.substring(from, to);
+    }
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "task_id": null,
+  "run_id": null,
+  "role": "worker",
+  "actual_model": null,
+  "status": "REVIEW_PENDING",
+  "source": {
+    "repository": "Maladie/moonlight-android",
+    "branch": null,
+    "head_before": null,
+    "head_after": null,
+    "input_fingerprint": null,
+    "output_fingerprint": null,
+    "diff_artifact": null,
+    "dirty_baseline_preserved": null
+  },
+  "dependency_reports": [],
+  "finding_dispositions": [],
+  "changed_files": [],
+  "contracts_changed": [],
+  "compatibility_notes": [],
+  "task_checks": [
+    {
+      "id": null,
+      "requirement": null,
+      "status": "NOT_RUN",
+      "command": null,
+      "exit_code": null,
+      "expected": null,
+      "observed": null,
+      "evidence_artifact": null
+    }
+  ],
+  "scenario_evidence": [
+    {
+      "test_id": null,
+      "covered_assertions": [],
+      "code_status": "NOT_RUN",
+      "device_status": "NOT_RUN",
+      "evidence_artifacts": [],
+      "remaining_scope": null
+    }
+  ],
+  "validation_commands": [],
+  "blockers": [],
+  "device_gates_pending": [],
+  "risks": [],
+  "next_action": null,
+  "checkpoint": {
+    "usable_without_followup": null,
+    "production_path_integrated": null,
+    "future_task_required": null,
+    "improvement": null,
+    "plan_artifact": null,
+    "plan_sha256": null,
+    "gate_report": null,
+    "architecture_artifact": null,
+    "compatibility_artifact": null,
+    "recovery_artifact": null,
+    "protected_flows": [],
+    "remaining_original_findings": []
+  }
+}

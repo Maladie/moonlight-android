@@ -4,7 +4,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 
-import com.limelight.nvstream.NvConnection;
+import com.limelight.nvstream.StreamInput;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.preferences.PreferenceConfiguration;
 
@@ -23,7 +23,7 @@ public class RelativeTouchContext implements TouchContext {
     private int pointerCount;
     private int maxPointerCountInGesture;
 
-    private final NvConnection conn;
+    private final StreamInput conn;
     private final int actionIndex;
     private final int referenceWidth;
     private final int referenceHeight;
@@ -91,7 +91,7 @@ public class RelativeTouchContext implements TouchContext {
 
     private static final int SCROLL_SPEED_FACTOR = 5;
 
-    public RelativeTouchContext(NvConnection conn, int actionIndex,
+    public RelativeTouchContext(StreamInput conn, int actionIndex,
                                 int referenceWidth, int referenceHeight,
                                 View view, PreferenceConfiguration prefConfig)
     {

@@ -5,6 +5,11 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.Typeface;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.AbsoluteSizeSpan;
+import android.text.style.TypefaceSpan;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -20,10 +25,17 @@ public class OverlayMenuButton extends LinearLayout {
     private static final int ICON_SIZE_DP = 24;
     private static final int PADDING_DP = 12;
     private static final int TEXT_SIZE_SP = 12;
-    private static final int CORNER_RADIUS_DP = 8;
+    static final int CORNER_RADIUS_DP = 8;
+    /** The overlay's one palette: dark translucent surface, white focus with black ink. */
+    static final int SURFACE = 0xD9000000;
+    static final int FOCUS_FILL = 0xC0FFFFFF;
+    static final int TEXT = Color.WHITE;
+    static final int TEXT_SECONDARY = 0xFFB8BDCC;
+    static final int INK = Color.BLACK;
 
     private ImageView iconView;
     private TextView labelView;
+    private TextView shortcutView;
     private GradientDrawable background;
     private boolean isSelected = false;
     private int strokeWidth;
@@ -60,10 +72,7 @@ public class OverlayMenuButton extends LinearLayout {
         setFocusable(true);
 
         // Create background drawable
-        background = new GradientDrawable();
-        background.setShape(GradientDrawable.RECTANGLE);
-        background.setCornerRadius(CORNER_RADIUS_DP * density);
-        background.setColor(0xD9000000); // Semi-transparent black
+        background = surface(context, false, CORNER_RADIUS_DP);
         setBackground(background);
 
         // Create icon view
@@ -86,6 +95,13 @@ public class OverlayMenuButton extends LinearLayout {
         labelView.setTextColor(Color.WHITE);
         labelView.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         addView(labelView);
+
+        shortcutView = new TextView(context);
+        LinearLayout.LayoutParams shortcutParams = new LinearLayout.LayoutParams(iconSize, iconSize);
+        shortcutParams.leftMargin = (int) (8 * density);
+        shortcutView.setLayoutParams(shortcutParams);
+        shortcutView.setVisibility(GONE);
+        addView(shortcutView);
     }
 
     /**
@@ -111,6 +127,38 @@ public class OverlayMenuButton extends LinearLayout {
         labelView.setVisibility(text != null && !text.isEmpty() ? VISIBLE : GONE);
     }
 
+    public void setShortcut(Typeface typeface, String glyph) {
+        shortcutView.setTypeface(typeface);
+        shortcutView.setText(glyph);
+        showShortcut();
+    }
+
+    /** A Guide chord ({@link com.limelight.ui.ControllerGlyphs#chord}); its text before the glyph is smaller. */
+    public void setGuideChordShortcut(SpannableString value) {
+        TypefaceSpan[] glyph = value.getSpans(0, value.length(), TypefaceSpan.class);
+        int start = glyph.length == 0 ? value.length() : value.getSpanStart(glyph[0]);
+        value.setSpan(new AbsoluteSizeSpan(TEXT_SIZE_SP, true), 0, start,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        shortcutView.setTypeface(Typeface.DEFAULT);
+        shortcutView.setText(value);
+        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) shortcutView.getLayoutParams();
+        params.width = LayoutParams.WRAP_CONTENT;
+        shortcutView.setLayoutParams(params);
+        showShortcut();
+    }
+
+    public void clearShortcut() {
+        shortcutView.setText("");
+        shortcutView.setVisibility(GONE);
+    }
+
+    private void showShortcut() {
+        shortcutView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        shortcutView.setTextColor(isSelected ? INK : TEXT);
+        shortcutView.setGravity(Gravity.CENTER);
+        shortcutView.setVisibility(VISIBLE);
+    }
+
     /**
      * Set whether this button is currently selected
      */
@@ -134,17 +182,37 @@ public class OverlayMenuButton extends LinearLayout {
     private void updateAppearance() {
         if (isSelected) {
             // Highlighted state - brighter background
-            background.setColor(0xC0FFFFFF); // Semi-transparent white
-            background.setStroke(strokeWidth, 0xFFFFFFFF); // White border
-            iconView.setImageTintList(ColorStateList.valueOf(0xFF000000)); // Black icon
-            labelView.setTextColor(Color.BLACK);
+            style(background, true, strokeWidth);
+            iconView.setImageTintList(ColorStateList.valueOf(INK));
+            shortcutView.setTextColor(INK);
+            labelView.setTextColor(INK);
         } else {
-            // Normal state
-            background.setColor(0xD9000000); // Semi-transparent black
-            background.setStroke(0, 0); // No border
-            iconView.setImageTintList(ColorStateList.valueOf(0xFFFFFFFF)); // White icon
-            labelView.setTextColor(Color.WHITE);
+            style(background, false, strokeWidth);
+            iconView.setImageTintList(ColorStateList.valueOf(TEXT));
+            shortcutView.setTextColor(TEXT);
+            labelView.setTextColor(TEXT);
         }
+    }
+
+    /** The overlay surface: {@link #SURFACE} at rest, the white focus fill when focused. */
+    static GradientDrawable surface(Context context, boolean focused, int radiusDp) {
+        float density = context.getResources().getDisplayMetrics().density;
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setShape(GradientDrawable.RECTANGLE);
+        drawable.setCornerRadius(radiusDp * density);
+        style(drawable, focused, (int) (2 * density));
+        return drawable;
+    }
+
+    private static void style(GradientDrawable drawable, boolean focused, int strokeWidth) {
+        drawable.setColor(focused ? FOCUS_FILL : SURFACE);
+        drawable.setStroke(focused ? strokeWidth : 0, focused ? Color.WHITE : 0);
+    }
+
+    /** Text that is {@code color} at rest and {@link #INK} on a focused parent's fill. */
+    static ColorStateList textColors(int color) {
+        return new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}},
+                new int[]{INK, color});
     }
 
     public void hideIcon() {
@@ -164,4 +232,5 @@ public class OverlayMenuButton extends LinearLayout {
         button.setLabel(label);
         return button;
     }
+
 }

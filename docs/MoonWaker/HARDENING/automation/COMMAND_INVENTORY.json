@@ -1,0 +1,125 @@
+{
+  "repository_sha": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "all_execution_results": "NOT_RUN",
+  "commands": [
+    {
+      "id": "android-unit",
+      "cwd": ".",
+      "unix": [
+        "./gradlew",
+        "testNonRootDebugUnitTest"
+      ],
+      "windows": [
+        ".\\gradlew.bat",
+        "testNonRootDebugUnitTest"
+      ],
+      "status": "COMMAND_VERIFIED_NOT_RUN",
+      "source": [
+        "R1",
+        "R2"
+      ],
+      "notes": "JUnit test configuration verified. Inspect availability and capture fresh XML; use a rerun for acceptance if stale/cached evidence would otherwise be read."
+    },
+    {
+      "id": "android-debug-build",
+      "cwd": ".",
+      "unix": [
+        "./gradlew",
+        "assembleNonRootDebug"
+      ],
+      "windows": [
+        ".\\gradlew.bat",
+        "assembleNonRootDebug"
+      ],
+      "status": "DERIVED_FROM_VERIFIED_VARIANTS_NOT_RUN",
+      "source": [
+        "R2"
+      ],
+      "notes": "Verify task graph, submodules, SDK/NDK and local optional dependencies."
+    },
+    {
+      "id": "android-release-build",
+      "cwd": ".",
+      "unix": [
+        "./gradlew",
+        "assembleNonRootRelease"
+      ],
+      "windows": [
+        ".\\gradlew.bat",
+        "assembleNonRootRelease"
+      ],
+      "status": "DERIVED_FROM_VERIFIED_VARIANTS_NOT_RUN",
+      "source": [
+        "R2"
+      ],
+      "notes": "No signing secrets required for build-only output; do not claim installable signed release without explicitly configured authorized signing."
+    },
+    {
+      "id": "gateway-unit",
+      "cwd": "host-services/gateway",
+      "argv": [
+        "{python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".",
+        "-p",
+        "test_*.py",
+        "-v"
+      ],
+      "status": "DISCOVERY_FROM_VERIFIED_TEST_FILES_NOT_RUN",
+      "source": [
+        "R3"
+      ],
+      "notes": "Inspect all selected suites for side effects/dependencies before enabling."
+    },
+    {
+      "id": "bridge-unit",
+      "cwd": "host-services/bridges/playnite",
+      "argv": [
+        "{python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".",
+        "-p",
+        "test_*.py",
+        "-v"
+      ],
+      "status": "DISCOVERY_FROM_VERIFIED_TEST_FILES_NOT_RUN",
+      "source": [
+        "R4"
+      ],
+      "notes": "Some modules emulate Windows APIs; distinguish portable unit checks from Windows-only integration."
+    },
+    {
+      "id": "broker-selftest",
+      "cwd": ".",
+      "windows": [
+        "powershell.exe",
+        "-NoProfile",
+        "-File",
+        "host-services/windows-login/login-broker/Test-MoonWakerLoginBroker.ps1"
+      ],
+      "status": "SCRIPT_VERIFIED_NOT_RUN",
+      "source": [
+        "R5"
+      ],
+      "notes": "Requires Windows .NET Framework compiler; script builds and runs a temp self-test EXE. Verify result parser; this does not exercise the real secure desktop."
+    },
+    {
+      "id": "android-device",
+      "cwd": ".",
+      "status": "NOT_CONFIGURED_AT_INSPECTED_APP_BUILD",
+      "source": [
+        "R2",
+        "A2",
+        "A5",
+        "A6"
+      ],
+      "notes": "Add AndroidJUnitRunner/test dependencies and actual tests. Then discover exact connected<Variant>AndroidTest or dedicated external UI driver tasks. Do not assume a connected release test task exists by default."
+    }
+  ]
+}

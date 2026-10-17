@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "task_id": null,
+  "input_fingerprint": null,
+  "approved_by_coordinator_run": null,
+  "outcome": null,
+  "production_path": [],
+  "artifact_compatibility_matrix": [],
+  "architecture_boundary": null,
+  "required_checks": [],
+  "device_checks_required": false,
+  "required_device_check_ids": [],
+  "protected_flows": [
+    {
+      "flow_id": "F01",
+      "check_ids": [],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F02",
+      "check_ids": [],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F03",
+      "check_ids": [],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F04",
+      "check_ids": [],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F05",
+      "check_ids": [],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F06",
+      "check_ids": [],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F07",
+      "check_ids": [],
+      "original_defects": []
+    }
+  ],
+  "target_regression_check_ids": [],
+  "cumulative_fixed_path_check_ids": [],
+  "build_and_package_check_ids": [],
+  "baseline_exception_evidence": [],
+  "amendments": [],
+  "device_topic_bindings": []
+}

@@ -55,14 +55,36 @@
 
     <include layout="@layout/brightness_slider" />
 
-    <com.limelight.ui.overlay.OverlayMenuView
-        android:id="@+id/overlayMenuView"
+    <LinearLayout
+        android:id="@+id/discordDockView"
+        android:layout_width="290dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="right|top"
+        android:layout_marginTop="18dp"
+        android:layout_marginRight="18dp"
+        android:layout_marginEnd="18dp"
+        android:orientation="vertical"
+        android:padding="14dp"
+        android:background="@drawable/discord_dock_glass"
+        android:alpha="1"
+        android:elevation="8dp"
+        android:preferKeepClear="true"
+        android:visibility="gone" />
+
+    <com.limelight.console.DiscordDmToastView
+        android:id="@+id/discordDmToastView"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="20dp"
-        android:layout_marginLeft="20dp"
-        android:layout_marginStart="20dp"
-        android:layout_gravity="bottom|left"
+        android:layout_gravity="right|top"
+        android:layout_marginTop="18dp"
+        android:layout_marginRight="18dp"
+        android:layout_marginEnd="18dp"
+        android:preferKeepClear="true" />
+
+    <com.limelight.ui.overlay.OverlayMenuView
+        android:id="@+id/overlayMenuView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:background="@null"
         android:focusable="true"
         android:focusableInTouchMode="true"

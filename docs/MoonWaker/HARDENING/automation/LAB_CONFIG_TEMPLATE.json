@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "status": "UNAUTHORIZED_TEMPLATE",
+  "authorization_ref": null,
+  "candidate_artifact_manifest": null,
+  "controller_outside_target_host": null,
+  "android_device_serial": null,
+  "windows_test_host_alias": null,
+  "test_profile_alias": null,
+  "test_child_alias": null,
+  "allowlisted_probe_game_ids": [],
+  "allowed_operations": [],
+  "credentials": "External approved secret store only; never fill secrets here.",
+  "exclusive_lab_lock": null,
+  "cleanup_policy": null,
+  "artifact_redaction_policy": null
+}

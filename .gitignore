@@ -19,6 +19,9 @@ gen/
 # Local configuration file (sdk path, etc)
 local.properties
 
+# Locally provisioned Discord Social SDK vendor bundle (licensed binary dependency)
+/local-sdk/
+
 # Windows thumbnail db
 Thumbs.db
 
@@ -43,3 +46,25 @@ app/.externalNativeBuild/
 
 # NDK stuff
 .cxx/
+
+# Local TV build/deploy helpers (machine-specific SDK, JDK and ADB setup)
+/build-tv.ps1
+/deploy-tv.ps1
+
+# Host-service build output (produced by Build-HostServices.ps1)
+/host-services/dist/
+/host-services/control/dist/
+__pycache__/
+*.py[cod]
+
+# Local scratch: UI dumps and screenshots in the repository root, agent work
+# directories, and archived host builds (Build-HostServices.ps1 -OutputPath ...)
+/*.png
+/*.xml
+/work/
+/.tmp/
+/host-services/dist-*/
+/host-services/**/dist-*/
+
+# Gateway runtime state written next to the source by local runs
+/host-services/gateway/child-time-usage.json

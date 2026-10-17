@@ -1,0 +1,61 @@
+{
+  "checked_on": "2026-09-08",
+  "repository_sha": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "sources": [
+    {
+      "id": "A1",
+      "title": "Android UI Automator",
+      "url": "https://developer.android.com/training/testing/other-components/ui-automator"
+    },
+    {
+      "id": "A2",
+      "title": "Android command-line tests",
+      "url": "https://developer.android.com/studio/test/command-line"
+    },
+    {
+      "id": "A3",
+      "title": "Android process lifetime",
+      "url": "https://developer.android.com/guide/components/activities/process-lifecycle"
+    },
+    {
+      "id": "A4",
+      "title": "GitHub secure use / self-hosted runners",
+      "url": "https://docs.github.com/en/actions/reference/security/secure-use"
+    },
+    {
+      "id": "A5",
+      "title": "Android instrumentation setup",
+      "url": "https://developer.android.com/training/testing/instrumented-tests"
+    },
+    {
+      "id": "A6",
+      "title": "Android advanced build-variant testing",
+      "url": "https://developer.android.com/studio/test/advanced-test-setup"
+    },
+    {
+      "id": "R1",
+      "title": "AGENTS.md",
+      "url": "https://github.com/Maladie/moonlight-android/blob/00366fd92a1f283bf3aa04171ed3455ce62897ac/AGENTS.md"
+    },
+    {
+      "id": "R2",
+      "title": "app/build.gradle",
+      "url": "https://github.com/Maladie/moonlight-android/blob/00366fd92a1f283bf3aa04171ed3455ce62897ac/app/build.gradle"
+    },
+    {
+      "id": "R3",
+      "title": "host-services/gateway/test_child_sessions_http.py",
+      "url": "https://github.com/Maladie/moonlight-android/blob/00366fd92a1f283bf3aa04171ed3455ce62897ac/host-services/gateway/test_child_sessions_http.py"
+    },
+    {
+      "id": "R4",
+      "title": "host-services/bridges/playnite/test_playnite_bridge.py",
+      "url": "https://github.com/Maladie/moonlight-android/blob/00366fd92a1f283bf3aa04171ed3455ce62897ac/host-services/bridges/playnite/test_playnite_bridge.py"
+    },
+    {
+      "id": "R5",
+      "title": "host-services/windows-login/login-broker/Test-MoonWakerLoginBroker.ps1",
+      "url": "https://github.com/Maladie/moonlight-android/blob/00366fd92a1f283bf3aa04171ed3455ce62897ac/host-services/windows-login/login-broker/Test-MoonWakerLoginBroker.ps1"
+    }
+  ]
+}

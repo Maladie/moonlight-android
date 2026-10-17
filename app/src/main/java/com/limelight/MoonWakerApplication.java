@@ -1,0 +1,205 @@
+package com.limelight;
+
+import android.Manifest;
+import android.app.Activity;
+import android.app.Application;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.preference.PreferenceManager;
+import android.widget.Toast;
+
+import com.limelight.binding.audio.UsbMicrophoneService;
+import com.limelight.binding.audio.UsbMicrophonePermissionActivity;
+import com.limelight.binding.audio.DiscordAudioDownlink;
+import com.limelight.console.HostGatewayStore;
+import com.limelight.console.PlayQueue;
+import com.limelight.console.ProfileAuthorization;
+import com.limelight.gateway.GatewayConnection;
+
+import com.limelight.diagnostics.MoonWakerDiagnostics;
+import com.limelight.session.SessionModel;
+
+import java.io.File;
+
+public final class MoonWakerApplication extends Application implements
+        Application.ActivityLifecycleCallbacks, SessionModel.Owner, PlayQueue.Owner,
+        SharedPreferences.OnSharedPreferenceChangeListener {
+    private static final java.util.concurrent.atomic.AtomicInteger STARTED_ACTIVITIES =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private Activity resumedActivity;
+    private boolean audioPermissionRequested;
+    private boolean notificationPermissionRequested;
+    private SharedPreferences defaultPreferences;
+    private SharedPreferences consolePreferences;
+    private SharedPreferences gatewayPreferences;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final DiscordAudioDownlink discordAudio = new DiscordAudioDownlink();
+    private final Runnable stopDiscordAudio = discordAudio::stop;
+    private SessionModel sessionModel;
+    private final PlayQueue playQueue = new PlayQueue(android.os.SystemClock::uptimeMillis);
+
+    @Override public SessionModel sessionModel() {
+        return sessionModel;
+    }
+
+    @Override public PlayQueue playQueue() {
+        return playQueue;
+    }
+
+    @Override public void onCreate() {
+        super.onCreate();
+        MoonWakerDiagnostics.initialize(new File(getNoBackupFilesDir(), "diagnostics"));
+        MoonWakerDiagnostics.installCrashHandler();
+        MoonWakerDiagnostics.record("INFO", "app", "process.started");
+        com.limelight.diagnostics.ExitReasonRecorder.recordAtStart(this);
+        sessionModel = SessionModel.create(this);
+        if (BuildConfig.DEBUG) {
+            android.os.StrictMode.setThreadPolicy(new android.os.StrictMode.ThreadPolicy.Builder()
+                    .detectAll().penaltyLog().build());
+            android.os.StrictMode.setVmPolicy(new android.os.StrictMode.VmPolicy.Builder()
+                    .detectAll().penaltyLog().build());
+        }
+        registerActivityLifecycleCallbacks(this);
+        defaultPreferences = PreferenceManager.getDefaultSharedPreferences(this);
+        consolePreferences = getSharedPreferences(
+                UsbMicrophoneService.CONSOLE_PREFS, MODE_PRIVATE);
+        gatewayPreferences = getSharedPreferences(
+                UsbMicrophoneService.GATEWAY_PREFS, MODE_PRIVATE);
+        ProfileAuthorization.onChange(() -> mainHandler.post(this::updateDiscordAudio));
+        defaultPreferences.registerOnSharedPreferenceChangeListener(this);
+        consolePreferences.registerOnSharedPreferenceChangeListener(this);
+        gatewayPreferences.registerOnSharedPreferenceChangeListener(this);
+    }
+
+    private void updateUsbMicrophoneService() {
+        Activity activity = resumedActivity;
+        boolean enabled = PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(UsbMicrophoneService.PREF_ENABLED, false);
+        if (!enabled) {
+            notificationPermissionRequested = false;
+            UsbMicrophoneService.stop(this);
+            if (!UsbMicrophoneService.isDisabledAttentionState(
+                    UsbMicrophoneService.state(this))) {
+                UsbMicrophoneService.publishState(this, UsbMicrophoneService.STATE_OFF);
+            }
+            return;
+        }
+        if (activity == null) return;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            UsbMicrophoneService.disableWithState(
+                    this, UsbMicrophoneService.STATE_UNSUPPORTED);
+            return;
+        }
+        if (!UsbMicrophoneService.hasConfiguration(this)) {
+            UsbMicrophoneService.disableWithState(
+                    this, UsbMicrophoneService.STATE_GATEWAY_REQUIRED);
+            Toast.makeText(activity, R.string.usb_microphone_gateway_required,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            if (!audioPermissionRequested) {
+                audioPermissionRequested = true;
+                UsbMicrophoneService.publishState(
+                        this, UsbMicrophoneService.STATE_PERMISSION_REQUIRED);
+                UsbMicrophonePermissionActivity.request(activity);
+            } else {
+                UsbMicrophoneService.disableWithState(
+                        this, UsbMicrophoneService.STATE_PERMISSION_REQUIRED);
+                Toast.makeText(activity, R.string.usb_microphone_permission_required,
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED && !notificationPermissionRequested) {
+            notificationPermissionRequested = true;
+            activity.requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 7105);
+        }
+        UsbMicrophoneService.startFromVisibleActivity(activity);
+    }
+
+    private void updateDiscordAudio() {
+        Activity activity = resumedActivity;
+        if (activity == null) return;
+        String selectedHost = consolePreferences.getString(
+                UsbMicrophoneService.SELECTED_HOST, "");
+        HostGatewayStore store = new HostGatewayStore(this);
+        // A stream is already past the profile gate; the console is not until it grants a host.
+        GatewayConnection connection = activity instanceof Game
+                ? store.loadForHost(selectedHost, null)
+                : store.loadForPolling(selectedHost, null, null);
+        // Only a known parent profile has Discord routes; a child or unclassified profile
+        // would only collect 404s.
+        if (connection != null && !store.discordEligible(selectedHost, connection.profileId())) {
+            connection = null;
+        }
+        int gain = defaultPreferences.getInt(
+                DiscordAudioDownlink.GAIN_PREF, DiscordAudioDownlink.DEFAULT_GAIN);
+        discordAudio.start(connection, gain, !(activity instanceof Game));
+    }
+
+    @Override public void onSharedPreferenceChanged(SharedPreferences preferences, String key) {
+        String selectedHost = consolePreferences.getString(
+                UsbMicrophoneService.SELECTED_HOST, "");
+        boolean micChanged = (preferences == defaultPreferences
+                && UsbMicrophoneService.PREF_ENABLED.equals(key))
+                || (preferences == consolePreferences
+                && UsbMicrophoneService.SELECTED_HOST.equals(key))
+                || (preferences == gatewayPreferences
+                && UsbMicrophoneService.isGatewayKeyForSelectedHost(selectedHost, key));
+        boolean discordAudioChanged = (preferences == defaultPreferences
+                && DiscordAudioDownlink.GAIN_PREF.equals(key))
+                || (preferences == consolePreferences
+                && UsbMicrophoneService.SELECTED_HOST.equals(key))
+                || (preferences == gatewayPreferences
+                && (UsbMicrophoneService.isGatewayKeyForSelectedHost(selectedHost, key)
+                // The cached profile list decides Discord eligibility.
+                || (selectedHost + ".profiles").equals(key)));
+        if (micChanged) updateUsbMicrophoneService();
+        if (discordAudioChanged) updateDiscordAudio();
+    }
+
+    @Override public void onActivityResumed(Activity activity) {
+        mainHandler.removeCallbacks(stopDiscordAudio);
+        if (activity instanceof UsbMicrophonePermissionActivity) return;
+        resumedActivity = activity;
+        updateDiscordAudio();
+        updateUsbMicrophoneService();
+    }
+
+    @Override public void onActivityPaused(Activity activity) {
+        if (resumedActivity == activity) {
+            resumedActivity = null;
+            mainHandler.postDelayed(stopDiscordAudio, 750);
+        }
+    }
+
+    @Override public void onActivityCreated(Activity activity, Bundle state) { }
+    @Override public void onActivityStarted(Activity activity) {
+        STARTED_ACTIVITIES.incrementAndGet();
+        // The user is back: a pending close-and-exit no longer ends MoonWaker.
+        com.limelight.console.MoonWakerExit.withdraw();
+    }
+
+    @Override public void onActivityStopped(Activity activity) {
+        // The user left MoonWaker (not a screen handed over to the next, nor recreated):
+        // nothing queued behind a close waits for them.
+        if (STARTED_ACTIVITIES.decrementAndGet() == 0 && !activity.isChangingConfigurations()) {
+            playQueue.appLeft();
+        }
+    }
+
+    /** True while any MoonWaker Activity is started, i.e. the app may start a foreground service. */
+    public static boolean isAppForeground() {
+        return STARTED_ACTIVITIES.get() > 0;
+    }
+    @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
+    @Override public void onActivityDestroyed(Activity activity) { }
+}

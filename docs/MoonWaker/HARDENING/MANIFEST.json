@@ -1,0 +1,973 @@
+{
+  "schema_version": 1,
+  "packet_id": "moonwaker-session-hardening",
+  "created": "2026-09-09",
+  "repository": "Maladie/moonlight-android",
+  "expected_branch": "codex/session-hardening",
+  "audit_base_sha": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "execution_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "default_policy": {
+    "commit": false,
+    "push": false,
+    "open_pr": false,
+    "deploy": false,
+    "max_mutating_workers": 1,
+    "model_names_are_hints": true,
+    "requires_real_delegation_tool": true,
+    "parallel_policy": "Read-only work may run in parallel. Mutating parallelism requires coordinator-approved isolated worktrees, explicit patch integration and fresh integration review; no shared-file writers.",
+    "product_edits_in_S00": false,
+    "checkpoint_rule": "Every accepted implementation slice is integrated, usable without a later task, and no worse on the protected baseline. Missing mandatory device evidence blocks checkpoint acceptance.",
+    "create_local_work_branch": true,
+    "fetch_named_base": true,
+    "test_execution": "LOCAL_FIRST; GitHub Actions is not required. Routine safe checks run locally; live device actions need separately bounded authorization."
+  },
+  "task_statuses": [
+    "NOT_STARTED",
+    "IN_PROGRESS",
+    "DESIGN_REVIEW_PENDING",
+    "REVIEW_PENDING",
+    "CHANGES_REQUESTED",
+    "CODE_VERIFIED_DEVICE_PENDING",
+    "CHECKPOINT_ACCEPTED",
+    "ACCEPTED_NO_CHANGE",
+    "CLOSED_BY_OWNER",
+    "BLOCKED"
+  ],
+  "dependency_satisfied_statuses": [
+    "CHECKPOINT_ACCEPTED",
+    "ACCEPTED_NO_CHANGE",
+    "CLOSED_BY_OWNER"
+  ],
+  "source_files": {
+    "rules": "RULES.md",
+    "contracts": "CONTRACTS.json",
+    "correlation": "CORRELATION.md",
+    "findings": "FINDINGS.json",
+    "tests": "ACCEPTANCE.json",
+    "state": "STATE.json",
+    "checkpoints": "CHECKPOINTS.md",
+    "decomposition": "DECOMPOSITION.md",
+    "automation": "automation/TEST_STRATEGY.md",
+    "branching": "BRANCHING.md"
+  },
+  "tasks": [
+    {
+      "id": "S00",
+      "title": "Bind the baseline, checkpoint gates and safe test environment",
+      "depends_on": [],
+      "implementation_model_hint": "Astra",
+      "review_model_hint": "Sol",
+      "resource_locks": [
+        "audit-contract"
+      ],
+      "findings": [
+        "H01",
+        "H02",
+        "H03",
+        "H04",
+        "H05",
+        "H06",
+        "H07",
+        "H08",
+        "H09",
+        "H10",
+        "H11"
+      ],
+      "invariants": [
+        "I07",
+        "I08",
+        "I12",
+        "I18",
+        "I21",
+        "I24",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F01",
+        "F02",
+        "F03",
+        "F04",
+        "F05",
+        "F06",
+        "F07"
+      ],
+      "tests": [
+        "T43"
+      ],
+      "decisions": [
+        "D01",
+        "D02",
+        "D03",
+        "D04",
+        "D05",
+        "D06",
+        "D07",
+        "D08",
+        "D09"
+      ],
+      "source_hints": [
+        "docs/MoonWaker/HARDENING/BRANCHING.md",
+        "AGENTS.md",
+        "CODEX_WORKFLOW.md",
+        "MOONWAKER_ARCHITECTURE.md",
+        "CHILD_PROFILES_DESIGN.md",
+        "app/src/main/java/com/limelight/Game.java",
+        "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+        "host-services/gateway/wakeplay_gateway.py",
+        "host-services/bridges/playnite/GameProviderBridge.py"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S00.md",
+      "pre_edit_contract_review": false,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "No gameplay change is claimed: the current product still builds; repeatable baseline and explicit checkpoint evidence are available.",
+      "decomposition_requirement": "Map responsibilities in Game, ConsoleActivity, Gateway and provider bridge; identify existing owners, state, effects, callers, packaging and tests before naming any new class.",
+      "task_kind": "BASELINE",
+      "test_risk": "SETUP_ONLY",
+      "mandatory_real_device_topics": []
+    },
+    {
+      "id": "S01",
+      "title": "Fix and centralize immutable actor/execution Gateway context",
+      "depends_on": [
+        "S00"
+      ],
+      "implementation_model_hint": "Sol",
+      "review_model_hint": "Astra",
+      "resource_locks": [
+        "android-game",
+        "android-gateway-facade"
+      ],
+      "findings": [
+        "H02"
+      ],
+      "invariants": [
+        "I07",
+        "I08",
+        "I18",
+        "I21",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F04",
+        "F07"
+      ],
+      "tests": [
+        "T09",
+        "T16",
+        "T22",
+        "T37",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "decisions": [
+        "D07",
+        "D08",
+        "D09"
+      ],
+      "source_hints": [
+        "app/src/main/java/com/limelight/Game.java",
+        "app/src/main/java/com/limelight/console/PlayniteTransitionGateway.java"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S01.md",
+      "pre_edit_contract_review": false,
+      "include_correlation_contract": false,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "Child actions use their authorized endpoints and cannot fail solely because a parent-only health call was selected.",
+      "decomposition_requirement": "Centralize immutable actor/execution context in the existing Gateway boundary; remove ambiguous parent-default overload usage from all affected production callers.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "POLICY_AND_WIRING",
+      "mandatory_real_device_topics": []
+    },
+    {
+      "id": "S02",
+      "title": "Unify retention policy and preserve explicit preferences",
+      "depends_on": [
+        "S01"
+      ],
+      "implementation_model_hint": "Sol",
+      "review_model_hint": "Astra",
+      "resource_locks": [
+        "android-retention-preferences"
+      ],
+      "findings": [
+        "H04"
+      ],
+      "invariants": [
+        "I03",
+        "I17",
+        "I19",
+        "I23",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F05"
+      ],
+      "tests": [
+        "T05",
+        "T07",
+        "T27",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "decisions": [
+        "D01",
+        "D03",
+        "D07",
+        "D08"
+      ],
+      "source_hints": [
+        "app/src/main/java/com/limelight/stream/BackgroundStreamPreferences.java",
+        "app/src/main/java/com/limelight/stream/BackgroundStreamService.java",
+        "app/src/main/java/com/limelight/Game.java"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S02.md",
+      "pre_edit_contract_review": false,
+      "include_correlation_contract": false,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "A fresh release no longer silently disables the verified retention policy; explicit user choices survive migration.",
+      "decomposition_requirement": "Put defaults/migration/retention decisions in the existing preference/policy owner, not a second Activity branch.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "POLICY_AND_WIRING",
+      "mandatory_real_device_topics": []
+    },
+    {
+      "id": "S03",
+      "title": "Complete Windows preparation with positive readiness proof",
+      "depends_on": [
+        "S02"
+      ],
+      "implementation_model_hint": "Sol",
+      "review_model_hint": "Astra",
+      "resource_locks": [
+        "android-console",
+        "android-preflight"
+      ],
+      "findings": [
+        "H07",
+        "H08"
+      ],
+      "invariants": [
+        "I07",
+        "I08",
+        "I13",
+        "I14",
+        "I21",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F01",
+        "F06",
+        "F07"
+      ],
+      "tests": [
+        "T01",
+        "T29",
+        "T30",
+        "T31",
+        "T32",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "decisions": [
+        "D05",
+        "D07",
+        "D08",
+        "D09"
+      ],
+      "source_hints": [
+        "app/src/main/java/com/limelight/console/HostLaunchPreflight.java",
+        "app/src/main/java/com/limelight/console/HostReadiness.java",
+        "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+        "host-services/windows-login/login-broker/BrokerCore.cs"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S03.md",
+      "pre_edit_contract_review": false,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "Authorized unattended start no longer waits for a streamer that needs login first, and no ambiguous login result is accepted as READY.",
+      "decomposition_requirement": "Move sign-in sequencing, typed results and cancellation ownership out of ConsoleActivity into the existing preflight/session owner; Activity only reports progress and forwards intent.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "DEVICE_CRITICAL",
+      "mandatory_real_device_topics": [
+        "Authorized Windows sign-in with Gateway before streamer; denial/timeout"
+      ]
+    },
+    {
+      "id": "S04",
+      "title": "Extract and integrate one actual transport-stop completion",
+      "depends_on": [
+        "S03"
+      ],
+      "implementation_model_hint": "Sol",
+      "review_model_hint": "Astra",
+      "resource_locks": [
+        "android-game",
+        "retained-runtime"
+      ],
+      "findings": [
+        "H09"
+      ],
+      "invariants": [
+        "I08",
+        "I09",
+        "I19",
+        "I20",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F04",
+        "F05"
+      ],
+      "tests": [
+        "T10",
+        "T12",
+        "T25",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "decisions": [
+        "D07",
+        "D08",
+        "D09"
+      ],
+      "source_hints": [
+        "app/src/main/java/com/limelight/Game.java",
+        "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S04.md",
+      "pre_edit_contract_review": false,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "Concurrent quit callers observe one real stop; replacement cannot run ahead of resources still stopping.",
+      "decomposition_requirement": "Extract a small concrete stop lifecycle/completion owner with its state, resources/generation binding and all stop callers. Do not pass the whole Game Activity to a helper.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "DEVICE_CRITICAL",
+      "mandatory_real_device_topics": [
+        "Actual stop completion and immediate safe reconnect on real streaming runtime"
+      ]
+    },
+    {
+      "id": "S05",
+      "title": "Complete local and host termination, including child expiry",
+      "depends_on": [
+        "S04"
+      ],
+      "implementation_model_hint": "Astra",
+      "review_model_hint": "Sol",
+      "resource_locks": [
+        "gateway-api",
+        "provider-bridge",
+        "host-child-policy",
+        "android-game",
+        "android-console",
+        "retained-runtime"
+      ],
+      "findings": [
+        "H01",
+        "H03",
+        "H09"
+      ],
+      "invariants": [
+        "I06",
+        "I07",
+        "I08",
+        "I17",
+        "I18",
+        "I21",
+        "I23",
+        "I04",
+        "I05",
+        "I09",
+        "I10",
+        "I20",
+        "I22",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F04",
+        "F07",
+        "F02",
+        "F03"
+      ],
+      "tests": [
+        "T11",
+        "T17",
+        "T18",
+        "T19",
+        "T20",
+        "T21",
+        "T22",
+        "T35",
+        "T36",
+        "T39",
+        "T42",
+        "T02",
+        "T09",
+        "T10",
+        "T23",
+        "T24",
+        "T34",
+        "T40",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "decisions": [
+        "D03",
+        "D04",
+        "D06",
+        "D07",
+        "D08",
+        "D09",
+        "D02"
+      ],
+      "source_hints": [
+        "host-services/gateway/wakeplay_gateway.py",
+        "host-services/bridges/playnite/GameProviderBridge.py",
+        "host-services/bridges/",
+        "app/src/main/java/com/limelight/Game.java",
+        "app/src/main/java/com/limelight/console/SessionOrchestrator.java",
+        "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+        "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java",
+        "app/src/main/java/com/limelight/ui/overlay/"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S05.md",
+      "pre_edit_contract_review": true,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "Whole quit disconnects locally regardless of RPC success; child expiry is terminal on Android and host; safe subsequent Play still works.",
+      "decomposition_requirement": "Extract MoonWaker termination orchestration and client-side child-terminal reactions out of Game; isolate host effect-time authorization/termination policy from HTTP routing while reusing authoritative lease/journal owners.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "DEVICE_CRITICAL",
+      "mandatory_real_device_topics": [
+        "Parent/child full quit, game-only retain, child expiry with Android absent, stale cleanup versus new session"
+      ]
+    },
+    {
+      "id": "S06",
+      "title": "Complete coherent observation from producer to UI and decisions",
+      "depends_on": [
+        "S05"
+      ],
+      "implementation_model_hint": "Astra",
+      "review_model_hint": "Sol",
+      "resource_locks": [
+        "gateway-api",
+        "provider-bridge",
+        "android-console",
+        "android-gateway-facade",
+        "transition-observation"
+      ],
+      "findings": [
+        "H10",
+        "H06"
+      ],
+      "invariants": [
+        "I07",
+        "I08",
+        "I11",
+        "I17",
+        "I18",
+        "I21",
+        "I01",
+        "I02",
+        "I04",
+        "I10",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F01",
+        "F02",
+        "F03",
+        "F07",
+        "F04",
+        "F05",
+        "F06"
+      ],
+      "tests": [
+        "T13",
+        "T15",
+        "T21",
+        "T28",
+        "T39",
+        "T02",
+        "T03",
+        "T14",
+        "T38",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "decisions": [
+        "D06",
+        "D07",
+        "D08"
+      ],
+      "source_hints": [
+        "host-services/gateway/wakeplay_gateway.py",
+        "host-services/bridges/playnite/GameProviderBridge.py",
+        "app/src/main/java/com/limelight/console/SessionStateResolver.java",
+        "app/src/main/java/com/limelight/console/SessionSnapshot.java",
+        "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+        "app/src/main/java/com/limelight/console/PlayniteTransitionGateway.java",
+        "app/src/main/java/com/limelight/console/ConsoleStreamTransitionCoordinator.java",
+        "app/src/main/java/com/limelight/console/SessionOrchestrator.java"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S06.md",
+      "pre_edit_contract_review": true,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "Running stream, game tiles and transition readiness agree on coherent evidence without reconnecting a live stream due to game uncertainty.",
+      "decomposition_requirement": "Extract coherent snapshot production from provider HTTP handling; centralize projection/observation through existing resolver/coordinator owners; remove parallel host/tile/start decisions from ConsoleActivity and Game.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "DEVICE_CRITICAL",
+      "mandatory_real_device_topics": [
+        "Running stream badge/tile consistency while switching and Gateway temporarily absent"
+      ]
+    },
+    {
+      "id": "S07",
+      "title": "Move physical stream ownership out of Activity without regressions",
+      "depends_on": [
+        "S06"
+      ],
+      "implementation_model_hint": "Astra",
+      "review_model_hint": "Sol",
+      "resource_locks": [
+        "android-game",
+        "android-console",
+        "retained-runtime",
+        "android-presentation"
+      ],
+      "findings": [
+        "H05"
+      ],
+      "invariants": [
+        "I02",
+        "I03",
+        "I08",
+        "I09",
+        "I12",
+        "I19",
+        "I20",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F02",
+        "F03",
+        "F04",
+        "F05",
+        "F06"
+      ],
+      "tests": [
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T12",
+        "T25",
+        "T26",
+        "T27",
+        "T37",
+        "T40",
+        "T43",
+        "T44",
+        "T45",
+        "T46",
+        "T50"
+      ],
+      "decisions": [
+        "D01",
+        "D07",
+        "D08",
+        "D09"
+      ],
+      "source_hints": [
+        "app/src/main/java/com/limelight/Game.java",
+        "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java",
+        "app/src/main/java/com/limelight/stream/BackgroundStreamService.java",
+        "app/src/main/java/com/limelight/stream/BackgroundStreamPreferences.java",
+        "app/src/main/java/com/limelight/console/StreamHomeActivity.java",
+        "app/src/main/AndroidManifest.xml"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S07.md",
+      "pre_edit_contract_review": true,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "Presentation/Activity replacement does not own or accidentally stop the retained transport; explicit quit still works.",
+      "decomposition_requirement": "Move the physical runtime and its state behind RetainedStreamSessionCoordinator; Game becomes a lifecycle/presentation adapter for these responsibilities. No duplicate socket owner or long-lived Activity capture.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "DEVICE_CRITICAL",
+      "mandatory_real_device_topics": [
+        "Home/host picker/Activity recreation continuity, decoder/audio/input restoration, process-death recovery"
+      ]
+    },
+    {
+      "id": "S08",
+      "title": "Share preparation and retained runtime across warm-up and Play",
+      "depends_on": [
+        "S07"
+      ],
+      "implementation_model_hint": "Sol",
+      "review_model_hint": "Astra",
+      "resource_locks": [
+        "android-console",
+        "android-preflight",
+        "retained-runtime"
+      ],
+      "findings": [],
+      "invariants": [
+        "I02",
+        "I07",
+        "I08",
+        "I13",
+        "I14",
+        "I15",
+        "I16",
+        "I22",
+        "I23",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F01",
+        "F05",
+        "F06",
+        "F07"
+      ],
+      "tests": [
+        "T01",
+        "T07",
+        "T16",
+        "T29",
+        "T30",
+        "T32",
+        "T33",
+        "T34",
+        "T37",
+        "T38",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "decisions": [
+        "D02",
+        "D03",
+        "D05",
+        "D07",
+        "D08"
+      ],
+      "source_hints": [
+        "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+        "app/src/main/java/com/limelight/console/SessionOrchestrator.java",
+        "app/src/main/java/com/limelight/console/HostLaunchPreflight.java",
+        "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S08.md",
+      "pre_edit_contract_review": false,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "Warm-up and Play share one authorized preparation/connection; post-quit Home does not immediately restart the stream.",
+      "decomposition_requirement": "Move remaining warm-up/preparation concurrency/cancellation policy out of ConsoleActivity into the canonical session/preflight owners; retain only view/intent wiring in Activity.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "DEVICE_CRITICAL",
+      "mandatory_real_device_topics": [
+        "One physical connect for concurrent warm-up/Play; quit suppression; child neutral stream"
+      ]
+    },
+    {
+      "id": "S09",
+      "title": "Integrate reliable artwork barriers and presentation handoffs",
+      "depends_on": [
+        "S08"
+      ],
+      "implementation_model_hint": "Sol",
+      "review_model_hint": "Astra",
+      "resource_locks": [
+        "android-game",
+        "android-console",
+        "android-presentation",
+        "transition-observation"
+      ],
+      "findings": [
+        "H11"
+      ],
+      "invariants": [
+        "I03",
+        "I04",
+        "I06",
+        "I08",
+        "I11",
+        "I12",
+        "I20",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F02",
+        "F03",
+        "F04",
+        "F05",
+        "F07"
+      ],
+      "tests": [
+        "T02",
+        "T03",
+        "T08",
+        "T15",
+        "T18",
+        "T23",
+        "T40",
+        "T41",
+        "T04",
+        "T43",
+        "T44",
+        "T45",
+        "T46"
+      ],
+      "decisions": [
+        "D07",
+        "D08",
+        "D09"
+      ],
+      "source_hints": [
+        "app/src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java",
+        "app/src/main/java/com/limelight/console/StreamHomeActivity.java",
+        "app/src/main/java/com/limelight/console/ConsoleStreamTransitionCoordinator.java",
+        "app/src/main/java/com/limelight/Game.java",
+        "app/src/main/java/com/limelight/console/transition/"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S09.md",
+      "pre_edit_contract_review": false,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "Artwork handoffs always resolve, reject stale reveals and retain transport on game-only stop/switch.",
+      "decomposition_requirement": "Extract the shared cover barrier/presentation handoff from Game/ConsoleActivity, with all state/callbacks; LaunchTransitionController remains the one privacy/readiness gate.",
+      "task_kind": "IMPLEMENTATION",
+      "test_risk": "DEVICE_CRITICAL",
+      "mandatory_real_device_topics": [
+        "Artwork/fresh-frame/input gates and view-loss cancellation on target TV"
+      ]
+    },
+    {
+      "id": "S10",
+      "title": "Qualify the cumulative candidate and architecture against all flows",
+      "depends_on": [
+        "S09"
+      ],
+      "implementation_model_hint": "Astra",
+      "review_model_hint": "Sol",
+      "resource_locks": [
+        "release-validation"
+      ],
+      "findings": [
+        "H01",
+        "H02",
+        "H03",
+        "H04",
+        "H05",
+        "H06",
+        "H07",
+        "H08",
+        "H09",
+        "H10",
+        "H11"
+      ],
+      "invariants": [
+        "I01",
+        "I02",
+        "I03",
+        "I04",
+        "I05",
+        "I06",
+        "I07",
+        "I08",
+        "I09",
+        "I10",
+        "I11",
+        "I12",
+        "I13",
+        "I14",
+        "I15",
+        "I16",
+        "I17",
+        "I18",
+        "I19",
+        "I20",
+        "I21",
+        "I22",
+        "I23",
+        "I24",
+        "I25",
+        "I26",
+        "I27",
+        "I28"
+      ],
+      "flows": [
+        "F01",
+        "F02",
+        "F03",
+        "F04",
+        "F05",
+        "F06",
+        "F07"
+      ],
+      "tests": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T09",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15",
+        "T16",
+        "T17",
+        "T18",
+        "T19",
+        "T20",
+        "T21",
+        "T22",
+        "T23",
+        "T24",
+        "T25",
+        "T26",
+        "T27",
+        "T28",
+        "T29",
+        "T30",
+        "T31",
+        "T32",
+        "T33",
+        "T34",
+        "T35",
+        "T36",
+        "T37",
+        "T38",
+        "T39",
+        "T40",
+        "T41",
+        "T42",
+        "T43",
+        "T44",
+        "T45",
+        "T46",
+        "T47",
+        "T48",
+        "T49",
+        "T50"
+      ],
+      "decisions": [
+        "D01",
+        "D02",
+        "D03",
+        "D04",
+        "D05",
+        "D06",
+        "D07",
+        "D08",
+        "D09"
+      ],
+      "source_hints": [
+        "AGENTS.md",
+        "CODEX_WORKFLOW.md",
+        "docs/MoonWaker/HARDENING/STATE.json",
+        "docs/MoonWaker/HARDENING/runs/"
+      ],
+      "write_scope_note": "Named responsibility, its state/effects, all direct production callers, required test/build/packaging changes and assigned run evidence. No unrelated formatting, dependency upgrades or replacement framework.",
+      "instructions": "tasks/S10.md",
+      "pre_edit_contract_review": false,
+      "include_correlation_contract": true,
+      "scenario_assertion_scope": "Complete independently usable outcome in this task. Unfixed pre-existing findings assigned later may remain listed, but no behavior introduced or changed here may depend on a future task to work.",
+      "task_acceptance_authority": "Task outcome + CHECKPOINTS.md + input-bound checkpoint plan + independent review of actual integrated production paths; no layer-only or future-dependent acceptance.",
+      "independently_usable_outcome": "No new gameplay claim: cumulative code, packaging, lifecycle and authorized device evidence qualify the exact candidate.",
+      "decomposition_requirement": "Verify completed responsibility removal, no dead legacy paths, no duplicate state owners, no catch-all manager and all extracted host modules included in deployment packaging.",
+      "task_kind": "QUALIFICATION",
+      "test_risk": "DEVICE_CRITICAL",
+      "mandatory_real_device_topics": [
+        "All applicable original T01–T42 on the exact candidate release; 100-switch soak"
+      ]
+    }
+  ],
+  "packet_root": "docs/MoonWaker/HARDENING",
+  "packet_version": "1.0.0",
+  "branch_policy": {
+    "remote": "origin",
+    "base_branch": "codex/multi-profile-remote-sign-in",
+    "work_branch": "codex/session-hardening",
+    "fresh_start": "Fetch the named base branch at execution time. Use its fetched tip unless the local named base is a strict descendant; in that case preserve and use the local tip. Divergence blocks setup.",
+    "pin_once": true,
+    "create_before": "S00",
+    "local_branch_creation_authorized": true,
+    "unrelated_dirty_work": "BLOCK_SETUP_WITHOUT_DISCARDING",
+    "existing_target": "RESUME_ONLY_WITH_MATCHING_RECORDED_BINDING_OTHERWISE_BLOCK",
+    "resume": "Keep the recorded base and existing work branch; verify ancestry and source evidence. Do not refork or automatically merge a moving base."
+  }
+}

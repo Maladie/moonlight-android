@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "packet_id": "moonwaker-session-hardening",
+  "baseline_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "baseline_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+  "coordinator_model_hint": "Sol",
+  "release_status": "NOT_EVALUATED",
+  "tasks": {
+    "S00": {
+      "status": "CHECKPOINT_ACCEPTED",
+      "assigned_run": "S00-worker-corrections-20260909T0829Z",
+      "input_fingerprint": "sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7",
+      "output_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+      "implementation_report": "runs/S00/implementation.json",
+      "review_report": "runs/S00/review.json",
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": "runs/S00/checkpoint-plan.json"
+    },
+    "S01": {
+      "status": "CHECKPOINT_ACCEPTED",
+      "assigned_run": "S01-worker-20260909T0850Z",
+      "input_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+      "output_fingerprint": "sha256:ff1458b66850bbb923c134c88d1e042072d66c0f456029440be35ee2988155fc",
+      "implementation_report": "runs/S01/implementation.json",
+      "review_report": "runs/S01/review.json",
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": "runs/S01/checkpoint-plan.json"
+    },
+    "S02": {
+      "status": "CHECKPOINT_ACCEPTED",
+      "assigned_run": "S02-worker-20260909T0920Z",
+      "input_fingerprint": "sha256:ff1458b66850bbb923c134c88d1e042072d66c0f456029440be35ee2988155fc",
+      "output_fingerprint": "sha256:02e6f8918a8027db3cb7b1270a22b1ed4ac520345c1f368093d85b2f95ca31bd",
+      "implementation_report": "runs/S02/implementation.json",
+      "review_report": "runs/S02/review.json",
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": "runs/S02/checkpoint-plan.json"
+    },
+    "S03": {
+      "status": "CLOSED_BY_OWNER",
+      "assigned_run": "S03-worker-20260909T1319Z",
+      "input_fingerprint": "sha256:02e6f8918a8027db3cb7b1270a22b1ed4ac520345c1f368093d85b2f95ca31bd",
+      "output_fingerprint": "sha256:a9190d904a6eb83d319672a81f4d3b7383c7fdb0bcc3371e2ad5aa8abea991c8",
+      "implementation_report": "runs/S03/implementation.json",
+      "review_report": "runs/S03/warmup-regression-fix-13/review.json",
+      "design_review_report": null,
+      "blockers": [
+        "Closed by the owner (amendment S03-S06-20260929-OWNER-CLOSURE); no formal CHECKPOINT_ACCEPTED evidence claimed."
+      ],
+      "checkpoint_plan": "runs/S03/checkpoint-plan.json",
+      "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
+    },
+    "S04": {
+      "status": "CLOSED_BY_OWNER",
+      "assigned_run": "S04-worker-20260910T0820Z",
+      "input_fingerprint": "sha256:c3d825c397e9c7a38296c8a0d0409da5066f419174b6393ff61d89927dfb7800",
+      "output_fingerprint": "sha256:dedbbd549d3fb7f24caa80154a1de701f6ceaacaa91f5225c6af000e30f623d8",
+      "implementation_report": "runs/S04/implementation.json",
+      "review_report": "runs/S04/review.json",
+      "design_review_report": null,
+      "blockers": [
+        "Closed by the owner (amendment S03-S06-20260929-OWNER-CLOSURE); no formal CHECKPOINT_ACCEPTED evidence claimed."
+      ],
+      "checkpoint_plan": "runs/S04/checkpoint-plan.json",
+      "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
+    },
+    "S05": {
+      "status": "CLOSED_BY_OWNER",
+      "assigned_run": "profile-takeover-overlay-correction-20260914",
+      "input_fingerprint": "sha256:12f04b802510ad9e014166509d2e640254c3a2d5680f6fbe74c0074fb2d9105d",
+      "output_fingerprint": "sha256:c1a7ee8942db045b33aed21f5b16abf69c95e812aa4ec119355c8c288de2e784",
+      "implementation_report": "runs/S05/profile-takeover-overlay-correction-20260914/implementation.json",
+      "review_report": "runs/S05/profile-takeover-overlay-correction-20260914/review.json",
+      "design_review_report": null,
+      "blockers": [
+        "Closed by the owner (amendment S03-S06-20260929-OWNER-CLOSURE); no formal CHECKPOINT_ACCEPTED evidence claimed."
+      ],
+      "checkpoint_plan": "runs/S05/profile-takeover-overlay-correction-20260914/checkpoint-plan.json",
+      "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
+    },
+    "S06": {
+      "status": "CLOSED_BY_OWNER",
+      "assigned_run": "S06-worker-20260914",
+      "input_fingerprint": "sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e",
+      "output_fingerprint": "sha256:60915ff34598b96acbb7e9d85377baec3cff2a887aaa1ec3191606d874afdb50",
+      "implementation_report": "runs/S06/implementation.json",
+      "review_report": "runs/S06/review-sol-no-compat-rereview.json",
+      "design_review_report": "runs/S06/pre-edit-review.json",
+      "blockers": [
+        "Closed by the owner (amendment S03-S06-20260929-OWNER-CLOSURE); no formal CHECKPOINT_ACCEPTED evidence claimed."
+      ],
+      "checkpoint_plan": "runs/S06/checkpoint-plan.json",
+      "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
+    },
+    "S07": {
+      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "assigned_run": "S07-worker-20260929",
+      "input_fingerprint": "sha256:eb5978f82809e316b87fffaae80001220e403d66dd409116cf9c87a91e75ea4f",
+      "output_fingerprint": "sha256:161d143ca5c77f6f62fcf9d23f9305b0b22d0732ba1e605a7624138c68fa1c6c",
+      "implementation_report": "runs/S07/implementation.json",
+      "review_report": "runs/S07/review.json",
+      "design_review_report": "runs/S07/review-bridge/R053-review.md",
+      "blockers": [
+        "Device evidence partial (runs/S07/device-evidence.json, R059 ACCEPTABLE_AS_LAB_EVIDENCE): lab 01-23 PASS (s07-diag-4a); pending T07 host picker, child expiry, T08 headless switch, PREPARING recreation (blocked by current lab trigger), unclassified 8a freeze, physical TV (API 32)."
+      ],
+      "checkpoint_plan": "runs/S07/checkpoint-plan.json"
+    },
+    "S08": {
+      "status": "CLOSED_BY_OWNER",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [
+        "Closed by the owner as superseded by step K4 of MW-05 (docs/MoonWaker/MW-04_MODEL_SESJI_PL.md section 8.1; amendment S08-20261005-SUPERSEDED-BY-SESSION-MODEL); S08 was never executed as written and no evidence is claimed. S09 must not start before K4 is accepted."
+      ],
+      "checkpoint_plan": null,
+      "closure_decision": "S08-20261005-SUPERSEDED-BY-SESSION-MODEL"
+    },
+    "S09": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    },
+    "S10": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    }
+  },
+  "contract_amendments": [
+    {
+      "id": "D01-20260909-30MIN",
+      "decision": "D01",
+      "status": "USER_AUTHORIZED",
+      "value": "For an absent stored preference, default background stream retention to 30 minutes in both debug and release. Preserve every explicit stored value, including zero/off. Do not apply this timeout to app Home or host-picker retention.",
+      "source": "User message: Ustawmy domyślnie 30min"
+    },
+    {
+      "id": "S04-20260910-DEPENDENCY-OVERRIDE",
+      "decision": "PROCEED_WITH_S04_WHILE_S03_DEVICE_PENDING",
+      "status": "USER_AUTHORIZED",
+      "value": "Proceed with S04 implementation on the exact code-reviewed S03 candidate while S03 device scenarios are tested in parallel. This does not accept S03, waive S03 or S04 device evidence, or authorize S05. Any S03 failure overlapping S04 must be reconciled before review or acceptance.",
+      "source": "User message: Rozumiem, ale wyrażam na to bezpośrednią zgodę. Przejdź do S4"
+    },
+    {
+      "id": "S05-20260910-DEPENDENCY-OVERRIDE",
+      "decision": "BEGIN_S05_PRE_EDIT_REVIEW_WITH_S04_NATIVE_TRACE_PENDING",
+      "status": "USER_AUTHORIZED",
+      "value": "Commit the complete S04 code-verified candidate and begin S05 pre-edit review on that exact commit. The user's functional S04 PASS is recorded, but this does not fabricate candidate-bound native ordering evidence or accept S04. No S05 product mutation may begin before the input-bound checkpoint plan incorporates the independent capability review.",
+      "source": "User message: Jest sukces dla S04. Wszystko przebiegło zgodnie z założeniami. Wcommituj i rozpocznij S05."
+    },
+    {
+      "id": "S05-A01-GATEWAY-CONTROL-PLANE",
+      "decision": "GATEWAY_OWNS_ALL_MOONWAKER_CONTROL",
+      "status": "USER_AUTHORIZED",
+      "value": "All MoonWaker launch/resume/reconnect/replacement/warm-up/full-quit operations require one exclusive Gateway generation and actor-lease permit. Android's existing riKey/sessionUrl0 Sunshine bootstrap may execute directly only inside that exact permit; media remains direct. Concurrent legacy clients are unsupported; unmanaged, uncertain or uncorrelated sessions fail closed and are never globally cleaned up automatically.",
+      "source": "User messages: Nie musimy gwarantować starszych klientów... Pasuje, rozpocznij"
+    },
+    {
+      "id": "S06-20260914-DEPENDENCY-OVERRIDE",
+      "decision": "PROCEED_WITH_FULL_S06_WHILE_S03_S05_FORMALLY_PENDING",
+      "status": "USER_AUTHORIZED",
+      "value": "Proceed with full S06 implementation on the exact cumulative input fingerprint sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e after the independent pre-edit design review. This does not accept S03, S04 or S05, waive their missing formal evidence, authorize S06 checkpoint acceptance without its own evidence, or authorize commit, push, APK installation, Gateway update or service restart.",
+      "source": "User message: Nie preedit. Wykonaj w pełni. Znoszę blokadę"
+    },
+    {
+      "id": "S06-20260929-CLOSURE",
+      "decision": "S06_CLOSED_ON_FORMAL137_GATE",
+      "status": "USER_AUTHORIZED",
+      "value": "S06 is closed on formal137 PASS 3/3 and R048 READY for candidate164 in the owned lab. Recorded limits: repeated Gateway lock-held-slow in _child_time_stop_stream, Playnite setup flake, memory pressure. Does not accept S03-S05, promote a baseline, or authorize push, publication or real-device deployment.",
+      "source": "User message: Tak, zamykamy S06"
+    },
+    {
+      "id": "S03-S06-20260929-OWNER-CLOSURE",
+      "decision": "CLOSE_S03_S06_WITHOUT_FORMAL_ACCEPTANCE",
+      "status": "USER_AUTHORIZED",
+      "value": "The owner closes S03, S04, S05 and S06 as CLOSED_BY_OWNER instead of pursuing formal CHECKPOINT_ACCEPTED on fingerprints of code that has since moved on. The recorded evidence stays as it is (S03 operator confirmation; S04 final-acceptance-20260914; S05 acceptance.json; S06 formal137 PASS 3/3 with review R048 READY, runs/S06/formal137-closure.json). It is not re-labelled as formal acceptance. S07 onward proceed on the current branch; S10 still requires the full release evidence on the exact final artifacts. Does not authorize push, publication, baseline promotion or real-device deployment.",
+      "source": "User message 2026-09-29: \"Wybieram B. Zamykamy i zapominamy o tym\""
+    },
+    {
+      "id": "S08-20261005-SUPERSEDED-BY-SESSION-MODEL",
+      "decision": "CLOSE_S08_AS_SUPERSEDED",
+      "status": "USER_AUTHORIZED",
+      "value": "S08 is not executed as written. It is closed as CLOSED_BY_OWNER and replaced by step K4 of the session model in docs/MoonWaker/MW-04_MODEL_SESJI_PL.md (section 8.1), which carries every S08 requirement as an acceptance scenario. S09 must not start before K4 is accepted. S10 is unchanged.",
+      "source": "User message 2026-10-05: \"Zgoda na oba, wpisz do dokumentu i zaktualizuj plan\"; owner re-authorised the closure in chat on 2026-10-06."
+    }
+  ],
+  "workspace": {
+    "status": "PREPARED",
+    "remote": "origin",
+    "base_branch": "codex/multi-profile-remote-sign-in",
+    "work_branch": "codex/session-hardening",
+    "base_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "fetched_remote_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "branch_creation_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "branch_setup_report": "runs/branch-setup.json"
+  }
+}

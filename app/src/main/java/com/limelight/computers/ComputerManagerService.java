@@ -45,8 +45,9 @@ import org.xmlpull.v1.XmlPullParserException;
 public class ComputerManagerService extends Service {
     private static final int SERVERINFO_POLLING_PERIOD_MS = 1500;
     private static final int APPLIST_POLLING_PERIOD_MS = 30000;
+    private static final int APPLIST_UNCHANGED_POLLING_PERIOD_MS = 120000;
     private static final int APPLIST_FAILED_POLLING_RETRY_MS = 2000;
-    private static final int MDNS_QUERY_PERIOD_MS = 1000;
+    private static final int MDNS_QUERY_PERIOD_MS = 60000;
     private static final int OFFLINE_POLL_TRIES = 3;
     private static final int INITIAL_POLL_TRIES = 2;
     private static final int EMPTY_LIST_THRESHOLD = 3;
@@ -291,16 +292,20 @@ public class ComputerManagerService extends Service {
         }
 
         public void invalidateStateForComputer(String uuid) {
+            PollingTuple selected = null;
             synchronized (pollingTuples) {
                 for (PollingTuple tuple : pollingTuples) {
                     if (uuid.equals(tuple.computer.uuid)) {
-                        // We need the network lock to prevent a concurrent poll
-                        // from wiping this change out
-                        synchronized (tuple.networkLock) {
-                            tuple.computer.state = ComputerDetails.State.UNKNOWN;
-                        }
+                        selected = tuple;
+                        break;
                     }
                 }
+            }
+            if (selected == null) return;
+            // Never hold the global tuple list while waiting for network I/O.
+            // UI reads only need pollingTuples and must remain non-blocking.
+            synchronized (selected.networkLock) {
+                selected.computer.state = ComputerDetails.State.UNKNOWN;
             }
         }
     }
@@ -801,6 +806,8 @@ public class ComputerManagerService extends Service {
         private final ComputerDetails computer;
         private final Object pollEvent = new Object();
         private boolean receivedAppList = false;
+        private boolean unchangedAppList;
+        private List<NvApp> acceptedAppList;
 
         public ApplistPoller(ComputerDetails computer) {
             this.computer = computer;
@@ -818,7 +825,9 @@ public class ComputerManagerService extends Service {
                     if (receivedAppList) {
                         // If we've already reported an app list successfully,
                         // wait the full polling period
-                        pollEvent.wait(APPLIST_POLLING_PERIOD_MS);
+                        pollEvent.wait(unchangedAppList
+                                ? APPLIST_UNCHANGED_POLLING_PERIOD_MS
+                                : APPLIST_POLLING_PERIOD_MS);
                     }
                     else {
                         // If we've failed to get an app list so far, retry much earlier
@@ -884,7 +893,24 @@ public class ComputerManagerService extends Service {
                                 appList = http.getAppListRaw();
                             }
 
+                            if (appList.equals(computer.rawAppList)) {
+                                receivedAppList = true;
+                                unchangedAppList = true;
+                                continue;
+                            }
+
                             List<NvApp> list = NvHTTP.getAppListByReader(new StringReader(appList));
+                            if (acceptedAppList == null && computer.rawAppList != null) {
+                                try {
+                                    acceptedAppList = NvHTTP.getAppListByReader(
+                                            new StringReader(computer.rawAppList));
+                                } catch (IOException | XmlPullParserException ignored) { }
+                            }
+                            if (AppListComparator.same(list, acceptedAppList)) {
+                                receivedAppList = true;
+                                unchangedAppList = true;
+                                continue;
+                            }
                             if (list.isEmpty()) {
                                 LimeLog.warning("Empty app list received from "+computer.uuid);
 
@@ -911,6 +937,8 @@ public class ComputerManagerService extends Service {
                                 // Update the computer
                                 computer.rawAppList = appList;
                                 receivedAppList = true;
+                                unchangedAppList = false;
+                                acceptedAppList = list;
 
                                 // Notify that the app list has been updated
                                 // and ensure that the thread is still active

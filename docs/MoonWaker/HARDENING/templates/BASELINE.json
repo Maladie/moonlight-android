@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "repository": "Maladie/moonlight-android",
+  "expected_branch": "codex/session-hardening",
+  "actual_branch": null,
+  "audit_reference": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "actual_head": null,
+  "code_fingerprint": null,
+  "branch_relationship": null,
+  "dirty_files_at_start": [],
+  "instruction_paths_read": [],
+  "architecture_paths_read": [],
+  "available_tools": {},
+  "actual_test_commands": [],
+  "versions": {},
+  "flow_entrypoints_and_owners": {},
+  "inherited_findings": [
+    {
+      "id": "H01",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H02",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H03",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H04",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H05",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H06",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H07",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H08",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H09",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H10",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    },
+    {
+      "id": "H11",
+      "current_disposition": null,
+      "source_evidence": [],
+      "runtime_reproduction": "NOT_RUN",
+      "notes": null
+    }
+  ],
+  "correlation_owner_mapping": {},
+  "host_stream_termination_capability": null,
+  "actor_rebind_policy": null,
+  "windows_device_profile_authorization": null,
+  "accepted_provisional_decisions": [],
+  "material_contract_blockers": [],
+  "baseline_test_evidence": [],
+  "recommended_scope_amendments": [],
+  "product_policy_pending": [],
+  "base_branch": "codex/multi-profile-remote-sign-in",
+  "base_head": null,
+  "fetched_remote_head": null,
+  "branch_setup_report": "runs/branch-setup.json"
+}

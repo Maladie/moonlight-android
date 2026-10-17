@@ -26,9 +26,9 @@ public class PreferenceConfiguration {
     private static final String LEGACY_RES_FPS_PREF_STRING = "list_resolution_fps";
     private static final String LEGACY_ENABLE_51_SURROUND_PREF_STRING = "checkbox_51_surround";
 
-    static final String RESOLUTION_PREF_STRING = "list_resolution";
-    static final String FPS_PREF_STRING = "list_fps";
-    static final String BITRATE_PREF_STRING = "seekbar_bitrate_kbps";
+    public static final String RESOLUTION_PREF_STRING = "list_resolution";
+    public static final String FPS_PREF_STRING = "list_fps";
+    public static final String BITRATE_PREF_STRING = "seekbar_bitrate_kbps";
     private static final String ENABLE_ULTRA_LOW_LATENCY_PREF_STRING = "checkbox_ultra_low_latency";
     private static final String BITRATE_PREF_OLD_STRING = "seekbar_bitrate";
     private static final String STRETCH_PREF_STRING = "checkbox_stretch_video";
@@ -54,7 +54,7 @@ public class PreferenceConfiguration {
     private static final String MOUSE_EMULATION_STRING = "checkbox_mouse_emulation";
     private static final String ANALOG_SCROLLING_PREF_STRING = "analog_scrolling";
     private static final String MOUSE_NAV_BUTTONS_STRING = "checkbox_mouse_nav_buttons";
-    static final String UNLOCK_FPS_STRING = "checkbox_unlock_fps";
+    public static final String UNLOCK_FPS_STRING = "checkbox_unlock_fps";
     private static final String VIBRATE_OSC_PREF_STRING = "checkbox_vibrate_osc";
     private static final String VIBRATE_FALLBACK_PREF_STRING = "checkbox_vibrate_fallback";
     private static final String VIBRATE_FALLBACK_STRENGTH_PREF_STRING = "seekbar_vibrate_fallback_strength";
@@ -64,6 +64,7 @@ public class PreferenceConfiguration {
     private static final String FRAME_PACING_PREF_STRING = "frame_pacing";
     private static final String ABSOLUTE_MOUSE_MODE_PREF_STRING = "checkbox_absolute_mouse_mode";
     private static final String ENABLE_AUDIO_FX_PREF_STRING = "checkbox_enable_audiofx";
+    private static final String USB_MICROPHONE_PREF_STRING = "checkbox_usb_microphone";
     private static final String REDUCE_REFRESH_RATE_PREF_STRING = "checkbox_reduce_refresh_rate";
     private static final String ACTUAL_DISPLAY_REFRESH_RATE_PREF_STRING = "text_actual_display_refresh_rate";
     private static final String FULL_RANGE_PREF_STRING = "checkbox_full_range";
@@ -72,12 +73,15 @@ public class PreferenceConfiguration {
     private static final String GAMEPAD_MOTION_FALLBACK_PREF_STRING = "checkbox_gamepad_motion_fallback";
     private static final String GAMEPAD_BATTERY_WARNING_PREF_STRING = "list_gamepad_battery_warning";
     private static final String OVERLAY_TRIGGER_BUTTON_PREF_STRING = "overlay_trigger_button";
+    private static final String HOME_TRIGGER_BUTTON_PREF_STRING = "home_trigger_button";
     private static final String OVERLAY_HOLD_DURATION_PREF_STRING = "overlay_hold_duration";
+    private static final String DISCORD_MUTE_SHORTCUT_PREF_STRING = "discord_mute_shortcut";
+    private static final String DISCORD_LEAVE_SHORTCUT_PREF_STRING = "discord_leave_shortcut";
     private static final String RUNTIME_BITRATE_CONTROL_PREF_STRING = "checkbox_runtime_bitrate_control";
     private static final String AUTO_RESUME_STREAM_PREF_STRING = "checkbox_auto_resume_stream";
 
-    static final String DEFAULT_RESOLUTION = "1280x720";
-    static final String DEFAULT_FPS = "60";
+    public static final String DEFAULT_RESOLUTION = "1280x720";
+    public static final String DEFAULT_FPS = "60";
     private static final boolean DEFAULT_ENABLE_ULTRA_LOW_LATENCY = false;
     private static final boolean DEFAULT_STRETCH = false;
     private static final boolean DEFAULT_SOPS = true;
@@ -119,7 +123,10 @@ public class PreferenceConfiguration {
     private static final boolean DEFAULT_GAMEPAD_MOTION_FALLBACK = false;
     private static final String DEFAULT_GAMEPAD_BATTERY_WARNING = "20";
     private static final String DEFAULT_OVERLAY_TRIGGER_BUTTON = "select";
+    private static final String DEFAULT_HOME_TRIGGER_BUTTON = "none";
     private static final String DEFAULT_OVERLAY_HOLD_DURATION = "1500";
+    private static final String DEFAULT_DISCORD_MUTE_SHORTCUT = "x";
+    private static final String DEFAULT_DISCORD_LEAVE_SHORTCUT = "y";
     private static final boolean DEFAULT_RUNTIME_BITRATE_CONTROL = false;
     private static final boolean DEFAULT_AUTO_RESUME_STREAM = false;
 
@@ -165,6 +172,7 @@ public class PreferenceConfiguration {
     public int framePacing;
     public boolean absoluteMouseMode;
     public boolean enableAudioFx;
+    public boolean enableUsbMicrophone;
     public boolean reduceRefreshRate;
     public String actualDisplayRefreshRate;
     public boolean fullRange;
@@ -173,7 +181,10 @@ public class PreferenceConfiguration {
     public boolean gamepadMotionSensorsFallbackToDevice;
     public int gamepadBatteryWarningThreshold;
     public String overlayTriggerButton;
+    public String homeTriggerButton;
     public int overlayHoldDurationMs;
+    public String discordMuteShortcut;
+    public String discordLeaveShortcut;
     public boolean runtimeBitrateControl;
     public boolean autoResumeStream;
 
@@ -365,6 +376,22 @@ public class PreferenceConfiguration {
         return getDefaultBitrate(
                 prefs.getString(RESOLUTION_PREF_STRING, DEFAULT_RESOLUTION),
                 prefs.getString(FPS_PREF_STRING, DEFAULT_FPS));
+    }
+
+    public static void applyStreamSettings(Context context, int width, int height, int fps,
+                                           int bitrateKbps) {
+        validateStreamSettings(width, height, fps, bitrateKbps);
+        PreferenceManager.getDefaultSharedPreferences(context).edit()
+                .putString(RESOLUTION_PREF_STRING, width + "x" + height)
+                .putString(FPS_PREF_STRING, Integer.toString(fps))
+                .putInt(BITRATE_PREF_STRING, bitrateKbps)
+                .apply();
+    }
+
+    static void validateStreamSettings(int width, int height, int fps, int bitrateKbps) {
+        if (width <= 0 || height <= 0 || fps <= 0 || bitrateKbps < 500) {
+            throw new IllegalArgumentException("Invalid stream settings");
+        }
     }
 
     private static FormatOption getVideoFormatValue(Context context) {
@@ -618,6 +645,7 @@ public class PreferenceConfiguration {
         config.enableLatencyToast = prefs.getBoolean(LATENCY_TOAST_PREF_STRING, DEFAULT_LATENCY_TOAST);
         config.absoluteMouseMode = prefs.getBoolean(ABSOLUTE_MOUSE_MODE_PREF_STRING, DEFAULT_ABSOLUTE_MOUSE_MODE);
         config.enableAudioFx = prefs.getBoolean(ENABLE_AUDIO_FX_PREF_STRING, DEFAULT_ENABLE_AUDIO_FX);
+        config.enableUsbMicrophone = prefs.getBoolean(USB_MICROPHONE_PREF_STRING, false);
         config.reduceRefreshRate = prefs.getBoolean(REDUCE_REFRESH_RATE_PREF_STRING, DEFAULT_REDUCE_REFRESH_RATE);
         config.actualDisplayRefreshRate = prefs.getString(ACTUAL_DISPLAY_REFRESH_RATE_PREF_STRING, DEFAULT_ACTUAL_DISPLAY_REFRESH_RATE);
         config.fullRange = prefs.getBoolean(FULL_RANGE_PREF_STRING, DEFAULT_FULL_RANGE);
@@ -626,7 +654,12 @@ public class PreferenceConfiguration {
         config.gamepadMotionSensorsFallbackToDevice = prefs.getBoolean(GAMEPAD_MOTION_FALLBACK_PREF_STRING, DEFAULT_GAMEPAD_MOTION_FALLBACK);
         config.gamepadBatteryWarningThreshold = Integer.parseInt(prefs.getString(GAMEPAD_BATTERY_WARNING_PREF_STRING, DEFAULT_GAMEPAD_BATTERY_WARNING));
         config.overlayTriggerButton = prefs.getString(OVERLAY_TRIGGER_BUTTON_PREF_STRING, DEFAULT_OVERLAY_TRIGGER_BUTTON);
+        config.homeTriggerButton = prefs.getString(HOME_TRIGGER_BUTTON_PREF_STRING, DEFAULT_HOME_TRIGGER_BUTTON);
         config.overlayHoldDurationMs = Integer.parseInt(prefs.getString(OVERLAY_HOLD_DURATION_PREF_STRING, DEFAULT_OVERLAY_HOLD_DURATION));
+        config.discordMuteShortcut = prefs.getString(DISCORD_MUTE_SHORTCUT_PREF_STRING,
+                DEFAULT_DISCORD_MUTE_SHORTCUT);
+        config.discordLeaveShortcut = prefs.getString(DISCORD_LEAVE_SHORTCUT_PREF_STRING,
+                DEFAULT_DISCORD_LEAVE_SHORTCUT);
         config.runtimeBitrateControl = prefs.getBoolean(RUNTIME_BITRATE_CONTROL_PREF_STRING, DEFAULT_RUNTIME_BITRATE_CONTROL);
         config.autoResumeStream = prefs.getBoolean(AUTO_RESUME_STREAM_PREF_STRING, DEFAULT_AUTO_RESUME_STREAM);
 

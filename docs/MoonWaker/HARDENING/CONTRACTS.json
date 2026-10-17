@@ -1,0 +1,305 @@
+{
+  "schema_version": 1,
+  "normative": true,
+  "invariants": [
+    {
+      "id": "I01",
+      "name": "Separate observed axes",
+      "rule": "Transport, game execution, presentation and actor authorization are independent axes. Unknown game state never negates an observed live local transport."
+    },
+    {
+      "id": "I02",
+      "name": "Retained means actual runtime",
+      "rule": "STREAM_READY requires an owned functioning local transport. A host health response, persistent resume record or Activity boolean alone is insufficient."
+    },
+    {
+      "id": "I03",
+      "name": "Home is presentation-only",
+      "rule": "App Home, TV Home and host picker without changing host do not stop a healthy transport during the configured retention window. Hidden presentation cannot inject game input."
+    },
+    {
+      "id": "I04",
+      "name": "Game-only stop retains transport",
+      "rule": "Stopping the managed game or switching A to B preserves transport identity/generation; never invoke whole-stream quit as a fallback for uncertain game state."
+    },
+    {
+      "id": "I05",
+      "name": "Full quit is locally unconditional",
+      "rule": "Explicit whole-session quit immediately blocks input and initiates actual local stop without waiting for a host RPC. Host cleanup failure must not resurrect the locally closed transport."
+    },
+    {
+      "id": "I06",
+      "name": "Child expiry is terminal",
+      "rule": "Budget exhaustion, schedule end and authorization revocation block child input and reconnect and disconnect the bound stream; host enforces without a live Android client. Never silently become the parent."
+    },
+    {
+      "id": "I07",
+      "name": "Actor is not execution profile",
+      "rule": "A child may execute in the parent Windows profile, but actor identity, allowed games, schedule, time budget and endpoint permissions remain those of the child. Shared Windows identity does not transfer privilege."
+    },
+    {
+      "id": "I08",
+      "name": "Effects are generation-fenced",
+      "rule": "Stop, launch, reveal, input enablement and status callbacks must match immutable host/actor/execution/session-operation identity. Old results cannot mutate a newer session. A device ID or game name alone is not a fence."
+    },
+    {
+      "id": "I09",
+      "name": "One real stop completion",
+      "rule": "All callers stopping one transport generation observe the same actual stop completion. Acceptance of a request and clearing connected flags are not completion. Do not start a replacement native transport before the old one is safe to replace."
+    },
+    {
+      "id": "I10",
+      "name": "Honest host projection",
+      "rule": "ONLINE_IDLE means observed reachable host with no active relevant stream; if absence is unconfirmed, report STOPPING/UNKNOWN, not a fabricated idle state. Distinguish a local stream from another client’s session."
+    },
+    {
+      "id": "I11",
+      "name": "Correlated readiness",
+      "rule": "Reveal requires target game/process/window evidence from a coherent host revision and fresh video for the current transition. Mixed-time current-game/readiness readings are insufficient."
+    },
+    {
+      "id": "I12",
+      "name": "Canonical privacy gate",
+      "rule": "LaunchTransitionController stays the reveal/input gate. Preserve artwork and existing privacy UX. Parent manual reveal remains an escape hatch, but cannot bypass terminal child denial or grant restricted desktop access."
+    },
+    {
+      "id": "I13",
+      "name": "Preparation order",
+      "rule": "Wake when needed, await Gateway, authorize device/actor/execution profile, confirm the correct interactive Windows session, ensure profile components, await streamer, establish one stream. Streamer availability must not gate the login needed to start it."
+    },
+    {
+      "id": "I14",
+      "name": "Positive sign-in proof",
+      "rule": "Only confirmed READY for the requested authorized Windows identity continues unattended launch. Null, timeout, denied, missing credentials, wrong active identity and cancelled work are not READY. No automatic retry loop using a rejected password."
+    },
+    {
+      "id": "I15",
+      "name": "One preparation, one transport",
+      "rule": "Warm-up and a concurrent game click share preparation for host/execution identity; launch additionally validates the current actor. Repeated entry/observation must not spawn duplicate preparations or transports."
+    },
+    {
+      "id": "I16",
+      "name": "No warm-up privilege grant",
+      "rule": "Neutral prepared stream exposes no parent desktop/input to a child. It must not start a random game, silently charge gameplay time or grant a gameplay authorization lease."
+    },
+    {
+      "id": "I17",
+      "name": "Durable host authority",
+      "rule": "GameOps durable state stays host-authoritative. Child budget does not reset across game switches, retries, service restart or day/clock handling. Use the configured schedule timezone, not an assumed user/device timezone."
+    },
+    {
+      "id": "I18",
+      "name": "Process and session safety",
+      "rule": "Host destructive operations target verified process identity and the bound stream/session. Revalidate immediately before the effect. No name-wide kills, arbitrary desktop automation or delayed global quit that can affect a replacement session."
+    },
+    {
+      "id": "I19",
+      "name": "Lifecycle honesty",
+      "rule": "Recreating only an Activity must not destroy an otherwise retained transport. Whole-process death cannot preserve a socket; represent loss and use controlled reconnect, with authorization revalidated."
+    },
+    {
+      "id": "I20",
+      "name": "Every accepted operation terminates",
+      "rule": "Every accepted operation/barrier has exactly one explicit terminal outcome. View detachment, cancellation and supersession cannot silently drop required cleanup or leave a pending result forever."
+    },
+    {
+      "id": "I21",
+      "name": "No security downgrade",
+      "rule": "An actually absent runtime capability returns an explicit restricted/unavailable path before effects, never a silent downgrade of child enforcement, correlation, permissions, TLS or readiness. Peers ship in lockstep (D06); there is no mixed-version support. Reuse existing capability machinery where feasible."
+    },
+    {
+      "id": "I22",
+      "name": "Explicit quit suppresses automatic warm-up",
+      "rule": "Returning Home because of full quit must not itself restart warm-up. A fresh explicit Play/Prepare or new intentional host-entry can clear that suppression after old-generation cleanup is safely fenced."
+    },
+    {
+      "id": "I23",
+      "name": "Budget covers retained running game",
+      "rule": "Home does not stop charging a still-running child game or reset remaining time. Mere pre-launch warm-up/neutral no-game transport does not consume gameplay budget. Preserve a stricter explicit existing parent policy if present; record it."
+    },
+    {
+      "id": "I24",
+      "name": "No false acceptance",
+      "rule": "Unit/integration success is not physical TV/Windows validation. Native transport counts, host process/session observations and actual frame/input checks have distinct evidence requirements."
+    },
+    {
+      "id": "I25",
+      "name": "Every accepted slice is independently usable",
+      "rule": "A completed implementation task integrates every producer, consumer, UI entrypoint and packaging change required by its outcome. No future task, disabled new path or partial API integration may be necessary to restore working behavior. A later task may fix a separate pre-existing defect, not a regression introduced here."
+    },
+    {
+      "id": "I26",
+      "name": "Monotonic protected baseline",
+      "rule": "Every accepted checkpoint passes target regressions, builds, cumulative fixed-path smoke and the seven-flow protected baseline. Explicit known original defects are not new regressions; no broad skips or rewritten expected results may conceal a new failure. Missing required physical evidence prevents checkpoint acceptance."
+    },
+    {
+      "id": "I27",
+      "name": "Move responsibilities, not only methods",
+      "rule": "Decompose affected monoliths in the same task as the relevant behavior change: move state, effects and production callers to one narrow owner and remove obsolete paths. No whole-Activity helper dependency, copied state, unused extraction or catch-all manager. Do not rewrite unrelated upstream Moonlight core."
+    },
+    {
+      "id": "I28",
+      "name": "Test real wiring and negative effects",
+      "rule": "Use actual production policies/callers with controllable effects, clocks and event order. Assert forbidden stop/reconnect/reveal/privilege effects as well as success. Unit/mocked evidence is never physical socket, secure sign-in or display evidence. Test hooks cannot weaken production security."
+    }
+  ],
+  "flows": [
+    {
+      "id": "F01",
+      "name": "Launch from sleeping or locked host",
+      "steps": [
+        "Accept latest explicit game intent and immutable actor/execution context.",
+        "Wake and run authorized positive-proof preparation in I13 order.",
+        "Create or reuse one owned transport; launch the authorized target once.",
+        "Cover until coherent target readiness and fresh current video; then enable permitted input."
+      ],
+      "postconditions": [
+        "Target runs under the intended Windows profile.",
+        "No user interaction when stored approval/credentials and dependencies are valid.",
+        "Missing approval or readiness fails explicitly without a hidden fallback."
+      ]
+    },
+    {
+      "id": "F02",
+      "name": "Close game only",
+      "steps": [
+        "Submit artwork cover and block game input.",
+        "Request stop of exactly the bound game, preserving the stream.",
+        "Show carousel promptly; retain STOPPING until stop is observed."
+      ],
+      "postconditions": [
+        "Same transport generation, zero transport-stop effects.",
+        "Host badge reports active/ready stream; old tile clears only on authoritative stop.",
+        "Next game can use the same transport."
+      ]
+    },
+    {
+      "id": "F03",
+      "name": "Switch games through carousel",
+      "steps": [
+        "Home entry does not stop current game or transport.",
+        "Selecting B displays B artwork and blocks hidden input.",
+        "Stop and confirm A, then launch B on retained transport.",
+        "Reveal only B with coherent readiness and fresh transition frame."
+      ],
+      "postconditions": [
+        "One transport across A and B.",
+        "Late observations or expiry belonging to A cannot affect B.",
+        "No input leaks to A, a parent desktop or unready B."
+      ]
+    },
+    {
+      "id": "F04",
+      "name": "Close stream and game",
+      "steps": [
+        "Block input, initiate real local stop and navigate Home without waiting for Gateway.",
+        "Run idempotent generation-fenced host game/stream cleanup.",
+        "Accept a new Play intent immediately but execute only past the safe replacement barrier."
+      ],
+      "postconditions": [
+        "No local rollback to retained stream on host failure.",
+        "ONLINE_IDLE only after confirmed host idle; otherwise honest pending/unknown.",
+        "Explicit quit is not reversed by auto-warm-up."
+      ]
+    },
+    {
+      "id": "F05",
+      "name": "Quick resume",
+      "steps": [
+        "Detach presentation/input/audio as appropriate when leaving to app Home, TV Home or host picker.",
+        "Retain the healthy transport within policy while host and execution identity stay unchanged.",
+        "Reattach current surface, decoder/audio/input through the canonical gate."
+      ],
+      "postconditions": [
+        "No new connection for a presentation-only round trip.",
+        "Activity recreation and full process death follow different paths.",
+        "No privacy or child-authorization bypass."
+      ]
+    },
+    {
+      "id": "F06",
+      "name": "Automatic stream warm-up",
+      "steps": [
+        "On intentional authorized host/profile entry, prepare once in the background.",
+        "Report PREPARING from real progress; report STREAM_READY only after transport established.",
+        "A game click joins current preparation; latest not-yet-dispatched launch intent wins."
+      ],
+      "postconditions": [
+        "No duplicate stream, accidental launch or desktop input.",
+        "No game-time lease merely for neutral warm-up.",
+        "Wrong actor/profile or superseded intent cannot reuse authorization."
+      ]
+    },
+    {
+      "id": "F07",
+      "name": "Child gameplay and expiry",
+      "steps": [
+        "Use child actor context with the parent Windows execution identity.",
+        "Apply the same retained-stream launch/home/switch semantics while enforcing child game eligibility.",
+        "Deny Discord, child-account management and all child-library mutation at the API as well as UI.",
+        "On expiry/schedule end/revocation, block input/reconnect and stop exactly the bound game and stream on client and host."
+      ],
+      "postconditions": [
+        "Budget and schedule survive switches and client loss.",
+        "No delayed child operation affects a later authorized parent session.",
+        "No inherited parent-management or Discord privileges."
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D01",
+      "status": "USER_AUTHORIZED",
+      "topic": "Retention default",
+      "value": "Amendment D01-20260909-30MIN (user authorized, see STATE.json contract_amendments): for an absent stored preference, default background stream retention is 30 minutes in both debug and release. Every explicit stored value, including zero/off, is preserved. This timeout does not apply to app Home or host-picker retention; do not introduce time-based disconnection there merely to reuse the background-TV preference."
+    },
+    {
+      "id": "D02",
+      "status": "PROVISIONAL_DEFAULT",
+      "topic": "Concurrent game intents",
+      "value": "Before host dispatch, latest explicit Play intent wins. After host effects start, serialize cancellation/reconciliation before the next target. Do not queue multiple duplicate launches or detach from a still-active stop."
+    },
+    {
+      "id": "D03",
+      "status": "PROVISIONAL_DEFAULT",
+      "topic": "Child accounting",
+      "value": "Running child game continues consuming time on Home. Neutral prelaunch warm-up consumes none. Preserve existing explicit parent-selected stricter policy; S00 records the rule, not invent a new billing/time system."
+    },
+    {
+      "id": "D04",
+      "status": "REQUIRED",
+      "topic": "Host cannot safely target a stream",
+      "value": "Inspect actual streamer capabilities. Prefer existing session-scoped termination. If only host-wide quit exists, require a single authoritative generation guard and serialized replacement barrier covering all relevant launch paths; otherwise block the unsafe mode and report the capability gap. Never claim per-session termination based on a local-only token."
+    },
+    {
+      "id": "D05",
+      "status": "REQUIRED",
+      "topic": "Other Windows identity active",
+      "value": "No implicit takeover, logoff or account switching beyond configured user authorization. Credentials remain in the existing broker/provider trust boundary. S00 documents the authorized device/profile mapping."
+    },
+    {
+      "id": "D06",
+      "status": "REQUIRED",
+      "topic": "Protocol evolution (lockstep)",
+      "value": "Extend existing capability/schema machinery minimally; no new protocol framework. Android APK and host artifacts are deployed together from one candidate build: no compatibility matrix, migration or legacy/old-shape detection. A capability that is actually absent at runtime is refused before effects, never silently downgraded (I21, D04). S10 verifies the installed APK and host artifacts come from the same candidate build."
+    },
+    {
+      "id": "D07",
+      "status": "REQUIRED",
+      "topic": "Unresolved product choices",
+      "value": "User requirements cannot be weakened by a reviewer. Routine implementation choices are autonomous. Material semantic conflict is recorded as CONTRACT_BLOCKED with a narrow proposed correction; continue independent read-only analysis; do not bypass a blocked checkpoint for dependent mutations, not an open-ended redesign."
+    },
+    {
+      "id": "D08",
+      "status": "REQUIRED",
+      "topic": "Native or device limits",
+      "value": "Do not promise immortality of foreground services, sockets across process death or instant remote effect during network loss. Report local completion separately from host confirmation and physical device validation."
+    },
+    {
+      "id": "D09",
+      "status": "REQUIRED",
+      "topic": "Timing targets",
+      "value": "No invented millisecond limits. Immediate means the local effect is not causally gated by network/UI work. Measure latency on the baseline and candidate; choose any numerical release threshold explicitly from evidence."
+    }
+  ]
+}

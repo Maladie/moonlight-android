@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="child_session_remaining">Pozostały czas: %1$s</string>
+    <string name="child_session_remaining_hours_minutes">%1$d godz. %2$d min</string>
+    <string name="child_session_remaining_hours">%1$d godz.</string>
+    <string name="child_session_remaining_minutes">%1$d min</string>
+    <string name="child_session_time_expired_title">Czas minął</string>
+    <string name="child_session_time_expired_message">Sesja dziecka została zakończona. Zapisz grę przed upływem czasu.</string>
+    <string name="child_session_ended_title">Sesja dziecka zakończona</string>
+    <string name="child_session_ended_message">Sesja dziecka została zakończona.</string>
+    <string name="child_session_game_access_revoked_message">Rodzic odebrał dostęp do tej gry.</string>
+    <string name="child_session_retry_from_library">Połączenie ze strumieniem zostało przerwane. Wróć do biblioteki i uruchom grę ponownie.</string>
+</resources>

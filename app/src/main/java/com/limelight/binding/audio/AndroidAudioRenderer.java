@@ -8,8 +8,10 @@ import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.media.audiofx.AudioEffect;
 import android.os.Build;
+import android.os.SystemClock;
 
 import com.limelight.LimeLog;
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.av.audio.AudioRenderer;
 import com.limelight.nvstream.jni.MoonBridge;
 
@@ -18,7 +20,21 @@ public class AndroidAudioRenderer implements AudioRenderer {
     private final Context context;
     private final boolean enableAudioFx;
 
+    /**
+     * Every gain change and the teardown fade last this long: a step clicks, and 20 ms still
+     * sounded like a cut on the TV when leaving for the console. Calibrate by ear.
+     */
+    private static final int FADE_MS = 40;
+    private static final long CLEANUP_FADE_STEP_MS = 5L;
+    private static final int CLEANUP_FADE_STEPS = (int) (FADE_MS / CLEANUP_FADE_STEP_MS);
+
     private AudioTrack track;
+    private volatile PcmGainRamp gainRamp;
+    private int channelCount;
+    private volatile float volume = 1f;
+    private volatile long buffersReceived, nonzeroBuffers, samplesWritten;
+    private volatile long lastBufferAt, lastSuccessfulWriteAt;
+    private volatile int lastWriteResult = Integer.MIN_VALUE;
 
     public AndroidAudioRenderer(Context context, boolean enableAudioFx) {
         this.context = context;
@@ -94,6 +110,9 @@ public class AndroidAudioRenderer implements AudioRenderer {
         LimeLog.info("Audio channel config: "+String.format("0x%X", channelConfig));
 
         bytesPerFrame = audioConfiguration.channelCount * samplesPerFrame * 2;
+        channelCount = audioConfiguration.channelCount;
+        // Starts silent, so the stream also fades in.
+        gainRamp = new PcmGainRamp(sampleRate * FADE_MS / 1000, volume);
 
         // We're not supposed to request less than the minimum
         // buffer size for our buffer, but it appears that we can
@@ -161,6 +180,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
             try {
                 track = createAudioTrack(channelConfig, sampleRate, bufferSize, lowLatency);
                 track.play();
+                logAudioState("setup");
 
                 // Successfully created working AudioTrack. We're done here.
                 LimeLog.info("Audio track configuration: "+bufferSize+" "+lowLatency);
@@ -185,14 +205,29 @@ public class AndroidAudioRenderer implements AudioRenderer {
         return 0;
     }
 
+    public void setVolume(float volume) {
+        this.volume = Math.max(0f, Math.min(1f, volume));
+        PcmGainRamp ramp = gainRamp;
+        if (ramp != null) ramp.setTarget(this.volume);
+        logAudioState("volume");
+    }
+
     @Override
     public void playDecodedAudio(short[] audioData) {
+        buffersReceived++;
+        if (containsNonzeroSample(audioData)) nonzeroBuffers++;
+        lastBufferAt = SystemClock.elapsedRealtime();
         // Only queue up to 40 ms of pending audio data in addition to what AudioTrack is buffering for us.
         if (MoonBridge.getPendingAudioDuration() < 40) {
             // This will block until the write is completed. That can cause a backlog
             // of pending audio data, so we do the above check to be able to bound
             // latency at 40 ms in that situation.
-            track.write(audioData, 0, audioData.length);
+            gainRamp.apply(audioData, channelCount);
+            lastWriteResult = track.write(audioData, 0, audioData.length);
+            if (lastWriteResult > 0) {
+                samplesWritten += lastWriteResult;
+                lastSuccessfulWriteAt = SystemClock.elapsedRealtime();
+            }
         }
         else {
             LimeLog.info("Too much pending audio data: " + MoonBridge.getPendingAudioDuration() +" ms");
@@ -201,6 +236,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     @Override
     public void start() {
+        logAudioState("start");
         if (enableAudioFx) {
             // Open an audio effect control session to allow equalizers to apply audio effects
             Intent i = new Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION);
@@ -213,6 +249,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     @Override
     public void stop() {
+        logAudioState("stop");
         if (enableAudioFx) {
             // Close our audio effect control session when we're stopping
             Intent i = new Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
@@ -224,10 +261,53 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     @Override
     public void cleanup() {
-        // Immediately drop all pending data
+        logAudioState("cleanup");
+        // The decoder has stopped, so the PCM ramp no longer runs: fade the ~100 ms the track
+        // still holds at the mixer (it applies to queued audio), then pause and flush silence.
+        if (track.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+            for (int step = CLEANUP_FADE_STEPS - 1; step >= 0; step--) {
+                track.setVolume(step / (float) CLEANUP_FADE_STEPS);
+                try {
+                    Thread.sleep(CLEANUP_FADE_STEP_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        // Drop all pending data
         track.pause();
         track.flush();
 
         track.release();
+    }
+
+    static boolean containsNonzeroSample(short[] samples) {
+        for (short sample : samples) if (sample != 0) return true;
+        return false;
+    }
+
+    private void logAudioState(String reason) {
+        AudioTrack current = track;
+        int state = -1, playState = -1, session = -1;
+        long playHead = -1;
+        try {
+            if (current != null) {
+                state = current.getState();
+                playState = current.getPlayState();
+                session = current.getAudioSessionId();
+                playHead = current.getPlaybackHeadPosition() & 0xffffffffL;
+            }
+        } catch (IllegalStateException ignored) { }
+        long now = SystemClock.elapsedRealtime();
+        MoonWakerDiagnostics.record("INFO", "android.audio", "audio.snapshot",
+                "reason", reason, "audio_renderer_id", System.identityHashCode(this),
+                "audio_volume", volume,
+                "audio_track_state", state, "audio_play_state", playState,
+                "audio_session_id", session, "audio_play_head", playHead,
+                "audio_buffers", buffersReceived, "audio_nonzero_buffers", nonzeroBuffers,
+                "audio_samples_written", samplesWritten, "audio_write_result", lastWriteResult,
+                "audio_buffer_age_ms", lastBufferAt == 0 ? -1 : now - lastBufferAt,
+                "audio_write_age_ms", lastSuccessfulWriteAt == 0 ? -1 : now - lastSuccessfulWriteAt);
     }
 }

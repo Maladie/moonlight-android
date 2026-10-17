@@ -1,0 +1,54 @@
+package com.limelight.console;
+
+/** Maps repository state to one stable UI status without depending on Android views. */
+final class ConsoleLibraryStatus {
+    enum State {
+        REFRESHING,
+        GATEWAY_NOT_CONFIGURED,
+        AUTHENTICATION_ERROR,
+        TIMEOUT,
+        INVALID_RESPONSE,
+        SERVER_ERROR,
+        GATEWAY_UNAVAILABLE,
+        CURRENT
+    }
+
+    private ConsoleLibraryStatus() { }
+
+    /**
+     * A library shown from the local cache is not a status of its own: every refresh either
+     * replaces it or ends in an error, so a "may be out of date" line could only flash while a
+     * refresh is still owed (for example on return from a stream).
+     */
+    static State resolve(boolean refreshing, boolean hasGames,
+                         PlayniteLibraryRepository.ErrorKind error,
+                         boolean gatewayConfigured) {
+        if (refreshing && !hasGames) return State.REFRESHING;
+        if (error == PlayniteLibraryRepository.ErrorKind.AUTHENTICATION) {
+            return gatewayConfigured ? State.AUTHENTICATION_ERROR
+                    : State.GATEWAY_NOT_CONFIGURED;
+        }
+        if (error == PlayniteLibraryRepository.ErrorKind.TIMEOUT) return State.TIMEOUT;
+        if (error == PlayniteLibraryRepository.ErrorKind.INVALID_RESPONSE
+                || error == PlayniteLibraryRepository.ErrorKind.API_VERSION) {
+            return State.INVALID_RESPONSE;
+        }
+        if (error == PlayniteLibraryRepository.ErrorKind.SERVER) return State.SERVER_ERROR;
+        if (error != null) return State.GATEWAY_UNAVAILABLE;
+        // A populated library remains usable while its background refresh runs.
+        return State.CURRENT;
+    }
+
+    /**
+     * The status line is shown only while a refresh has nothing to show yet and for errors; a
+     * current library (also during its periodic background refresh) shows nothing and reserves
+     * no space.
+     */
+    static boolean visible(State state) {
+        return state != State.CURRENT;
+    }
+
+    static boolean isError(State state) {
+        return state != State.REFRESHING && state != State.CURRENT;
+    }
+}

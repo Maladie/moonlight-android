@@ -1,0 +1,1019 @@
+{
+  "schema_version": 1,
+  "all_results": "NOT_RUN",
+  "original_test_ids": "T01-T36",
+  "added_coverage_ids": [
+    "T37",
+    "T38",
+    "T39",
+    "T40",
+    "T41",
+    "T42",
+    "T43",
+    "T44",
+    "T45",
+    "T46",
+    "T47",
+    "T48",
+    "T49",
+    "T50"
+  ],
+  "tests": [
+    {
+      "id": "T01",
+      "title": "Cold launch with wake and Windows sign-in",
+      "given": "Host asleep; authorized device and requested Windows profile have stored valid credentials; game permitted.",
+      "when": "Select Play once.",
+      "must_observe": [
+        "Ordered WoL → Gateway → authorized interactive session → profile components → streamer → one transport → one game execution.",
+        "Correct game becomes interactive only through canonical readiness/frame gate."
+      ],
+      "must_not_observe": [
+        "A streamer-port prerequisite before necessary sign-in.",
+        "Duplicate login/game/transport from retries."
+      ],
+      "code_evidence": [
+        "unit: ordered preparation effects",
+        "integration: broker/profile/streamer handoff"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T02",
+      "title": "Close game, keep stream",
+      "given": "Game A running over transport generation G.",
+      "when": "Use close-game overlay action.",
+      "must_observe": [
+        "Stop confirmation for exactly A; carousel; G remains active.",
+        "Host badge and A tile use the same confirmed projection."
+      ],
+      "must_not_observe": [
+        "Native transport stop or replacement.",
+        "Idle host while G remains owned/live."
+      ],
+      "code_evidence": [
+        "unit: effects and projection",
+        "integration: provider game-stop"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T03",
+      "title": "Retained A→B→A switching",
+      "given": "A running over G; B is allowed.",
+      "when": "Open Home, select B; repeat back to A.",
+      "must_observe": [
+        "Exactly one transport start for the run and zero stops.",
+        "Each replacement waits for previous verified stop; correct tile/process/artwork."
+      ],
+      "must_not_observe": [
+        "A late old-game callback changing the new game."
+      ],
+      "code_evidence": [
+        "unit: switch ordering with delayed callbacks",
+        "integration: provider execution identity"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T04",
+      "title": "100-switch soak",
+      "given": "Known baseline transport/thread/resource counts; two suitable test games; authorized device.",
+      "when": "Execute 100 sequential retained switches with a mix of overlay and controller Home paths.",
+      "must_observe": [
+        "Same G; no accumulating owners, stuck operations or growing resource counts attributable to the change.",
+        "Report measured baseline/candidate timings and failures, not an inferred pass."
+      ],
+      "must_not_observe": [
+        "Hidden reconnect counted as success.",
+        "Old cover reveal or stale running tile."
+      ],
+      "code_evidence": [
+        "unit: bounded repeated transition sequence"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Record a trace summary plus resource samples; unit repetition is not the physical soak."
+    },
+    {
+      "id": "T05",
+      "title": "TV Home resume",
+      "given": "A running; retention enabled; return within configured window.",
+      "when": "TV Home then return to the app/game.",
+      "must_observe": [
+        "Same actual transport G; current surface attached; audio/input restored only when authorized."
+      ],
+      "must_not_observe": [
+        "Network reconnect for a presentation-only round trip.",
+        "Hidden game receiving TV navigation input."
+      ],
+      "code_evidence": [
+        "android lifecycle/instrumentation: presentation detach/attach"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T06",
+      "title": "App Home resume",
+      "given": "A running over G.",
+      "when": "Use overlay Home and controller shortcut in separate runs; return to game.",
+      "must_observe": [
+        "Same G, carousel while hidden game runs, no hidden-input forwarding."
+      ],
+      "must_not_observe": [
+        "Whole-session quit or unwanted stop A."
+      ],
+      "code_evidence": [
+        "unit: input routing and Home intent",
+        "android instrumentation: attach/detach"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T07",
+      "title": "Host picker without host change",
+      "given": "A and G active with fixed execution identity.",
+      "when": "Open host picker and re-enter the same host/profile.",
+      "must_observe": [
+        "G and A retained; correct active-stream host indicator."
+      ],
+      "must_not_observe": [
+        "Session teardown or authorization leakage to a different actor."
+      ],
+      "code_evidence": [
+        "unit: navigation/session identity"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T08",
+      "title": "Home during transition",
+      "given": "Prepare, switch and reveal controllably paused at their async boundaries.",
+      "when": "Go Home at each boundary, then deliver pending callbacks in reversed order.",
+      "must_observe": [
+        "Each accepted operation has one terminal result or a still-valid explicit running owner.",
+        "No stale surface callback opens hidden video/input."
+      ],
+      "must_not_observe": [
+        "Dropped continuation or permanently pending cleanup."
+      ],
+      "code_evidence": [
+        "unit: deterministic callback schedule",
+        "android instrumentation: view detachment"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T09",
+      "title": "Parent and child full quit",
+      "given": "In separate runs, parent/child has an active bound game/stream.",
+      "when": "Choose close-stream-and-game.",
+      "must_observe": [
+        "Local input blocked and actual stop initiated before any delayed host response.",
+        "Host confirms correct game/stream cleanup; child requests only allowed APIs."
+      ],
+      "must_not_observe": [
+        "Health/management access granted to child to make quit succeed.",
+        "Local transport resurrection after remote error."
+      ],
+      "code_evidence": [
+        "unit: ordered effects",
+        "integration: actual child Gateway route allowlist"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T10",
+      "title": "Quit then immediate Play",
+      "given": "G1/A active; stop processing can be delayed.",
+      "when": "Full quit, immediately Play B; deliver G1 callbacks after B becomes pending/new.",
+      "must_observe": [
+        "B intent accepted immediately; actual replacement obeys stop/generation barrier.",
+        "Old stop cannot kill B/G2 or clear its projection."
+      ],
+      "must_not_observe": [
+        "A second active native owner before replacement is safe."
+      ],
+      "code_evidence": [
+        "unit: controlled race",
+        "host integration: delayed cleanup versus new start"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T11",
+      "title": "Lost stop response",
+      "given": "Host executes a stop with an operation ID, but its response is lost.",
+      "when": "Retry/reconcile that operation after another intent arrives.",
+      "must_observe": [
+        "Same operation result or observed completion; no second destructive effect on a different generation."
+      ],
+      "must_not_observe": [
+        "Blind global re-quit that closes the new stream."
+      ],
+      "code_evidence": [
+        "host integration: response loss/idempotency"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T12",
+      "title": "Concurrent stop completion",
+      "given": "Fake actual connection stop blocks on a latch; two callers share generation G.",
+      "when": "Both call stop; release latch afterwards.",
+      "must_observe": [
+        "One actual stop invocation; neither successful completion runs before stop returns.",
+        "Both callers get the same terminal result, including failure semantics if injected."
+      ],
+      "must_not_observe": [
+        "Completion inferred from connected=false."
+      ],
+      "code_evidence": [
+        "unit: latch-controlled actual-stop seam"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T13",
+      "title": "Mixed-time game/readiness",
+      "given": "Prepare old current-game A observation and new readiness B observation.",
+      "when": "Deliver mixed readings to snapshot/transition consumers.",
+      "must_observe": [
+        "Mixed epoch/revision/target evidence rejected or explicitly unknown; transport truth preserved."
+      ],
+      "must_not_observe": [
+        "Reveal from incompatible observations labeled as one snapshot."
+      ],
+      "code_evidence": [
+        "unit: parser/reducer",
+        "host integration: coherent producer snapshot"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T14",
+      "title": "Gateway temporarily missing while stream lives",
+      "given": "Local G healthy; Gateway fails several reads.",
+      "when": "Refresh host and game status; select resume.",
+      "must_observe": [
+        "G remains active; game evidence may be unknown/stale with honest UI.",
+        "Resume reuses G without unneeded connect."
+      ],
+      "must_not_observe": [
+        "Online-idle projection or live transport invalidated by missing gameId."
+      ],
+      "code_evidence": [
+        "unit: reducer/effects with failed observations"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T15",
+      "title": "Old events after new launch",
+      "given": "A stop/ready/frame callbacks retained; current target/execution is B.",
+      "when": "Deliver old callbacks after B launch and after surface replacement.",
+      "must_observe": [
+        "B state, cover and input gate unchanged by A events."
+      ],
+      "must_not_observe": [
+        "Clearing B tile or opening B gate from A frame/window evidence."
+      ],
+      "code_evidence": [
+        "unit: generation and surface fencing"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T16",
+      "title": "Parent/child equivalent gameplay semantics",
+      "given": "Allowed target shared by parent and child; same Windows execution identity.",
+      "when": "Run launch→Home→switch→close-game for each actor.",
+      "must_observe": [
+        "Same retain/disconnect semantics for equivalent gameplay operations.",
+        "Actor-specific allowlist, lease and endpoint authorization remain distinct."
+      ],
+      "must_not_observe": [
+        "Client child flag alone deciding server permissions."
+      ],
+      "code_evidence": [
+        "unit: actor-context callers",
+        "integration: permissions plus stream binding"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T17",
+      "title": "Child switch preserves used time",
+      "given": "Child has partially consumed budget; A running.",
+      "when": "Switch A→B and retry an already accepted switch.",
+      "must_observe": [
+        "Spent/remaining time conserved according to policy; no new daily budget.",
+        "Same transport, new verified game execution."
+      ],
+      "must_not_observe": [
+        "Resetting time on game switch or request retry."
+      ],
+      "code_evidence": [
+        "host unit/integration: lease/accounting clock"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T18",
+      "title": "Child budget expiry in game and on Home",
+      "given": "Child lease active and close to budget limit; test both visible game and Home.",
+      "when": "Advance authoritative time to expiry.",
+      "must_observe": [
+        "Input/reconnect denied; bound game and stream terminated on host, local transport stopped when client exists.",
+        "No dependency on drawing a cover."
+      ],
+      "must_not_observe": [
+        "Retained neutral stream after terminal expiry."
+      ],
+      "code_evidence": [
+        "unit: terminal dispatch",
+        "host integration: expiry enforcement"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T19",
+      "title": "Schedule end with remaining budget",
+      "given": "Child has remaining daily budget but permitted time window ends.",
+      "when": "Cross schedule boundary.",
+      "must_observe": [
+        "Same terminal denial/stream cleanup as budget exhaustion."
+      ],
+      "must_not_observe": [
+        "Continued stream because budget remains positive."
+      ],
+      "code_evidence": [
+        "host unit/integration: controllable schedule clock"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T20",
+      "title": "Host enforcement without Android",
+      "given": "Child game and stream are bound; Android unavailable or network to app interrupted.",
+      "when": "Allow budget/window to expire.",
+      "must_observe": [
+        "Host independently stops exact game and session; later client resume denied."
+      ],
+      "must_not_observe": [
+        "Dependence on Android timer/UI callback for enforcement."
+      ],
+      "code_evidence": [
+        "host integration: no-client lease expiry"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T21",
+      "title": "Stale child expiry after parent reauthorization",
+      "given": "Same device, possibly same physical transport; parent has a new authorized binding after child.",
+      "when": "Deliver delayed expiry/cleanup belonging to the child.",
+      "must_observe": [
+        "Parent execution/stream survives; authorization epoch prevents stale effect."
+      ],
+      "must_not_observe": [
+        "Device-ID-only or unchanged transport-generation check terminating parent."
+      ],
+      "code_evidence": [
+        "host integration: rebind race",
+        "unit: client stale callbacks"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T22",
+      "title": "Child forbidden APIs",
+      "given": "Authenticated child, including after previously using parent UI/session.",
+      "when": "Call Discord, create/update child, and add/update games in own/other child library directly.",
+      "must_observe": [
+        "Host rejects each unauthorized operation; UI hides/blocks access separately.",
+        "Child permitted gameplay/stop endpoints continue to work."
+      ],
+      "must_not_observe": [
+        "Security only through hidden buttons.",
+        "Inherited parent management token or desktop access."
+      ],
+      "code_evidence": [
+        "host integration: actual route/auth handlers",
+        "unit: UI permissions"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T23",
+      "title": "Destroyed cover view",
+      "given": "A pending frame/cover barrier exists; no drawable surface after detach.",
+      "when": "Destroy view before callback, then deliver any old callback.",
+      "must_observe": [
+        "Exactly one explicit CANCELLED/UNAVAILABLE/SUBMITTED result as appropriate.",
+        "Safety-critical termination still occurs without rendering."
+      ],
+      "must_not_observe": [
+        "Silently dropping continuation or stale input enablement."
+      ],
+      "code_evidence": [
+        "unit: barrier lifecycle",
+        "android instrumentation: renderer lifecycle"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T24",
+      "title": "Gateway offline during whole quit",
+      "given": "G active; all cleanup RPCs fail or time out.",
+      "when": "Select full quit.",
+      "must_observe": [
+        "Actual local stop starts without RPC completion; Home shown; host status remains honest unknown/stopping.",
+        "No spontaneous auto-warm-up."
+      ],
+      "must_not_observe": [
+        "Keeping/resurrecting stream because remote state cannot be confirmed."
+      ],
+      "code_evidence": [
+        "unit: never-completing RPC plus actual stop seam"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T25",
+      "title": "Activity destroy versus stop/new intent",
+      "given": "Actual stop controllably blocked; lifecycle destroy and new intent can race.",
+      "when": "Interleave destroy, stop and new Play across one old generation.",
+      "must_observe": [
+        "One owner, one actual stop result and no old completion on new resources."
+      ],
+      "must_not_observe": [
+        "Use-after-release or double-stop from independent owners."
+      ],
+      "code_evidence": [
+        "unit: controlled lifecycle/effect race",
+        "android instrumentation"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T26",
+      "title": "Activity recreation versus process death",
+      "given": "A/G retained and authorized.",
+      "when": "Recreate Activity; separately terminate entire app process and relaunch.",
+      "must_observe": [
+        "Activity-only recreation keeps runtime G and safely attaches a new presentation.",
+        "Process death honestly reports no live local G, reconciles host and reconnects under current authorization."
+      ],
+      "must_not_observe": [
+        "Claiming socket continuity after process death.",
+        "Old UI persisted flags acting as live evidence."
+      ],
+      "code_evidence": [
+        "android lifecycle/instrumentation",
+        "unit: restore/reconnect classification"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T27",
+      "title": "Release/debug retention default parity",
+      "given": "Fresh release/debug installs; stored retention preference absent, explicitly disabled and explicitly set to other values.",
+      "when": "Read the retention policy and run Home resume.",
+      "must_observe": [
+        "Absent preference yields the same 30 minute background retention on release and debug (D01).",
+        "Explicit stored values, including disabled, are preserved; configured retention boundaries tested."
+      ],
+      "must_not_observe": [
+        "Overwriting an explicit disabled choice, applying the background timeout to app Home/host-picker retention, or treating debug-only success as release evidence."
+      ],
+      "code_evidence": [
+        "unit: preference default/explicit-value semantics",
+        "build: debug and release configuration verification"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T28",
+      "title": "Host observation epoch reset",
+      "given": "Bridge snapshot revision high in boot E1; service then restarts at revision low in E2.",
+      "when": "Receive E2 then delayed E1 snapshots.",
+      "must_observe": [
+        "Resynchronize on new boot; reject stale E1; do not compare revisions across boots."
+      ],
+      "must_not_observe": [
+        "Discarding all new data forever or using stale process identity after restart."
+      ],
+      "code_evidence": [
+        "host integration: restart/revision",
+        "unit: client reducer"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T29",
+      "title": "Gateway before streamer",
+      "given": "Gateway and broker available, correct user not yet logged in, streamer absent.",
+      "when": "Launch and warm-up in separate runs.",
+      "must_observe": [
+        "Authorized sign-in is attempted without streamer-port readiness; streamer checked only after correct session/components."
+      ],
+      "must_not_observe": [
+        "Circular readiness deadlock."
+      ],
+      "code_evidence": [
+        "unit: ordered stage fake",
+        "host integration: pre-login service arrangement"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T30",
+      "title": "No approval or invalid credentials",
+      "given": "Cases: unapproved device, missing stored password, rejected password.",
+      "when": "Attempt unattended launch and automatic preparation.",
+      "must_observe": [
+        "Explicit denial/action-needed; no game dispatch without correct-session READY.",
+        "No retry loop of rejected credentials, no credential leakage."
+      ],
+      "must_not_observe": [
+        "Silent parent fallback or bypassing device approval."
+      ],
+      "code_evidence": [
+        "unit: typed outcomes",
+        "host integration: permission/broker rejection"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T31",
+      "title": "Different active Windows user",
+      "given": "An unrelated Windows user is interactive; desired profile differs.",
+      "when": "Request launch under the configured profile.",
+      "must_observe": [
+        "Respect configured authorized switching policy or return explicit action-needed."
+      ],
+      "must_not_observe": [
+        "Implicit logoff/takeover or treating any interactive user as ready."
+      ],
+      "code_evidence": [
+        "host integration: profile identity policy",
+        "unit: client identity gate"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T32",
+      "title": "Sign-in timeout/null/cancel/late success",
+      "given": "Preflight can emit missing session, expired deadline, cancellation and delayed success.",
+      "when": "Exercise each ordering with a fake monotonic clock.",
+      "must_observe": [
+        "Only positive READY for current requested identity continues.",
+        "Cancelled/superseded generation never launches on late success."
+      ],
+      "must_not_observe": [
+        "Null/timeout masquerading as success."
+      ],
+      "code_evidence": [
+        "unit: all typed outcomes and stale completion"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T33",
+      "title": "Warm-up and Play collide",
+      "given": "Host/profile entered; prepare in flight; current actor authorized.",
+      "when": "Click game during preparation and repeat host-entry notifications.",
+      "must_observe": [
+        "One prepare owner and one real connection; correct latest pending intent dispatched once."
+      ],
+      "must_not_observe": [
+        "Duplicate stream/game launch or lost explicit Play."
+      ],
+      "code_evidence": [
+        "unit: single-flight deterministic race"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T34",
+      "title": "Auto-warm-up after explicit quit",
+      "given": "Auto-warm-up enabled with active G.",
+      "when": "Full quit returns Home; then explicit fresh Play in a separate step.",
+      "must_observe": [
+        "Home return alone does not restart preparation; fresh Play can proceed after safe cleanup barrier."
+      ],
+      "must_not_observe": [
+        "Self-recreating stream loop or suppression that permanently prevents explicit Play."
+      ],
+      "code_evidence": [
+        "unit: intent/suppression lifecycle"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T35",
+      "title": "Revoke game during child play",
+      "given": "Child playing an assigned game with valid schedule.",
+      "when": "Parent revokes the relevant game grant.",
+      "must_observe": [
+        "Access revoked and bound session terminated; later resume/launch denied."
+      ],
+      "must_not_observe": [
+        "Affecting unrelated parent session or merely hiding tile while access persists."
+      ],
+      "code_evidence": [
+        "host integration: policy revision and revocation"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T36",
+      "title": "Day/DST/clock/restart accounting",
+      "given": "Known budget use; configured schedule timezone and durable state.",
+      "when": "Cross midnight/DST, adjust wall clock and restart Gateway in controlled tests.",
+      "must_observe": [
+        "Explicit documented daily-reset and schedule rules; elapsed use not erased/replayed by restart or clock rollback."
+      ],
+      "must_not_observe": [
+        "Using device timezone implicitly or restoring a fresh allowance after reconnect."
+      ],
+      "code_evidence": [
+        "host unit: fake monotonic/wall clocks",
+        "host integration: persistence/restart"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T37",
+      "title": "Actor rebind with retained transport",
+      "given": "Parent/child share Windows execution profile; parent UI previously used.",
+      "when": "Rebind to child or parent with proper authorization while retaining transport where supported.",
+      "must_observe": [
+        "New authorization epoch and correct actor restrictions; old management/Discord/input capabilities invalidated."
+      ],
+      "must_not_observe": [
+        "Treating same Windows account or G as sufficient authorization."
+      ],
+      "code_evidence": [
+        "host integration: actor rebind",
+        "unit: facade/context invalidation"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T38",
+      "title": "Neutral warm-up is safe and truthful",
+      "given": "No managed game; parent and child tested separately.",
+      "when": "Enter host/profile; complete warm-up without selecting a game.",
+      "must_observe": [
+        "PREPARING then STREAM_READY from actual connection evidence.",
+        "No game-time debit or gameplay grant merely for preparation; no exposed desktop input."
+      ],
+      "must_not_observe": [
+        "False ready from health alone, random launch, child navigating parent desktop."
+      ],
+      "code_evidence": [
+        "unit: projection/accounting boundary",
+        "host integration: neutral binding"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T39",
+      "title": "Runtime capability absence fails safe",
+      "given": "A required runtime capability is actually absent (for example the streamer lacks session-scoped termination, D04).",
+      "when": "Attempt the affected operation including child gameplay/expiry.",
+      "must_observe": [
+        "Explicit safe blocker before any effect; local full quit still functions.",
+        "Capability-absence behavior tested."
+      ],
+      "must_not_observe": [
+        "Silent downgrade to unsafe global quit or unenforced child session."
+      ],
+      "code_evidence": [
+        "contract tests: runtime capability absence"
+      ],
+      "device_evidence": [],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T40",
+      "title": "Equivalent UI entrypoints and repeated buttons",
+      "given": "Same operation available through overlay, game tile, controller shortcut and relevant navigation.",
+      "when": "Trigger each and repeat/collide button presses around stop/start.",
+      "must_observe": [
+        "All routes reach the canonical operation with equivalent semantics and deduplicated effects."
+      ],
+      "must_not_observe": [
+        "One legacy caller bypassing actor context, stop barrier or retained policy."
+      ],
+      "code_evidence": [
+        "unit/integration: real caller wiring",
+        "android input/navigation instrumentation"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T41",
+      "title": "Manual reveal versus child terminal denial",
+      "given": "Cover active; test authorized parent recovery and terminally denied child separately.",
+      "when": "Invoke manual reveal/restore input action.",
+      "must_observe": [
+        "Parent recovery retains intended privacy escape hatch within existing authorization.",
+        "Expired child remains blocked/disconnected and cannot reach parent desktop."
+      ],
+      "must_not_observe": [
+        "Blanket removal of manual parent recovery or bypass of child denial."
+      ],
+      "code_evidence": [
+        "unit: canonical gate authorization",
+        "android UI instrumentation"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T42",
+      "title": "Old destructive host effect versus new session",
+      "given": "Host stop delayed between validation and execution; another authorized generation may start, including another client where supported.",
+      "when": "Release old stop at the adverse moment.",
+      "must_observe": [
+        "Authoritative serialization/session targeting prevents touching the replacement/unrelated session.",
+        "Where backend cannot guarantee this, affected acceptance is BLOCKED, not passed by a local token check."
+      ],
+      "must_not_observe": [
+        "PID/name/device-only identity or unguarded host-wide quit."
+      ],
+      "code_evidence": [
+        "host integration: effect-time fence and replacement barrier"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build"
+      ],
+      "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
+    },
+    {
+      "id": "T43",
+      "title": "Independently usable integrated checkpoint",
+      "given": "Previous accepted product plus declared original defects.",
+      "when": "Finish any implementation slice and stop all further implementation.",
+      "must_observe": [
+        "Target outcome works through real production entrypoints. All protected flows are no worse, builds and cumulative smoke pass.",
+        "No later task is needed for new producer/consumer/schema/packaging changes to function."
+      ],
+      "must_not_observe": [
+        "Dangling producers, unimplemented consumers, hidden critical paths, new known regression deferred to a future task."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "Required where the changed responsibility depends on real Windows/TV/native effects; follow approved checkpoint plan."
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T44",
+      "title": "Complete responsibility extraction",
+      "given": "One responsibility is selected from Game/ConsoleActivity/Gateway/Bridge.",
+      "when": "Apply and exercise its extraction.",
+      "must_observe": [
+        "State, effects and every affected caller have one production owner; obsolete paths are removed.",
+        "Focused behavioral tests can run without constructing the entire Activity."
+      ],
+      "must_not_observe": [
+        "Helper reaching through Game for its mutable state; duplicated session truth; new monolithic manager."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "Required where the changed responsibility depends on real Windows/TV/native effects; follow approved checkpoint plan."
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T45",
+      "title": "Extracted modules ship in lockstep",
+      "given": "APK/host artifacts built from the same candidate source.",
+      "when": "Build/package and verify import/registration and that the installed APK and host artifacts pair as one candidate build.",
+      "must_observe": [
+        "Extracted Java classes and host modules are included and wired in produced artifacts.",
+        "APK and host artifacts come from the same candidate build (lockstep pairing verified)."
+      ],
+      "must_not_observe": [
+        "Unit tests pass from repository files but deployed host lacks the extracted module."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "Required where the changed responsibility depends on real Windows/TV/native effects; follow approved checkpoint plan."
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T46",
+      "title": "Repeatable adverse event schedule",
+      "given": "Production owner logic behind deterministic effect boundaries.",
+      "when": "Deliver seeded duplicates, late completion, reordered observations, view replacement and cancelled work.",
+      "must_observe": [
+        "Same seed yields the same event trace and assertions; failures include replay input.",
+        "Effects target the correct transport/actor/process generation and terminate once."
+      ],
+      "must_not_observe": [
+        "Fixed sleeps as concurrency proof; retries turning flaky failures green; test oracle reusing production resolver as its only expected result."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "Required where the changed responsibility depends on real Windows/TV/native effects; follow approved checkpoint plan."
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T47",
+      "title": "Park/resume soak",
+      "given": "Live retained stream on the target TV with an authorized actor.",
+      "when": "Run 50 cycles of TV Home then return, plus several host sleep/wake cycles.",
+      "must_observe": [
+        "The same transport generation G survives every cycle.",
+        "Decoder, AudioTrack, thread and fd counts show no growth across cycles (measured values reported)."
+      ],
+      "must_not_observe": [
+        "Leaked decoder/AudioTrack/thread/fd resources, a silently replaced transport, or invented growth thresholds."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build: adb-sampled decoder/AudioTrack/thread/fd counters per cycle"
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T48",
+      "title": "Long session resource stability",
+      "given": "One stream running 2 hours or longer on the target TV.",
+      "when": "Sample dumpsys meminfo, thread count and fd count at start and end.",
+      "must_observe": [
+        "Start and end measurements are recorded and reported as measured values.",
+        "The stream remains live and correctly attributed for the whole session."
+      ],
+      "must_not_observe": [
+        "Invented pass/fail thresholds or a claim without raw samples."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build: 2h+ stream with start/end meminfo, thread and fd samples"
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T49",
+      "title": "Network disruption during a live stream",
+      "given": "Live retained stream on the target TV.",
+      "when": "Turn Wi-Fi off for 5-30 s, change the host IP, and restart the Gateway during the stream.",
+      "must_observe": [
+        "Honest state at each step (no false STREAM_READY).",
+        "Reconnect happens under the current authorization and time budget.",
+        "No operation is left stuck."
+      ],
+      "must_not_observe": [
+        "Stuck PREPARING/connecting state, stale-authorization reuse, or reconnect to an unverified host identity."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build: Wi-Fi off/on, host IP change, Gateway restart with observed states"
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T50",
+      "title": "Exit-reason evidence",
+      "given": "A debug/candidate build after Activity recreation and after process kill (LMK, crash, ANR, am kill/force-stop).",
+      "when": "The app starts again.",
+      "must_observe": [
+        "ApplicationExitInfo (API 30+) is recorded into MoonWakerDiagnostics at app start so lab evidence distinguishes LMK/crash/ANR/process kill from Activity recreation (supports T26).",
+        "StrictMode is enabled in debug builds only."
+      ],
+      "must_not_observe": [
+        "Credentials or private desktop data in diagnostics, StrictMode in release builds, or process death reported as Activity recreation."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build: forced recreation (Do not keep activities) and process kill with recorded exit reasons"
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    }
+  ]
+}

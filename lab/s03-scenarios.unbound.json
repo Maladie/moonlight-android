@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "binding_status": "UNBOUND",
+  "locale": "en-US",
+  "android_package": "com.limelight.UNBOUND",
+  "console_component": "com.limelight.UNBOUND/com.limelight.console.ConsoleActivity",
+  "adb_argv": ["UNBOUND_ADB"],
+  "observer_argv": ["UNBOUND_READ_ONLY_HOST_OBSERVER"],
+  "cleanup_argv": ["UNBOUND_REVIEWED_FIXTURE_CLEANUP"],
+  "cleanup_fixture_alias": "LAB_CLEANUP_FIXTURE",
+  "cleanup_bound": false,
+  "poll_seconds": 0.25,
+  "timeout_seconds": 120,
+  "scenarios": {
+    "success": {
+      "fixture_alias": "LAB_SUCCESS_FIXTURE",
+      "fixture_bound": false,
+      "navigation": [
+        {"selector": "LAB_SUCCESS_HOST", "keys": [], "activate": true},
+        {"selector": "LAB_SUCCESS_GAME", "keys": ["KEYCODE_DPAD_DOWN"], "activate": true}
+      ],
+      "outcome_text": null
+    },
+    "warmup": {
+      "fixture_alias": "LAB_WARMUP_FIXTURE",
+      "fixture_bound": false,
+      "navigation": [
+        {"selector": "LAB_WARMUP_HOST", "keys": ["KEYCODE_DPAD_RIGHT"], "activate": true}
+      ],
+      "outcome_text": null
+    },
+    "denied": {
+      "fixture_alias": "LAB_DENIED_FIXTURE",
+      "fixture_bound": false,
+      "navigation": [
+        {"selector": "LAB_DENIED_HOST", "keys": ["KEYCODE_DPAD_RIGHT", "KEYCODE_DPAD_RIGHT"], "activate": true},
+        {"selector": "LAB_DENIED_GAME", "keys": ["KEYCODE_DPAD_DOWN"], "activate": true}
+      ],
+      "outcome_text": "This device cannot remotely sign in to profile LAB_PROFILE_DENIED."
+    },
+    "wrong_identity": {
+      "fixture_alias": "LAB_WRONG_IDENTITY_FIXTURE",
+      "fixture_bound": false,
+      "navigation": [
+        {"selector": "LAB_WRONG_IDENTITY_HOST", "keys": ["KEYCODE_DPAD_LEFT"], "activate": true},
+        {"selector": "LAB_WRONG_IDENTITY_GAME", "keys": ["KEYCODE_DPAD_DOWN"], "activate": true}
+      ],
+      "outcome_text": "Another Windows profile is active on the computer."
+    },
+    "timeout_late_ready": {
+      "fixture_alias": "LAB_TIMEOUT_FIXTURE_UNBOUND",
+      "fixture_bound": false,
+      "navigation": [
+        {"selector": "LAB_TIMEOUT_CONTRACT", "keys": [], "activate": true}
+      ],
+      "outcome_text": null
+    }
+  }
+}

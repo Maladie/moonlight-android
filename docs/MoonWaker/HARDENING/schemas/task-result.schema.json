@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "run_id",
+    "role",
+    "actual_model",
+    "status",
+    "source",
+    "dependency_reports",
+    "finding_dispositions",
+    "changed_files",
+    "contracts_changed",
+    "compatibility_notes",
+    "task_checks",
+    "scenario_evidence",
+    "validation_commands",
+    "blockers",
+    "device_gates_pending",
+    "risks",
+    "next_action",
+    "checkpoint"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "role": {
+      "enum": [
+        "worker"
+      ]
+    },
+    "actual_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "REVIEW_PENDING",
+        "BLOCKED",
+        "DESIGN_REVIEW_PENDING",
+        "CODE_VERIFIED_DEVICE_PENDING"
+      ]
+    },
+    "source": {
+      "type": "object"
+    },
+    "dependency_reports": {
+      "type": "array"
+    },
+    "finding_dispositions": {
+      "type": "array"
+    },
+    "changed_files": {
+      "type": "array"
+    },
+    "contracts_changed": {
+      "type": "array"
+    },
+    "compatibility_notes": {
+      "type": "array"
+    },
+    "task_checks": {
+      "type": "array"
+    },
+    "scenario_evidence": {
+      "type": "array"
+    },
+    "validation_commands": {
+      "type": "array"
+    },
+    "blockers": {
+      "type": "array"
+    },
+    "device_gates_pending": {
+      "type": "array"
+    },
+    "risks": {
+      "type": "array"
+    },
+    "next_action": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "checkpoint": {
+      "type": "object"
+    }
+  }
+}

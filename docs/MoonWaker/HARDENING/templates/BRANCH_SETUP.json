@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "status": "NOT_PREPARED",
+  "repository": "Maladie/moonlight-android",
+  "remote": "origin",
+  "base_branch": "codex/multi-profile-remote-sign-in",
+  "work_branch": "codex/session-hardening",
+  "observed_at_utc": null,
+  "original_branch": null,
+  "original_head": null,
+  "remote_identity_verified": false,
+  "fetch_succeeded": false,
+  "fetched_remote_head": null,
+  "local_base_head": null,
+  "local_vs_remote": null,
+  "selected_base_head": null,
+  "selection_reason": null,
+  "branch_creation_head": null,
+  "dirty_paths_before": [],
+  "preserved_packet_paths": [],
+  "commands_and_observed_results": [],
+  "blockers": []
+}

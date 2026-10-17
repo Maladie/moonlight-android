@@ -1,0 +1,321 @@
+package com.limelight.console;
+
+import java.util.Objects;
+
+/** Immutable library metadata. It deliberately contains no streaming state. */
+final class PlayniteLibraryGame {
+    final String playniteGameId;
+    final String name;
+    final boolean installed;
+    final boolean installing;
+    final boolean hidden;
+    final long playtimeSeconds;
+    final String lastActivity;
+    final long activityEpoch;
+    final String coverKey;
+    final String backgroundKey;
+    final String heroKey;
+    final String description;
+    final int playCount;
+    final String source;
+    final String provider;
+    final String providerGameId;
+    final String metadataPlayniteGameId;
+    final String libraryKey;
+    final String libraryName;
+    final boolean canLaunch;
+    final boolean canInstall;
+    final boolean canUninstall;
+    final boolean requiresConnector;
+    final boolean startBeforeStream;
+    final String genres;
+    final boolean installRequiresAttention;
+    final String installAttentionReason;
+    final String installWindowTitle;
+    final String installLauncher;
+    final String operationState;
+    final int operationProgress;
+    final boolean uninstalling;
+    /** "" (none), "required", "downloading" or "patching": Steam's pending update. */
+    final String updateState;
+    /** Progress 0-100 of that update, -1 when unknown. */
+    final int updateProgress;
+
+    private PlayniteLibraryGame(PlayniteLibraryGame base, String updateState,
+                                int updateProgress) {
+        this.playniteGameId = base.playniteGameId;
+        this.name = base.name;
+        this.installed = base.installed;
+        this.installing = base.installing;
+        this.hidden = base.hidden;
+        this.playtimeSeconds = base.playtimeSeconds;
+        this.lastActivity = base.lastActivity;
+        this.activityEpoch = base.activityEpoch;
+        this.coverKey = base.coverKey;
+        this.backgroundKey = base.backgroundKey;
+        this.heroKey = base.heroKey;
+        this.description = base.description;
+        this.playCount = base.playCount;
+        this.source = base.source;
+        this.provider = base.provider;
+        this.providerGameId = base.providerGameId;
+        this.metadataPlayniteGameId = base.metadataPlayniteGameId;
+        this.libraryKey = base.libraryKey;
+        this.libraryName = base.libraryName;
+        this.canLaunch = base.canLaunch;
+        this.canInstall = base.canInstall;
+        this.canUninstall = base.canUninstall;
+        this.requiresConnector = base.requiresConnector;
+        this.startBeforeStream = base.startBeforeStream;
+        this.genres = base.genres;
+        this.installRequiresAttention = base.installRequiresAttention;
+        this.installAttentionReason = base.installAttentionReason;
+        this.installWindowTitle = base.installWindowTitle;
+        this.installLauncher = base.installLauncher;
+        this.operationState = base.operationState;
+        this.operationProgress = base.operationProgress;
+        this.uninstalling = base.uninstalling;
+        this.updateState = updateState == null ? "" : updateState;
+        this.updateProgress = updateProgress;
+    }
+
+    /** The same game with Steam's pending update (library listing / cache). */
+    PlayniteLibraryGame withUpdate(String state, int progress) {
+        return new PlayniteLibraryGame(this, state, progress);
+    }
+
+    /** The update is running or paused-with-bytes: a state to show, not only a requirement. */
+    boolean updateActive() {
+        return "downloading".equals(updateState) || "patching".equals(updateState);
+    }
+
+    boolean updateRequired() {
+        return !updateState.isEmpty();
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean hidden, long playtimeSeconds, String lastActivity,
+                        String coverKey, String backgroundKey, String source) {
+        this(playniteGameId, name, installed, hidden, playtimeSeconds, lastActivity,
+                coverKey, backgroundKey, "", 0, source);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean hidden, long playtimeSeconds, String lastActivity,
+                        String coverKey, String backgroundKey, String description,
+                        String source) {
+        this(playniteGameId, name, installed, hidden, playtimeSeconds, lastActivity,
+                coverKey, backgroundKey, description, 0, source);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean hidden, long playtimeSeconds, String lastActivity,
+                        String coverKey, String backgroundKey, String description,
+                        int playCount, String source) {
+        this(playniteGameId, name, installed, false, hidden, playtimeSeconds, lastActivity,
+                coverKey, backgroundKey, description, playCount, source);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, description, playCount, source, "");
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source, String genres) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, description, playCount, source,
+                genres, false, "", "", "");
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source, String genres,
+                        boolean installRequiresAttention, String installAttentionReason,
+                        String installWindowTitle, String installLauncher) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, description, playCount, source,
+                genres, installRequiresAttention, installAttentionReason,
+                installWindowTitle, installLauncher, "", -1, false);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source, String genres,
+                        boolean installRequiresAttention, String installAttentionReason,
+                        String installWindowTitle, String installLauncher,
+                        String operationState, int operationProgress, boolean uninstalling) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, description, playCount, source,
+                genres, installRequiresAttention, installAttentionReason, installWindowTitle,
+                installLauncher, operationState, operationProgress, uninstalling,
+                providerFrom(source), "",
+                isGuid(playniteGameId) ? playniteGameId : "",
+                sourceKey(source), text(source).isEmpty() ? "Playnite" : source,
+                true, true, true, isGuid(playniteGameId), false);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source, String genres,
+                        boolean installRequiresAttention, String installAttentionReason,
+                        String installWindowTitle, String installLauncher,
+                        String operationState, int operationProgress, boolean uninstalling,
+                        String provider, String providerGameId,
+                        String metadataPlayniteGameId, String libraryKey, String libraryName,
+                        boolean canLaunch, boolean canInstall, boolean canUninstall,
+                        boolean requiresConnector) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, description, playCount, source,
+                genres, installRequiresAttention, installAttentionReason, installWindowTitle,
+                installLauncher, operationState, operationProgress, uninstalling,
+                provider, providerGameId, metadataPlayniteGameId,
+                libraryKey, libraryName, canLaunch, canInstall, canUninstall,
+                requiresConnector, false);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source, String genres,
+                        boolean installRequiresAttention, String installAttentionReason,
+                        String installWindowTitle, String installLauncher,
+                        String operationState, int operationProgress, boolean uninstalling,
+                        String provider, String providerGameId,
+                        String metadataPlayniteGameId, String libraryKey, String libraryName,
+                        boolean canLaunch, boolean canInstall, boolean canUninstall,
+                        boolean requiresConnector, boolean startBeforeStream) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, "", description,
+                playCount, source, genres, installRequiresAttention,
+                installAttentionReason, installWindowTitle, installLauncher,
+                operationState, operationProgress, uninstalling,
+                provider, providerGameId, metadataPlayniteGameId, libraryKey,
+                libraryName, canLaunch, canInstall, canUninstall, requiresConnector,
+                startBeforeStream);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String heroKey, String description, int playCount, String source,
+                        String genres, boolean installRequiresAttention,
+                        String installAttentionReason, String installWindowTitle,
+                        String installLauncher, String operationState, int operationProgress,
+                        boolean uninstalling, String provider,
+                        String providerGameId, String metadataPlayniteGameId,
+                        String libraryKey, String libraryName, boolean canLaunch,
+                        boolean canInstall, boolean canUninstall, boolean requiresConnector,
+                        boolean startBeforeStream) {
+        this.playniteGameId = playniteGameId;
+        this.name = name;
+        this.installed = installed;
+        this.installing = installing;
+        this.hidden = hidden;
+        this.playtimeSeconds = Math.max(0L, playtimeSeconds);
+        this.lastActivity = text(lastActivity);
+        this.activityEpoch = PlayniteLibraryOrdering.activityEpoch(this.lastActivity);
+        this.coverKey = text(coverKey);
+        this.backgroundKey = text(backgroundKey);
+        this.heroKey = text(heroKey);
+        this.description = descriptionText(description);
+        this.playCount = Math.max(0, playCount);
+        this.source = text(source);
+        this.provider = text(provider).toLowerCase(java.util.Locale.ROOT);
+        this.providerGameId = text(providerGameId);
+        this.metadataPlayniteGameId = text(metadataPlayniteGameId).toLowerCase(
+                java.util.Locale.ROOT);
+        this.libraryKey = text(libraryKey).toLowerCase(java.util.Locale.ROOT);
+        this.libraryName = text(libraryName);
+        this.canLaunch = canLaunch;
+        this.canInstall = canInstall;
+        this.canUninstall = canUninstall;
+        this.requiresConnector = requiresConnector;
+        this.startBeforeStream = startBeforeStream;
+        this.genres = text(genres);
+        this.installRequiresAttention = installRequiresAttention;
+        this.installAttentionReason = text(installAttentionReason);
+        this.installWindowTitle = text(installWindowTitle);
+        this.installLauncher = text(installLauncher);
+        this.operationState = text(operationState);
+        this.operationProgress = operationProgress;
+        this.uninstalling = uninstalling;
+        this.updateState = "";
+        this.updateProgress = -1;
+    }
+
+    @Override public boolean equals(Object value) {
+        if (this == value) return true;
+        if (!(value instanceof PlayniteLibraryGame)) return false;
+        PlayniteLibraryGame game = (PlayniteLibraryGame) value;
+        return installed == game.installed && installing == game.installing &&
+                uninstalling == game.uninstalling && operationProgress == game.operationProgress &&
+                installRequiresAttention == game.installRequiresAttention &&
+                hidden == game.hidden &&
+                playtimeSeconds == game.playtimeSeconds &&
+                playniteGameId.equals(game.playniteGameId) && name.equals(game.name) &&
+                lastActivity.equals(game.lastActivity) && coverKey.equals(game.coverKey) &&
+                backgroundKey.equals(game.backgroundKey) &&
+                heroKey.equals(game.heroKey) &&
+                description.equals(game.description) && playCount == game.playCount &&
+                source.equals(game.source) && genres.equals(game.genres) &&
+                provider.equals(game.provider) && providerGameId.equals(game.providerGameId) &&
+                metadataPlayniteGameId.equals(game.metadataPlayniteGameId) &&
+                libraryKey.equals(game.libraryKey) && libraryName.equals(game.libraryName) &&
+                canLaunch == game.canLaunch && canInstall == game.canInstall &&
+                canUninstall == game.canUninstall &&
+                requiresConnector == game.requiresConnector &&
+                startBeforeStream == game.startBeforeStream &&
+                installAttentionReason.equals(game.installAttentionReason) &&
+                installWindowTitle.equals(game.installWindowTitle) &&
+                installLauncher.equals(game.installLauncher) &&
+                operationState.equals(game.operationState) &&
+                updateState.equals(game.updateState) && updateProgress == game.updateProgress;
+    }
+
+    @Override public int hashCode() {
+        return Objects.hash(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, heroKey, description, playCount,
+                source, genres,
+                installRequiresAttention, installAttentionReason, installWindowTitle,
+                installLauncher, operationState, operationProgress, uninstalling,
+                provider, providerGameId, metadataPlayniteGameId,
+                libraryKey, libraryName, canLaunch, canInstall, canUninstall,
+                requiresConnector, startBeforeStream, updateState, updateProgress);
+    }
+
+    private static String text(String value) { return value == null ? "" : value.trim(); }
+
+    private static final java.util.regex.Pattern GUID = java.util.regex.Pattern.compile(
+            "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    private static final java.util.regex.Pattern PROVIDER_NAME =
+            java.util.regex.Pattern.compile("[a-z][a-z0-9_-]{1,31}");
+    private static final java.util.regex.Pattern BLANK_LINE_RUN =
+            java.util.regex.Pattern.compile("(?:\\r?\\n[ \\t]*){3,}");
+
+    private static boolean isGuid(String value) {
+        return GUID.matcher(text(value)).matches();
+    }
+
+    private static String providerFrom(String source) {
+        String normalized = text(source).toLowerCase(java.util.Locale.ROOT);
+        return PROVIDER_NAME.matcher(normalized).matches() ? normalized : "playnite";
+    }
+
+    private static String sourceKey(String source) {
+        String normalized = text(source).toLowerCase(java.util.Locale.ROOT);
+        return normalized.isEmpty() ? "playnite" : normalized;
+    }
+
+    private static String descriptionText(String value) {
+        return BLANK_LINE_RUN.matcher(text(value)).replaceAll("\n\n");
+    }
+}
